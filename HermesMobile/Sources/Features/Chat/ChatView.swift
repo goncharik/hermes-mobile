@@ -113,26 +113,51 @@ struct ChatView: View {
   /// The transcript, rendered behind the shared renderer boundary (`SwiftUITranscriptView`).
   /// The reducer owns no scroll state — stick-to-bottom / pin behaviour is renderer-local.
   /// `onLoadOlder` is gated on `hasMoreAbove` so the top sentinel can't page past the start.
+  @ViewBuilder
   private var transcript: some View {
-    SwiftUITranscriptView(
-      rows: Array(store.visibleRows),
-      turnState: store.isSending ? .streaming : .idle,
-      onLoadOlder: { if store.hasMoreAbove { store.send(.loadOlderRequested) } },
-      onScrollPositionChanged: { _ in }
-    ) { row in
-      rowView(row)
-        .contextMenu {
-          Button {
-            store.send(.copyRow(id: row.id))
-          } label: {
-            Label("Copy", systemImage: "doc.on.doc")
-          }
-        }
+    let rows = Array(store.visibleRows)
+    let turnState: TurnState = store.isSending ? .streaming : .idle
+    let onLoadOlder = { if store.hasMoreAbove { store.send(.loadOlderRequested) } }
+
+    // The device-local A/B preference selects the engine. Both renderers share the same
+    // initializer shape and the same `cell` closure, so flipping the pref re-instantiates
+    // the chosen renderer with identical rows.
+    Group {
+      switch store.chatRenderer {
+      case .swiftUI:
+        SwiftUITranscriptView(
+          rows: rows,
+          turnState: turnState,
+          onLoadOlder: onLoadOlder,
+          onScrollPositionChanged: { _ in },
+          cell: transcriptCell
+        )
+      case .collectionView:
+        CollectionTranscriptView(
+          rows: rows,
+          turnState: turnState,
+          onLoadOlder: onLoadOlder,
+          onScrollPositionChanged: { _ in },
+          cell: transcriptCell
+        )
+      }
     }
     .scrollDismissesKeyboard(.interactively)
     // Tap on empty transcript space dismisses the keyboard without stealing taps
     // from row buttons, context menus, or markdown links.
     .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+  }
+
+  @ViewBuilder
+  private func transcriptCell(_ row: ChatRow) -> some View {
+    rowView(row)
+      .contextMenu {
+        Button {
+          store.send(.copyRow(id: row.id))
+        } label: {
+          Label("Copy", systemImage: "doc.on.doc")
+        }
+      }
   }
 
   @ViewBuilder

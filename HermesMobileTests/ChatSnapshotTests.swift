@@ -9,6 +9,56 @@ import XCTest
 final class ChatSnapshotTests: SnapshotTestCase {
   // MARK: ChatView
 
+  /// Build a `ChatView` over `rows` for a specific rendering engine, so we can A/B the two
+  /// interchangeable renderers on identical fixtures.
+  private func chatView(
+    rows: [ChatRow],
+    title: String,
+    status: ChatFeature.State.Status,
+    renderer: ChatRendererKind
+  ) -> some View {
+    NavigationStack {
+      ChatView(
+        store: Store(
+          initialState: ChatFeature.State(
+            connection: connection,
+            title: title,
+            transcript: IdentifiedArray(uniqueElements: rows),
+            status: status,
+            chatRenderer: renderer
+          )
+        ) {
+          ChatFeature()
+        } withDependencies: {
+          // Don't open a real socket during render.
+          $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+          $0.continuousClock = ImmediateClock()
+        }
+      )
+    }
+  }
+
+  /// Render the same fixture under both engines (suffixed snapshot names).
+  private func assertBothEngines(
+    rows: [ChatRow],
+    title: String,
+    status: ChatFeature.State.Status,
+    file: StaticString = #file,
+    testName: String = #function,
+    line: UInt = #line
+  ) {
+    for renderer in ChatRendererKind.allCases {
+      assertSnapshot(
+        of: chatView(rows: rows, title: title, status: status, renderer: renderer),
+        as: deviceImage(),
+        named: renderer.rawValue,
+        file: file,
+        testName: testName,
+        line: line
+      )
+    }
+  }
+
   func testChatView() {
     let rows: [ChatRow] = [
       ChatRow(id: id(0), kind: .message(role: .user, text: "Summarize the streaming protocol.", isComplete: true)),
@@ -20,25 +70,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         isComplete: true
       )),
     ]
-    let view = NavigationStack {
-      ChatView(
-        store: Store(
-          initialState: ChatFeature.State(
-            connection: connection,
-            title: "Protocol chat",
-            transcript: IdentifiedArray(uniqueElements: rows),
-            status: .ready
-          )
-        ) {
-          ChatFeature()
-        } withDependencies: {
-          // Don't open a real socket during render.
-          $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
-          $0.continuousClock = ImmediateClock()
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertBothEngines(rows: rows, title: "Protocol chat", status: .ready)
   }
 
   /// Fenced code block + list rendering (Task 11 markdown polish).
@@ -51,24 +83,8 @@ final class ChatSnapshotTests: SnapshotTestCase {
         isComplete: true
       )),
     ]
-    let view = NavigationStack {
-      ChatView(
-        store: Store(
-          initialState: ChatFeature.State(
-            connection: connection,
-            title: "Protocol chat",
-            transcript: IdentifiedArray(uniqueElements: rows),
-            status: .reconnecting // exercises the connection banner too
-          )
-        ) {
-          ChatFeature()
-        } withDependencies: {
-          $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
-          $0.continuousClock = ImmediateClock()
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    // .reconnecting exercises the connection banner too.
+    assertBothEngines(rows: rows, title: "Protocol chat", status: .reconnecting)
   }
 
   func testChatView_sentImageAttachment() {
@@ -80,24 +96,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
       ),
       ChatRow(id: id(1), kind: .message(role: .assistant, text: "A solid teal square.", isComplete: true)),
     ]
-    let view = NavigationStack {
-      ChatView(
-        store: Store(
-          initialState: ChatFeature.State(
-            connection: connection,
-            title: "Vision chat",
-            transcript: IdentifiedArray(uniqueElements: rows),
-            status: .ready
-          )
-        ) {
-          ChatFeature()
-        } withDependencies: {
-          $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
-          $0.continuousClock = ImmediateClock()
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertBothEngines(rows: rows, title: "Vision chat", status: .ready)
   }
 
   // MARK: Code-block copy affordance (#9)

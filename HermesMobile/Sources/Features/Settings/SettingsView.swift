@@ -38,6 +38,18 @@ struct SettingsView: View {
       }
 
       Section {
+        Picker("Chat list engine", selection: $store.chatRenderer) {
+          ForEach(ChatRendererKind.allCases, id: \.self) { kind in
+            Text(kind.displayName).tag(kind)
+          }
+        }
+      } header: {
+        Text("Experimental")
+      } footer: {
+        Text("Switches the chat transcript rendering engine. Experimental — reopen a chat to compare.")
+      }
+
+      Section {
         Button("Clear token & disconnect", role: .destructive) {
           store.send(.clearTokenTapped)
         }

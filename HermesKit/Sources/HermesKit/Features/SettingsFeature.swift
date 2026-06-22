@@ -16,12 +16,15 @@ public struct SettingsFeature {
     public var savedConfirmation: Bool
     /// Live debug log, newest last; fed by `DebugLogClient`.
     public var log: [GatewayLogEntry]
+    /// The selected chat transcript rendering engine (device-local A/B preference).
+    public var chatRenderer: ChatRendererKind
 
     public init(connection: ServerConnection) {
       self.connection = connection
       self.token = connection.token ?? ""
       self.savedConfirmation = false
       self.log = []
+      self.chatRenderer = .default
     }
 
     public var serverURLString: String { connection.baseURL.absoluteString }
@@ -64,6 +67,7 @@ public struct SettingsFeature {
     Reduce { state, action in
       switch action {
       case .task:
+        state.chatRenderer = preferences.loadChatRenderer()
         return .run { [debugLog] send in
           for await entries in debugLog.stream() {
             await send(.logUpdated(entries))
@@ -77,6 +81,10 @@ public struct SettingsFeature {
 
       case .binding(\.token):
         state.savedConfirmation = false
+        return .none
+
+      case .binding(\.chatRenderer):
+        preferences.saveChatRenderer(state.chatRenderer)
         return .none
 
       case .binding:

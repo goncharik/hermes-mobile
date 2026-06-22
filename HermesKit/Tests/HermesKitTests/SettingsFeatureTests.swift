@@ -16,6 +16,7 @@ struct SettingsFeatureTests {
     preferences.saveSeenCounts(["s1": 4])
     preferences.saveGroupingMode(.chronological)
     preferences.saveSelectedProfileID("staging")
+    preferences.saveChatRenderer(.swiftUI) // device-local A/B pref — must survive logout
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -33,6 +34,36 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSeenCounts() == [:]) // unread state cleared too
     #expect(preferences.loadGroupingMode() == .workspace) // grouping pref reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
+    #expect(preferences.loadChatRenderer() == .swiftUI) // device-local — NOT cleared on logout
+  }
+
+  @Test func taskLoadsChatRendererPreference() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveChatRenderer(.swiftUI)
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+      $0.debugLog.stream = { @Sendable in AsyncStream { $0.finish() } }
+    }
+
+    await store.send(.task) {
+      $0.chatRenderer = .swiftUI
+    }
+  }
+
+  @Test func selectingChatRendererPersistsPreference() async {
+    let preferences = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(\.binding.chatRenderer, .swiftUI) {
+      $0.chatRenderer = .swiftUI
+    }
+    #expect(preferences.loadChatRenderer() == .swiftUI)
   }
 
   @Test func clearTokenWipesChatSnapshotStore() async {

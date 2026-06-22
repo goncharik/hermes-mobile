@@ -228,13 +228,13 @@ ChatTranscriptView(
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Modify: `HermesMobile/Sources/Features/Settings/.../SettingsView.swift` (existing settings screen)
 
-- [ ] Add `ChatRendererKind` (`.swiftUI` | `.collectionView`) and `chatRenderer` get/set to `PreferencesClient` (default `.collectionView`); `.inMemory()` variant supports it; **not** cleared on logout.
-- [ ] `ChatView` switches between `SwiftUITranscriptView` and `CollectionTranscriptView` on the pref; flipping re-instantiates with the same `rows`.
-- [ ] Add a Settings `Picker` ("Chat list engine — experimental").
-- [ ] Write tests: `chatRenderer` round-trips via `.inMemory()` PreferencesClient; default is `.collectionView`; logout does not clear it.
-- [ ] Run `tuist generate`; build.
-- [ ] Re-record + verify snapshots for **both** engines on the same fixture transcript.
-- [ ] Run full suites — must pass before next task.
+- [x] Add `ChatRendererKind` (`.swiftUI` | `.collectionView`) and `chatRenderer` get/set to `PreferencesClient` (default `.collectionView`); `.inMemory()` variant supports it; **not** cleared on logout. (New `ChatRendererKind.swift` model; `loadChatRenderer`/`saveChatRenderer` on both `live` (UserDefaults `hermes.chat-renderer`, garbage→default) and `.inMemory()`. Verified no logout/`clearIdentityScopedPrefs` path touches it.)
+- [x] `ChatView` switches between `SwiftUITranscriptView` and `CollectionTranscriptView` on the pref; flipping re-instantiates with the same `rows`. (`ChatFeature.State.chatRenderer` loaded on `.task` from prefs; `ChatView.transcript` is a `Group` switch over `store.chatRenderer`, both engines fed the shared `transcriptCell` builder + identical `rows`/`turnState`/`onLoadOlder`.)
+- [x] Add a Settings `Picker` ("Chat list engine — experimental"). (`SettingsFeature.State.chatRenderer` bindable, loaded on `.task`, persisted on `binding(\.chatRenderer)`; `SettingsView` "Experimental" section with a `Picker("Chat list engine")` + footer.)
+- [x] Write tests: `chatRenderer` round-trips via `.inMemory()` PreferencesClient; default is `.collectionView`; logout does not clear it. (PreferencesClientTests: in-memory/live round-trip, default, garbage→default, `clearIdentityScopedPrefs` keeps it. SettingsFeatureTests: `.task` loads pref, binding persists pref, logout asserts `loadChatRenderer() == .swiftUI` survives.)
+- [x] Run `tuist generate`; build. (`make generate` ok; `xcodebuild` Debug iPhone 17 Pro simulator → BUILD SUCCEEDED. Reverted the spurious `HermesKit/Package.resolved` pin.)
+- [x] Re-record + verify snapshots for **both** engines on the same fixture transcript. (ChatView snapshot tests parameterized over `ChatRendererKind.allCases` via `assertBothEngines`, producing `.collectionView`/`.swiftUI`-suffixed baselines on identical fixtures; re-recorded all baselines; `make snapshot` → 68 tests, 0 failures.)
+- [x] Run full suites — must pass before next task. (HermesKit: 489 tests pass; snapshots: 68 tests, 0 failures.)
 
 ### Task 9: Verify acceptance criteria
 

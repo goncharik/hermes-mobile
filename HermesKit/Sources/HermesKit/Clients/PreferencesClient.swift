@@ -25,6 +25,10 @@ public struct PreferencesClient: Sendable {
   public var loadSelectedProfileID: @Sendable () -> String? = { nil }
   public var saveSelectedProfileID: @Sendable (_ id: String) -> Void
   public var clearSelectedProfileID: @Sendable () -> Void
+  /// Which transcript rendering engine the chat screen uses. Device-local A/B preference;
+  /// **not** identity-scoped, so it survives logout.
+  public var loadChatRenderer: @Sendable () -> ChatRendererKind = { .default }
+  public var saveChatRenderer: @Sendable (_ kind: ChatRendererKind) -> Void
 }
 
 public extension PreferencesClient {
@@ -47,6 +51,7 @@ public extension PreferencesClient {
     let pinnedKey = "hermes.pinned-session-ids"
     let groupingKey = "hermes.session-grouping-mode"
     let selectedProfileKey = "hermes.selected-profile-id"
+    let chatRendererKey = "hermes.chat-renderer"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
     return PreferencesClient(
@@ -63,7 +68,11 @@ public extension PreferencesClient {
       saveGroupingMode: { store.set($0.rawValue, forKey: groupingKey) },
       loadSelectedProfileID: { store.string(forKey: selectedProfileKey) },
       saveSelectedProfileID: { store.set($0, forKey: selectedProfileKey) },
-      clearSelectedProfileID: { store.removeObject(forKey: selectedProfileKey) }
+      clearSelectedProfileID: { store.removeObject(forKey: selectedProfileKey) },
+      loadChatRenderer: {
+        store.string(forKey: chatRendererKey).flatMap(ChatRendererKind.init(rawValue:)) ?? .default
+      },
+      saveChatRenderer: { store.set($0.rawValue, forKey: chatRendererKey) }
     )
   }
 
@@ -74,6 +83,7 @@ public extension PreferencesClient {
     let pinned = LockIsolated<[String]>([])
     let grouping = LockIsolated<SessionGroupingMode>(.default)
     let selectedProfile = LockIsolated<String?>(nil)
+    let chatRenderer = LockIsolated<ChatRendererKind>(.default)
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -86,7 +96,9 @@ public extension PreferencesClient {
       saveGroupingMode: { grouping.setValue($0) },
       loadSelectedProfileID: { selectedProfile.value },
       saveSelectedProfileID: { selectedProfile.setValue($0) },
-      clearSelectedProfileID: { selectedProfile.setValue(nil) }
+      clearSelectedProfileID: { selectedProfile.setValue(nil) },
+      loadChatRenderer: { chatRenderer.value },
+      saveChatRenderer: { chatRenderer.setValue($0) }
     )
   }
 }
