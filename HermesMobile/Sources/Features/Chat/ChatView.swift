@@ -6,7 +6,6 @@ import SwiftUI
 /// the composer. Streams over the gateway via `ChatFeature`.
 struct ChatView: View {
   @Bindable var store: StoreOf<ChatFeature>
-  @State private var isAtBottom = true
   @FocusState private var composerFocused: Bool
 
   var body: some View {
@@ -111,78 +110,29 @@ struct ChatView: View {
     )
   }
 
+  /// The transcript, rendered behind the shared renderer boundary (`SwiftUITranscriptView`).
+  /// The reducer owns no scroll state — stick-to-bottom / pin behaviour is renderer-local.
+  /// `onLoadOlder` is gated on `hasMoreAbove` so the top sentinel can't page past the start.
   private var transcript: some View {
-    ScrollViewReader { proxy in
-      GeometryReader { outer in
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 10) {
-            // Top sentinel: when older rows are windowed out, appearing near the top
-            // (the first visible row's leading edge) reveals the previous page. Kept
-            // iOS 17-safe via plain `.onAppear` rather than scroll-geometry APIs.
-            if store.hasMoreAbove {
-              Color.clear.frame(height: 1)
-                .id(Self.topSentinel)
-                .onAppear { store.send(.loadOlderRequested) }
-            }
-            ForEach(store.visibleRows) { row in
-              rowView(row)
-                .id(row.id)
-                .contextMenu {
-                  Button {
-                    store.send(.copyRow(id: row.id))
-                  } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                  }
-                }
-            }
-            // Invisible anchor at the very bottom; its position relative to the viewport
-            // tells us whether the user is scrolled to the latest message.
-            Color.clear.frame(height: 1)
-              .id(Self.bottomAnchor)
-              .background(GeometryReader { inner in
-                Color.clear.preference(
-                  key: BottomDistanceKey.self,
-                  value: inner.frame(in: .global).minY - outer.frame(in: .global).maxY
-                )
-              })
-          }
-          .padding()
-        }
-        .scrollDismissesKeyboard(.interactively)
-        // Tap on empty transcript space dismisses the keyboard without stealing taps
-        // from row buttons, context menus, or markdown links.
-        .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
-        .onPreferenceChange(BottomDistanceKey.self) { distance in
-          isAtBottom = distance < 60 // within ~60pt of the bottom counts as "at bottom"
-        }
-        // Scroll on row count changes, not just the last row's id: the thinking row is
-        // pinned last, so appending a tool/answer row reorders without changing `last?.id`.
-        .onChange(of: store.transcript.count) { _, count in
-          guard count > 0 else { return }
-          withAnimation { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-        }
-        .overlay(alignment: .bottomTrailing) {
-          if !isAtBottom {
-            ScrollToBottomButton {
-              withAnimation { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
-            }
-            .padding(.trailing, 16)
-            .padding(.bottom, 12)
-            .transition(.scale.combined(with: .opacity))
+    SwiftUITranscriptView(
+      rows: Array(store.visibleRows),
+      turnState: store.isSending ? .streaming : .idle,
+      onLoadOlder: { if store.hasMoreAbove { store.send(.loadOlderRequested) } },
+      onScrollPositionChanged: { _ in }
+    ) { row in
+      rowView(row)
+        .contextMenu {
+          Button {
+            store.send(.copyRow(id: row.id))
+          } label: {
+            Label("Copy", systemImage: "doc.on.doc")
           }
         }
-        .animation(.spring(duration: 0.25), value: isAtBottom)
-      }
     }
-  }
-
-  private static let bottomAnchor = "transcript-bottom-anchor"
-  private static let topSentinel = "transcript-top-sentinel"
-
-  /// Bottom anchor's distance below the viewport bottom (≤0 ⇒ visible ⇒ at bottom).
-  private struct BottomDistanceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    .scrollDismissesKeyboard(.interactively)
+    // Tap on empty transcript space dismisses the keyboard without stealing taps
+    // from row buttons, context menus, or markdown links.
+    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
   }
 
   @ViewBuilder

@@ -198,13 +198,13 @@ ChatTranscriptView(
 - Create: `HermesMobile/Sources/Features/Chat/Transcript/SwiftUITranscriptView.swift`
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 
-- [ ] Define the shared `ChatTranscriptView` initializer shape (`rows`, `turnState`, `onLoadOlder`, `onScrollPositionChanged`) and `TurnState`.
-- [ ] Implement `SwiftUITranscriptView`: `ScrollView` + `LazyVStack`, `.defaultScrollAnchor(.bottom)`, `ScrollPosition` binding, `onScrollGeometryChange` → `isPinnedToBottom`, top sentinel → `onLoadOlder`, prepend anchored via `.scrollPosition(id:)`.
-- [ ] Implement the shared stick-to-bottom contract (open/hydrate jump, pinned follow, no-yank when scrolled up, reduce-motion instant).
-- [ ] Reuse `MessageBubbleView` / `MarkdownText` / `ThinkingIndicatorView` / `ToolStatusView` verbatim for cell content.
-- [ ] Point `ChatView` at `SwiftUITranscriptView`; run `tuist generate`.
-- [ ] Re-record + verify snapshots for the SwiftUI engine.
-- [ ] Run tests — must pass before next task.
+- [x] Define the shared `ChatTranscriptView` initializer shape (`rows`, `turnState`, `onLoadOlder`, `onScrollPositionChanged`) and `TurnState`. (`SwiftUITranscriptView(rows:turnState:onLoadOlder:onScrollPositionChanged:cell:)` — adds a `@ViewBuilder cell:` so both engines share the caller's `rowView` switch; `TurnState` = `.idle`/`.streaming`.)
+- [x] Implement `SwiftUITranscriptView`: `ScrollView` + `LazyVStack`, `.defaultScrollAnchor(.bottom)`, `ScrollPosition` binding, `onScrollGeometryChange` → `isPinnedToBottom`, top sentinel → `onLoadOlder`, prepend anchored via `.scrollPosition(id:)`. (Prepend re-anchors to the previously-first row via `scrollPosition.scrollTo(id:)` captured in the sentinel's `onAppear`.)
+- [x] Implement the shared stick-to-bottom contract (open/hydrate jump, pinned follow, no-yank when scrolled up, reduce-motion instant). (Open jump on first appear + `.defaultScrollAnchor(.bottom)`; appended-row follow gated on `isPinnedToBottom`; streaming-delta follow keyed off a `lastRowSignature`; `withAnimation` skipped under `accessibilityReduceMotion`.)
+- [x] Reuse `MessageBubbleView` / `MarkdownText` / `ThinkingIndicatorView` / `ToolStatusView` verbatim for cell content. (Reused via `ChatView.rowView` passed in as the `cell` closure — no subview rewrites.)
+- [x] Point `ChatView` at `SwiftUITranscriptView`; run `tuist generate`. (`ChatView.transcript` now wraps the renderer; removed the old `ScrollViewReader`/`BottomDistanceKey`/anchor machinery — the renderer owns scroll + the jump-to-bottom button. `make generate` run.)
+- [x] Re-record + verify snapshots for the SwiftUI engine. (6 transcript snapshots re-recorded to the new bottom-anchored layout; `make snapshot` → 68 tests, 0 failures.)
+- [x] Run tests — must pass before next task. (HermesKit: 483 tests pass; snapshots: 68 tests, 0 failures.)
 
 ### Task 7: Renderer A (UICollectionView) behind UIViewRepresentable
 
