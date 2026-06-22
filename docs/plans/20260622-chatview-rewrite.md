@@ -212,13 +212,13 @@ ChatTranscriptView(
 - Create: `HermesMobile/Sources/Features/Chat/Transcript/CollectionTranscriptView.swift`
 - Create: `HermesMobile/Sources/Features/Chat/Transcript/TranscriptCollectionCoordinator.swift`
 
-- [ ] Implement `CollectionTranscriptView` (`UIViewRepresentable`) with the **same initializer shape** as `SwiftUITranscriptView`, guarded by `#if canImport(UIKit)`.
-- [ ] Configure `UICollectionView` compositional layout, single section, self-sizing `UIHostingConfiguration` cells, `UICollectionViewDiffableDataSource<Section, ChatRow.ID>`.
-- [ ] Coordinator: apply diffs from `rows`; re-pin contentOffset on cell bounds-change while pinned (validate this first — primary streaming-jank mitigation).
-- [ ] Coordinator: prepend offset-preservation across `loadOlder`; `scrollViewDidScroll → onScrollPositionChanged` (~60pt threshold); open/hydrate jump-to-bottom.
-- [ ] Keep pure helper logic (threshold math, anchor selection) outside the `#if` guard.
-- [ ] Run `tuist generate`; build the app target.
-- [ ] Run tests — must pass before next task.
+- [x] Implement `CollectionTranscriptView` (`UIViewRepresentable`) with the **same initializer shape** as `SwiftUITranscriptView` (`rows`/`turnState`/`onLoadOlder`/`onScrollPositionChanged`/`@ViewBuilder cell`), guarded by `#if canImport(UIKit)`.
+- [x] Configure `UICollectionView` compositional layout (single section, `.estimated` self-sizing items + 10pt inter-group spacing), self-sizing `UIHostingConfiguration` cells reusing the shared `cell` closure, `UICollectionViewDiffableDataSource<Section, ChatRow.ID>` keyed on the deterministic id.
+- [x] Coordinator: apply diffs from `rows` (snapshot + `reconfigureItems` for in-place delta mutations); re-pin contentOffset on cell bounds-change while pinned via a `contentSize` KVO observation (primary streaming-jank mitigation — validated first).
+- [x] Coordinator: prepend offset-preservation across `loadOlder` (shift offset by inserted height, armed by the top sentinel); `scrollViewDidScroll → onScrollPositionChanged` (~60pt threshold) + hosted `ScrollToBottomButton`; open/hydrate jump-to-bottom on first population; reduce-motion → instant jumps.
+- [x] Keep pure helper logic outside the `#if` guard: `TranscriptScrollMath` (threshold / pin / max-offset / prepend-offset) and `TranscriptDiffKind` (prepend-vs-append classification) in `TranscriptCollectionCoordinator.swift`.
+- [x] Run `tuist generate`; build the app target. (Both new files compiled into the target; `xcodebuild` Debug simulator build exit 0; reverted the spurious `HermesKit/Package.resolved` pin.)
+- [x] Run tests — must pass before next task. (HermesKit: 483 tests pass; snapshots: 68 tests, 0 failures — ChatView still on the SwiftUI engine, toggle is Task 8.)
 
 ### Task 8: chatRenderer preference + Settings toggle
 
