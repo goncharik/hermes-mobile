@@ -115,11 +115,12 @@ struct HydrateTests {
       // Model + usage overwritten by the server (not merged with the cache).
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 42, contextMax: 200_000, contextPercent: 0)
-      // Cached row gone; server rows present (wholesale replace).
-      $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "fresh server msg", isComplete: true)),
-        ChatRow(id: self.uuid(1), kind: .message(role: .assistant, text: "fresh server reply", isComplete: true)),
-      ]
+      // Cached row gone; server rows present (wholesale replace). Rows carry deterministic,
+      // content-derived ids (matching `reconstructTranscript`).
+      $0.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript([
+        SessionMessage(id: 1, role: "user", content: "fresh server msg"),
+        SessionMessage(id: 2, role: "assistant", content: "fresh server reply"),
+      ]))
     }
     // The stale cached row id is gone entirely.
     #expect(store.state.transcript[id: self.uuid(10)] == nil)

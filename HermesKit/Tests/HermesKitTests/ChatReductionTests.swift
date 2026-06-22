@@ -774,10 +774,11 @@ struct ChatReductionTests {
       $0.status = .ready
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 10, contextMax: 200_000, contextPercent: 0)
-      $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hi", isComplete: true)),
-        ChatRow(id: self.uuid(1), kind: .message(role: .assistant, text: "hello", isComplete: true)),
-      ]
+      // Rows carry deterministic, content-derived ids (matching `reconstructTranscript`).
+      $0.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript([
+        SessionMessage(id: 1, role: "user", content: "hi"),
+        SessionMessage(id: 2, role: "assistant", content: "hello"),
+      ]))
     }
     // Single resume call — no activate, no fallback dance.
     #expect(methods.value == ["session.resume"])

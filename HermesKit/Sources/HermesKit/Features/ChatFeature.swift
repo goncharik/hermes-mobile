@@ -1269,7 +1269,7 @@ public struct ChatFeature {
     }
 
     // Rebuild the transcript wholesale from the authoritative history (server wins).
-    state.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript(response.messages, makeID: { uuid() }))
+    state.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript(response.messages))
     state.streamingRowID = nil
     state.thinkingRowID = nil
     state.toolRowIDs = [:]

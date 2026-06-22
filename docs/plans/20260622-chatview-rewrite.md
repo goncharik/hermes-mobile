@@ -134,13 +134,13 @@ ChatTranscriptView(
 - Modify: `HermesKit/Sources/HermesKit/Models/TranscriptReconstruction.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/TranscriptReconstructionTests.swift` (or create if absent)
 
-- [ ] Add a stable `kindDiscriminator` token per `ChatRow.Kind` case in `ChatRow.swift`.
-- [ ] Add a deterministic ID factory deriving `ChatRow.ID` from `(sequenceIndex, role, kindDiscriminator)`, excluding mutable text.
-- [ ] Update `reconstructTranscript` to assign deterministic IDs by position (replace `makeID: { uuid() }` default path; keep signature compatible or update call sites).
-- [ ] Update `ChatFeature.hydrate` reconstruction call site to use the deterministic path.
-- [ ] Write tests: same history in → byte-identical IDs out; identical consecutive rows get distinct IDs (sequence index); message + its reasoning row get distinct IDs.
-- [ ] Write tests: error/edge — empty history, single row, all-same-role runs.
-- [ ] Run tests — must pass before next task.
+- [x] Add a stable `kindDiscriminator` token per `ChatRow.Kind` case in `ChatRow.swift`.
+- [x] Add a deterministic ID factory deriving `ChatRow.ID` from `(sequenceIndex, role, kindDiscriminator)`, excluding mutable text. (`ChatRow.deterministicID` + a pure `UUID.deterministic(from:)` FNV-1a seed; `id` stays `UUID` for source compatibility.)
+- [x] Update `reconstructTranscript` to assign deterministic IDs by position (dropped the `makeID` parameter; ids derived per output ordinal; updated all call sites).
+- [x] Update `ChatFeature.hydrate` reconstruction call site to use the deterministic path.
+- [x] Write tests: same history in → byte-identical IDs out; identical consecutive rows get distinct IDs (sequence index); message + its reasoning row get distinct IDs.
+- [x] Write tests: error/edge — empty history, single row, all-same-role runs.
+- [x] Run tests — must pass before next task. (466 tests, all passing.)
 
 ### Task 2: Preserve row identity across streaming deltas
 

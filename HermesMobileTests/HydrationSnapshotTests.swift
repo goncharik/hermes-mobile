@@ -22,19 +22,6 @@ import XCTest
 /// Row timestamps aren't shown in `ChatView` rows, so determinism only requires the pinned
 /// dark traits + immediate clock from `SnapshotTestCase`.
 final class HydrationSnapshotTests: SnapshotTestCase {
-  /// A deterministic incrementing `UUID` factory for `reconstructTranscript`'s `makeID`
-  /// (row identity is never load-bearing for reconstruction — rows match by key).
-  private func incrementingIDs() -> () -> UUID {
-    let counter = LockIsolated(0)
-    return {
-      let n = counter.withValue { value -> Int in
-        value += 1
-        return value
-      }
-      return UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
-    }
-  }
-
   // MARK: Fixtures
 
   /// Stored history for a turn, in the **cooked `session.resume` shape** the gateway actually
@@ -77,7 +64,7 @@ final class HydrationSnapshotTests: SnapshotTestCase {
   /// expected rows: user prompt, a completed tool row (name + `context` preview), and the
   /// assistant's answer, in the server's stream order (tool before the final answer).
   func testRehydrated_rendersStoredHistory() {
-    let rows = reconstructTranscript(storedHistory(), makeID: incrementingIDs())
+    let rows = reconstructTranscript(storedHistory())
 
     XCTAssertEqual(rows.map { $0.kind }, [
       .message(role: .user, text: "What's in server.py?", isComplete: true),
@@ -104,7 +91,7 @@ final class HydrationSnapshotTests: SnapshotTestCase {
         reasoning: "Let me look at the gateway server first, then the event types."
       ),
     ]
-    let rows = reconstructTranscript(history, makeID: incrementingIDs())
+    let rows = reconstructTranscript(history)
     assertSnapshot(of: chatView(rows: rows), as: deviceImage())
   }
 
