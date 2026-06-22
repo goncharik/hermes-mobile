@@ -144,6 +144,11 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// The floating "jump to latest" button (a hosted `ScrollToBottomButton`), shown only when
     /// scrolled up — mirrors the SwiftUI engine's overlay.
     private weak var jumpButton: UIView?
+    /// Strong reference to the button's hosting controller. Without this the controller would
+    /// deallocate the instant `installJumpButton` returns (only its `view` is retained by the
+    /// collection-view hierarchy), stripping the SwiftUI update/lifecycle machinery off a view
+    /// still on screen. No retain cycle: the button's action closure captures `self` weakly.
+    private var jumpHost: UIHostingController<ScrollToBottomButton>?
 
     init(
       onLoadOlder: @escaping () -> Void,
@@ -220,6 +225,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         ),
       ])
       jumpButton = host.view
+      jumpHost = host
     }
 
     private func setJumpButtonVisible(_ visible: Bool) {
