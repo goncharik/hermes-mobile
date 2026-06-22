@@ -163,22 +163,41 @@ import Testing
     #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
   }
 
-  @Test func classifyReorderSameLengthIsReset() {
-    // Same length, reordered ids: not in-place (sequence changed) and not a prefix/suffix ⇒ reset.
+  @Test func classifyReorderSameLengthIsNotReset() {
+    // Same length, reordered ids (a permutation of the same logical rows, e.g. `keepThinkingLast`
+    // moving the thinking row): the id SET is unchanged ⇒ NOT a wholesale reset. It must follow
+    // the no-yank pin rule (`.appendOrMutate`), never force a jump.
     let old = ids(3)
     let reordered = [old[2], old[0], old[1]]
-    #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .reset)
+    #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .appendOrMutate)
   }
 
-  @Test func classifyGrowthWithoutPrefixOrSuffixMatchIsReset() {
-    // Counts grew but the old sequence is neither a contiguous suffix (not a prepend) nor a
-    // contiguous prefix (not an append) ⇒ reset.
+  @Test func classifyMidInsertReorderIsNotReset() {
+    // Counts grew and the new row was inserted in the MIDDLE (neither a contiguous prefix nor
+    // suffix), but every old id survives — the canonical live-turn `keepThinkingLast` shape
+    // (insert a tool/answer row above the thinking row). Must be `.appendOrMutate`, never `.reset`,
+    // so a user who scrolled up mid-turn is NOT yanked to the bottom.
     let old = ids(3)
     let new = [old[0], old[1]]
       + [ChatRow.deterministicID(sequenceIndex: 50, role: .user, kindDiscriminator: "status")]
       + [old[2]]
-    // old == [0,1,2]; new prefix(3) == [0,1,status] != old and suffix(3) == [1,status,2] != old.
-    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+    // old == [0,1,2]; new prefix(3) == [0,1,status] != old and suffix(3) == [1,status,2] != old,
+    // yet {0,1,2} ⊆ {0,1,status,2} ⇒ old rows preserved ⇒ not a reset.
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
+  }
+
+  @Test func classifyLiveTurnKeepThinkingLastIsNotReset() {
+    // Concrete `keepThinkingLast` sequence: a turn with [user, tool, thinking]; an assistant
+    // answer row is inserted above the thinking row, then thinking is moved to the end →
+    // [user, tool, answer, thinking]. Neither prefix nor suffix matches, but the old ids all
+    // survive. This is the exact round-2 regression: it must NOT be `.reset`.
+    let user = ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message")
+    let tool = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "tool")
+    let thinking = ChatRow.deterministicID(sequenceIndex: 2, role: .assistant, kindDiscriminator: "thinking")
+    let answer = ChatRow.deterministicID(sequenceIndex: 3, role: .assistant, kindDiscriminator: "message")
+    let old = [user, tool, thinking]
+    let new = [user, tool, answer, thinking]
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
   }
 
   @Test func classifyHydrateWhileScrolledUpIsReset() {

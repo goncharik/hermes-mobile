@@ -131,7 +131,22 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// the on-screen anchor instead of following or jumping.
     private var pendingPrependPreservation = false
     /// Re-entrancy guard: programmatic offset changes shouldn't be read back as user scrolls.
+    ///
+    /// Lifecycle: set `true` when we kick off a programmatic `setContentOffset`. For a
+    /// *non-animated* jump the offset settles synchronously, so we clear it on the next runloop.
+    /// For an *animated* follow we must keep it set across the whole animation (UIKit emits
+    /// intermediate `scrollViewDidScroll` frames that would otherwise be misread as user scrolls
+    /// and flip the pin mid-follow); it is cleared by whichever of these fires first:
+    ///   - `scrollViewDidEndScrollingAnimation` (the animation completed normally), or
+    ///   - `scrollViewWillBeginDragging` (a user touch cancelled the animation — no end callback), or
+    ///   - the `animationGuardGeneration` watchdog (a safety net if neither fires, e.g. the
+    ///     animation is superseded/cancelled by view churn).
+    /// This belt-and-braces clearing guarantees the guard can never be left permanently `true`,
+    /// which would otherwise freeze pin/pagination updates and suppress the contentSize re-pin.
     private var isAdjustingOffset = false
+    /// Monotonic token identifying the latest animated follow, so a stale watchdog from a
+    /// superseded animation can't clear the guard belonging to a newer one.
+    private var animationGuardGeneration = 0
     /// True while a snapshot apply is in flight. The `contentSize` KVO fires during a diff
     /// apply (the layout grows as rows are inserted/resized); the apply *completion* already
     /// owns the authoritative re-pin/preserve/jump, so the KVO must not also snap mid-apply
@@ -331,8 +346,19 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // cleared synchronously those programmatic frames would be read as user scrolls and could
       // flip `isPinnedToBottom` to false mid-animation — then later contentSize growth would no
       // longer re-pin and fast streaming would race the follow, leaving the list above the
-      // latest content. The guard is cleared in `scrollViewDidEndScrollingAnimation` instead.
-      if !willAnimate {
+      // latest content. The guard is normally cleared in `scrollViewDidEndScrollingAnimation`,
+      // or earlier in `scrollViewWillBeginDragging` if the user interrupts; the watchdog below is
+      // a final safety net so the guard can never be stranded by a cancelled/superseded animation.
+      if willAnimate {
+        animationGuardGeneration &+= 1
+        let generation = animationGuardGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+          guard let self, self.animationGuardGeneration == generation, self.isAdjustingOffset
+          else { return }
+          self.isAdjustingOffset = false
+          self.updatePinState()
+        }
+      } else {
         DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
       }
     }
@@ -404,6 +430,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // dropped the pin mid-follow). Re-evaluate pin state from the final resting offset.
       isAdjustingOffset = false
       updatePinState()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+      // A user touch cancels any in-flight programmatic animation: UIKit will NOT then emit a
+      // `scrollViewDidEndScrollingAnimation` for the cancelled follow, so that callback can no
+      // longer be relied on to clear `isAdjustingOffset`. Clear it here so the guard can never be
+      // left permanently set by an interrupted animated follow (after which `scrollViewDidScroll`
+      // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
+      // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
+      isAdjustingOffset = false
     }
   }
 }

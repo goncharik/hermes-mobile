@@ -65,26 +65,38 @@ public enum TranscriptScrollMath {
 }
 
 /// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
-/// append/in-place mutation (streaming / new turn), or a *reset* (a wholesale replacement of
-/// the visible slice, e.g. a server-authoritative re-hydrate). A prepend requires offset
-/// preservation; a reset forces a jump-to-bottom (the open/hydrate contract); everything else
-/// follows the pin rule. Pure over the row id sequences so it is testable.
+/// append/in-place mutation (streaming / new turn / live-turn reorder), or a *reset* (a genuine
+/// wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A prepend
+/// requires offset preservation; a reset forces a jump-to-bottom (the open/hydrate contract);
+/// everything else follows the pin rule. Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
-  /// Newer rows appended at the bottom and/or trailing rows mutated in place (streaming / a new
-  /// turn). The old sequence is a *contiguous prefix* of the new one (or the sequence is
-  /// unchanged in length and only content mutated) — the natural follow-the-bottom case.
+  /// Newer rows appended at the bottom, trailing rows mutated in place, or the same logical rows
+  /// reordered/inserted-in-the-middle (a live-turn `keepThinkingLast` reorder). The follow-the-
+  /// bottom case: follow only if pinned, **never yank a scrolled-up reader** (the no-yank
+  /// contract). Crucially this — NOT `.reset` — is what a live-turn reorder maps to, so a user
+  /// who scrolled up mid-turn is not yanked back to the bottom.
   case appendOrMutate
   /// No structural change to the id sequence (pure content mutation, e.g. a delta).
   case inPlace
-  /// A wholesale replacement of the visible slice: the old sequence is neither a contiguous
-  /// prefix (append) nor suffix (prepend) of the new one — a server-authoritative re-hydrate
-  /// (`session.resume` rebuilds rows wholesale) or a reorder. Per the open/hydrate contract the
-  /// renderer must force a jump-to-bottom on a reset, regardless of pin state.
+  /// A *genuine* wholesale replacement of the visible slice: the new id sequence is neither a
+  /// reordering nor a superset of the old one — the old rows were largely replaced by different
+  /// ids, which is what `reconstructTranscript` produces (fresh deterministic ids) only when the
+  /// underlying messages actually changed (a server-authoritative re-hydrate via `session.resume`,
+  /// or first population). Per the open/hydrate contract the renderer must force a jump-to-bottom
+  /// on a reset, regardless of pin state. A live-turn reorder is explicitly NOT a reset.
   case reset
 
   /// Classify the transition from `old` row ids to `new` row ids.
+  ///
+  /// The ordering of the checks below is deliberate. We must distinguish a live-turn reorder
+  /// (the `keepThinkingLast` insert-then-move-thinking-to-the-end pattern — which is neither a
+  /// contiguous prefix nor suffix match, yet preserves all the old logical rows) from a genuine
+  /// hydrate (`reconstructTranscript` mints fresh ids when the messages changed, so the old ids
+  /// largely disappear). `.reset` is therefore reserved for the case where the new sequence is
+  /// NOT a reordering of the old set and NOT a superset of the old ids — i.e. the old rows were
+  /// actually replaced, not merely shuffled or added to.
   public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
       // First population (empty → rows): treat as a reset so the renderer performs the
@@ -106,7 +118,21 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     if new.count >= old.count, Array(new.prefix(old.count)) == old {
       return .appendOrMutate
     }
-    // Neither a prefix nor a suffix relationship: a wholesale replace / reorder ⇒ reset.
+    // Neither a contiguous prefix nor suffix — but it may still be a live-turn reorder rather
+    // than a wholesale replace. Two non-reset shapes (both preserve the old logical rows, so a
+    // scrolled-up reader must NOT be yanked):
+    //   1. A permutation: the new and old id sets are the same multiset (e.g. `keepThinkingLast`
+    //      moving the thinking row to the end with no row added).
+    //   2. A superset: every old id survives in the new sequence (the usual live-turn case where
+    //      a tool/answer row is inserted *above* the thinking row, then thinking is moved last —
+    //      counts grow and the insert lands in the middle, so it's neither prefix nor suffix).
+    // Only when neither holds — the old ids were largely replaced by different ids — is this a
+    // genuine hydrate/wholesale reset.
+    let oldSet = Set(old)
+    let newSet = Set(new)
+    if newSet == oldSet { return .appendOrMutate }       // permutation / reorder
+    if oldSet.isSubset(of: newSet) { return .appendOrMutate } // superset: old rows preserved
+    // The old rows were largely replaced by different ids ⇒ genuine wholesale reset.
     return .reset
   }
 }
