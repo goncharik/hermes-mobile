@@ -272,6 +272,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       }
 
       let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
+      // A wholesale replace of the visible slice — a server-authoritative re-hydrate
+      // (`session.resume` rebuilds rows to the bottom window) or a reorder. Per the open/hydrate
+      // contract this forces a jump-to-bottom regardless of pin state, so a re-hydrate while the
+      // user is scrolled up doesn't leave the list parked mid-history. A prepend that is *also*
+      // being offset-preserved (`preservePrepend`) is explicitly NOT a reset — the prepend path
+      // owns the offset there.
+      let isReset = !preservePrepend && {
+        if case .reset = diff { return true } else { return false }
+      }()
 
       // Suppress the contentSize KVO for the duration of the apply: the completion below is the
       // single authority on where the offset lands for this structural change.
@@ -279,8 +288,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
         guard let self else { return }
         defer { self.isApplyingSnapshot = false }
-        if isFirstPopulation || !self.didInitialJump, !newOrder.isEmpty {
-          // Open/hydrate: jump to bottom (no animation) — always.
+        if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
+          // Open / hydrate / wholesale-reset: jump to bottom (no animation) — always, regardless
+          // of pin state (honours the open/hydrate→bottom contract on a re-hydrate while the
+          // user had scrolled up).
           self.didInitialJump = true
           self.scrollToBottom(animated: false)
         } else if preservePrepend {
@@ -306,14 +317,23 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         topInset: collectionView.adjustedContentInset.top,
         bottomInset: collectionView.adjustedContentInset.bottom
       )
+      // Animate only when there's a meaningful distance to travel; an animated call that is
+      // already at the target produces NO `scrollViewDidEndScrollingAnimation`, which would
+      // strand `isAdjustingOffset == true` forever. Treat a no-op as a synchronous settle.
+      let willAnimate = animated && abs(collectionView.contentOffset.y - target) > 0.5
       isAdjustingOffset = true
-      collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: animated)
+      collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: willAnimate)
       // For non-animated jumps the offset settles synchronously; clear the guard on the next
       // runloop so the resulting `scrollViewDidScroll` doesn't read it back as a user scroll.
-      if !animated {
+      //
+      // For *animated* follows we must KEEP the guard set for the full animation: UIKit emits a
+      // stream of `scrollViewDidScroll` frames as the offset animates, and if the guard were
+      // cleared synchronously those programmatic frames would be read as user scrolls and could
+      // flip `isPinnedToBottom` to false mid-animation — then later contentSize growth would no
+      // longer re-pin and fast streaming would race the follow, leaving the list above the
+      // latest content. The guard is cleared in `scrollViewDidEndScrollingAnimation` instead.
+      if !willAnimate {
         DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
-      } else {
-        isAdjustingOffset = false
       }
     }
 
@@ -375,6 +395,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         pendingPrependPreservation = true
         onLoadOlder()
       }
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+      // An animated programmatic follow (`scrollToBottom(animated: true)`) has settled. Clear
+      // the re-entrancy guard now — not synchronously when the animation was kicked off — so the
+      // intermediate animation frames were never mistaken for user scrolls (which would have
+      // dropped the pin mid-follow). Re-evaluate pin state from the final resting offset.
+      isAdjustingOffset = false
+      updatePinState()
     }
   }
 }

@@ -116,9 +116,10 @@ import Testing
     #expect(TranscriptDiffKind.classify(old: [], new: []) == .inPlace)
   }
 
-  @Test func classifyFirstPopulationIsAppend() {
+  @Test func classifyFirstPopulationIsReset() {
+    // Empty → rows: a reset so the renderer performs the open-at-bottom jump.
     let new = ids(3)
-    #expect(TranscriptDiffKind.classify(old: [], new: new) == .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: [], new: new) == .reset)
   }
 
   @Test func classifyAppend() {
@@ -151,30 +152,43 @@ import Testing
     #expect(TranscriptDiffKind.classify(old: old, new: new) == .prepend(insertedCount: 1))
   }
 
-  @Test func classifyFullReplacementIsAppendOrMutate() {
-    // A hydrate over a different transcript: no suffix relationship ⇒ not a prepend.
+  @Test func classifyFullReplacementIsReset() {
+    // A hydrate over a different transcript: neither prefix nor suffix relationship ⇒ reset,
+    // which forces the open/hydrate jump-to-bottom regardless of pin state.
     let old = ids(3)
     let new = [
       ChatRow.deterministicID(sequenceIndex: 0, role: .assistant, kindDiscriminator: "thinking"),
       ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message"),
     ]
-    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
   }
 
-  @Test func classifyReorderSameLengthIsAppendOrMutate() {
-    // Same length, reordered ids: not in-place (sequence changed) and not a prepend (no growth).
+  @Test func classifyReorderSameLengthIsReset() {
+    // Same length, reordered ids: not in-place (sequence changed) and not a prefix/suffix ⇒ reset.
     let old = ids(3)
     let reordered = [old[2], old[0], old[1]]
-    #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .reset)
   }
 
-  @Test func classifyGrowthWithoutSuffixMatchIsAppendOrMutate() {
-    // Counts grew but the old sequence is NOT a contiguous suffix ⇒ append/mutate, not prepend.
+  @Test func classifyGrowthWithoutPrefixOrSuffixMatchIsReset() {
+    // Counts grew but the old sequence is neither a contiguous suffix (not a prepend) nor a
+    // contiguous prefix (not an append) ⇒ reset.
     let old = ids(3)
     let new = [old[0], old[1]]
       + [ChatRow.deterministicID(sequenceIndex: 50, role: .user, kindDiscriminator: "status")]
       + [old[2]]
-    // old == [0,1,2]; new suffix(3) == [1, status, 2] != old ⇒ not a prepend.
-    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
+    // old == [0,1,2]; new prefix(3) == [0,1,status] != old and suffix(3) == [1,status,2] != old.
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
+
+  @Test func classifyHydrateWhileScrolledUpIsReset() {
+    // A re-hydrate (session.resume rebuilds rows wholesale to the bottom window) while the user
+    // was scrolled up: the new bottom-window ids share nothing structural with the old top
+    // slice ⇒ reset, forcing the documented jump-to-bottom.
+    let oldTopSlice = ids(50)  // user had paged to the top window
+    let newBottomWindow = (200..<250).map {
+      ChatRow.deterministicID(sequenceIndex: $0, role: .assistant, kindDiscriminator: "message")
+    }
+    #expect(TranscriptDiffKind.classify(old: oldTopSlice, new: newBottomWindow) == .reset)
   }
 }

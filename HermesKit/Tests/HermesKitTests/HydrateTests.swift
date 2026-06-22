@@ -13,6 +13,11 @@ struct HydrateTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// The deterministic id the hydrate path assigns to the recreated live thinking row when it is
+  /// the only seeded in-flight row (transcript index 0, role nil, "thinking" discriminator).
+  private let resumedThinkingID = ChatRow.deterministicID(
+    sequenceIndex: 0, role: nil, kindDiscriminator: "thinking"
+  )
 
   // MARK: Instant paint
 
@@ -382,9 +387,9 @@ struct HydrateTests {
       $0.isSending = true
       // Live thinking row recreated, seeded at 7s elapsed, still in flight.
       $0.thinkingSeconds = 7
-      $0.thinkingRowID = self.uuid(0)
+      $0.thinkingRowID = self.resumedThinkingID
       $0.transcript = [ChatRow(
-        id: self.uuid(0),
+        id: self.resumedThinkingID,
         kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 7, isComplete: false)
       )]
     }
@@ -417,9 +422,9 @@ struct HydrateTests {
     await store.receive(\.activateResult.success) {
       $0.isSending = true
       $0.thinkingSeconds = 0
-      $0.thinkingRowID = self.uuid(0)
+      $0.thinkingRowID = self.resumedThinkingID
       $0.transcript = [ChatRow(
-        id: self.uuid(0),
+        id: self.resumedThinkingID,
         kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
       )]
     }
@@ -608,6 +613,83 @@ struct HydrateTests {
     #expect(store.state.isSending == true)
     #expect(store.state.hasRequestedSession == true)
     // The inflight streaming assistant row was seeded.
+    #expect(store.state.transcript.contains { row in
+      if case let .message(role, text, isComplete) = row.kind {
+        return role == .assistant && text == "partial answer" && !isComplete
+      }
+      return false
+    })
+
+    await store.send(.onDisappear)
+  }
+
+  // MARK: Stable in-flight row identity across repeated hydrates (review finding #4)
+
+  // A running turn's seeded in-flight rows (echoed user, eager streaming assistant, recreated
+  // live thinking row) must carry DETERMINISTIC, position-derived ids — not fresh `uuid()` —
+  // so repeated hydrates of the SAME running turn yield byte-identical ids. Otherwise the
+  // unchanged in-flight content diffs as delete/insert (identity churn) instead of a stable
+  // update, defeating the deterministic-identity goal. This hydrates twice and asserts the row
+  // ids are identical across both hydrates.
+  @Test func repeatedHydrateOfRunningTurnKeepsStableInflightIDs() async {
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    // `.incrementing` would hand out a fresh uuid on every seeded row — the very churn this
+    // test guards against. With the deterministic fix the ids must NOT depend on it.
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = snapshotClient
+      // Reconnect yields a single `.ready` then idles, so `.foreground` drives a second hydrate.
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        AsyncStream { continuation in continuation.yield(.ready) }
+      }
+      $0.hermesGateway.send = { @Sendable _, _ in
+        .object([
+          "session_id": .string("live123"),
+          "stored_session_id": .string("stored123"),
+          "messages": .array([
+            .object(["id": .number(1), "role": .string("user"), "content": .string("prior question")]),
+            .object(["id": .number(2), "role": .string("assistant"), "content": .string("prior answer")]),
+          ]),
+          "running": .bool(true),
+          "info": .object(["model": .string("claude-opus-4-8")]),
+          "inflight": .object([
+            "user": .string("the live question"),
+            "assistant": .string("partial answer"),
+            "streaming": .bool(true),
+          ]),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    // First hydrate.
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+    let firstIDs = store.state.transcript.ids
+    let firstStreamingID = store.state.streamingRowID
+
+    // Second hydrate of the SAME running turn (e.g. a foreground/reconnect re-resume).
+    await store.send(.foreground)
+    await store.receive(\.gatewayEvent)
+    await store.receive(\.activateResult.success)
+    let secondIDs = store.state.transcript.ids
+
+    // Byte-identical row ids across both hydrates — no identity churn.
+    #expect(Array(firstIDs) == Array(secondIDs))
+    // The streaming row id is stable too, so a delta still reuses the same seeded row.
+    #expect(store.state.streamingRowID == firstStreamingID)
+    #expect(store.state.streamingRowID != nil)
+    // Sanity: the seeded in-flight rows are present (echoed user + eager streaming assistant).
+    #expect(store.state.transcript.contains { row in
+      if case let .message(role, text, isComplete) = row.kind {
+        return role == .user && text == "the live question" && isComplete
+      }
+      return false
+    })
     #expect(store.state.transcript.contains { row in
       if case let .message(role, text, isComplete) = row.kind {
         return role == .assistant && text == "partial answer" && !isComplete

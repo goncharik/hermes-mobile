@@ -827,25 +827,31 @@ struct ChatReductionTests {
       $0.usage = Usage(contextUsed: 5, contextMax: 200_000, contextPercent: 0)
       // running == true → working indicator on.
       $0.isSending = true
-      // Inflight user row + seeded streaming assistant row (uuid 0, uuid 1) + a live thinking
-      // row (uuid 2) recreated by the timer reconcile (running with no anchor → ticks from 0).
+      // Inflight user row + seeded streaming assistant row + a live thinking row recreated by
+      // the timer reconcile (running with no anchor → ticks from 0). The seeded rows now carry
+      // DETERMINISTIC, position-derived ids (review finding #4) — not fresh uuids — so repeated
+      // hydrates don't churn identity. Derived from their transcript positions (0/1/2).
+      let inflightUserID = ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message")
+      let inflightAssistantID = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message")
+      let inflightThinkingID = ChatRow.deterministicID(sequenceIndex: 2, role: nil, kindDiscriminator: "thinking")
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "explain this", isComplete: true)),
-        ChatRow(id: self.uuid(1), kind: .message(role: .assistant, text: "Sure, ", isComplete: false)),
+        ChatRow(id: inflightUserID, kind: .message(role: .user, text: "explain this", isComplete: true)),
+        ChatRow(id: inflightAssistantID, kind: .message(role: .assistant, text: "Sure, ", isComplete: false)),
         ChatRow(
-          id: self.uuid(2),
+          id: inflightThinkingID,
           kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
         ),
       ]
-      $0.streamingRowID = self.uuid(1)
-      $0.thinkingRowID = self.uuid(2)
+      $0.streamingRowID = inflightAssistantID
+      $0.thinkingRowID = inflightThinkingID
     }
     // Activate's authoritative `running:true` lights the list glow for this session.
     await store.receive(\.delegate.runningChanged)
     // The next delta appends to the seeded row — a SINGLE assistant row, no duplicate; the
     // live thinking row is moved to last (keepThinkingLast) but stays the same row.
+    let inflightAssistantID = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message")
     await store.send(.gatewayEvent(.messageDelta(text: "here goes."))) {
-      $0.transcript[id: self.uuid(1)]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: false)
+      $0.transcript[id: inflightAssistantID]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: false)
     }
     // user + assistant + thinking = 3 rows (no duplicate assistant from the delta).
     #expect(store.state.transcript.count == 3)

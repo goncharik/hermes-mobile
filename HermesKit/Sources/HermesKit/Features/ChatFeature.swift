@@ -1355,18 +1355,32 @@ public struct ChatFeature {
     state.isSending = running
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
+    // Use DETERMINISTIC, position-derived ids (same convention as `reconstructTranscript`) so
+    // repeated hydrates of the same running turn yield byte-identical in-flight row ids — no
+    // identity churn (a re-hydrate diffs the unchanged in-flight rows as a stable update, not a
+    // delete/insert). Streaming is unaffected: `streamingRowID` still points at the seeded row,
+    // so the next `message.delta` mutates it in place under the same id.
     if let inflight = response.inflight {
       if let user = inflight.user?.nonEmpty {
-        state.transcript.append(ChatRow(id: uuid(), kind: .message(role: .user, text: user, isComplete: true)))
+        let userKind = ChatRow.Kind.message(role: .user, text: user, isComplete: true)
+        state.transcript.append(ChatRow(
+          id: ChatRow.deterministicID(
+            sequenceIndex: state.transcript.count, role: userKind.role,
+            kindDiscriminator: userKind.discriminator
+          ),
+          kind: userKind
+        ))
       }
       // Seed the streaming row eagerly when the turn is still streaming so the next
       // `message.delta` reuses it (avoids a duplicate from the lazy first-delta path).
       let assistant = inflight.assistant ?? ""
       if inflight.streaming == true || !assistant.isEmpty {
-        let id = uuid()
-        state.transcript.append(ChatRow(
-          id: id, kind: .message(role: .assistant, text: assistant, isComplete: false)
-        ))
+        let assistantKind = ChatRow.Kind.message(role: .assistant, text: assistant, isComplete: false)
+        let id = ChatRow.deterministicID(
+          sequenceIndex: state.transcript.count, role: assistantKind.role,
+          kindDiscriminator: assistantKind.discriminator
+        )
+        state.transcript.append(ChatRow(id: id, kind: assistantKind))
         state.streamingRowID = id
       }
     }
@@ -1421,12 +1435,17 @@ public struct ChatFeature {
       state.thinkingSeconds = seconds
       // Recreate the live thinking row (the in-flight one was dropped by the wholesale
       // transcript rebuild). Created eagerly with the seeded elapsed so it renders as a live
-      // shimmering "Thinking <n>s" while the tick continues.
-      let thinkingID = uuid()
-      state.transcript.append(ChatRow(
-        id: thinkingID,
-        kind: .thinking(reasoning: "", status: nil, elapsedSeconds: seconds, isComplete: false)
-      ))
+      // shimmering "Thinking <n>s" while the tick continues. Deterministic, position-derived id
+      // (same convention as `reconstructTranscript` / the seeded in-flight rows) so repeated
+      // hydrates of the same running turn don't churn its identity.
+      let thinkingKind = ChatRow.Kind.thinking(
+        reasoning: "", status: nil, elapsedSeconds: seconds, isComplete: false
+      )
+      let thinkingID = ChatRow.deterministicID(
+        sequenceIndex: state.transcript.count, role: thinkingKind.role,
+        kindDiscriminator: thinkingKind.discriminator
+      )
+      state.transcript.append(ChatRow(id: thinkingID, kind: thinkingKind))
       state.thinkingRowID = thinkingID
       keepThinkingLast(into: &state)
       // Resume the tick (seeded `thinkingSeconds` continues incrementing from `elapsed`).

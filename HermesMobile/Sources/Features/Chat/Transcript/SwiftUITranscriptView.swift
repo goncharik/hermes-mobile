@@ -51,6 +51,10 @@ struct SwiftUITranscriptView<Cell: View>: View {
   /// The id of the first currently-visible row, captured *before* a prepend so we can
   /// re-anchor scroll to it afterwards (keeps the viewport from jumping on `loadOlder`).
   @State private var prependAnchorID: ChatRow.ID?
+  /// The row-id sequence from the previous update, so we can classify the structural change
+  /// (`TranscriptDiffKind`) and detect a wholesale `.reset` (a server-authoritative re-hydrate)
+  /// that must force a jump-to-bottom regardless of pin state.
+  @State private var previousRowIDs: [ChatRow.ID] = []
 
   init(
     rows: [ChatRow],
@@ -86,13 +90,7 @@ struct SwiftUITranscriptView<Cell: View>: View {
         // scrolled to the top of the window → request the previous page. Before the
         // prepend we capture the first visible row's id so we can re-anchor to it.
         Color.clear.frame(height: 1)
-          .onAppear {
-            // Only arm prepend re-anchoring when a load can actually happen; otherwise the
-            // anchor would never clear (no prepend) and would misfire the next append.
-            guard canLoadOlder, let first = rows.first else { return }
-            prependAnchorID = first.id
-            onLoadOlder()
-          }
+          .onAppear { maybeLoadOlder() }
         ForEach(rows) { row in
           cell(row)
             .id(row.id)
@@ -122,30 +120,65 @@ struct SwiftUITranscriptView<Cell: View>: View {
     .onAppear {
       // Open/hydrate: jump to the bottom (no animation) — always. `.defaultScrollAnchor`
       // covers first layout; this guards async row population after appearance.
+      previousRowIDs = rows.map(\.id)
       guard !didInitialJump else { return }
       didInitialJump = true
       jumpToBottom(animated: false)
     }
-    .onChange(of: rows.count) { old, new in
-      guard new > old else { return }
-      if let anchor = prependAnchorID {
-        // A prepend (older page loaded): re-anchor to the previously-first row so the
-        // viewport doesn't jump. No follow.
-        scrollPosition.scrollTo(id: anchor)
+    .onChange(of: rows) { _, newRows in
+      let newIDs = newRows.map(\.id)
+      let diff = TranscriptDiffKind.classify(old: previousRowIDs, new: newIDs)
+      previousRowIDs = newIDs
+
+      switch diff {
+      case .prepend:
+        // A prepend (older page loaded): re-anchor to the previously-first row so the viewport
+        // doesn't jump. No follow. (`prependAnchorID` was captured before the load fired.)
+        if let anchor = prependAnchorID {
+          scrollPosition.scrollTo(id: anchor)
+          prependAnchorID = nil
+        }
+      case .reset:
+        // A wholesale replace of the visible slice — a server-authoritative re-hydrate
+        // (`session.resume` rebuilds rows to the bottom window). Per the open/hydrate contract
+        // force a jump-to-bottom regardless of pin state, so a re-hydrate while the user was
+        // scrolled up doesn't leave the list parked mid-history. (A stale prepend anchor, if
+        // any, is irrelevant now — clear it.)
         prependAnchorID = nil
-        return
-      }
-      // A new row appended at the bottom: follow only if pinned (never yank a
-      // scrolled-up reader). Reduce-motion degrades the follow to an instant jump.
-      if isPinnedToBottom {
-        jumpToBottom(animated: !reduceMotion)
+        jumpToBottom(animated: false)
+      case .appendOrMutate:
+        // A new row appended at the bottom: follow only if pinned (never yank a scrolled-up
+        // reader). Reduce-motion degrades the follow to an instant jump.
+        if isPinnedToBottom {
+          jumpToBottom(animated: !reduceMotion)
+        }
+      case .inPlace:
+        // No structural change (a streaming delta that grew the last cell without changing the
+        // id sequence). Follow under the same pin rule while a turn is in flight.
+        if turnState == .streaming, isPinnedToBottom {
+          jumpToBottom(animated: !reduceMotion)
+        }
       }
     }
-    .onChange(of: lastRowSignature) { _, _ in
-      // A streaming delta grew the last cell (no count change). Same pin rule.
-      guard turnState == .streaming, isPinnedToBottom else { return }
-      jumpToBottom(animated: !reduceMotion)
-    }
+  }
+
+  /// Request the previous page when the top sentinel appears — but ONLY from a genuine
+  /// scroll-up, never from the initial layout. When the current window fits in the viewport the
+  /// sentinel is on screen immediately, so firing on bare `.onAppear` would auto-page on first
+  /// open with no user scroll and keep paging until `windowStart` hits 0, defeating windowing.
+  /// Two guards prevent that:
+  ///   - `didInitialJump` — the open-at-bottom jump must have run first (we never page during
+  ///     the initial population pass);
+  ///   - `!isPinnedToBottom` — the user must have actually scrolled up off the bottom. A short
+  ///     chat that fits the viewport stays pinned, so its visible top sentinel never auto-pages.
+  /// A legitimate scroll toward the top unpins first (reaching the sentinel requires scrolling
+  /// up), so real pagination still works.
+  private func maybeLoadOlder() {
+    guard canLoadOlder, didInitialJump, !isPinnedToBottom, let first = rows.first else { return }
+    // Arm prepend re-anchoring (capture the current first row) only when a load actually fires;
+    // otherwise the anchor would never clear (no prepend) and would misfire the next append.
+    prependAnchorID = first.id
+    onLoadOlder()
   }
 
   /// Imperatively pin to the bottom edge. Animation degrades to instant under reduce-motion.
@@ -154,19 +187,6 @@ struct SwiftUITranscriptView<Cell: View>: View {
       withAnimation(.spring(duration: 0.25)) { scrollPosition.scrollTo(edge: .bottom) }
     } else {
       scrollPosition.scrollTo(edge: .bottom)
-    }
-  }
-
-  /// A cheap fingerprint of the last row's mutable content so we can detect a streaming
-  /// delta that grows the final cell without changing the row count or its id.
-  private var lastRowSignature: String {
-    guard let last = rows.last else { return "" }
-    switch last.kind {
-    case let .message(_, text, isComplete): return "m:\(text.count):\(isComplete)"
-    case let .thinking(reasoning, status, _, isComplete):
-      return "t:\(reasoning.count):\(status?.count ?? 0):\(isComplete)"
-    case let .tool(_, _, state, _, _): return "x:\(state)"
-    case let .status(_, text): return "s:\(text.count)"
     }
   }
 }

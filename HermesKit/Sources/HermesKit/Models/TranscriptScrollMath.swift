@@ -64,22 +64,34 @@ public enum TranscriptScrollMath {
   }
 }
 
-/// Detect whether a `rows` update is a *prepend* (older page loaded at the top) versus an
-/// append/in-place mutation. A prepend is the only update that requires offset preservation;
-/// everything else follows the pin rule. Pure over the row id sequences so it is testable.
+/// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
+/// append/in-place mutation (streaming / new turn), or a *reset* (a wholesale replacement of
+/// the visible slice, e.g. a server-authoritative re-hydrate). A prepend requires offset
+/// preservation; a reset forces a jump-to-bottom (the open/hydrate contract); everything else
+/// follows the pin rule. Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
-  /// Newer rows appended and/or trailing rows mutated in place (streaming / new turn).
+  /// Newer rows appended at the bottom and/or trailing rows mutated in place (streaming / a new
+  /// turn). The old sequence is a *contiguous prefix* of the new one (or the sequence is
+  /// unchanged in length and only content mutated) — the natural follow-the-bottom case.
   case appendOrMutate
   /// No structural change to the id sequence (pure content mutation, e.g. a delta).
   case inPlace
+  /// A wholesale replacement of the visible slice: the old sequence is neither a contiguous
+  /// prefix (append) nor suffix (prepend) of the new one — a server-authoritative re-hydrate
+  /// (`session.resume` rebuilds rows wholesale) or a reorder. Per the open/hydrate contract the
+  /// renderer must force a jump-to-bottom on a reset, regardless of pin state.
+  case reset
 
   /// Classify the transition from `old` row ids to `new` row ids.
   public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
-      return new.isEmpty ? .inPlace : .appendOrMutate
+      // First population (empty → rows): treat as a reset so the renderer performs the
+      // open-at-bottom jump. (Both renderers also guard this via their first-population flag.)
+      return new.isEmpty ? .inPlace : .reset
     }
+    if new == old { return .inPlace }
     // Prepend: the old sequence still appears as a *contiguous suffix* of the new one and the
     // new sequence is strictly longer (older rows added in front of the prior first row). The
     // suffix-match is the authoritative signal — we deliberately do NOT additionally require
@@ -89,7 +101,12 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     if new.count > old.count, Array(new.suffix(old.count)) == old {
       return .prepend(insertedCount: new.count - old.count)
     }
-    if new == old { return .inPlace }
-    return .appendOrMutate
+    // Append / in-place mutation: the old sequence is a *contiguous prefix* of the new one
+    // (rows appended at the bottom; trailing cells may have mutated content under stable ids).
+    if new.count >= old.count, Array(new.prefix(old.count)) == old {
+      return .appendOrMutate
+    }
+    // Neither a prefix nor a suffix relationship: a wholesale replace / reorder ⇒ reset.
+    return .reset
   }
 }
