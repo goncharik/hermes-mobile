@@ -32,18 +32,10 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
   // transcript. Building the `Kind` first lets us read the role/discriminator the id derives
   // from before the row exists.
   func append(_ kind: ChatRow.Kind) {
-    let sequenceIndex = rows.count
-    let role: ChatRow.Role?
-    if case let .message(r, _, _) = kind { role = r } else { role = nil }
-    let discriminator: String
-    switch kind {
-    case .message: discriminator = "message"
-    case .tool: discriminator = "tool"
-    case .thinking: discriminator = "thinking"
-    case .status: discriminator = "status"
-    }
+    // Single source for role/discriminator: read them off the `Kind` so this never drifts from
+    // `ChatRow.kindDiscriminator` / `ChatRow.rowRole`.
     let id = ChatRow.deterministicID(
-      sequenceIndex: sequenceIndex, role: role, kindDiscriminator: discriminator
+      sequenceIndex: rows.count, role: kind.role, kindDiscriminator: kind.discriminator
     )
     rows.append(ChatRow(id: id, kind: kind))
   }

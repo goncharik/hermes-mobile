@@ -15,8 +15,10 @@ import UIKit
 ///
 /// - `rows` — the windowed slice (`store.visibleRows`); never the full transcript.
 /// - `turnState` — `.idle` / `.streaming`, drives the follow-to-bottom decision.
+/// - `canLoadOlder` — whether older history exists above the window (`store.hasMoreAbove`).
+///   When `false` the top sentinel does NOT fire `onLoadOlder` nor arm prepend preservation,
+///   so a transcript scrolled to its true top never gets stuck with `pendingPrependPreservation`.
 /// - `onLoadOlder` — fired when the top sentinel is reached (older page requested).
-/// - `onScrollPositionChanged` — `true` when pinned to the bottom (~60pt threshold).
 /// - `cell` — builds the row content; reused verbatim via `UIHostingConfiguration` so the
 ///   bubble subviews render identically across engines.
 ///
@@ -25,8 +27,8 @@ import UIKit
 struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   let rows: [ChatRow]
   let turnState: TurnState
+  let canLoadOlder: Bool
   let onLoadOlder: () -> Void
-  let onScrollPositionChanged: (Bool) -> Void
   let cell: (ChatRow) -> Cell
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -34,21 +36,20 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   init(
     rows: [ChatRow],
     turnState: TurnState,
+    canLoadOlder: Bool,
     onLoadOlder: @escaping () -> Void,
-    onScrollPositionChanged: @escaping (Bool) -> Void,
     @ViewBuilder cell: @escaping (ChatRow) -> Cell
   ) {
     self.rows = rows
     self.turnState = turnState
+    self.canLoadOlder = canLoadOlder
     self.onLoadOlder = onLoadOlder
-    self.onScrollPositionChanged = onScrollPositionChanged
     self.cell = cell
   }
 
   func makeCoordinator() -> Coordinator {
     Coordinator(
       onLoadOlder: onLoadOlder,
-      onScrollPositionChanged: onScrollPositionChanged,
       cell: cell
     )
   }
@@ -68,10 +69,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   func updateUIView(_ collectionView: UICollectionView, context: Context) {
     // Refresh the closures each update so SwiftUI captures stay fresh (state from the store).
     context.coordinator.onLoadOlder = onLoadOlder
-    context.coordinator.onScrollPositionChanged = onScrollPositionChanged
     context.coordinator.cell = cell
     context.coordinator.reduceMotion = reduceMotion
     context.coordinator.turnState = turnState
+    context.coordinator.canLoadOlder = canLoadOlder
     context.coordinator.apply(rows: rows)
   }
 
@@ -105,10 +106,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     enum Section { case main }
 
     var onLoadOlder: () -> Void
-    var onScrollPositionChanged: (Bool) -> Void
     var cell: (ChatRow) -> Cell
     var reduceMotion = false
     var turnState: TurnState = .idle
+    /// Whether older history exists above the window. Gates the top-sentinel load trigger so
+    /// `pendingPrependPreservation` is only armed when a prepend can actually follow.
+    var canLoadOlder = false
 
     private weak var collectionView: UICollectionView?
     private var dataSource: UICollectionViewDiffableDataSource<Section, ChatRow.ID>!
@@ -129,6 +132,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var pendingPrependPreservation = false
     /// Re-entrancy guard: programmatic offset changes shouldn't be read back as user scrolls.
     private var isAdjustingOffset = false
+    /// True while a snapshot apply is in flight. The `contentSize` KVO fires during a diff
+    /// apply (the layout grows as rows are inserted/resized); the apply *completion* already
+    /// owns the authoritative re-pin/preserve/jump, so the KVO must not also snap mid-apply
+    /// (which could fight the completion's prepend-preservation). Streaming-delta growth
+    /// happens *outside* an apply, where this is false, so the KVO still handles that.
+    private var isApplyingSnapshot = false
     /// KVO token watching `contentSize` so a self-sizing cell that grows (a streaming delta
     /// resizing the last bubble) re-pins to the bottom while pinned — the primary jank fix.
     private var contentSizeObservation: NSKeyValueObservation?
@@ -138,11 +147,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
 
     init(
       onLoadOlder: @escaping () -> Void,
-      onScrollPositionChanged: @escaping (Bool) -> Void,
       cell: @escaping (ChatRow) -> Cell
     ) {
       self.onLoadOlder = onLoadOlder
-      self.onScrollPositionChanged = onScrollPositionChanged
       self.cell = cell
     }
 
@@ -166,6 +173,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           new.height > old.height,                 // content grew
           self.isPinnedToBottom,                   // user is at the bottom
           !self.isAdjustingOffset,                 // not our own programmatic change
+          !self.isApplyingSnapshot,                // apply completion owns the re-pin
           !self.pendingPrependPreservation,        // a prepend handles its own offset
           self.didInitialJump                      // skip first population (handled by jump)
         else { return }
@@ -259,8 +267,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
 
       let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
 
+      // Suppress the contentSize KVO for the duration of the apply: the completion below is the
+      // single authority on where the offset lands for this structural change.
+      isApplyingSnapshot = true
       dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
         guard let self else { return }
+        defer { self.isApplyingSnapshot = false }
         if isFirstPopulation || !self.didInitialJump, !newOrder.isEmpty {
           // Open/hydrate: jump to bottom (no animation) — always.
           self.didInitialJump = true
@@ -321,7 +333,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
     }
 
-    /// Re-evaluate pin state from live geometry and notify the reducer on a change.
+    /// Re-evaluate pin state from live geometry and toggle the jump button on a change.
     private func updatePinState() {
       guard let collectionView else { return }
       let pinned = TranscriptScrollMath.isPinnedToBottom(
@@ -333,7 +345,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
         setJumpButtonVisible(!pinned)
-        onScrollPositionChanged(pinned)
       }
     }
 
@@ -345,11 +356,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       guard !isAdjustingOffset else { return }
       updatePinState()
 
-      // Top sentinel: when the user pulls near the top of the window, request the older page.
-      // Arm prepend preservation so the next `apply` keeps the anchor row fixed.
-      let topThreshold = TranscriptScrollMath.bottomThreshold
-      let atTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= topThreshold
-      if atTop, !pendingPrependPreservation {
+      // Top sentinel: when the user pulls near the top of the window AND older history exists,
+      // request the older page. Arm prepend preservation so the next `apply` keeps the anchor
+      // row fixed. Gating on `canLoadOlder` is essential: without it, a transcript scrolled to
+      // its true top would fire `onLoadOlder` every scroll tick and leave
+      // `pendingPrependPreservation` stuck `true` (no prepend ever clears it), which would then
+      // suppress the next legitimate page.
+      let topTriggerThreshold = TranscriptScrollMath.loadOlderTopThreshold
+      let atTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
+        <= topTriggerThreshold
+      if atTop, canLoadOlder, !pendingPrependPreservation {
         pendingPrependPreservation = true
         onLoadOlder()
       }

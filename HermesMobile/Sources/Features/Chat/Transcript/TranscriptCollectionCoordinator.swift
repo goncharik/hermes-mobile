@@ -11,6 +11,11 @@ enum TranscriptScrollMath {
   /// SwiftUI engine's `bottomThreshold` so the two renderers agree on the at-bottom contract.
   static let bottomThreshold: CGFloat = 60
 
+  /// Distance from the *top* (in points) at which scrolling up triggers a load-older page.
+  /// Distinct from `bottomThreshold` even though they currently share a value: the top
+  /// load-older trigger distance is conceptually independent of the bottom pin tolerance.
+  static let loadOlderTopThreshold: CGFloat = 60
+
   /// Given the content's full height, the visible viewport height, the bottom inset, and the
   /// current vertical offset, decide whether the viewport is pinned to the bottom edge.
   /// `≤ threshold` of remaining scroll distance below the viewport ⇒ pinned to the latest row.
@@ -71,16 +76,17 @@ enum TranscriptDiffKind: Equatable {
 
   /// Classify the transition from `old` row ids to `new` row ids.
   static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
-    guard !old.isEmpty, let oldFirst = old.first else {
+    guard !old.isEmpty else {
       return new.isEmpty ? .inPlace : .appendOrMutate
     }
-    // Prepend: the old sequence still appears as a contiguous suffix of the new one, and the
-    // new sequence is strictly longer (older rows added in front of the prior first row).
-    if new.count > old.count {
-      let suffix = Array(new.suffix(old.count))
-      if suffix == old, new.first != oldFirst {
-        return .prepend(insertedCount: new.count - old.count)
-      }
+    // Prepend: the old sequence still appears as a *contiguous suffix* of the new one and the
+    // new sequence is strictly longer (older rows added in front of the prior first row). The
+    // suffix-match is the authoritative signal — we deliberately do NOT additionally require
+    // `new.first != old.first`, because a prepend whose inserted rows happen to start with the
+    // old first id is still a prepend (counts grew, suffix preserved) and must not be
+    // misclassified as an append.
+    if new.count > old.count, Array(new.suffix(old.count)) == old {
+      return .prepend(insertedCount: new.count - old.count)
     }
     if new == old { return .inPlace }
     return .appendOrMutate

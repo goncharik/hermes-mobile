@@ -48,6 +48,25 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
     case thinking(reasoning: String, status: String?, elapsedSeconds: Int, isComplete: Bool)
     /// A transient status line (e.g. "searching…"); `kind` is an open string.
     case status(kind: String, text: String)
+
+    /// A stable, role-agnostic token per case (NOT its mutable payload). The **single source**
+    /// for the row-identity discriminator — `ChatRow.kindDiscriminator` and
+    /// `reconstructTranscript` both read this so the value can never drift between them.
+    public var discriminator: String {
+      switch self {
+      case .message: return "message"
+      case .tool: return "tool"
+      case .thinking: return "thinking"
+      case .status: return "status"
+      }
+    }
+
+    /// The message role for `.message` cases; `nil` for non-message kinds. Single source for
+    /// role extraction used by `ChatRow.rowRole` and `reconstructTranscript`.
+    public var role: Role? {
+      if case let .message(role, _, _) = self { return role }
+      return nil
+    }
   }
 
   /// Text put on the pasteboard when the user copies this row (Task 11). Tool rows
@@ -75,28 +94,18 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
   /// and therefore the same row id. This is why message #7's reasoning row and its text row
   /// get distinct-but-reproducible ids: they live at distinct sequence indices with distinct
   /// discriminators.
-  public var kindDiscriminator: String {
-    switch kind {
-    case .message: return "message"
-    case .tool: return "tool"
-    case .thinking: return "thinking"
-    case .status: return "status"
-    }
-  }
+  public var kindDiscriminator: String { kind.discriminator }
 
   /// The message role for `.message` rows (used as a stable id component); `nil` for
   /// non-message kinds.
-  var rowRole: Role? {
-    if case let .message(role, _, _) = kind { return role }
-    return nil
-  }
+  var rowRole: Role? { kind.role }
 
   /// Build a deterministic `ChatRow.ID` from `(sequenceIndex, role, kindDiscriminator)`,
   /// excluding any mutable text so streaming deltas preserve identity. The same logical row
   /// (same ordinal + role + kind) always hashes to the same UUID, so re-running
   /// `reconstructTranscript` over identical history yields byte-identical ids — which is what
   /// lets a diffing engine preserve scroll/animate inserts across a hydrate.
-  static func deterministicID(
+  public static func deterministicID(
     sequenceIndex: Int,
     role: Role?,
     kindDiscriminator: String

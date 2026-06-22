@@ -29,7 +29,7 @@ Replace the current fragile `ChatView` scroll/layout with a robust foundation th
 - Snapshot tests render real views with pinned timestamps (`make snapshot` / `make snapshot-record`).
 
 **Dependencies identified:**
-- Deployment target raise to **iOS 18** (approved) — required for `onScrollGeometryChange` / `ScrollPosition` in Renderer C. Update `Project.swift` and `HermesKit/Package.swift`.
+- Deployment target raise to **iOS 18** (approved) — required for `onScrollGeometryChange` / `ScrollPosition` in the SwiftUI renderer. Update `Project.swift` and `HermesKit/Package.swift`.
 - Tuist: new source files need `tuist generate` before `xcodebuild` picks them up.
 
 ## Development Approach
@@ -92,7 +92,10 @@ Three layers, built bottom-up so each is independently shippable:
 Actions:
 - `.loadOlderRequested` → `windowStart = max(0, windowStart - pageSize)` (`pageSize ≈ 50`).
 - On hydrate / wholesale replace → reset `windowStart` to the bottom window.
-- Optional cap of live rendered rows (~150) to bound relayout cost during streaming.
+- ~~Optional cap of live rendered rows (~150) to bound relayout cost during streaming.~~
+  **Dropped (see Task 3):** the `initialWindow ≈ 50` bottom-window re-pin during streaming
+  (`maintainWindowAfterStreaming`) already bounds the live row count, so a separate hard cap
+  was unnecessary and would only complicate scroll-up paging.
 
 ### Shared stick-to-bottom contract (renderer-local)
 
@@ -113,8 +116,11 @@ ChatTranscriptView(
 )
 ```
 
-- **Renderer C (`SwiftUITranscriptView`):** `ScrollView` + `LazyVStack`, `.defaultScrollAnchor(.bottom)`, `ScrollPosition` binding, `onScrollGeometryChange` for `isPinnedToBottom`, top sentinel `.onAppear` → `onLoadOlder`, prepend anchored via `.scrollPosition(id:)` on the first previously-visible row.
-- **Renderer A (`CollectionTranscriptView`):** `UIViewRepresentable` wrapping `UICollectionView` (compositional layout, single section, self-sizing `UIHostingConfiguration` cells, `UICollectionViewDiffableDataSource<Section, ChatRow.ID>`). Coordinator owns diff application, contentOffset re-pin on cell bounds-change while pinned, the prepend offset-preservation recipe, and `scrollViewDidScroll → onScrollPositionChanged`. Guarded by `#if canImport(UIKit)`.
+Two renderers ship (an earlier intermediate "Renderer B" exploration was dropped — only the
+SwiftUI and `UICollectionView` engines below exist):
+
+- **SwiftUI renderer (`SwiftUITranscriptView`):** `ScrollView` + `LazyVStack`, `.defaultScrollAnchor(.bottom)`, `ScrollPosition` binding, `onScrollGeometryChange` for `isPinnedToBottom`, top sentinel `.onAppear` → `onLoadOlder`, prepend anchored via `.scrollPosition(id:)` on the first previously-visible row.
+- **UICollectionView renderer (`CollectionTranscriptView`):** `UIViewRepresentable` wrapping `UICollectionView` (compositional layout, single section, self-sizing `UIHostingConfiguration` cells, `UICollectionViewDiffableDataSource<Section, ChatRow.ID>`). Coordinator owns diff application, contentOffset re-pin on cell bounds-change while pinned, the prepend offset-preservation recipe, and `scrollViewDidScroll` pin detection (drives the floating jump-to-bottom button). Guarded by `#if canImport(UIKit)`.
 
 ### Settings toggle
 
@@ -192,7 +198,7 @@ ChatTranscriptView(
 - [x] Run `tuist generate`; confirm app builds and `swift test` still runs on macOS. (`tuist generate` succeeded; `xcodebuild` Debug simulator build succeeded (exit 0).)
 - [x] Run HermesKit tests — must pass before next task. (483 tests, all passing.)
 
-### Task 6: Shared renderer boundary + extract Renderer C (SwiftUI)
+### Task 6: Shared renderer boundary + extract the SwiftUI renderer
 
 **Files:**
 - Create: `HermesMobile/Sources/Features/Chat/Transcript/SwiftUITranscriptView.swift`
@@ -206,7 +212,7 @@ ChatTranscriptView(
 - [x] Re-record + verify snapshots for the SwiftUI engine. (6 transcript snapshots re-recorded to the new bottom-anchored layout; `make snapshot` → 68 tests, 0 failures.)
 - [x] Run tests — must pass before next task. (HermesKit: 483 tests pass; snapshots: 68 tests, 0 failures.)
 
-### Task 7: Renderer A (UICollectionView) behind UIViewRepresentable
+### Task 7: UICollectionView renderer behind UIViewRepresentable
 
 **Files:**
 - Create: `HermesMobile/Sources/Features/Chat/Transcript/CollectionTranscriptView.swift`

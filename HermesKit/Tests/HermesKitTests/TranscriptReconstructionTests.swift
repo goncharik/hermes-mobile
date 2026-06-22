@@ -259,4 +259,58 @@ struct TranscriptReconstructionTests {
     #expect(base != ChatRow.deterministicID(sequenceIndex: 0, role: .assistant, kindDiscriminator: "message"))
     #expect(base != ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "tool"))
   }
+
+  @Test func deterministicIDUniqueAcrossRealisticRange() {
+    // The FNV-1a-derived UUID is not collision-resistant in the cryptographic sense, but it
+    // MUST be collision-free over the realistic transcript space, or two distinct rows would
+    // silently merge in the diffable data source. Enumerate every (sequenceIndex, role,
+    // kindDiscriminator) combination a long session could produce and assert all ids are
+    // distinct — 1000 indices × 3 roles × 4 discriminators = 12000 seeds.
+    let roles: [ChatRow.Role?] = [.user, .assistant, nil]
+    let discriminators = ["message", "tool", "thinking", "status"]
+    var ids = Set<UUID>()
+    var count = 0
+    for index in 0..<1000 {
+      for role in roles {
+        for discriminator in discriminators {
+          ids.insert(
+            ChatRow.deterministicID(
+              sequenceIndex: index, role: role, kindDiscriminator: discriminator
+            )
+          )
+          count += 1
+        }
+      }
+    }
+    #expect(count == 12000)
+    #expect(ids.count == count)  // zero collisions across the realistic range
+  }
+
+  @Test func deterministicIDStableAcrossRecomputation() {
+    // Re-running the same seed yields the byte-identical UUID (no per-call randomness).
+    for index in 0..<200 {
+      let a = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
+      let b = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
+      #expect(a == b)
+    }
+  }
+
+  @Test func kindDiscriminatorSingleSourceMatchesReconstruction() {
+    // ChatRow.kindDiscriminator/rowRole and Kind.discriminator/role are the same source;
+    // a reconstructed row's id therefore equals one derived from the row's own components.
+    let history = [
+      msg(0, "user", text: "hi"),
+      msg(1, "assistant", text: "answer", reasoning: "hmm"),
+      msg(2, "tool", name: "search", context: "q"),
+    ]
+    let rows = reconstructTranscript(history)
+    for (index, row) in rows.enumerated() {
+      let expected = ChatRow.deterministicID(
+        sequenceIndex: index, role: row.kind.role, kindDiscriminator: row.kind.discriminator
+      )
+      #expect(row.id == expected)
+      #expect(row.kind.discriminator == row.kindDiscriminator)
+      #expect(row.kind.role == row.rowRole)
+    }
+  }
 }

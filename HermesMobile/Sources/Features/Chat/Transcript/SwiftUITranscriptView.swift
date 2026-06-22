@@ -17,13 +17,15 @@ enum TurnState: Equatable {
 /// single call site:
 ///
 /// ```
-/// ChatTranscriptView(rows:turnState:onLoadOlder:onScrollPositionChanged:cell:)
+/// ChatTranscriptView(rows:turnState:canLoadOlder:onLoadOlder:cell:)
 /// ```
 ///
 /// - `rows` — the windowed slice (`store.visibleRows`); never the full transcript.
 /// - `turnState` — `.idle` / `.streaming`, drives the follow-to-bottom decision.
+/// - `canLoadOlder` — whether older history exists above the window (`store.hasMoreAbove`).
+///   When `false` the top sentinel does NOT fire `onLoadOlder` nor arm prepend preservation,
+///   so a transcript scrolled to its true top never stays stuck mid-load.
 /// - `onLoadOlder` — fired when the top sentinel is reached (older page requested).
-/// - `onScrollPositionChanged` — `true` when pinned to the bottom (~60pt threshold).
 /// - `cell` — builds the row content; the caller passes its existing `rowView` switch so the
 ///   reused bubble subviews (`MessageBubbleView` / `MarkdownText` / `ThinkingIndicatorView` /
 ///   `ToolStatusView`) render identically across engines.
@@ -33,8 +35,8 @@ enum TurnState: Equatable {
 struct SwiftUITranscriptView<Cell: View>: View {
   let rows: [ChatRow]
   let turnState: TurnState
+  let canLoadOlder: Bool
   let onLoadOlder: () -> Void
-  let onScrollPositionChanged: (Bool) -> Void
   @ViewBuilder let cell: (ChatRow) -> Cell
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -56,14 +58,14 @@ struct SwiftUITranscriptView<Cell: View>: View {
   init(
     rows: [ChatRow],
     turnState: TurnState,
+    canLoadOlder: Bool,
     onLoadOlder: @escaping () -> Void,
-    onScrollPositionChanged: @escaping (Bool) -> Void,
     @ViewBuilder cell: @escaping (ChatRow) -> Cell
   ) {
     self.rows = rows
     self.turnState = turnState
+    self.canLoadOlder = canLoadOlder
     self.onLoadOlder = onLoadOlder
-    self.onScrollPositionChanged = onScrollPositionChanged
     self.cell = cell
   }
 
@@ -88,7 +90,9 @@ struct SwiftUITranscriptView<Cell: View>: View {
         // prepend we capture the first visible row's id so we can re-anchor to it.
         Color.clear.frame(height: 1)
           .onAppear {
-            guard let first = rows.first else { return }
+            // Only arm prepend re-anchoring when a load can actually happen; otherwise the
+            // anchor would never clear (no prepend) and would misfire the next append.
+            guard canLoadOlder, let first = rows.first else { return }
             prependAnchorID = first.id
             onLoadOlder()
           }
@@ -113,7 +117,6 @@ struct SwiftUITranscriptView<Cell: View>: View {
       let pinned = distanceFromBottom <= Self.bottomThreshold
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
-        onScrollPositionChanged(pinned)
       }
     }
     .onAppear {

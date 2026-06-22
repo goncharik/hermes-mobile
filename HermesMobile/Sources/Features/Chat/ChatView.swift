@@ -112,12 +112,14 @@ struct ChatView: View {
 
   /// The transcript, rendered behind the shared renderer boundary (`SwiftUITranscriptView`).
   /// The reducer owns no scroll state — stick-to-bottom / pin behaviour is renderer-local.
-  /// `onLoadOlder` is gated on `hasMoreAbove` so the top sentinel can't page past the start.
+  /// `canLoadOlder` (= `hasMoreAbove`) gates the top sentinel so it can't page past the start
+  /// and can't get stuck mid-load when already at the true top of history.
   @ViewBuilder
   private var transcript: some View {
     let rows = Array(store.visibleRows)
     let turnState: TurnState = store.isSending ? .streaming : .idle
-    let onLoadOlder = { if store.hasMoreAbove { store.send(.loadOlderRequested) } }
+    let canLoadOlder = store.hasMoreAbove
+    let onLoadOlder = { _ = store.send(.loadOlderRequested) }
 
     // The device-local A/B preference selects the engine. Both renderers share the same
     // initializer shape and the same `cell` closure, so flipping the pref re-instantiates
@@ -128,16 +130,16 @@ struct ChatView: View {
         SwiftUITranscriptView(
           rows: rows,
           turnState: turnState,
+          canLoadOlder: canLoadOlder,
           onLoadOlder: onLoadOlder,
-          onScrollPositionChanged: { _ in },
           cell: transcriptCell
         )
       case .collectionView:
         CollectionTranscriptView(
           rows: rows,
           turnState: turnState,
+          canLoadOlder: canLoadOlder,
           onLoadOlder: onLoadOlder,
-          onScrollPositionChanged: { _ in },
           cell: transcriptCell
         )
       }
