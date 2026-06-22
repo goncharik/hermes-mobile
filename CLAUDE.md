@@ -37,6 +37,33 @@ build/test/distribution, and `docs/plans/completed/` for the full design history
   `continuousClock` (`thinkingSeconds`) frozen into the row's `elapsedSeconds` on
   completion/error/drop, then collapses to a static `Thinking · <elapsed>` disclosure. Status
   is shown inside that disclosure — **never** as a persistent footer above the composer.
+- **Transcript rows use DETERMINISTIC content-derived IDs** — `ChatRow.ID` is an FNV-1a hash of
+  `(sequenceIndex, role, kindDiscriminator)` (a stable token per `Kind` case), **never** a random
+  `UUID` and **never** derived from mutable streaming text — so diffing, scroll restoration, and
+  pagination stay stable across hydrates and deltas. `reconstructTranscript` assigns these by
+  output ordinal (no `makeID` randomness); live streaming rows tracked by
+  `streamingRowID`/`thinkingRowID`/`toolRowIDs` reconcile to the deterministic history ID on the
+  next hydrate (server wins, wholesale replace, no flicker). A `message.delta` mutates the row in
+  place, preserving its id.
+- **Chat history paginates client-side** (no server pagination — `session.resume` returns the full
+  cooked history in one payload). `ChatFeature.State` keeps `windowStart` over the full in-memory
+  `transcript` (~50 initial / `pageSize` per page); computed `hasMoreAbove` (`windowStart > 0`) and
+  `visibleRows` (the slice the view renders). `.loadOlderRequested` does
+  `windowStart = max(0, windowStart - pageSize)`; hydrate/wholesale-replace resets to the bottom
+  window; streaming append keeps the newest row visible without yanking a scrolled-up user.
+- **Two swappable transcript renderers** sit behind one `ChatTranscriptView` interface
+  (`rows`/`turnState`/`onLoadOlder`/`onScrollPositionChanged` + a shared `@ViewBuilder cell` so both
+  reuse the caller's `rowView`): **`SwiftUITranscriptView`** (`ScrollView`+`LazyVStack`,
+  `.defaultScrollAnchor(.bottom)`, `onScrollGeometryChange`, `ScrollPosition` binding) and
+  **`CollectionTranscriptView`** (`UICollectionView` + diffable data source keyed on the
+  deterministic id + `UIHostingConfiguration` cells; coordinator owns contentOffset re-pin and the
+  prepend offset-preservation recipe, `#if canImport(UIKit)`-guarded with pure
+  `TranscriptScrollMath`/`TranscriptDiffKind` helpers outside the guard). Selected at runtime by the
+  `chatRenderer` `PreferencesClient` pref (`ChatRendererKind` `.swiftUI`|`.collectionView`, default
+  **`.collectionView`**); it is **device-scoped — NOT cleared on logout** (Settings → "Chat list
+  engine — experimental"). The **stick-to-bottom contract is renderer-local** (not in the reducer):
+  `isPinnedToBottom` from scroll geometry (~60pt), open/hydrate jumps to bottom, pinned →
+  animated follow, scrolled-up → no-yank, reduce-motion → instant jumps.
 - **Decode leniently; never crash on unknown events** — unknown `type` → `.unknown`.
 - **Auth has two regimes**, modeled by `AuthSession` (`.token` | `.cookie(CookieSession)`) so
   the REST/Gateway clients adapt transport without scattering regime checks. **Token mode**
@@ -165,9 +192,10 @@ build/test/distribution, and `docs/plans/completed/` for the full design history
   up (sources are globbed at generation time).
 - **`@Sendable` effect closures** must capture dependencies explicitly (`[dismiss]`,
   `[gateway]`) — the reducer `self` is not `Sendable`.
-- **Deployment target is iOS 17.** Gate newer APIs: `#available(iOS 26, *)` for Liquid
-  Glass (`.glassEffect`) with a material fallback; prefer `GeometryReader`/`PreferenceKey`
-  over iOS-18-only scroll APIs when behaviour must work on 17.
+- **Deployment target is iOS 18** (`Project.swift` + `HermesKit/Package.swift`; raised for
+  `onScrollGeometryChange`/`ScrollPosition` in `SwiftUITranscriptView`). iOS-18 scroll APIs are now
+  available directly. Still gate genuinely-newer APIs: `#available(iOS 26, *)` for Liquid Glass
+  (`.glassEffect`) with a material fallback.
 - **A `public struct` nested in feature State** needs an explicit `public init` to be
   constructed from the app/snapshot target (the memberwise init is internal).
 - **HermesKit is tested on macOS via `swift test`**, but `AVAudioSession`/`PhotosUI`/UIKit

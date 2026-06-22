@@ -252,9 +252,9 @@ ChatTranscriptView(
 
 ### Task 10: [Final] Update documentation
 
-- [ ] Update `CLAUDE.md` with the new ChatView conventions (deterministic IDs, windowing, renderer toggle, stick-to-bottom contract).
-- [ ] Update `README.md` / `docs/architecture.md` if the chat section references the old scroll approach.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] Update `CLAUDE.md` with the new ChatView conventions (deterministic IDs, windowing, renderer toggle, stick-to-bottom contract). (Added a dense convention bullet set after the "Thinking indicator" bullet; bumped the deployment-target gotcha to iOS 18.)
+- [x] Update `README.md` / `docs/architecture.md` if the chat section references the old scroll approach. (Checked both — README has no chat/scroll/deployment references; `docs/architecture.md` only mentions `reconstructTranscript` rebuilding wholesale, which is still accurate, so no edit needed.)
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 
