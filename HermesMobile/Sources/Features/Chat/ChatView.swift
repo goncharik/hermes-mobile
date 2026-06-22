@@ -116,7 +116,15 @@ struct ChatView: View {
       GeometryReader { outer in
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 10) {
-            ForEach(store.transcript) { row in
+            // Top sentinel: when older rows are windowed out, appearing near the top
+            // (the first visible row's leading edge) reveals the previous page. Kept
+            // iOS 17-safe via plain `.onAppear` rather than scroll-geometry APIs.
+            if store.hasMoreAbove {
+              Color.clear.frame(height: 1)
+                .id(Self.topSentinel)
+                .onAppear { store.send(.loadOlderRequested) }
+            }
+            ForEach(store.visibleRows) { row in
               rowView(row)
                 .id(row.id)
                 .contextMenu {
@@ -169,6 +177,7 @@ struct ChatView: View {
   }
 
   private static let bottomAnchor = "transcript-bottom-anchor"
+  private static let topSentinel = "transcript-top-sentinel"
 
   /// Bottom anchor's distance below the viewport bottom (≤0 ⇒ visible ⇒ at bottom).
   private struct BottomDistanceKey: PreferenceKey {

@@ -175,11 +175,11 @@ ChatTranscriptView(
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Modify: `HermesMobileTests/.../ChatViewSnapshotTests.swift` (existing snapshot suite)
 
-- [ ] Render `store.visibleRows` instead of `store.transcript`; row `.id` now uses the deterministic ID.
-- [ ] Add the top sentinel that sends `.loadOlderRequested` when `hasMoreAbove` and the top is approached.
-- [ ] Confirm open-at-bottom and streaming follow behave at least as well as before (regression guard for the migration).
-- [ ] Re-record affected snapshots (`make snapshot-record`) and verify (`make snapshot`).
-- [ ] Run full HermesKit + snapshot suites — must pass before next task.
+- [x] Render `store.visibleRows` instead of `store.transcript`; row `.id` now uses the deterministic ID.
+- [x] Add the top sentinel that sends `.loadOlderRequested` when `hasMoreAbove` and the top is approached. (iOS 17-safe `.onAppear` on a 1pt top marker, gated by `store.hasMoreAbove`.)
+- [x] Confirm open-at-bottom and streaming follow behave at least as well as before (regression guard for the migration). (Scroll-to-bottom still keys off `store.transcript.count` — only real new rows trigger it, not `loadOlderRequested` window growth — so open-at-bottom and streaming-follow are preserved and pagination doesn't yank.)
+- [x] Re-record affected snapshots (`make snapshot-record`) and verify (`make snapshot`). (No re-record needed: fixture transcripts are under the 50-row window so `hasMoreAbove` is false / no sentinel renders; all 68 snapshot tests stayed green.)
+- [x] Run full HermesKit + snapshot suites — must pass before next task. (HermesKit: 483 tests pass; snapshots: 68 tests, 0 failures.)
 
 ### Task 5: Raise deployment target to iOS 18
 
