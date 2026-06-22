@@ -145,15 +145,15 @@ ChatTranscriptView(
 ### Task 2: Preserve row identity across streaming deltas
 
 **Files:**
-- Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
-- Modify: `HermesKit/Tests/HermesKitTests/ChatFeatureTests.swift`
+- Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift` (verified — fold helpers already mutate rows in place; no change needed)
+- Create: `HermesKit/Tests/HermesKitTests/RowIdentityTests.swift` (added a dedicated identity-preservation suite rather than a `ChatFeatureTests.swift`, which doesn't exist; reducer tests live in `ChatReductionTests.swift`/`HydrateTests.swift`)
 
-- [ ] Ensure `appendToStreamingMessage` and the thinking/tool fold helpers keep a stable row ID across deltas (no ID churn on append).
-- [ ] Ensure live streaming row IDs reconcile to the deterministic history IDs on the next hydrate (same content/position → same ID, no visual flicker).
-- [ ] Verify `keepThinkingLast` reordering preserves IDs.
-- [ ] Write `TestStore` tests: delta append preserves the streaming row ID; hydrate after a turn reconciles live → deterministic IDs without duplicating rows.
-- [ ] Write tests: error/edge — `message.complete` with no deltas, reasoning-only turn.
-- [ ] Run tests — must pass before next task.
+- [x] Ensure `appendToStreamingMessage` and the thinking/tool fold helpers keep a stable row ID across deltas (no ID churn on append). (Verified: each delta mutates `transcript[id:].kind` in place, reusing the row's id.)
+- [x] Ensure live streaming row IDs reconcile to the deterministic history IDs on the next hydrate (same content/position → same ID, no visual flicker). (Verified: `applyActivate` rebuilds the transcript wholesale from `reconstructTranscript`, replacing random live ids with deterministic ones — server wins.)
+- [x] Verify `keepThinkingLast` reordering preserves IDs. (Verified: it removes-and-re-appends the same row instance; test added.)
+- [x] Write `TestStore` tests: delta append preserves the streaming row ID; hydrate after a turn reconciles live → deterministic IDs without duplicating rows.
+- [x] Write tests: error/edge — `message.complete` with no deltas, reasoning-only turn.
+- [x] Run tests — must pass before next task. (473 tests, all passing.)
 
 ### Task 3: Client-side windowing in ChatFeature
 
