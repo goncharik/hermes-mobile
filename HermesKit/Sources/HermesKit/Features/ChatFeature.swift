@@ -14,6 +14,11 @@ import Foundation
 public struct ChatFeature {
   @ObservableState
   public struct State: Equatable {
+    /// Rows rendered when the chat first opens / after a wholesale hydrate (the bottom window).
+    static let initialWindow = 50
+    /// Rows revealed per `.loadOlderRequested` (scroll-up).
+    static let pageSize = 50
+
     public var connection: ServerConnection
     /// The active profile this chat is scoped to. `nil` (or `"default"`) means the
     /// default profile — session create/resume and history hydration omit the `profile`
@@ -22,6 +27,14 @@ public struct ChatFeature {
     public var profileName: String?
     public var title: String?
     public var transcript: IdentifiedArrayOf<ChatRow>
+    /// Index of the oldest currently-rendered row — the top of the client-side rendering
+    /// window over the full in-memory `transcript`. There is NO network pagination: the
+    /// server returns the full history in one `session.resume` payload, so this is purely a
+    /// client-side window to bound relayout cost on long chats. Defaults to the bottom window
+    /// (`max(0, count - initialWindow)`), grows downward as the user pulls in older rows via
+    /// `.loadOlderRequested`, and is reset to the bottom window on every wholesale transcript
+    /// replace (hydrate). The view renders `visibleRows`, never `transcript` directly.
+    public var windowStart: Int
     public var composerText: String
     public var status: Status
     public var errorBanner: String?
@@ -127,6 +140,7 @@ public struct ChatFeature {
       self.storedSessionID = resumeStoredID
       self.title = title
       self.transcript = transcript
+      self.windowStart = 0
       self.composerText = composerText
       self.status = status
       self.errorBanner = nil
@@ -171,6 +185,26 @@ public struct ChatFeature {
         self.reasoningEffort = snapshot.reasoningEffort
         self.usage = snapshot.usage
       }
+
+      // Open at the bottom window over whatever transcript we ended up with (instant-paint
+      // snapshot or a caller-supplied one). Hydrate later resets this again — server wins.
+      self.windowStart = State.bottomWindowStart(count: self.transcript.count)
+    }
+
+    /// The bottom (newest) rendering window over a transcript of `count` rows.
+    static func bottomWindowStart(count: Int) -> Int { max(0, count - initialWindow) }
+
+    /// True when older rows exist above the current window — drives the scroll-up "load more"
+    /// sentinel in the view.
+    public var hasMoreAbove: Bool { windowStart > 0 }
+
+    /// The view boundary: the windowed slice of `transcript` from `windowStart` to the end.
+    /// Newly appended (streaming) rows always fall after `windowStart`, so they stay visible.
+    public var visibleRows: ArraySlice<ChatRow> {
+      let count = transcript.count
+      guard count > 0 else { return [] }
+      let start = min(max(0, windowStart), count)
+      return transcript.elements[start..<count]
     }
 
     public var canSend: Bool {
@@ -201,6 +235,9 @@ public struct ChatFeature {
     case delegate(Delegate)
     case task
     case onDisappear
+    /// Scroll-up reached the top of the current window: reveal another `pageSize` of older
+    /// rows from the in-memory transcript (client-side only — no network call).
+    case loadOlderRequested
     case thinkingTick
     case gatewayEvent(GatewayEvent)
     case gatewayClosed
@@ -334,12 +371,22 @@ public struct ChatFeature {
           wasRecording ? .run { [audioRecorder] _ in await audioRecorder.cancel() } : .none
         )
 
+      case .loadOlderRequested:
+        // Reveal another page of older rows, clamped at the top of the transcript. Purely a
+        // window move over the already-fetched in-memory transcript (no network).
+        state.windowStart = max(0, state.windowStart - State.pageSize)
+        return .none
+
       case .thinkingTick:
         state.thinkingSeconds += 1
         return .none
 
       case let .gatewayEvent(event):
+        // Snapshot whether the user is parked at the bottom window *before* the fold appends any
+        // streaming rows, so we can re-pin afterward without yanking a user who scrolled up.
+        let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
         let effect = reduce(event: event, into: &state)
+        maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
         // Write-back: any event that mutates the transcript / model / usage schedules a
         // debounced snapshot persist so the next open paints instantly. Debounced (and
         // cancel-in-flight) so heavy streaming coalesces into one SQLite write. Gated on a
@@ -498,7 +545,9 @@ public struct ChatFeature {
           })
         }
 
+        let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
         state.transcript.append(ChatRow(id: uuid(), kind: .message(role: .user, text: text, isComplete: true)))
+        maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
         state.composerText = ""
         state.errorBanner = nil
         state.isSending = true
@@ -773,11 +822,13 @@ public struct ChatFeature {
       case let .attachmentsSubmitted(displayText, images, rowID):
         // Upload + submit landed: echo the user row (with image thumbnails), clear composer +
         // attachments. isSending stays true — the turn streams (clears on completion).
+        let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
         state.transcript.append(ChatRow(
           id: rowID,
           kind: .message(role: .user, text: displayText, isComplete: true),
           attachmentImages: images
         ))
+        maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
         state.composerText = ""
         state.attachments = []
         return .none
@@ -1176,6 +1227,21 @@ public struct ChatFeature {
     state.transcript.append(row)
   }
 
+  /// Keep the client-side rendering window sensible as rows append live (streaming deltas, a
+  /// freshly-echoed user row). When the user was parked at the bottom window (i.e. hadn't
+  /// scrolled up to pull in older history), re-pin to the bottom window so the newest rows stay
+  /// visible and the live window stays bounded by `initialWindow` — capping relayout cost on a
+  /// long streaming turn. A user who DID scroll up (a window wider than the bottom one) is left
+  /// untouched: we never yank their scroll. Always clamps `windowStart` into range.
+  private func maintainWindowAfterStreaming(wasAtBottomWindow: Bool, into state: inout State) {
+    let count = state.transcript.count
+    if wasAtBottomWindow {
+      state.windowStart = State.bottomWindowStart(count: count)
+    }
+    // Clamp defensively (a removal could otherwise leave windowStart past the end).
+    state.windowStart = min(max(0, state.windowStart), count)
+  }
+
   // MARK: - Effects
 
   private func connect(_ connection: ServerConnection) -> Effect<Action> {
@@ -1301,6 +1367,12 @@ public struct ChatFeature {
     // the anchor (no phantom timer); a `running` turn resumes the tick seeded at the elapsed
     // offset rather than restarting at 0.
     let timerEffect = reconcileTurnTimer(running: running, into: &state)
+
+    // Server wins: a wholesale transcript replace resets the client-side window to the bottom
+    // (newest) so the chat opens/re-hydrates parked at the latest rows, discarding any prior
+    // scroll-up that revealed older history. Computed after every append above (inflight +
+    // reconciled thinking row) so the count is final.
+    state.windowStart = State.bottomWindowStart(count: state.transcript.count)
 
     // Persist the freshly-hydrated, server-authoritative state back to the cache so the next
     // cold open paints from it (debounced — coalesces with any immediately-following deltas).

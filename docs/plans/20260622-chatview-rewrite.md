@@ -159,15 +159,15 @@ ChatTranscriptView(
 
 **Files:**
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
-- Modify: `HermesKit/Tests/HermesKitTests/ChatFeatureTests.swift`
+- Create: `HermesKit/Tests/HermesKitTests/ChatWindowingTests.swift` (there is no `ChatFeatureTests.swift`; added a dedicated windowing suite alongside `ChatReductionTests`/`HydrateTests`/`RowIdentityTests`)
 
-- [ ] Add `windowStart: Int` to `State`, plus computed `hasMoreAbove` and `visibleRows` slice.
-- [ ] Add `.loadOlderRequested` action: `windowStart = max(0, windowStart - pageSize)` (`pageSize ≈ 50`, `initialWindow ≈ 50`).
-- [ ] Reset `windowStart` to the bottom window on hydrate / wholesale transcript replace.
-- [ ] Keep `windowStart` valid as the transcript grows during streaming (new rows stay in-window).
-- [ ] Write `TestStore` tests: `loadOlderRequested` decrements and clamps at 0; hydrate resets to bottom window; streaming append keeps newest visible.
-- [ ] Write tests: edge — transcript shorter than `initialWindow`, exactly one page.
-- [ ] Run tests — must pass before next task.
+- [x] Add `windowStart: Int` to `State`, plus computed `hasMoreAbove` and `visibleRows` slice.
+- [x] Add `.loadOlderRequested` action: `windowStart = max(0, windowStart - pageSize)` (`pageSize ≈ 50`, `initialWindow ≈ 50`).
+- [x] Reset `windowStart` to the bottom window on hydrate / wholesale transcript replace.
+- [x] Keep `windowStart` valid as the transcript grows during streaming (new rows stay in-window). (`maintainWindowAfterStreaming` re-pins to the bottom window when parked there; never yanks a scrolled-up user. The optional ~150 cap fell out as unnecessary — when parked at bottom only `initialWindow` rows render — so it was omitted to avoid over-engineering.)
+- [x] Write `TestStore` tests: `loadOlderRequested` decrements and clamps at 0; hydrate resets to bottom window; streaming append keeps newest visible.
+- [x] Write tests: edge — transcript shorter than `initialWindow`, exactly one page, empty transcript, scrolled-up user not yanked, hydrate-after-scroll-up resets.
+- [x] Run tests — must pass before next task. (483 tests, all passing.)
 
 ### Task 4: Wire foundation into the existing ChatView (no new renderer)
 
