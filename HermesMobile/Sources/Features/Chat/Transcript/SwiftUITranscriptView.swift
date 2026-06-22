@@ -12,12 +12,12 @@ enum TurnState: Equatable {
 
 /// Shared renderer boundary for the chat transcript.
 ///
-/// Both rendering engines (this pure-SwiftUI one and the future `UICollectionView` one)
-/// expose the **same** initializer shape so `ChatView` can swap between them behind a
-/// single call site:
+/// Both rendering engines — this pure-SwiftUI one and `CollectionTranscriptView` (the
+/// `UICollectionView` one) — expose the **same** initializer shape so `ChatView` can swap
+/// between them behind a single call site:
 ///
 /// ```
-/// ChatTranscriptView(rows:turnState:canLoadOlder:onLoadOlder:cell:)
+/// init(rows:turnState:canLoadOlder:onLoadOlder:cell:)
 /// ```
 ///
 /// - `rows` — the windowed slice (`store.visibleRows`); never the full transcript.
@@ -51,9 +51,6 @@ struct SwiftUITranscriptView<Cell: View>: View {
   /// The id of the first currently-visible row, captured *before* a prepend so we can
   /// re-anchor scroll to it afterwards (keeps the viewport from jumping on `loadOlder`).
   @State private var prependAnchorID: ChatRow.ID?
-
-  /// Distance from the bottom (in points) that still counts as "pinned".
-  private static var bottomThreshold: CGFloat { 60 }
 
   init(
     rows: [ChatRow],
@@ -102,19 +99,22 @@ struct SwiftUITranscriptView<Cell: View>: View {
         }
       }
       .padding()
-      // Re-anchor after a prepend: scroll to the row that was first before older rows
-      // were inserted, so the viewport stays put instead of jumping to the new top.
+      // Enables `scrollPosition.scrollTo(id:)` to resolve row ids to scroll targets (used by
+      // the prepend re-anchor in `.onChange(of: rows.count)` below).
       .scrollTargetLayout()
     }
     .defaultScrollAnchor(.bottom)
     .scrollPosition($scrollPosition)
-    // Compute pin state from live scroll geometry: distance of the content's bottom edge
-    // below the viewport's bottom edge. ≤ threshold ⇒ pinned to the latest message.
-    .onScrollGeometryChange(for: CGFloat.self) { geo in
-      geo.contentSize.height + geo.contentInsets.bottom
-        - (geo.contentOffset.y + geo.containerSize.height)
-    } action: { _, distanceFromBottom in
-      let pinned = distanceFromBottom <= Self.bottomThreshold
+    // Compute pin state from live scroll geometry via the shared math so both renderers agree
+    // on the at-bottom contract (≤ `TranscriptScrollMath.bottomThreshold` ⇒ pinned).
+    .onScrollGeometryChange(for: Bool.self) { geo in
+      TranscriptScrollMath.isPinnedToBottom(
+        contentHeight: geo.contentSize.height,
+        viewportHeight: geo.containerSize.height,
+        bottomInset: geo.contentInsets.bottom,
+        offsetY: geo.contentOffset.y
+      )
+    } action: { _, pinned in
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
       }

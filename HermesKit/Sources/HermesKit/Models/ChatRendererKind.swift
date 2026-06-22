@@ -3,8 +3,8 @@ import Foundation
 /// Which transcript rendering engine the chat screen uses. A device-local preference
 /// (persisted in `PreferencesClient`) so the two interchangeable renderers can be A/B'd
 /// on identical chats:
-/// - `.collectionView` — UIKit `UICollectionView` engine (Renderer A), the default.
-/// - `.swiftUI` — pure-SwiftUI `ScrollView` + `LazyVStack` engine (Renderer C).
+/// - `.collectionView` — the UIKit `UICollectionView` engine, the default.
+/// - `.swiftUI` — the pure-SwiftUI `ScrollView` + `LazyVStack` engine.
 ///
 /// Not identity-scoped — it is **not** cleared on logout.
 public enum ChatRendererKind: String, Sendable, CaseIterable, Equatable {
@@ -17,7 +17,7 @@ public enum ChatRendererKind: String, Sendable, CaseIterable, Equatable {
   /// Human-readable label for the Settings picker.
   public var displayName: String {
     switch self {
-    case .collectionView: "UICollectionView"
+    case .collectionView: "UICollectionView (default)"
     case .swiftUI: "SwiftUI"
     }
   }

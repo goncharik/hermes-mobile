@@ -38,7 +38,7 @@ struct SettingsView: View {
       }
 
       Section {
-        Picker("Chat list engine", selection: $store.chatRenderer) {
+        Picker("Chat transcript engine", selection: $store.chatRenderer) {
           ForEach(ChatRendererKind.allCases, id: \.self) { kind in
             Text(kind.displayName).tag(kind)
           }

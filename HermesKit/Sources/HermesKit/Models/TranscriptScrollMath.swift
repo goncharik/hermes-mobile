@@ -1,25 +1,26 @@
 import Foundation
-import HermesKit
 
-// MARK: - Pure helpers (platform-independent, unit-testable)
+// MARK: - Pure transcript scroll/anchor math (platform-independent, unit-testable)
 
-/// Pure scroll/anchor math for the `UICollectionView` transcript engine. Kept outside the
-/// `#if canImport(UIKit)` guard so the threshold/anchor logic is platform-independent and
-/// directly testable (HermesKit-style), and so the same numbers drive both engines.
-enum TranscriptScrollMath {
-  /// Distance from the bottom (in points) that still counts as "pinned" — mirrors the
-  /// SwiftUI engine's `bottomThreshold` so the two renderers agree on the at-bottom contract.
-  static let bottomThreshold: CGFloat = 60
+/// Pure scroll/anchor math shared by both transcript rendering engines (the SwiftUI
+/// `ScrollView` engine and the `UICollectionView` engine). Foundation-only — no UIKit — so the
+/// threshold/anchor logic is platform-independent, lives in `HermesKit` (logic, not views), and
+/// is directly unit-testable via `swift test`. Keeping the numbers here is what makes the two
+/// renderers agree on the at-bottom contract.
+public enum TranscriptScrollMath {
+  /// Distance from the bottom (in points) that still counts as "pinned" — both renderers read
+  /// this single constant so they agree on the at-bottom contract.
+  public static let bottomThreshold: CGFloat = 60
 
   /// Distance from the *top* (in points) at which scrolling up triggers a load-older page.
   /// Distinct from `bottomThreshold` even though they currently share a value: the top
   /// load-older trigger distance is conceptually independent of the bottom pin tolerance.
-  static let loadOlderTopThreshold: CGFloat = 60
+  public static let loadOlderTopThreshold: CGFloat = 60
 
   /// Given the content's full height, the visible viewport height, the bottom inset, and the
   /// current vertical offset, decide whether the viewport is pinned to the bottom edge.
   /// `≤ threshold` of remaining scroll distance below the viewport ⇒ pinned to the latest row.
-  static func isPinnedToBottom(
+  public static func isPinnedToBottom(
     contentHeight: CGFloat,
     viewportHeight: CGFloat,
     bottomInset: CGFloat,
@@ -32,7 +33,7 @@ enum TranscriptScrollMath {
 
   /// The maximum legal vertical content offset for a scroll view (clamped at 0 so short
   /// transcripts that don't fill the viewport never produce a negative offset).
-  static func maxOffsetY(
+  public static func maxOffsetY(
     contentHeight: CGFloat,
     viewportHeight: CGFloat,
     topInset: CGFloat,
@@ -44,7 +45,7 @@ enum TranscriptScrollMath {
   /// Offset-preservation across a prepend: when older rows are inserted at the top, the
   /// content grows by `insertedHeight`, so to keep the on-screen anchor row visually fixed we
   /// shift the offset down by exactly that delta. Returns the new offset (clamped to legal).
-  static func offsetAfterPrepend(
+  public static func offsetAfterPrepend(
     previousOffsetY: CGFloat,
     insertedHeight: CGFloat,
     contentHeight: CGFloat,
@@ -66,7 +67,7 @@ enum TranscriptScrollMath {
 /// Detect whether a `rows` update is a *prepend* (older page loaded at the top) versus an
 /// append/in-place mutation. A prepend is the only update that requires offset preservation;
 /// everything else follows the pin rule. Pure over the row id sequences so it is testable.
-enum TranscriptDiffKind: Equatable {
+public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
   /// Newer rows appended and/or trailing rows mutated in place (streaming / new turn).
@@ -75,7 +76,7 @@ enum TranscriptDiffKind: Equatable {
   case inPlace
 
   /// Classify the transition from `old` row ids to `new` row ids.
-  static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
+  public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
       return new.isEmpty ? .inPlace : .appendOrMutate
     }

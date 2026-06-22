@@ -146,7 +146,6 @@ public struct ChatFeature {
       self.storedSessionID = resumeStoredID
       self.title = title
       self.transcript = transcript
-      self.windowStart = 0
       self.composerText = composerText
       self.status = status
       self.errorBanner = nil
@@ -184,9 +183,11 @@ public struct ChatFeature {
       // `State.init` (the store/preview supplies `\.chatSnapshot`), which only holds for this
       // synchronous instant-paint path. Do NOT copy this pattern into other feature inits;
       // everywhere else, read dependencies from the reducer (`@Dependency`), not from `init`.
+      var resolvedTranscript = transcript
       if transcript.isEmpty, let storedID = resumeStoredID,
          let snapshot = Dependency(\.chatSnapshot).wrappedValue.loadSnapshot(storedID) {
-        self.transcript = IdentifiedArrayOf(uniqueElements: snapshot.rows)
+        resolvedTranscript = IdentifiedArrayOf(uniqueElements: snapshot.rows)
+        self.transcript = resolvedTranscript
         self.model = snapshot.model
         self.reasoningEffort = snapshot.reasoningEffort
         self.usage = snapshot.usage
@@ -194,7 +195,7 @@ public struct ChatFeature {
 
       // Open at the bottom window over whatever transcript we ended up with (instant-paint
       // snapshot or a caller-supplied one). Hydrate later resets this again — server wins.
-      self.windowStart = State.bottomWindowStart(count: self.transcript.count)
+      self.windowStart = State.bottomWindowStart(count: resolvedTranscript.count)
     }
 
     /// The bottom (newest) rendering window over a transcript of `count` rows.

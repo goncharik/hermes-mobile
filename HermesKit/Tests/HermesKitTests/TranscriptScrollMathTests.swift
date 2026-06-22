@@ -1,56 +1,54 @@
-import HermesKit
-import XCTest
+import Foundation
+import Testing
 
-@testable import HermesMobile
+@testable import HermesKit
 
-/// Unit tests for the pure scroll/anchor math and the diff classifier behind the
-/// `UICollectionView` transcript engine. These helpers are deliberately kept outside the
-/// `#if canImport(UIKit)` guard precisely so they can be tested here without a live scroll
-/// view. (They live in the app target, not HermesKit, so this iOS test target — which can
-/// `@testable import HermesMobile` — is where they are reachable by the test runner.)
-final class TranscriptScrollMathTests: XCTestCase {
+/// Unit tests for the pure scroll/anchor math and the diff classifier shared by both transcript
+/// rendering engines. These helpers live in `HermesKit` (logic, not views) and are Foundation-only,
+/// so they run under `swift test` with no live scroll view.
+@Suite struct TranscriptScrollMathTests {
 
   // MARK: - isPinnedToBottom
 
-  func testPinnedWhenContentShorterThanViewport() {
+  @Test func pinnedWhenContentShorterThanViewport() {
     // Short transcript that doesn't fill the viewport: distance from bottom is negative ⇒ pinned.
-    XCTAssertTrue(
+    #expect(
       TranscriptScrollMath.isPinnedToBottom(
         contentHeight: 100, viewportHeight: 800, bottomInset: 0, offsetY: 0
       )
     )
   }
 
-  func testPinnedAtExactBottom() {
+  @Test func pinnedAtExactBottom() {
     // offsetY + viewport == contentHeight ⇒ distance 0 ⇒ pinned.
-    XCTAssertTrue(
+    #expect(
       TranscriptScrollMath.isPinnedToBottom(
         contentHeight: 2000, viewportHeight: 800, bottomInset: 0, offsetY: 1200
       )
     )
   }
 
-  func testPinnedWithinThreshold() {
+  @Test func pinnedWithinThreshold() {
     // 40pt above the true bottom is still within the 60pt threshold.
-    XCTAssertTrue(
+    #expect(
       TranscriptScrollMath.isPinnedToBottom(
         contentHeight: 2000, viewportHeight: 800, bottomInset: 0, offsetY: 1160
       )
     )
   }
 
-  func testNotPinnedBeyondThreshold() {
+  @Test func notPinnedBeyondThreshold() {
     // 100pt above the bottom exceeds the 60pt threshold ⇒ not pinned.
-    XCTAssertFalse(
-      TranscriptScrollMath.isPinnedToBottom(
+    #expect(
+      !TranscriptScrollMath.isPinnedToBottom(
         contentHeight: 2000, viewportHeight: 800, bottomInset: 0, offsetY: 1100
       )
     )
   }
 
-  func testBottomInsetCountsTowardPin() {
+  @Test func bottomInsetCountsTowardPin() {
     // The bottom inset extends the content's effective bottom edge.
-    XCTAssertTrue(
+    #expect(
       TranscriptScrollMath.isPinnedToBottom(
         contentHeight: 2000, viewportHeight: 800, bottomInset: 50, offsetY: 1250
       )
@@ -59,57 +57,52 @@ final class TranscriptScrollMathTests: XCTestCase {
 
   // MARK: - maxOffsetY
 
-  func testMaxOffsetYForTallContent() {
-    XCTAssertEqual(
+  @Test func maxOffsetYForTallContent() {
+    #expect(
       TranscriptScrollMath.maxOffsetY(
         contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 0
-      ),
-      1200
+      ) == 1200
     )
   }
 
-  func testMaxOffsetYClampsForShortContent() {
+  @Test func maxOffsetYClampsForShortContent() {
     // Content shorter than the viewport: the max offset clamps to `-topInset` so a short
     // transcript never produces a positive (over-scrolled) offset.
-    XCTAssertEqual(
+    #expect(
       TranscriptScrollMath.maxOffsetY(
         contentHeight: 100, viewportHeight: 800, topInset: 0, bottomInset: 0
-      ),
-      0
+      ) == 0
     )
   }
 
-  func testMaxOffsetYIncludesBottomInset() {
-    XCTAssertEqual(
+  @Test func maxOffsetYIncludesBottomInset() {
+    #expect(
       TranscriptScrollMath.maxOffsetY(
         contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 50
-      ),
-      1250
+      ) == 1250
     )
   }
 
   // MARK: - offsetAfterPrepend
 
-  func testOffsetAfterPrependShiftsByInsertedHeight() {
+  @Test func offsetAfterPrependShiftsByInsertedHeight() {
     // Inserting 300pt of older rows shifts the offset down by exactly 300 so the anchor row
     // stays visually fixed.
-    XCTAssertEqual(
+    #expect(
       TranscriptScrollMath.offsetAfterPrepend(
         previousOffsetY: 100, insertedHeight: 300,
         contentHeight: 2300, viewportHeight: 800, topInset: 0, bottomInset: 0
-      ),
-      400
+      ) == 400
     )
   }
 
-  func testOffsetAfterPrependClampsToMax() {
+  @Test func offsetAfterPrependClampsToMax() {
     // Target would exceed the legal max ⇒ clamps to maxOffsetY.
-    XCTAssertEqual(
+    #expect(
       TranscriptScrollMath.offsetAfterPrepend(
         previousOffsetY: 1400, insertedHeight: 300,
         contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 0
-      ),
-      1200
+      ) == 1200
     )
   }
 
@@ -119,69 +112,69 @@ final class TranscriptScrollMathTests: XCTestCase {
     (0..<count).map { ChatRow.deterministicID(sequenceIndex: $0, role: .user, kindDiscriminator: "message") }
   }
 
-  func testClassifyBothEmptyIsInPlace() {
-    XCTAssertEqual(TranscriptDiffKind.classify(old: [], new: []), .inPlace)
+  @Test func classifyBothEmptyIsInPlace() {
+    #expect(TranscriptDiffKind.classify(old: [], new: []) == .inPlace)
   }
 
-  func testClassifyFirstPopulationIsAppend() {
+  @Test func classifyFirstPopulationIsAppend() {
     let new = ids(3)
-    XCTAssertEqual(TranscriptDiffKind.classify(old: [], new: new), .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: [], new: new) == .appendOrMutate)
   }
 
-  func testClassifyAppend() {
+  @Test func classifyAppend() {
     let base = ids(3)
     let appended = base + [ChatRow.deterministicID(sequenceIndex: 99, role: .assistant, kindDiscriminator: "message")]
-    XCTAssertEqual(TranscriptDiffKind.classify(old: base, new: appended), .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: base, new: appended) == .appendOrMutate)
   }
 
-  func testClassifyInPlaceWhenIdentical() {
+  @Test func classifyInPlaceWhenIdentical() {
     let base = ids(4)
-    XCTAssertEqual(TranscriptDiffKind.classify(old: base, new: base), .inPlace)
+    #expect(TranscriptDiffKind.classify(old: base, new: base) == .inPlace)
   }
 
-  func testClassifyPrepend() {
+  @Test func classifyPrepend() {
     let old = ids(3)
     let older = [
       ChatRow.deterministicID(sequenceIndex: 100, role: .user, kindDiscriminator: "tool"),
       ChatRow.deterministicID(sequenceIndex: 101, role: .assistant, kindDiscriminator: "thinking"),
     ]
     let new = older + old
-    XCTAssertEqual(TranscriptDiffKind.classify(old: old, new: new), .prepend(insertedCount: 2))
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .prepend(insertedCount: 2))
   }
 
-  func testClassifyPrependWhereInsertedFirstEqualsOldFirst() {
+  @Test func classifyPrependWhereInsertedFirstEqualsOldFirst() {
     // A prepend whose inserted rows START with the old first id. The suffix still matches and
     // counts grew, so it MUST be classified as a prepend — not misread as an append just
     // because `new.first == old.first`. (This is the regression the classifier fix addresses.)
     let old = ids(3)
     let new = [old[0]] + old  // duplicate the old first id at the head
-    XCTAssertEqual(TranscriptDiffKind.classify(old: old, new: new), .prepend(insertedCount: 1))
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .prepend(insertedCount: 1))
   }
 
-  func testClassifyFullReplacementIsAppendOrMutate() {
+  @Test func classifyFullReplacementIsAppendOrMutate() {
     // A hydrate over a different transcript: no suffix relationship ⇒ not a prepend.
     let old = ids(3)
     let new = [
       ChatRow.deterministicID(sequenceIndex: 0, role: .assistant, kindDiscriminator: "thinking"),
       ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message"),
     ]
-    XCTAssertEqual(TranscriptDiffKind.classify(old: old, new: new), .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
   }
 
-  func testClassifyReorderSameLengthIsAppendOrMutate() {
+  @Test func classifyReorderSameLengthIsAppendOrMutate() {
     // Same length, reordered ids: not in-place (sequence changed) and not a prepend (no growth).
     let old = ids(3)
     let reordered = [old[2], old[0], old[1]]
-    XCTAssertEqual(TranscriptDiffKind.classify(old: old, new: reordered), .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .appendOrMutate)
   }
 
-  func testClassifyGrowthWithoutSuffixMatchIsAppendOrMutate() {
+  @Test func classifyGrowthWithoutSuffixMatchIsAppendOrMutate() {
     // Counts grew but the old sequence is NOT a contiguous suffix ⇒ append/mutate, not prepend.
     let old = ids(3)
     let new = [old[0], old[1]]
       + [ChatRow.deterministicID(sequenceIndex: 50, role: .user, kindDiscriminator: "status")]
       + [old[2]]
     // old == [0,1,2]; new suffix(3) == [1, status, 2] != old ⇒ not a prepend.
-    XCTAssertEqual(TranscriptDiffKind.classify(old: old, new: new), .appendOrMutate)
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
   }
 }
