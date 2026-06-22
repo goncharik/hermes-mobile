@@ -187,10 +187,10 @@ ChatTranscriptView(
 - Modify: `Project.swift`
 - Modify: `HermesKit/Package.swift`
 
-- [ ] Bump app deployment target to iOS 18 in `Project.swift` (per-configuration settings preserved).
-- [ ] Bump `HermesKit` platform minimum to iOS 18 (keep macOS test platform intact for `swift test`).
-- [ ] Run `tuist generate`; confirm app builds and `swift test` still runs on macOS.
-- [ ] Run HermesKit tests — must pass before next task.
+- [x] Bump app deployment target to iOS 18 in `Project.swift` (per-configuration settings preserved). (Both `HermesMobile` and `HermesMobileTests` targets → `.iOS("18.0")`; Debug/Release per-config settings untouched.)
+- [x] Bump `HermesKit` platform minimum to iOS 18 (keep macOS test platform intact for `swift test`). (`.iOS(.v18)`; `.macOS(.v14)` kept.)
+- [x] Run `tuist generate`; confirm app builds and `swift test` still runs on macOS. (`tuist generate` succeeded; `xcodebuild` Debug simulator build succeeded (exit 0).)
+- [x] Run HermesKit tests — must pass before next task. (483 tests, all passing.)
 
 ### Task 6: Shared renderer boundary + extract Renderer C (SwiftUI)
 

@@ -28,7 +28,7 @@ let project = Project(
       destinations: [.iPhone],
       product: .app,
       bundleId: "me.honcharenko.HermesMobile",
-      deploymentTargets: .iOS("17.0"),
+      deploymentTargets: .iOS("18.0"),
       infoPlist: .extendingDefault(with: [
         // Wire the bundle version/short-version to the build settings below so a
         // `CURRENT_PROJECT_VERSION` bump actually reaches the Info.plist (Tuist's
@@ -85,7 +85,7 @@ let project = Project(
       destinations: [.iPhone],
       product: .unitTests,
       bundleId: "me.honcharenko.HermesMobileTests",
-      deploymentTargets: .iOS("17.0"),
+      deploymentTargets: .iOS("18.0"),
       sources: ["HermesMobileTests/**"],
       dependencies: [
         .target(name: "HermesMobile"),
