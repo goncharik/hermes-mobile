@@ -288,10 +288,16 @@ Dependencies identified:
 
 ### Task 8: [Final] Update documentation
 
-- [ ] Update `CLAUDE.md` if new conventions emerged (e.g. the self-heal-on-`session not
+- [x] Update `CLAUDE.md` if new conventions emerged (e.g. the self-heal-on-`session not
       found` RPC pattern; in-flight-row preservation on hydrate; Markdown block rendering).
-- [ ] Update `README.md`/`docs/` only if user-facing behavior described there changed.
-- [ ] Move this plan to `docs/plans/completed/`.
+      Added: self-heal-on-`session not found` (into the gateway/`prompt.submit`-failure bullet),
+      running-turn in-flight-row preservation (into the hydrate bullet), and a new
+      block-Markdown + bubble-less chat bullet.
+- [x] Update `README.md`/`docs/` only if user-facing behavior described there changed.
+      Skipped — README's "render as native Markdown" / "Copy a whole message" descriptions
+      still hold; the block-types / full-selection / bubble-less changes are refinements that
+      don't contradict the existing user-facing copy.
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Investigation notes (#17)
 

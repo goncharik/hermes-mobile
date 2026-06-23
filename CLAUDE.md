@@ -29,6 +29,12 @@ build/test/distribution, and `docs/plans/completed/` for the full design history
   `send` has a per-request timeout (default 30s) — a hung RPC throws
   `GatewayError.timedOut` rather than hanging. **Surface `prompt.submit` failures**
   (set `errorBanner`, clear `isSending`/`activity`) — never swallow them with `try?`.
+  **Outbound RPCs self-heal on a server "session not found"** (`GatewayError.isSessionNotFound`,
+  #17): `prompt.submit` / attach uploads / `session.title` re-resume (`session.resume`) for a
+  fresh `liveSessionID` — or `session.create` when there's no stored id — then replay the RPC
+  **once** (single retry, no loop); the banner shows only if the heal/retry also fails. The
+  foreground `session.resume` likewise **recreates** on "session not found" rather than swallowing
+  it as a benign `.disconnected` drop.
 - **Streaming has no message id** (verified by the M0 probe) — the fold tracks a single
   in-flight assistant row, created **lazily on the first delta** (a `message.start` with no
   text would otherwise render as an empty bubble). `session_id` is on the event *frame*.
@@ -64,6 +70,11 @@ build/test/distribution, and `docs/plans/completed/` for the full design history
   engine — experimental"). The **stick-to-bottom contract is renderer-local** (not in the reducer):
   `isPinnedToBottom` from scroll geometry (~60pt), open/hydrate jumps to bottom, pinned →
   animated follow, scrolled-up → no-yank, reduce-motion → instant jumps.
+- **Chat Markdown renders block-level structure** (#27) — pure classification in `MarkdownSegment`
+  (headers / blockquotes / tables alongside prose + fenced code; fences take precedence, odd markup
+  degrades to prose), rendered in `MarkdownText` (headings → scaled bold, blockquote → indented bar,
+  table → `Grid`). **Only USER messages have a bubble** — assistant / tool / thinking rows render
+  bubble-less plain content, and the assistant Markdown is fully selectable (`.textSelection`).
 - **Decode leniently; never crash on unknown events** — unknown `type` → `.unknown`.
 - **Auth has two regimes**, modeled by `AuthSession` (`.token` | `.cookie(CookieSession)`) so
   the REST/Gateway clients adapt transport without scattering regime checks. **Token mode**
@@ -90,7 +101,11 @@ build/test/distribution, and `docs/plans/completed/` for the full design history
   `inflight` **directly from the response** — `applyRuntimeInfo` for model/reasoning/usage,
   `reconstructTranscript` to rebuild tool/thinking rows wholesale (server wins; never merge),
   seed the streaming row from `inflight` so the next delta reuses it. Don't re-init in-flight
-  state to zeros and don't `loadHistory` separately.
+  state to zeros and don't `loadHistory` separately. **On a foreground re-hydrate of a still-
+  RUNNING turn, PRESERVE the client's live thinking + tool rows** (#26) — server `inflight`
+  carries only user/assistant text (no reasoning/tools), so re-append the preserved rows after
+  the authoritative history (thinking row last) rather than wiping them; a **completed** turn
+  (`running == false`) still replaces wholesale.
 - **Elapsed-timer continuity uses a client turn-start anchor** (`reconcileTimer`): the server
   has no turn-start timestamp, so persist one in `ChatSnapshotClient` on `prompt.submit` /
   `message.start` and clear it on complete/error/interrupt. On hydrate, **`running` decides
