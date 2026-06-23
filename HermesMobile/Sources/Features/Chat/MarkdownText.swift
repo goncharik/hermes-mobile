@@ -41,6 +41,10 @@ struct MarkdownText: View {
         }
       }
     }
+    // Make every rendered text run (headings, prose, blockquotes, list items, table
+    // cells) selectable so any part of an agent response can be copied — not just the
+    // per-code-block copy button (which keeps its own `.textSelection`/copy button). (#27b)
+    .textSelection(.enabled)
   }
 
   private func prose(_ value: String) -> some View {

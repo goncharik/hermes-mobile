@@ -234,14 +234,14 @@ Dependencies identified:
 - Modify: `HermesKit/Tests/HermesKitTests/RowIdentityTests.swift` or
   `TranscriptReconstructionTests.swift`
 
-- [ ] Enable `.textSelection(.enabled)` across the assistant rendered Markdown so any part
+- [x] Enable `.textSelection(.enabled)` across the assistant rendered Markdown so any part
       of an agent response can be selected/copied (not just the per-block code button).
-- [ ] Verify the existing row context-menu `Copy` (`.copyRow(id:)`) yields the full row's
+- [x] Verify the existing row context-menu `Copy` (`.copyRow(id:)`) yields the full row's
       plain text for message/thinking/tool rows; add a `ChatRow` copy-text accessor if the
       current source is incomplete.
-- [ ] Write a unit test for the row copy-text accessor (assistant message, thinking,
+- [x] Write a unit test for the row copy-text accessor (assistant message, thinking,
       tool) covering full-content extraction.
-- [ ] Run tests — must pass before Task 6.
+- [x] Run tests — must pass before Task 6.
 
 ### Task 6: Bubble-less chat restructure (#27 part c)
 
