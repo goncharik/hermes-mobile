@@ -144,7 +144,7 @@ public enum MarkdownSegment: Equatable, Sendable {
     let level = hashes.count
     guard level >= 1, level <= 6 else { return nil }
     let rest = trimmed[hashes.endIndex...]
-    // Require a space after the hashes (or end-of-line for a bare `##` → treat as no-text).
+    // Require a space after the hashes; a bare `##` (no space/text) degrades to prose.
     guard rest.first == " " else { return nil }
     var title = rest.trimmingCharacters(in: .whitespaces)
     // Strip an optional closing run of `#` (and surrounding spaces): "## Title ##".

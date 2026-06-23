@@ -1410,12 +1410,9 @@ public struct ChatFeature {
     var preservedThinkingRow: ChatRow?
     if running {
       // Tool rows in transcript order (so re-append preserves the original ordering).
-      let toolIDsInOrder = state.transcript.compactMap { row -> (String, ChatRow.ID)? in
+      preservedToolRows = state.transcript.compactMap { row -> (String, ChatRow)? in
         guard let entry = state.toolRowIDs.first(where: { $0.value == row.id }) else { return nil }
-        return (entry.key, row.id)
-      }
-      preservedToolRows = toolIDsInOrder.compactMap { key, id in
-        state.transcript[id: id].map { (key, $0) }
+        return (entry.key, row)
       }
       if let thinkingID = state.thinkingRowID {
         preservedThinkingRow = state.transcript[id: thinkingID]
