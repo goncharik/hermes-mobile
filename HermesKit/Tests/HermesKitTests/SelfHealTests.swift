@@ -288,4 +288,182 @@ struct SelfHealTests {
     }
     #expect(store.state.liveSessionID == "stale-live") // unchanged, no recreate
   }
+
+  // MARK: session.title (rename) self-heal
+
+  @Test func renameSelfHealsOnSessionNotFoundThenSucceeds() async {
+    // session.title fails "session not found" against the stale id → re-resume for a fresh id →
+    // replay the rename against it → succeeds, with NO rollback and no banner.
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = healableState()
+    initial.title = "Old title"
+    initial.renameDraft = "New title"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case "session.title":
+          if sid == "stale-live" { throw GatewayError.server("session not found") }
+          return .object([:]) // retried against fresh id
+        case "session.resume":
+          return self.resumePayload(liveID: "fresh-live")
+        default:
+          return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.confirmRename) {
+      $0.title = "New title" // optimistic
+      $0.renameDraft = nil
+    }
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+    }
+    await store.finish()
+
+    let methods = calls.value.map(\.method)
+    #expect(methods == ["session.title", "session.resume", "session.title"])
+    #expect(calls.value.last?.sessionID == "fresh-live")
+    #expect(store.state.title == "New title") // no rollback
+    #expect(store.state.errorBanner == nil)
+  }
+
+  @Test func renameSurfacesRollbackWhenHealRetryFails() async {
+    // Re-resume succeeds, but the replayed session.title STILL fails — roll back the optimistic
+    // title and surface the rename banner (a single retry, no loop).
+    let calls = LockIsolated<[String]>([])
+    var initial = healableState()
+    initial.title = "Old title"
+    initial.renameDraft = "New title"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "session.title": throw GatewayError.server("session not found")
+        case "session.resume": return self.resumePayload(liveID: "fresh-live")
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.confirmRename) {
+      $0.title = "New title"
+      $0.renameDraft = nil
+    }
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+    }
+    await store.receive(\.renameFailed) {
+      $0.title = "Old title" // rolled back
+      $0.errorBanner = "Couldn’t rename the session."
+    }
+    await store.finish()
+
+    // Exactly one retry: title, resume, title — never a third title.
+    #expect(calls.value == ["session.title", "session.resume", "session.title"])
+  }
+
+  // MARK: no-stored-id heal (session.create fallback — the actual #17 root cause)
+
+  @Test func promptSubmitHealWithNoStoredIDRecreatesSession() async {
+    // A brand-new session whose handle carried no stored id: the heal CANNOT re-resume, so it
+    // must `session.create` (NOT `session.resume`), apply the fresh live id (coalescing the new
+    // stored id), and replay the prompt.submit ONCE.
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "stale-live"
+    initial.storedSessionID = nil // no stored id to resume against
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case "prompt.submit":
+          if sid == "stale-live" { throw GatewayError.server("session not found") }
+          return .object(["status": .string("streaming")])
+        case "session.create":
+          // Recreated handle carries a fresh stored id too.
+          return .object([
+            "session_id": .string("recreated-live"),
+            "stored_session_id": .string("new-stored"),
+          ])
+        default:
+          return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted) {
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.composerText = ""
+      $0.isSending = true
+    }
+    // The create-fallback heal lands a fresh live id AND coalesces the new stored id.
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "recreated-live"
+      $0.storedSessionID = "new-stored"
+    }
+    await store.finish()
+
+    let methods = calls.value.map(\.method)
+    // Recreate via session.create (never session.resume), then replay once.
+    #expect(methods == ["prompt.submit", "session.create", "prompt.submit"])
+    #expect(calls.value.last?.sessionID == "recreated-live")
+    #expect(store.state.errorBanner == nil)
+    #expect(store.state.isSending)
+  }
+
+  // MARK: malformed heal response
+
+  @Test func promptSubmitHealMalformedResumeSurfacesBannerNoReplay() async {
+    // The re-resume returns a malformed payload (no session_id) → healLiveSessionID throws →
+    // the prompt banner surfaces and there is NO replay.
+    let calls = LockIsolated<[String]>([])
+    var initial = healableState()
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "prompt.submit": throw GatewayError.server("session not found")
+        case "session.resume": return .object(["messages": .array([])]) // missing session_id
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted) {
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.composerText = ""
+      $0.isSending = true
+    }
+    await store.receive(\.promptSubmitFailed) {
+      $0.errorBanner = "Prompt failed: Malformed session.resume result"
+      $0.isSending = false
+    }
+    await store.finish()
+
+    // No liveSessionIDRefreshed and no second submit: heal threw before applying anything.
+    #expect(calls.value == ["prompt.submit", "session.resume"])
+    #expect(store.state.liveSessionID == "stale-live")
+  }
 }

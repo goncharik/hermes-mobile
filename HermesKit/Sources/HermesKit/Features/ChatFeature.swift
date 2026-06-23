@@ -559,15 +559,12 @@ public struct ChatFeature {
               ]))
             }
             do {
-              do {
-                try await runUploadAndSubmit(sessionID)
-              } catch let error as GatewayError where error.isSessionNotFound {
-                // Stale live id: re-resume/recreate for a fresh one, apply it, replay once.
-                let healedID = try await healLiveSessionID(
-                  storedSessionID: stored, profile: profile, gateway: gateway, send: send
-                )
-                try await runUploadAndSubmit(healedID)
-              }
+              // Stale live id: re-resume/recreate for a fresh one, apply it, replay the whole
+              // upload→submit sequence once (uploads are idempotent).
+              try await withSessionHeal(
+                runUploadAndSubmit, sessionID: sessionID, storedSessionID: stored,
+                profile: profile, gateway: gateway, send: send
+              )
               // Echo images as thumbnails in the bubble; non-image files (no thumbnail)
               // fall back to their names when there's no typed text.
               let images = attachments.filter { $0.kind == .image }.map(\.data)
@@ -604,7 +601,7 @@ public struct ChatFeature {
         let profile = state.scopedProfile
         return .merge(anchor, .run { [gateway] send in
           await submitPrompt(
-            text: text, sessionID: sessionID, storedSessionID: stored, profile: profile,
+            sessionID: sessionID, storedSessionID: stored, profile: profile,
             gateway: gateway, send: send
           ) { healedID in
             _ = try await gateway.send("prompt.submit", .object([
@@ -990,15 +987,11 @@ public struct ChatFeature {
             ]))
           }
           do {
-            do {
-              try await rename(sessionID)
-            } catch let error as GatewayError where error.isSessionNotFound {
-              // Stale live id after foreground: self-heal once, then replay the rename (#17).
-              let healedID = try await healLiveSessionID(
-                storedSessionID: stored, profile: profile, gateway: gateway, send: send
-              )
-              try await rename(healedID)
-            }
+            // Stale live id after foreground: self-heal once, then replay the rename (#17).
+            try await withSessionHeal(
+              rename, sessionID: sessionID, storedSessionID: stored,
+              profile: profile, gateway: gateway, send: send
+            )
           } catch {
             await send(.renameFailed(previousTitle: previousTitle))
           }
@@ -1730,12 +1723,34 @@ private func healLiveSessionID(
   return handle.sessionID
 }
 
-/// Run a `prompt.submit` with transparent self-heal on "session not found" (#17): run
-/// `submit` against the current live id; if it throws `isSessionNotFound`, re-resume/recreate
-/// for a fresh id and replay `submit(healedID)` ONCE; on any other failure (or a failed
-/// heal/retry) surface `.promptSubmitFailed`. A single retry — never recurses.
+/// Run an outbound RPC with transparent self-heal on "session not found" (#17): run `op`
+/// against the current live id; if it throws `isSessionNotFound`, re-resume/recreate for a
+/// fresh id (applying it via `.liveSessionIDRefreshed`) and replay `op(healedID)` ONCE. A
+/// single retry — never recurses. This is the SHARED inner mechanism; callers keep their own
+/// OUTER catch to map a failure (heal, retry, or any other error) to the right per-call action
+/// (`.promptSubmitFailed` / `.attachmentUploadFailed` / `.renameFailed`).
+private func withSessionHeal(
+  _ op: (_ targetID: String) async throws -> Void,
+  sessionID: String,
+  storedSessionID: String?,
+  profile: String?,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>
+) async throws {
+  do {
+    try await op(sessionID)
+  } catch let error as GatewayError where error.isSessionNotFound {
+    let healedID = try await healLiveSessionID(
+      storedSessionID: storedSessionID, profile: profile, gateway: gateway, send: send
+    )
+    try await op(healedID)
+  }
+}
+
+/// Run a `prompt.submit` with transparent self-heal on "session not found" (#17): replay the
+/// submit ONCE against a freshly re-resumed/recreated id; on any other failure (or a failed
+/// heal/retry) surface `.promptSubmitFailed`.
 private func submitPrompt(
-  text: String,
   sessionID: String,
   storedSessionID: String?,
   profile: String?,
@@ -1744,14 +1759,10 @@ private func submitPrompt(
   submit: @escaping (_ targetID: String) async throws -> Void
 ) async {
   do {
-    do {
-      try await submit(sessionID)
-    } catch let error as GatewayError where error.isSessionNotFound {
-      let healedID = try await healLiveSessionID(
-        storedSessionID: storedSessionID, profile: profile, gateway: gateway, send: send
-      )
-      try await submit(healedID)
-    }
+    try await withSessionHeal(
+      submit, sessionID: sessionID, storedSessionID: storedSessionID,
+      profile: profile, gateway: gateway, send: send
+    )
   } catch let error as GatewayError {
     await send(.promptSubmitFailed(message: error.message))
   } catch {

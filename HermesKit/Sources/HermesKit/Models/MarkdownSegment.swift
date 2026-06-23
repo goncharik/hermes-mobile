@@ -175,7 +175,6 @@ public enum MarkdownSegment: Equatable, Sendable {
   /// A separator row: every cell is made only of `-`, `:`, and spaces and contains at
   /// least one `-`.
   static func isSeparatorRow(_ trimmed: String) -> Bool {
-    guard trimmed.contains("|") || trimmed.contains("-") else { return false }
     let cells = splitPipeCells(trimmed)
     guard !cells.isEmpty else { return false }
     for cell in cells {
