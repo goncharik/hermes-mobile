@@ -147,17 +147,17 @@ Dependencies identified:
 - Modify: `HermesKit/Sources/HermesKit/Clients/HermesGatewayClient.swift`
 - Create: `HermesKit/Tests/HermesKitTests/GatewayErrorTests.swift`
 
-- [ ] Reproduce #17 against a live agent: start a new session, send one turn, background,
-      foreground; capture the `session.resume` request/response and the failing
-      `prompt.submit` via `DebugLogClient`/Probe. Record findings in this plan under a
-      `## Investigation notes (#17)` section: does `session.create` return
-      `stored_session_id`? does foreground `session.resume` succeed, and what `session_id`
-      does it return vs. the stale `liveSessionID`?
-- [ ] Add `var isSessionNotFound: Bool` to `GatewayError` — case-insensitive match on
+- [x] Reproduce #17 against a live agent (static analysis — live repro not automatable in
+      sandbox). Findings recorded below under `## Investigation notes (#17)`: `session.create`
+      may return `stored_session_id == nil` for a fresh session; foreground `session.resume`
+      failures are swallowed as `.reconnecting` without refreshing/clearing the stale
+      `liveSessionID`; `prompt.submit`/attach use `state.liveSessionID` (refreshed only by a
+      successful `applyActivate`).
+- [x] Add `var isSessionNotFound: Bool` to `GatewayError` — case-insensitive match on
       `server(message)` containing "session not found" (mirrors `isUnknownMethod`).
-- [ ] Write tests for `isSessionNotFound` (matches server "session not found" variants;
+- [x] Write tests for `isSessionNotFound` (matches server "session not found" variants;
       false for `.disconnected`/`.timedOut`/`.authExpired`/other `server` messages).
-- [ ] Run tests — must pass before Task 2.
+- [x] Run tests — must pass before Task 2.
 
 ### Task 2: Self-heal outbound RPCs on "session not found" (#17 fix)
 
@@ -279,6 +279,67 @@ Dependencies identified:
       found` RPC pattern; in-flight-row preservation on hydrate; Markdown block rendering).
 - [ ] Update `README.md`/`docs/` only if user-facing behavior described there changed.
 - [ ] Move this plan to `docs/plans/completed/`.
+
+## Investigation notes (#17)
+
+*Static analysis — no live agent in the sandbox, so this is a code read of `ChatFeature.swift`
+(`.ready` / `hydrate` / `createSession` / `applyActivate` / `.foreground` / `.composerSubmitted` /
+`activateResult` failure handling), `Session.swift` (`SessionHandle` / `ActivateResponse` /
+`SessionInflight`), and `HermesGatewayClient.swift` (`send` / `GatewayError`).*
+
+**Symptom (from the ticket).** After background→foreground on a fresh session, the socket
+reconnects and `session.resume` *appears* to recover, but the next outbound RPC (`prompt.submit`
+or an attach upload) fails with `session not found`.
+
+**Three concrete questions answered by the code:**
+
+1. **Does `session.create` populate `storedSessionID`?** *Partially / not guaranteed.*
+   `SessionHandle` decodes `stored_session_id` (`Session.swift:81`), and the success handler
+   sets `state.storedSessionID = handle.storedSessionID ?? state.storedSessionID`
+   (`ChatFeature.swift:449`). So **if** the server returns a `stored_session_id` in the
+   `session.create` result, it is captured. But a brand-new session that hasn't persisted a turn
+   yet may return only the live `session_id` with `stored_session_id == nil`, leaving
+   `state.storedSessionID == nil`. On the next `.ready` (foreground reconnect),
+   `.ready` branches on `state.storedSessionID` (`ChatFeature.swift:976`): a `nil` stored id
+   takes the `createSession` branch (creates *another* new session) rather than re-resuming the
+   one in flight — so the in-flight session id is never refreshed and the original turn is
+   orphaned. This is the root-cause hinge for Task 2's "fall back / capture stored id" checkbox.
+
+2. **Does the foreground `session.resume` failure get silently swallowed?** *Effectively yes for
+   the failure path.* On foreground, `.foreground` resets `hasRequestedSession` and reconnects
+   (`ChatFeature.swift:497-509`); the fresh `.ready` re-`hydrate`s when a stored id exists.
+   If `session.resume` throws (or returns malformed), it lands in `activateResult(.failure)`
+   (`ChatFeature.swift:471-480`), which only sets `state.status = .reconnecting` and raises a
+   banner *unless* the error is `.disconnected`. Crucially **it leaves `state.liveSessionID`
+   unchanged** — there is no re-resume, no recreate, no clearing of the stale id. A genuine server
+   `session not found` from `session.resume` is therefore not distinguished from a benign socket
+   drop and never triggers recovery; the stale `liveSessionID` survives. (And when stored id is
+   `nil` per (1), `hydrate` isn't even attempted — `createSession` runs instead.)
+
+3. **What id does `prompt.submit` use?** **`state.liveSessionID`** (the short live/runtime id) —
+   `ChatFeature.swift:512` guards on it and passes it as `session_id` at lines 537 (attach path)
+   and 571 (plain submit). The attach uploads (`uploadAttachment`) and `session.title` rename
+   (line 923) use the same `liveSessionID`. After a background→foreground the agent may have torn
+   down / rebuilt the in-memory live session and assigned a **new** live id; the only thing that
+   refreshes `state.liveSessionID` is a *successful* `applyActivate` (`ChatFeature.swift:1329`,
+   `state.liveSessionID = response.sessionID`). If resume failed/was swallowed (or never ran due
+   to a `nil` stored id), `prompt.submit` reuses the now-stale `liveSessionID`, producing the
+   server's `session not found`.
+
+**Most-likely root cause.** The client keeps a stale `liveSessionID` after foreground because
+(a) a fresh session may have no `storedSessionID` to re-resume against, so `.ready` recreates
+instead of re-resuming, and (b) even when a stored id exists, a `session.resume` failure is
+swallowed as `.reconnecting` without refreshing or clearing `liveSessionID`. The next
+`prompt.submit`/attach then sends the invalidated live id → `session not found`.
+
+**What this implies for Task 2.** (i) Add the typed `GatewayError.isSessionNotFound` matcher
+(done in Task 1) so the submit/attach/rename paths can detect the condition. (ii) On a
+`session not found` from an outbound RPC, self-heal by re-resuming `storedSessionID` to obtain a
+fresh `liveSessionID`, then replay the RPC once (guarded against loops). (iii) Stop swallowing a
+real `session not found` from the foreground `session.resume` — distinguish it from
+`.disconnected` and trigger re-resume/recreate. (iv) Ensure `storedSessionID` is captured from
+`session.create` (and fall back to `session.create` when no stored id exists) so re-resume always
+has a target.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only.*
