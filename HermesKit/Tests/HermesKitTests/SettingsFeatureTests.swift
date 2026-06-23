@@ -39,7 +39,8 @@ struct SettingsFeatureTests {
 
   @Test func taskLoadsChatRendererPreference() async {
     let preferences = PreferencesClient.inMemory()
-    preferences.saveChatRenderer(.swiftUI)
+    // Use the non-default engine so `.task` produces an observable state change (default is .swiftUI).
+    preferences.saveChatRenderer(.collectionView)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -48,7 +49,7 @@ struct SettingsFeatureTests {
     }
 
     await store.send(.task) {
-      $0.chatRenderer = .swiftUI
+      $0.chatRenderer = .collectionView
     }
   }
 
@@ -60,10 +61,10 @@ struct SettingsFeatureTests {
       $0.preferences = preferences
     }
 
-    await store.send(\.binding.chatRenderer, .swiftUI) {
-      $0.chatRenderer = .swiftUI
+    await store.send(\.binding.chatRenderer, .collectionView) {
+      $0.chatRenderer = .collectionView
     }
-    #expect(preferences.loadChatRenderer() == .swiftUI)
+    #expect(preferences.loadChatRenderer() == .collectionView)
   }
 
   @Test func clearTokenWipesChatSnapshotStore() async {
