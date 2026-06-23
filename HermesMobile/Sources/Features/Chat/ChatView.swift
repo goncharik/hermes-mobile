@@ -144,10 +144,12 @@ struct ChatView: View {
         )
       }
     }
+    // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a
+    // `.simultaneousGesture(TapGesture())` here: over the SwiftUI engine's `.plain`-style
+    // `ScrollToBottomButton` that combination swallows the button's tap (the button only worked in
+    // the UICollectionView engine, whose hosted button sits outside this gesture). Dropping it
+    // makes the jump-to-bottom button tappable in both engines.
     .scrollDismissesKeyboard(.interactively)
-    // Tap on empty transcript space dismisses the keyboard without stealing taps
-    // from row buttons, context menus, or markdown links.
-    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
   }
 
   @ViewBuilder
