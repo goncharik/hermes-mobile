@@ -11,6 +11,11 @@ import UIKit
 /// / split-view too; only a height *decrease* fires.
 final class TranscriptCollectionView: UICollectionView {
   var onViewportHeightShrink: (() -> Void)?
+  /// Fired after every layout pass (once the view actually has a frame). The coordinator uses it
+  /// to complete the open-at-bottom settle: in a `UIViewRepresentable` the first diff `apply`
+  /// runs *before* the collection view is sized, so a scroll-to-bottom there targets a bogus
+  /// (zero-height) viewport. Re-pinning on real layout passes is what makes "open at bottom" stick.
+  var onLayout: (() -> Void)?
   private var lastViewportHeight: CGFloat = 0
 
   override func layoutSubviews() {
@@ -20,6 +25,7 @@ final class TranscriptCollectionView: UICollectionView {
       onViewportHeightShrink?()
     }
     lastViewportHeight = height
+    onLayout?()
   }
 }
 
@@ -82,6 +88,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     collectionView.delegate = context.coordinator
     collectionView.onViewportHeightShrink = { [weak coordinator = context.coordinator] in
       coordinator?.viewportDidShrink()
+    }
+    collectionView.onLayout = { [weak coordinator = context.coordinator] in
+      coordinator?.didLayout()
     }
     context.coordinator.configure(collectionView: collectionView)
     context.coordinator.installJumpButton(in: collectionView)
@@ -149,15 +158,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var isPinnedToBottom = true
     /// Guards the one-shot open/hydrate jump for this view instance.
     private var didInitialJump = false
-    /// True while the initial (or post-hydrate) open-at-bottom is still *settling*. Self-sizing
-    /// `UIHostingConfiguration` cells finish measuring over several layout passes AFTER the first
-    /// scroll-to-bottom, so `contentSize` keeps growing; without this the list lands short of the
-    /// real bottom (the user has to scroll/tap repeatedly). While set, the `contentSize` KVO keeps
-    /// re-pinning regardless of the pin flag and `updatePinState` won't flip the pin off, so the
-    /// view tracks the true bottom until the layout stabilises.
+    /// True while the initial (or post-hydrate) open-at-bottom is still *settling*. Two things make
+    /// "open at bottom" hard here: (1) in a `UIViewRepresentable` the first diff `apply` runs before
+    /// the collection view is sized, so its scroll-to-bottom targets a zero-height viewport; and
+    /// (2) self-sizing `UIHostingConfiguration` cells finish measuring over several later layout
+    /// passes, growing `contentSize` after that first scroll. While this is set we re-pin to the
+    /// bottom on every layout pass (`didLayout`) and every `contentSize` growth, and `updatePinState`
+    /// won't flip the pin off — so the view converges on the true bottom. It's cleared by the first
+    /// real user scroll (`scrollViewWillBeginDragging`), after which normal pin rules resume.
     private var needsInitialBottomSettle = false
-    /// Monotonic token so a stale settle-release timer can't end a newer settle.
-    private var settleGeneration = 0
     /// Set by the top-sentinel trigger so the next `apply` (which will be a prepend) preserves
     /// the on-screen anchor instead of following or jumping.
     private var pendingPrependPreservation = false
@@ -425,17 +434,19 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// holds. We force one synchronous layout to get closer immediately, then release the settle
     /// after a short window once the layout has stabilised.
     private func beginInitialBottomSettle() {
-      guard let collectionView else { return }
       needsInitialBottomSettle = true
-      settleGeneration &+= 1
-      let generation = settleGeneration
-      collectionView.layoutIfNeeded()
+      // Pin now against whatever frame we have; `didLayout` re-pins on every subsequent layout
+      // pass (when the real frame and self-sized cell heights arrive) until the user scrolls.
+      collectionView?.layoutIfNeeded()
       scrollToBottom(animated: false)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-        guard let self, self.settleGeneration == generation else { return }
-        self.needsInitialBottomSettle = false
-        self.updatePinState()
-      }
+    }
+
+    /// Called after every collection-view layout pass. While the initial open-at-bottom is still
+    /// settling, keep pinning to the true bottom (the frame/cell sizes are only correct here, not
+    /// in the pre-layout `apply` completion).
+    func didLayout() {
+      guard needsInitialBottomSettle else { return }
+      scrollToBottom(animated: false)
     }
 
     /// The viewport lost height (typically the keyboard appeared and SwiftUI shrank our frame).
