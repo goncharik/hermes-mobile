@@ -162,7 +162,7 @@ struct SwiftUITranscriptView<Cell: View>: View {
         }
       }
         if !isPinnedToBottom {
-          ScrollToBottomButton { jump(proxy, animated: false) }
+          ScrollToBottomButton { jump(proxy, animated: !reduceMotion) }
             .padding(.trailing, 16)
             .padding(.bottom, 12)
             .transition(.scale.combined(with: .opacity))
@@ -187,14 +187,14 @@ struct SwiftUITranscriptView<Cell: View>: View {
     onLoadOlder()
   }
 
-  /// Imperatively scroll to the bottom anchor.
-  ///
-  /// We call `proxy.scrollTo` WITHOUT `withAnimation`. Wrapping it in `withAnimation` silently fails
-  /// to scroll in this layout — that was the actual reason the jump button and streaming-follow did
-  /// nothing while the (un-wrapped) open-at-bottom worked. Plain `scrollTo` is reliable; the scroll
-  /// is instant, which is an acceptable trade for it actually working. The `animated` parameter is
-  /// kept for call-site symmetry with the UIKit engine but is intentionally not honoured here.
+  /// Imperatively scroll to the bottom anchor. `animated` wraps the scroll in `withAnimation` for a
+  /// smooth follow/jump (used by streaming-follow and the jump button); open/hydrate pass `false`
+  /// for an instant landing. Reduce-motion callers pass `false`.
   private func jump(_ proxy: ScrollViewProxy, animated: Bool) {
-    proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
+    if animated {
+      withAnimation(.spring(duration: 0.3)) { proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom) }
+    } else {
+      proxy.scrollTo(transcriptBottomAnchorID, anchor: .bottom)
+    }
   }
 }
