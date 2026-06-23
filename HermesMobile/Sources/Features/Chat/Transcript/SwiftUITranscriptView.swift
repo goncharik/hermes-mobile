@@ -59,6 +59,9 @@ struct SwiftUITranscriptView<Cell: View>: View {
   /// (`TranscriptDiffKind`) and detect a wholesale `.reset` (a server-authoritative re-hydrate)
   /// that must force a jump-to-bottom regardless of pin state.
   @State private var previousRowIDs: [ChatRow.ID] = []
+  /// TEMPORARY diagnostic: counts taps that actually reach the renderer, to distinguish "button
+  /// tap never fires" from "scroll call fails". Remove once the jump button is confirmed working.
+  @State private var debugTapCount = 0
 
   init(
     rows: [ChatRow],
@@ -154,14 +157,33 @@ struct SwiftUITranscriptView<Cell: View>: View {
           if turnState == .streaming, isPinnedToBottom { jump(proxy, animated: !reduceMotion) }
         }
       }
+      // Keyboard appearance (or any viewport-height shrink) eats vertical space; if the user was
+      // pinned to the bottom, re-pin so the latest rows stay visible instead of being covered.
+      .onChange(of: geo.size.height) { oldHeight, newHeight in
+        if newHeight < oldHeight - 0.5, isPinnedToBottom {
+          jump(proxy, animated: false)
+        }
+      }
         if !isPinnedToBottom {
-          ScrollToBottomButton { jump(proxy, animated: false) }
+          ScrollToBottomButton { debugTapCount += 1; jump(proxy, animated: false) }
             .padding(.trailing, 16)
             .padding(.bottom, 12)
             .transition(.scale.combined(with: .opacity))
         }
         }
         .animation(.spring(duration: 0.25), value: isPinnedToBottom)
+        // TEMPORARY diagnostic label (top-leading). Tapping the LABEL also increments + jumps, so:
+        //  • tap the round button → does "taps" go up? (does the button's own tap fire?)
+        //  • tap this label → does "taps" go up AND scroll? (does a tap-triggered jump work at all?)
+        .overlay(alignment: .topLeading) {
+          Text("taps: \(debugTapCount)")
+            .font(.caption2.monospacedDigit())
+            .padding(6)
+            .background(.red.opacity(0.7), in: .rect(cornerRadius: 6))
+            .foregroundStyle(.white)
+            .padding(8)
+            .onTapGesture { debugTapCount += 1; jump(proxy, animated: false) }
+        }
       }
     }
   }
