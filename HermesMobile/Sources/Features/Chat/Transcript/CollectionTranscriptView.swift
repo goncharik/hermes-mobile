@@ -4,6 +4,25 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 
+/// A `UICollectionView` that reports when its viewport *height* shrinks — e.g. the keyboard
+/// appears and SwiftUI shrinks our frame to make room. The coordinator uses this to re-pin to
+/// the bottom so a user parked at the latest message stays there when the keyboard eats vertical
+/// space (instead of the keyboard covering the last rows without scrolling). Generic over rotation
+/// / split-view too; only a height *decrease* fires.
+final class TranscriptCollectionView: UICollectionView {
+  var onViewportHeightShrink: (() -> Void)?
+  private var lastViewportHeight: CGFloat = 0
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let height = bounds.height
+    if height < lastViewportHeight - 0.5 {
+      onViewportHeightShrink?()
+    }
+    lastViewportHeight = height
+  }
+}
+
 /// Renderer A: a `UICollectionView`-backed transcript engine, drop-in interchangeable with
 /// `SwiftUITranscriptView`. **Same initializer shape** so `ChatView` can swap between the two
 /// behind a single call site (Task 8 wires the toggle).
@@ -56,11 +75,14 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
 
   func makeUIView(context: Context) -> UICollectionView {
     let layout = Self.makeLayout()
-    let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+    let collectionView = TranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
     collectionView.backgroundColor = .clear
     collectionView.keyboardDismissMode = .interactive
     collectionView.alwaysBounceVertical = true
     collectionView.delegate = context.coordinator
+    collectionView.onViewportHeightShrink = { [weak coordinator = context.coordinator] in
+      coordinator?.viewportDidShrink()
+    }
     context.coordinator.configure(collectionView: collectionView)
     context.coordinator.installJumpButton(in: collectionView)
     return collectionView
@@ -127,6 +149,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var isPinnedToBottom = true
     /// Guards the one-shot open/hydrate jump for this view instance.
     private var didInitialJump = false
+    /// True while the initial (or post-hydrate) open-at-bottom is still *settling*. Self-sizing
+    /// `UIHostingConfiguration` cells finish measuring over several layout passes AFTER the first
+    /// scroll-to-bottom, so `contentSize` keeps growing; without this the list lands short of the
+    /// real bottom (the user has to scroll/tap repeatedly). While set, the `contentSize` KVO keeps
+    /// re-pinning regardless of the pin flag and `updatePinState` won't flip the pin off, so the
+    /// view tracks the true bottom until the layout stabilises.
+    private var needsInitialBottomSettle = false
+    /// Monotonic token so a stale settle-release timer can't end a newer settle.
+    private var settleGeneration = 0
     /// Set by the top-sentinel trigger so the next `apply` (which will be a prepend) preserves
     /// the on-screen anchor instead of following or jumping.
     private var pendingPrependPreservation = false
@@ -191,7 +222,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           let old = change.oldValue,
           let new = change.newValue,
           new.height > old.height,                 // content grew
-          self.isPinnedToBottom,                   // user is at the bottom
+          self.isPinnedToBottom || self.needsInitialBottomSettle, // at bottom, or still settling open
           !self.isAdjustingOffset,                 // not our own programmatic change
           !self.isApplyingSnapshot,                // apply completion owns the re-pin
           !self.pendingPrependPreservation,        // a prepend handles its own offset
@@ -306,9 +337,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
           // Open / hydrate / wholesale-reset: jump to bottom (no animation) — always, regardless
           // of pin state (honours the open/hydrate→bottom contract on a re-hydrate while the
-          // user had scrolled up).
+          // user had scrolled up). Begin a "settle" so self-sizing cell growth keeps re-pinning
+          // until the real bottom is reached.
           self.didInitialJump = true
-          self.scrollToBottom(animated: false)
+          self.isPinnedToBottom = true
+          self.setJumpButtonVisible(false)
+          self.beginInitialBottomSettle()
         } else if preservePrepend {
           self.preserveOffsetAfterPrepend(
             previousOffsetY: capturedOffsetY,
@@ -385,8 +419,39 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
     }
 
+    /// Drive the open-at-bottom across self-sizing cell measurement. The first `scrollToBottom`
+    /// runs against estimated (60pt) cell heights, so `contentSize` keeps growing over the next
+    /// few layout passes; the `contentSize` KVO re-pins on each growth while `needsInitialBottomSettle`
+    /// holds. We force one synchronous layout to get closer immediately, then release the settle
+    /// after a short window once the layout has stabilised.
+    private func beginInitialBottomSettle() {
+      guard let collectionView else { return }
+      needsInitialBottomSettle = true
+      settleGeneration &+= 1
+      let generation = settleGeneration
+      collectionView.layoutIfNeeded()
+      scrollToBottom(animated: false)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+        guard let self, self.settleGeneration == generation else { return }
+        self.needsInitialBottomSettle = false
+        self.updatePinState()
+      }
+    }
+
+    /// The viewport lost height (typically the keyboard appeared and SwiftUI shrank our frame).
+    /// If the user was parked at the bottom, keep them there so the keyboard doesn't cover the
+    /// latest rows without scrolling.
+    func viewportDidShrink() {
+      guard isPinnedToBottom || needsInitialBottomSettle else { return }
+      scrollToBottom(animated: false)
+    }
+
     /// Re-evaluate pin state from live geometry and toggle the jump button on a change.
     private func updatePinState() {
+      // While settling the initial open-at-bottom, intermediate cell-sizing can momentarily look
+      // "not at bottom"; don't let that flip the pin off (it would stop the re-pin and strand the
+      // list short of the real bottom). The settle-release timer re-evaluates once stable.
+      guard !needsInitialBottomSettle else { return }
       guard let collectionView else { return }
       let pinned = TranscriptScrollMath.isPinnedToBottom(
         contentHeight: collectionView.contentSize.height,
@@ -440,6 +505,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
       // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
       isAdjustingOffset = false
+      // A deliberate user scroll also ends any initial open-at-bottom settle — respect their
+      // intent rather than yanking back to the bottom as cells finish sizing.
+      needsInitialBottomSettle = false
     }
   }
 }

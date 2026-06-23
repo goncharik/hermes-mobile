@@ -85,7 +85,13 @@ struct SwiftUITranscriptView<Cell: View>: View {
 
   private var scroll: some View {
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: 10) {
+      // A plain `VStack` (not `LazyVStack`): the transcript is windowed to ~50 rows, so eager
+      // measurement is cheap and — critically — gives `.defaultScrollAnchor(.bottom)` and
+      // `onScrollGeometryChange` a STABLE `contentSize` from first layout. A `LazyVStack`
+      // measures rows only as they appear, so on open the bottom anchor positions against
+      // estimated heights (rows render mis-placed until you scroll) and the pin math reads a
+      // shifting `contentSize` (so the jump button never hides and streaming never follows).
+      VStack(alignment: .leading, spacing: 10) {
         // Top sentinel: a 1pt marker above the first row. Appearing it means the user
         // scrolled to the top of the window → request the previous page. Before the
         // prepend we capture the first visible row's id so we can re-anchor to it.
@@ -103,16 +109,16 @@ struct SwiftUITranscriptView<Cell: View>: View {
     }
     .defaultScrollAnchor(.bottom)
     .scrollPosition($scrollPosition)
-    // Compute pin state from live scroll geometry via the shared math so both renderers agree
-    // on the at-bottom contract (≤ `TranscriptScrollMath.bottomThreshold` ⇒ pinned).
-    .onScrollGeometryChange(for: Bool.self) { geo in
-      TranscriptScrollMath.isPinnedToBottom(
-        contentHeight: geo.contentSize.height,
-        viewportHeight: geo.containerSize.height,
-        bottomInset: geo.contentInsets.bottom,
-        offsetY: geo.contentOffset.y
-      )
-    } action: { _, pinned in
+    // Compute pin state from live scroll geometry. We measure the distance from the bottom edge
+    // using the unambiguous content/container sizes (`maxOffset = contentSize - containerSize`,
+    // the true scrollable range; `contentOffset.y` runs 0…maxOffset) rather than inset-relative
+    // offsets, which are coordinate-system-dependent in SwiftUI. Both renderers still agree on the
+    // shared `TranscriptScrollMath.bottomThreshold` (≤ threshold ⇒ pinned).
+    .onScrollGeometryChange(for: CGFloat.self) { geo in
+      let maxOffset = max(0, geo.contentSize.height - geo.containerSize.height)
+      return maxOffset - geo.contentOffset.y
+    } action: { _, distanceFromBottom in
+      let pinned = distanceFromBottom <= TranscriptScrollMath.bottomThreshold
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
       }
