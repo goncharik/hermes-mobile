@@ -83,6 +83,12 @@ struct SwiftUITranscriptView<Cell: View>: View {
     // overlay lives inside the reader so the button can use the same proxy.
     ScrollViewReader { proxy in
       GeometryReader { geo in
+        // The jump button is a ZStack SIBLING of the ScrollView, NOT an `.overlay` on it: an
+        // overlay-on-ScrollView `Button` does not reliably receive taps — that is why the button did
+        // nothing while the streaming-follow (same `jump`, but triggered by `.onChange` state)
+        // worked. A sibling mirrors the UICollectionView engine, whose hosted button is also a
+        // sibling subview and is tappable.
+        ZStack(alignment: .bottomTrailing) {
         ScrollView {
           // A plain `VStack` (not `LazyVStack`): the transcript is windowed to ~50 rows, so eager
           // measurement is cheap and keeps heights known up front (a `LazyVStack` measures rows
@@ -148,15 +154,14 @@ struct SwiftUITranscriptView<Cell: View>: View {
           if turnState == .streaming, isPinnedToBottom { jump(proxy, animated: !reduceMotion) }
         }
       }
-      .overlay(alignment: .bottomTrailing) {
         if !isPinnedToBottom {
-          ScrollToBottomButton { jump(proxy, animated: !reduceMotion) }
+          ScrollToBottomButton { jump(proxy, animated: false) }
             .padding(.trailing, 16)
             .padding(.bottom, 12)
             .transition(.scale.combined(with: .opacity))
         }
-      }
-      .animation(.spring(duration: 0.25), value: isPinnedToBottom)
+        }
+        .animation(.spring(duration: 0.25), value: isPinnedToBottom)
       }
     }
   }
