@@ -266,15 +266,25 @@ Dependencies identified:
 
 ### Task 7: Verify acceptance criteria
 
-- [ ] #17: a foreground after backgrounding a new session no longer fails the next
-      `prompt.submit`/attach with `session not found` (covered by Task 2 tests; spot-check
-      manually per Post-Completion).
-- [ ] #26: backgrounding mid-thinking and returning preserves the thinking block + streamed
-      tool calls (no restart) — covered by Task 3 tests.
-- [ ] #27: headers/blockquotes/tables render; agent responses are fully copyable; only user
-      messages have bubbles.
-- [ ] Run the full suite: `script -q /dev/null swift test --package-path HermesKit` and
-      `make snapshot`.
+- [x] #17: a foreground after backgrounding a new session no longer fails the next
+      `prompt.submit`/attach with `session not found` (verified via `SelfHealTests.swift`:
+      `promptSubmitSelfHealsOnSessionNotFoundThenSucceeds`, the retry-failure and
+      re-resume-failure banner cases, both attach-path cases, and
+      `foregroundResumeSessionNotFoundRecreatesSession`; manual TestFlight spot-check of the
+      live background→foreground repro tracked in Post-Completion — not automatable in sandbox).
+- [x] #26: backgrounding mid-thinking and returning preserves the thinking block + streamed
+      tool calls (no restart) — verified via `HydrateTests.swift`:
+      `hydrateRunningPreservesLiveThinkingAndToolRows` (running==true preserves thinking + tool
+      rows, thinking last), `hydrateNotRunningWipesLiveThinkingAndToolRows` (running==false
+      wholesale replace), and `repeatedHydrateOfRunningTurnKeepsStableInflightIDs`.
+- [x] #27: headers/blockquotes/tables render (`MarkdownSegmentTests` — headers each level,
+      trailing-hash strip, 7-hashes-not-header, inline markdown in headers, multi-line/lazy
+      blockquotes, tables with/without separator + alignment + surrounding prose); agent
+      responses are fully copyable (`ChatRowCopyTests` for message/streaming/tool/status +
+      `.textSelection(.enabled)` on the assistant Markdown in `MarkdownText.swift`); only user
+      messages have bubbles (bubble-less snapshots re-recorded in Task 6).
+- [x] Run the full suite: `script -q /dev/null swift test --package-path HermesKit` (593 tests
+      pass, 45 suites) and `make snapshot` (71 tests pass — TEST SUCCEEDED).
 
 ### Task 8: [Final] Update documentation
 
