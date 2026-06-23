@@ -75,46 +75,51 @@ struct SwiftUITranscriptView<Cell: View>: View {
   }
 
   var body: some View {
-    // A `ScrollViewReader` drives imperative scrolls via `proxy.scrollTo(id:)`, which — unlike the
-    // `ScrollPosition` binding — does NOT conflict with `.defaultScrollAnchor(.bottom)` (the two
-    // together left the jump button and streaming-follow doing nothing). The overlay lives inside
-    // the reader so the button can use the same proxy.
+    // A `ScrollViewReader` drives every scroll via `proxy.scrollTo(id:)`. We deliberately do NOT
+    // use `.defaultScrollAnchor(.bottom)`: it silently neutralises `proxy.scrollTo`, so the jump
+    // button and the streaming-follow did nothing. Instead the content is bottom-aligned with a
+    // `minHeight` frame (so a SHORT transcript still rests at the bottom — the role
+    // `defaultScrollAnchor` used to play) and we scroll imperatively for open/hydrate/follow. The
+    // overlay lives inside the reader so the button can use the same proxy.
     ScrollViewReader { proxy in
-      ScrollView {
-        // A plain `VStack` (not `LazyVStack`): the transcript is windowed to ~50 rows, so eager
-        // measurement is cheap and keeps `.defaultScrollAnchor(.bottom)` honest from first layout
-        // (a `LazyVStack` measures rows only as they appear, mis-placing them on open).
-        VStack(alignment: .leading, spacing: 10) {
-          // Top sentinel: appearing it means the user scrolled to the top of the window → request
-          // the previous page (we capture the first row id first, to re-anchor after the prepend).
-          Color.clear.frame(height: 1)
-            .onAppear { maybeLoadOlder() }
-          ForEach(rows) { row in
-            cell(row)
-              .id(row.id)
-          }
-          // Bottom anchor: the imperative scroll target AND the pin detector. When this 1pt row is
-          // visible in the viewport the user is at the bottom (pinned); when it scrolls off, it's
-          // not. `onScrollVisibilityChange` answers "at the bottom?" directly — far more robust
-          // than offset math across SwiftUI's coordinate edge cases (short content, insets).
-          Color.clear.frame(height: 1)
-            .id(transcriptBottomAnchorID)
-            .onScrollVisibilityChange(threshold: 0.01) { visible in
-              if visible != isPinnedToBottom { isPinnedToBottom = visible }
+      GeometryReader { geo in
+        ScrollView {
+          // A plain `VStack` (not `LazyVStack`): the transcript is windowed to ~50 rows, so eager
+          // measurement is cheap and keeps heights known up front (a `LazyVStack` measures rows
+          // only as they appear, mis-placing them on open and making `scrollTo` unreliable).
+          VStack(alignment: .leading, spacing: 10) {
+            // Top sentinel: appearing it means the user scrolled to the top of the window → request
+            // the previous page (we capture the first row id first, to re-anchor after the prepend).
+            Color.clear.frame(height: 1)
+              .onAppear { maybeLoadOlder() }
+            ForEach(rows) { row in
+              cell(row)
+                .id(row.id)
             }
+            // Bottom anchor: the imperative scroll target AND the pin detector. When this 1pt row is
+            // visible in the viewport the user is at the bottom (pinned); when it scrolls off, it's
+            // not. `onScrollVisibilityChange` answers "at the bottom?" directly — far more robust
+            // than offset math across SwiftUI's coordinate edge cases (short content, insets).
+            Color.clear.frame(height: 1)
+              .id(transcriptBottomAnchorID)
+              .onScrollVisibilityChange(threshold: 0.01) { visible in
+                if visible != isPinnedToBottom { isPinnedToBottom = visible }
+              }
+          }
+          .padding()
+          // Fill at least the viewport, bottom-aligned, so a short transcript sticks to the bottom
+          // (replacing `.defaultScrollAnchor(.bottom)` without breaking `proxy.scrollTo`).
+          .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .bottom)
         }
-        .padding()
-      }
-      .defaultScrollAnchor(.bottom)
-      .onAppear {
-        // Open/hydrate: jump to the bottom. `.defaultScrollAnchor` covers first layout; this
-        // reinforces it after async row population.
-        previousRowIDs = rows.map(\.id)
-        guard !didInitialJump else { return }
-        didInitialJump = true
-        jump(proxy, animated: false)
-      }
-      .onChange(of: rows) { _, newRows in
+        .onAppear {
+          // Open/hydrate: jump to the bottom. Deferred to after first layout so the eager VStack
+          // heights are resolved and the imperative scroll actually lands.
+          previousRowIDs = rows.map(\.id)
+          guard !didInitialJump else { return }
+          didInitialJump = true
+          DispatchQueue.main.async { jump(proxy, animated: false) }
+        }
+        .onChange(of: rows) { _, newRows in
         let newIDs = newRows.map(\.id)
         let diff = TranscriptDiffKind.classify(old: previousRowIDs, new: newIDs)
         previousRowIDs = newIDs
@@ -152,6 +157,7 @@ struct SwiftUITranscriptView<Cell: View>: View {
         }
       }
       .animation(.spring(duration: 0.25), value: isPinnedToBottom)
+      }
     }
   }
 
