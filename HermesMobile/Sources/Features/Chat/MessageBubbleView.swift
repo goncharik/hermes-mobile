@@ -19,27 +19,28 @@ struct MessageBubbleView: View {
       VStack(alignment: role == .user ? .trailing : .leading, spacing: 4) {
         if !attachmentImages.isEmpty { imageThumbnails }
         if !text.isEmpty {
-          Group {
-            if role == .assistant {
-              MarkdownText(
-                text: text,
-                copiedToken: copiedToken,
-                tokenPrefix: tokenPrefix,
-                onCopyCode: onCopyCode
-              )
-            } else {
-              Text(text).textSelection(.enabled)
-            }
+          if role == .assistant {
+            // Assistant text renders as bubble-less, leading-aligned, full-width plain
+            // content (Claude-app style) — only user messages keep a bubble.
+            MarkdownText(
+              text: text,
+              copiedToken: copiedToken,
+              tokenPrefix: tokenPrefix,
+              onCopyCode: onCopyCode
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+          } else {
+            Text(text)
+              .textSelection(.enabled)
+              .padding(.horizontal, 12)
+              .padding(.vertical, 8)
+              .background(bubbleColor, in: .rect(cornerRadius: 14))
           }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 8)
-          .background(bubbleColor, in: .rect(cornerRadius: 14))
         }
         if !isComplete {
           ProgressView().controlSize(.mini)
         }
       }
-      if role == .assistant { Spacer(minLength: 32) }
     }
   }
 
@@ -57,7 +58,8 @@ struct MessageBubbleView: View {
     }
   }
 
+  /// The user bubble fill; assistant text is bubble-less so this is only read for `.user`.
   private var bubbleColor: Color {
-    role == .user ? Color.accentColor.opacity(0.18) : Color(uiColor: .secondarySystemBackground)
+    Color.accentColor.opacity(0.18)
   }
 }

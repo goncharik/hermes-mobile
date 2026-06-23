@@ -252,14 +252,17 @@ Dependencies identified:
   bubble background)
 - Modify: `HermesMobileTests/ChatSnapshotTests.swift` + `__Snapshots__`
 
-- [ ] Remove the bubble wrapper for `role == .assistant` in `MessageBubbleView` (plain
+- [x] Remove the bubble wrapper for `role == .assistant` in `MessageBubbleView` (plain
       leading-aligned, full-width text); keep the trailing user bubble.
-- [ ] Remove the `.secondarySystemBackground` bubble from `ToolStatusView`; render tool rows
+- [x] Remove the `.secondarySystemBackground` bubble from `ToolStatusView`; render tool rows
       as bubble-less plain content (keep tap-to-detail affordance and state styling).
-- [ ] Ensure thinking rows render bubble-less and consistent with the new layout.
-- [ ] Re-record affected snapshots (`make snapshot-record`) and review the diffs for the new
-      Claude-app-style layout; then `make snapshot` must pass.
-- [ ] Run reducer tests + snapshot tests — must pass before Task 7.
+- [x] Ensure thinking rows render bubble-less and consistent with the new layout
+      (`ThinkingIndicatorView` already had no bubble background — left as-is, spacing fits).
+- [x] Re-record affected snapshots (`make snapshot-record`) and review the diffs for the new
+      Claude-app-style layout; then `make snapshot` must pass. (Re-recorded on a Mac with the
+      iOS 26.2 simulator; `make snapshot` passes against the new baselines.)
+- [x] Run reducer tests + snapshot tests — must pass before Task 7. (HermesKit `swift test`:
+      593 tests pass; `make snapshot`: TEST SUCCEEDED.)
 
 ### Task 7: Verify acceptance criteria
 

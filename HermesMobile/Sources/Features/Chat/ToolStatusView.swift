@@ -33,9 +33,8 @@ struct ToolStatusView: View {
           Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
         }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 12))
+      .padding(.vertical, 6)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .buttonStyle(.plain)
     .disabled(!hasDetail)
