@@ -269,6 +269,11 @@ public struct ChatFeature {
     case usageResponse(Usage)
     case composerSubmitted
     case promptSubmitFailed(message: String)
+    /// A self-heal re-resume/recreate landed a fresh live session id for an outbound RPC that
+    /// failed with "session not found" (#17). Apply it WITHOUT a wholesale transcript rebuild
+    /// (unlike `activateResult`) so the optimistic user/attachment row stays put while the
+    /// retried RPC replays. Carries the fresh stored id too when the heal learned one.
+    case liveSessionIDRefreshed(liveSessionID: String, storedSessionID: String?)
     case interruptTapped
     case respondToApproval(approve: Bool, all: Bool)
     case respondToClarify(answer: String)
@@ -469,6 +474,16 @@ public struct ChatFeature {
         return applyActivate(response, into: &state)
 
       case let .activateResult(.failure(error)):
+        // A real server "session not found" from the foreground `session.resume` is NOT a
+        // benign socket drop: the stored id the agent had is gone (e.g. it expired/rebuilt).
+        // Don't leave a stale `liveSessionID` standing (the next prompt.submit would fail too) —
+        // recreate a fresh session so the chat can keep sending (#17). Keep the cached paint.
+        if error.isSessionNotFound {
+          state.status = .reconnecting
+          state.liveSessionID = nil
+          state.hasRequestedSession = true // createSession is the in-flight request
+          return createSession(profile: state.scopedProfile)
+        }
         // Offline / connection error: keep the cached instant-paint on screen (never blank
         // it) and show a subtle reconnecting status. The cached rows stay until a successful
         // resume replaces them wholesale. A plain `.disconnected` (the socket dropped — e.g.
@@ -522,11 +537,17 @@ public struct ChatFeature {
           for index in state.attachments.indices { state.attachments[index].uploadState = .uploading }
           // Anchor the turn start so a hydrate while it runs resumes the elapsed timer.
           let anchor = setTurnAnchor(state)
+          let stored = state.storedSessionID
+          let profile = state.scopedProfile
           return .merge(anchor, .run { [gateway, uuid] send in
-            do {
+            // The uploads + submit target the live id, which can be stale after a
+            // background→foreground; self-heal the whole upload→submit sequence once on a
+            // "session not found" by re-resuming for a fresh id and replaying (#17). The
+            // uploads are idempotent (the agent re-stages the bytes against the fresh session).
+            func runUploadAndSubmit(_ targetID: String) async throws {
               var refs: [String] = []
               for attachment in attachments {
-                if let ref = try await uploadAttachment(attachment, sessionID: sessionID, gateway: gateway) {
+                if let ref = try await uploadAttachment(attachment, sessionID: targetID, gateway: gateway) {
                   refs.append(ref)
                 }
               }
@@ -534,8 +555,19 @@ public struct ChatFeature {
               // image/pdf are picked up from session state by prompt.submit.
               let body = (refs + (text.isEmpty ? [] : [text])).joined(separator: "\n")
               _ = try await gateway.send("prompt.submit", .object([
-                "session_id": .string(sessionID), "text": .string(body),
+                "session_id": .string(targetID), "text": .string(body),
               ]))
+            }
+            do {
+              do {
+                try await runUploadAndSubmit(sessionID)
+              } catch let error as GatewayError where error.isSessionNotFound {
+                // Stale live id: re-resume/recreate for a fresh one, apply it, replay once.
+                let healedID = try await healLiveSessionID(
+                  storedSessionID: stored, profile: profile, gateway: gateway, send: send
+                )
+                try await runUploadAndSubmit(healedID)
+              }
               // Echo images as thumbnails in the bubble; non-image files (no thumbnail)
               // fall back to their names when there's no typed text.
               let images = attachments.filter { $0.kind == .image }.map(\.data)
@@ -565,16 +597,19 @@ public struct ChatFeature {
         let anchor = setTurnAnchor(state)
         // prompt.submit acks fast (`{status:"streaming"}`); the turn streams via events,
         // so success does nothing here — only a thrown error (timeout / server / drop)
-        // surfaces. Don't swallow it (Issue #6: a stuck server left the spinner hung).
+        // surfaces. Don't swallow it (Issue #6: a stuck server left the spinner hung). A stale
+        // live id after background→foreground answers "session not found" — self-heal once by
+        // re-resuming for a fresh id and replaying the submit (#17).
+        let stored = state.storedSessionID
+        let profile = state.scopedProfile
         return .merge(anchor, .run { [gateway] send in
-          do {
+          await submitPrompt(
+            text: text, sessionID: sessionID, storedSessionID: stored, profile: profile,
+            gateway: gateway, send: send
+          ) { healedID in
             _ = try await gateway.send("prompt.submit", .object([
-              "session_id": .string(sessionID), "text": .string(text),
+              "session_id": .string(healedID), "text": .string(text),
             ]))
-          } catch let error as GatewayError {
-            await send(.promptSubmitFailed(message: error.message))
-          } catch {
-            await send(.promptSubmitFailed(message: GatewayError.disconnected.message))
           }
         })
 
@@ -587,6 +622,15 @@ public struct ChatFeature {
         // never produce a snapshot row (those aren't counted by the LRU sweep, which only
         // evicts `sessions` rows).
         return clearTurnAnchor(state)
+
+      case let .liveSessionIDRefreshed(liveSessionID, storedSessionID):
+        // Self-heal landed a fresh runtime id (#17). Swap it in so subsequent RPCs target the
+        // valid session; do NOT touch the transcript (the retried RPC's events repaint it, and a
+        // wholesale replace here would wipe the optimistic user/attachment row mid-retry).
+        state.liveSessionID = liveSessionID
+        state.storedSessionID = storedSessionID ?? state.storedSessionID
+        state.status = .ready
+        return .none
 
       case .interruptTapped:
         guard let sessionID = state.liveSessionID else { return .none }
@@ -936,12 +980,25 @@ public struct ChatFeature {
         state.title = trimmed
         state.renameDraft = nil
         state.errorBanner = nil
+        let stored = state.storedSessionID
+        let profile = state.scopedProfile
         return .run { [gateway] send in
-          do {
+          func rename(_ targetID: String) async throws {
             _ = try await gateway.send("session.title", .object([
-              "session_id": .string(sessionID),
+              "session_id": .string(targetID),
               "title": .string(trimmed),
             ]))
+          }
+          do {
+            do {
+              try await rename(sessionID)
+            } catch let error as GatewayError where error.isSessionNotFound {
+              // Stale live id after foreground: self-heal once, then replay the rename (#17).
+              let healedID = try await healLiveSessionID(
+                storedSessionID: stored, profile: profile, gateway: gateway, send: send
+              )
+              try await rename(healedID)
+            }
           } catch {
             await send(.renameFailed(previousTitle: previousTitle))
           }
@@ -1583,6 +1640,74 @@ public struct ChatFeature {
 
 private func backoffDelay(attempt: Int) -> Duration {
   .seconds(min(30.0, pow(2.0, Double(max(0, attempt - 1)))))
+}
+
+/// Self-heal an outbound RPC that failed with "session not found" (#17): obtain a FRESH live
+/// session id by re-resuming the stored session (`session.resume`), or — when no stored id is
+/// known (a brand-new session whose `session.create` returned no `stored_session_id`) —
+/// recreating one (`session.create`). Applies the fresh id to state via
+/// `.liveSessionIDRefreshed` (no transcript rebuild, so the optimistic row survives the retry)
+/// and returns it so the caller can replay the original RPC ONCE. Throws if the heal itself
+/// fails (the caller surfaces the banner — no second retry, no recursion). The default/nil
+/// profile is omitted so single-profile/token-mode requests stay byte-identical.
+private func healLiveSessionID(
+  storedSessionID: String?,
+  profile: String?,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>
+) async throws -> String {
+  if let storedSessionID {
+    var fields: [String: JSONValue] = ["session_id": .string(storedSessionID)]
+    if let profile { fields["profile"] = .string(profile) }
+    let result = try await gateway.send("session.resume", .object(fields))
+    guard let response = result.decoded(ActivateResponse.self), !response.sessionID.isEmpty else {
+      throw GatewayError.server("Malformed session.resume result")
+    }
+    await send(.liveSessionIDRefreshed(
+      liveSessionID: response.sessionID, storedSessionID: response.storedSessionID
+    ))
+    return response.sessionID
+  }
+  // No stored id to resume against — recreate a fresh session so the heal still has a target.
+  var fields: [String: JSONValue] = [:]
+  if let profile { fields["profile"] = .string(profile) }
+  let result = try await gateway.send("session.create", .object(fields))
+  guard let handle = result.decoded(SessionHandle.self) else {
+    throw GatewayError.server("Malformed session.create result")
+  }
+  await send(.liveSessionIDRefreshed(
+    liveSessionID: handle.sessionID, storedSessionID: handle.storedSessionID
+  ))
+  return handle.sessionID
+}
+
+/// Run a `prompt.submit` with transparent self-heal on "session not found" (#17): run
+/// `submit` against the current live id; if it throws `isSessionNotFound`, re-resume/recreate
+/// for a fresh id and replay `submit(healedID)` ONCE; on any other failure (or a failed
+/// heal/retry) surface `.promptSubmitFailed`. A single retry — never recurses.
+private func submitPrompt(
+  text: String,
+  sessionID: String,
+  storedSessionID: String?,
+  profile: String?,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>,
+  submit: @escaping (_ targetID: String) async throws -> Void
+) async {
+  do {
+    do {
+      try await submit(sessionID)
+    } catch let error as GatewayError where error.isSessionNotFound {
+      let healedID = try await healLiveSessionID(
+        storedSessionID: storedSessionID, profile: profile, gateway: gateway, send: send
+      )
+      try await submit(healedID)
+    }
+  } catch let error as GatewayError {
+    await send(.promptSubmitFailed(message: error.message))
+  } catch {
+    await send(.promptSubmitFailed(message: GatewayError.disconnected.message))
+  }
 }
 
 /// Upload one staged attachment to the session via the method its kind dictates (#8).

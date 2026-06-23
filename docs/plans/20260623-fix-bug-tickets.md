@@ -166,24 +166,24 @@ Dependencies identified:
 - Modify: `HermesKit/Tests/HermesKitTests/HydrateTests.swift` (or
   `ChatInteractionTests.swift`)
 
-- [ ] On `prompt.submit` failure where `error.isSessionNotFound`, transparently re-resume:
+- [x] On `prompt.submit` failure where `error.isSessionNotFound`, transparently re-resume:
       `session.resume(storedSessionID)` → apply the fresh `liveSessionID` → replay
       `prompt.submit` **once**; surface the banner only if re-resume or the retry fails.
       Guard against retry loops (single retry).
-- [ ] Apply the same self-heal to the attach-upload path and `session.title` rename
+- [x] Apply the same self-heal to the attach-upload path and `session.title` rename
       (they also use `liveSessionID`).
-- [ ] Stop silently swallowing a real server `session not found` from the foreground
+- [x] Stop silently swallowing a real server `session not found` from the foreground
       `session.resume`/`activateResult(.failure)` path: distinguish it from a benign
       `.disconnected` drop and trigger a re-resume/recreate rather than leaving a stale
       `liveSessionID`.
-- [ ] If investigation shows `storedSessionID` is `nil` for fresh sessions, ensure it is
+- [x] If investigation shows `storedSessionID` is `nil` for fresh sessions, ensure it is
       captured from `session.create`'s handle (and/or fall back to `session.create` when no
       stored id exists), so re-resume always has a target.
-- [ ] Write reducer tests: foreground `prompt.submit` returns `session not found` →
+- [x] Write reducer tests: foreground `prompt.submit` returns `session not found` →
       reducer re-resumes (assert `session.resume` effect) → applies new live id → retries
       submit → succeeds with no error banner. Add the failure-of-retry case (banner shown).
-- [ ] Write a test for the attach path self-heal (success + retry-failure).
-- [ ] Run tests — must pass before Task 3.
+- [x] Write a test for the attach path self-heal (success + retry-failure).
+- [x] Run tests — must pass before Task 3.
 
 ### Task 3: Preserve in-flight thinking + tool rows across foreground (#26 fix)
 
