@@ -191,21 +191,21 @@ Dependencies identified:
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift` (`applyActivate`)
 - Modify: `HermesKit/Tests/HermesKitTests/HydrateTests.swift`
 
-- [ ] In `applyActivate`, when `running == true`, capture the existing in-flight live rows
+- [x] In `applyActivate`, when `running == true`, capture the existing in-flight live rows
       (the thinking row via `thinkingRowID` and tool rows via `toolRowIDs`, in transcript
       order) **before** the wholesale transcript replace.
-- [ ] After rebuilding from `messages` and seeding the inflight user/assistant rows,
+- [x] After rebuilding from `messages` and seeding the inflight user/assistant rows,
       re-append the preserved thinking + tool rows and restore
       `thinkingRowID`/`toolRowIDs`/`streamingRowID` so subsequent deltas reconcile in place;
       preserve the "thinking row last" contract.
-- [ ] Confirm a **completed** turn (`running == false`) still replaces wholesale (server
+- [x] Confirm a **completed** turn (`running == false`) still replaces wholesale (server
       wins) — no preserved live rows leak into a finished transcript.
-- [ ] Reconcile the elapsed timer continuity with the preserved thinking row (existing
+- [x] Reconcile the elapsed timer continuity with the preserved thinking row (existing
       `reconcileTurnTimer` anchor behavior must still hold).
-- [ ] Write reducer tests: hydrate with `running == true` while client has a live thinking
+- [x] Write reducer tests: hydrate with `running == true` while client has a live thinking
       row + N tool rows → assert they survive (ids/content preserved, thinking last);
       hydrate with `running == false` → assert wholesale replace (no leftover live rows).
-- [ ] Run tests — must pass before Task 4.
+- [x] Run tests — must pass before Task 4.
 
 ### Task 4: Markdown block support — headers, blockquotes, tables (#27 part a)
 

@@ -470,6 +470,108 @@ struct HydrateTests {
     await store.send(.onDisappear)
   }
 
+  // MARK: #26 — preserve in-flight thinking + tool rows across foreground hydrate
+
+  @Test func hydrateRunningPreservesLiveThinkingAndToolRows() async {
+    // Bug #26: the agent is mid-turn (thinking + streaming tool calls) when the app is
+    // backgrounded. On foreground, the hydrate reports `running == true` but its payload carries
+    // no reasoning/tools (SessionInflight has none). The client's own live thinking row (with
+    // accumulated reasoning) and tool rows must SURVIVE the wholesale transcript replace — same
+    // ids + content — and their tracking maps must still point at them so the next
+    // `thinking.delta`/`tool.complete` reconciles in place. Thinking row stays last.
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    let clock = TestClock()
+    let nowDate = Date(timeIntervalSince1970: 1_000)
+    snapshotClient.setTurnAnchor("stored123", nowDate.addingTimeInterval(-7))
+
+    let tool1ID = uuid(101)
+    let tool2ID = uuid(102)
+    let thinkingID = uuid(103)
+    let thinkingRow = ChatRow(
+      id: thinkingID,
+      kind: .thinking(reasoning: "weighing options", status: "compacting", elapsedSeconds: 4, isComplete: false)
+    )
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = [
+      ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
+      ChatRow(id: tool2ID, kind: .tool(name: "read", title: "Read", state: .running, detail: nil, durationS: nil)),
+      thinkingRow,
+    ]
+    initial.toolRowIDs = ["t1": tool1ID, "t2": tool2ID]
+    initial.thinkingRowID = thinkingID
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(nowDate)
+      $0.chatSnapshot = snapshotClient
+      $0.hermesGateway.send = { @Sendable _, _ in Self.activateResponse(running: true) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    // The two running tool rows survived (same ids + content, original order), the thinking row
+    // survived with its accumulated reasoning intact and renders LAST.
+    #expect(store.state.transcript.count == 3)
+    #expect(store.state.transcript[0].id == tool1ID)
+    #expect(store.state.transcript[1].id == tool2ID)
+    #expect(store.state.transcript.last?.id == thinkingID)
+    #expect(store.state.transcript[id: thinkingID]?.kind
+      == .thinking(reasoning: "weighing options", status: "compacting", elapsedSeconds: 4, isComplete: false))
+    // The tracking maps still point at the preserved rows so later events reconcile in place.
+    #expect(store.state.thinkingRowID == thinkingID)
+    #expect(store.state.toolRowIDs == ["t1": tool1ID, "t2": tool2ID])
+    // Timer continuity: the preserved row's elapsed/reasoning did NOT reset; the tick resumes at 7.
+    #expect(store.state.thinkingSeconds == 7)
+
+    await store.send(.onDisappear)
+  }
+
+  @Test func hydrateNotRunningWipesLiveThinkingAndToolRows() async {
+    // A COMPLETED turn (`running == false`) keeps the strict server-wins behavior: the prior
+    // live thinking/tool rows are GONE and their tracking ids reset — no live rows leak into a
+    // finished transcript.
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    let clock = TestClock()
+
+    let tool1ID = uuid(201)
+    let thinkingID = uuid(202)
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = [
+      ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
+      ChatRow(id: thinkingID, kind: .thinking(reasoning: "still thinking", status: nil, elapsedSeconds: 2, isComplete: false)),
+    ]
+    initial.toolRowIDs = ["t1": tool1ID]
+    initial.thinkingRowID = thinkingID
+    initial.streamingRowID = uuid(203)
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = snapshotClient
+      $0.hermesGateway.send = { @Sendable _, _ in Self.activateResponse(running: false) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    // Wholesale replace: empty server history → empty transcript; live rows discarded.
+    #expect(store.state.transcript.isEmpty)
+    #expect(store.state.thinkingRowID == nil)
+    #expect(store.state.toolRowIDs.isEmpty)
+    #expect(store.state.streamingRowID == nil)
+
+    await store.send(.onDisappear)
+  }
+
   @Test func submitWritesAnchorAndCompleteClearsIt() async {
     // The anchor is persisted on prompt.submit (so a hydrate mid-turn resumes the timer) and
     // dropped on message.complete (so a stopped turn leaves no stale anchor).

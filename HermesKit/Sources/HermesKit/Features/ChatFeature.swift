@@ -1401,15 +1401,39 @@ public struct ChatFeature {
       state.usage = target.usage
     }
 
+    // Working indicator from the authoritative `running` flag.
+    let running = response.running ?? false
+    state.isSending = running
+
+    // #26: when the hydrate reports a STILL-RUNNING turn, the agent is mid-turn and the
+    // client's own live thinking + tool rows are not in the server payload (`SessionInflight`
+    // carries only user/assistant/streaming — no reasoning, no tools). Capture those live rows
+    // (in transcript order, tools then thinking) BEFORE the wholesale replace so they survive
+    // the round-trip; we re-append them after the authoritative history is rebuilt and restore
+    // their tracking ids so subsequent `tool.*`/`message.delta` events reconcile in place.
+    // A COMPLETED turn (`running == false`) keeps the strict server-wins behavior: no preserved
+    // live rows leak into a finished transcript.
+    var preservedToolRows: [(toolKey: String, row: ChatRow)] = []
+    var preservedThinkingRow: ChatRow?
+    if running {
+      // Tool rows in transcript order (so re-append preserves the original ordering).
+      let toolIDsInOrder = state.transcript.compactMap { row -> (String, ChatRow.ID)? in
+        guard let entry = state.toolRowIDs.first(where: { $0.value == row.id }) else { return nil }
+        return (entry.key, row.id)
+      }
+      preservedToolRows = toolIDsInOrder.compactMap { key, id in
+        state.transcript[id: id].map { (key, $0) }
+      }
+      if let thinkingID = state.thinkingRowID {
+        preservedThinkingRow = state.transcript[id: thinkingID]
+      }
+    }
+
     // Rebuild the transcript wholesale from the authoritative history (server wins).
     state.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript(response.messages))
     state.streamingRowID = nil
     state.thinkingRowID = nil
     state.toolRowIDs = [:]
-
-    // Working indicator from the authoritative `running` flag.
-    let running = response.running ?? false
-    state.isSending = running
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
     // Use DETERMINISTIC, position-derived ids (same convention as `reconstructTranscript`) so
@@ -1442,12 +1466,24 @@ public struct ChatFeature {
       }
     }
 
+    // #26: re-append the preserved live tool rows (in their original transcript order) after the
+    // rebuilt history + seeded inflight rows, restoring `toolRowIDs` so a later `tool.complete`
+    // for the same tool key reconciles the same row in place. Keep the ORIGINAL row ids (the
+    // running tool calls already exist client-side under those ids) — no UUID churn, no diff
+    // delete/insert. The thinking row is handled by `reconcileTurnTimer` so it can stay last.
+    for (toolKey, row) in preservedToolRows where state.transcript[id: row.id] == nil {
+      state.transcript.append(row)
+      state.toolRowIDs[toolKey] = row.id
+    }
+
     // Reconcile the live "Thinking" elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;
     // the anchor only supplies the *start instant*. A `!running` + stale anchor must DISCARD
     // the anchor (no phantom timer); a `running` turn resumes the tick seeded at the elapsed
     // offset rather than restarting at 0.
-    let timerEffect = reconcileTurnTimer(running: running, into: &state)
+    let timerEffect = reconcileTurnTimer(
+      running: running, preservedThinkingRow: preservedThinkingRow, into: &state
+    )
 
     // Server wins: a wholesale transcript replace resets the client-side window to the bottom
     // (newest) so the chat opens/re-hydrates parked at the latest rows, discarding any prior
@@ -1481,7 +1517,9 @@ public struct ChatFeature {
   ///     phantom timer; the reconstructed (complete) reasoning row stands as a static
   ///     `Thought · <elapsed>` disclosure;
   ///   - `.none` → no in-flight turn; nothing to do.
-  private func reconcileTurnTimer(running: Bool, into state: inout State) -> Effect<Action> {
+  private func reconcileTurnTimer(
+    running: Bool, preservedThinkingRow: ChatRow? = nil, into state: inout State
+  ) -> Effect<Action> {
     // Read the anchor under the same key the submit path wrote it (`storedSessionID ??
     // liveSessionID`), NOT `response.sessionID` (the live id) — they differ for a resumed
     // session keyed by its stored id.
@@ -1490,19 +1528,30 @@ public struct ChatFeature {
     case let .running(elapsed):
       let seconds = Int(elapsed)
       state.thinkingSeconds = seconds
-      // Recreate the live thinking row (the in-flight one was dropped by the wholesale
-      // transcript rebuild). Created eagerly with the seeded elapsed so it renders as a live
-      // shimmering "Thinking <n>s" while the tick continues. Deterministic, position-derived id
-      // (same convention as `reconstructTranscript` / the seeded in-flight rows) so repeated
-      // hydrates of the same running turn don't churn its identity.
-      let thinkingKind = ChatRow.Kind.thinking(
-        reasoning: "", status: nil, elapsedSeconds: seconds, isComplete: false
-      )
-      let thinkingID = ChatRow.deterministicID(
-        sequenceIndex: state.transcript.count, role: thinkingKind.role,
-        kindDiscriminator: thinkingKind.discriminator
-      )
-      state.transcript.append(ChatRow(id: thinkingID, kind: thinkingKind))
+      // #26: if a live thinking row was preserved from before the wholesale replace, re-use it
+      // (same id + accumulated reasoning + latest status) so the thinking block does NOT restart
+      // — its content survives the background→foreground round-trip and the next `thinking.delta`
+      // mutates it in place. Otherwise recreate an empty live thinking row (the in-flight one was
+      // dropped by the wholesale rebuild) with a deterministic, position-derived id so repeated
+      // hydrates of the same running turn don't churn its identity. Either way it renders as a
+      // live shimmering "Thinking <n>s" (the view reads the live `thinkingSeconds`) while the
+      // tick continues.
+      let thinkingID: ChatRow.ID
+      if let preserved = preservedThinkingRow {
+        thinkingID = preserved.id
+        if state.transcript[id: preserved.id] == nil {
+          state.transcript.append(preserved)
+        }
+      } else {
+        let thinkingKind = ChatRow.Kind.thinking(
+          reasoning: "", status: nil, elapsedSeconds: seconds, isComplete: false
+        )
+        thinkingID = ChatRow.deterministicID(
+          sequenceIndex: state.transcript.count, role: thinkingKind.role,
+          kindDiscriminator: thinkingKind.discriminator
+        )
+        state.transcript.append(ChatRow(id: thinkingID, kind: thinkingKind))
+      }
       state.thinkingRowID = thinkingID
       keepThinkingLast(into: &state)
       // Resume the tick (seeded `thinkingSeconds` continues incrementing from `elapsed`).
