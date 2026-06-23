@@ -24,6 +24,12 @@ struct MarkdownText: View {
         switch segment {
         case let .prose(value):
           prose(value)
+        case let .heading(level, value):
+          heading(level: level, text: value)
+        case let .blockquote(value):
+          blockquote(value)
+        case let .table(headers, rows):
+          tableView(headers: headers, rows: rows)
         case let .code(value, language):
           let token = "\(tokenPrefix)#\(index)"
           CodeBlockView(
@@ -44,6 +50,68 @@ struct MarkdownText: View {
         lineView(line)
       }
     }
+  }
+
+  /// An ATX header: scaled bold text, level 1–6 mapping to decreasing font sizes.
+  private func heading(level: Int, text: String) -> some View {
+    Text(inline(text))
+      .font(Self.headingFont(level: level))
+      .fontWeight(.bold)
+      .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private static func headingFont(level: Int) -> Font {
+    switch level {
+    case 1: return .title
+    case 2: return .title2
+    case 3: return .title3
+    case 4: return .headline
+    case 5: return .subheadline
+    default: return .callout
+    }
+  }
+
+  /// A blockquote: an indented secondary-styled block with a leading vertical bar.
+  private func blockquote(_ value: String) -> some View {
+    let lines = value.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    return HStack(alignment: .top, spacing: 8) {
+      Rectangle()
+        .fill(Color.secondary.opacity(0.4))
+        .frame(width: 3)
+      VStack(alignment: .leading, spacing: 3) {
+        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+          Text(inline(line))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+    .fixedSize(horizontal: false, vertical: true)
+  }
+
+  /// A pipe table rendered as a `Grid`: an emphasized header row, a divider, then body
+  /// rows. Cells are left-aligned, inline Markdown applied, and allowed to wrap.
+  private func tableView(headers: [String], rows: [[String]]) -> some View {
+    let columnCount = max(headers.count, rows.map(\.count).max() ?? 0)
+    return Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
+      GridRow {
+        ForEach(0..<columnCount, id: \.self) { col in
+          Text(inline(col < headers.count ? headers[col] : ""))
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      Divider()
+      ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+        GridRow {
+          ForEach(0..<columnCount, id: \.self) { col in
+            Text(inline(col < row.count ? row[col] : ""))
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   @ViewBuilder

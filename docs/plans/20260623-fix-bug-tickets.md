@@ -214,15 +214,15 @@ Dependencies identified:
 - Modify: `HermesMobile/Sources/Features/Chat/MarkdownText.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/MarkdownSegmentTests.swift`
 
-- [ ] Extend the pure parser to classify **headers** (`#`..`######`), **blockquotes**
+- [x] Extend the pure parser to classify **headers** (`#`..`######`), **blockquotes**
       (`>`), and **tables** (`| … |` with a `---` separator row), with fenced code still
       taking precedence; unterminated/odd markup degrades to prose (lenient, never crashes).
-- [ ] Render the new blocks in `MarkdownText`: headings as scaled bold `Text`; blockquote
+- [x] Render the new blocks in `MarkdownText`: headings as scaled bold `Text`; blockquote
       as an indented bar + secondary-styled lines; table as a `Grid` (header row emphasized),
       inline Markdown still applied within cells/lines.
-- [ ] Write parser tests (success: each block type; edge: heading with trailing `#`,
+- [x] Write parser tests (success: each block type; edge: heading with trailing `#`,
       nested/lazy blockquote, table without separator → prose, mixed prose+table+code).
-- [ ] Run tests — must pass before Task 5.
+- [x] Run tests — must pass before Task 5.
 
 ### Task 5: Full copyability of agent responses (#27 part b)
 
