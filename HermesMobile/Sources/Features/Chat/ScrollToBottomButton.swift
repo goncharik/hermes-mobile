@@ -29,10 +29,10 @@ struct ScrollToBottomButton: View {
 private struct GlassCircle: ViewModifier {
   func body(content: Content) -> some View {
     if #available(iOS 26.0, *) {
-      // Non-interactive glass: the `.interactive()` variant installs its own press-gesture handling
-      // (meant to pair with a `Button`); with our `.onTapGesture` it's unnecessary and could
-      // compete for the touch.
-      content.glassEffect(.regular, in: .circle)
+      // `.interactive()` gives the Liquid Glass press highlight (the glass reacts to the touch on
+      // its own — it doesn't require a `Button`), so it coexists with our `.onTapGesture` which
+      // owns the actual tap action.
+      content.glassEffect(.regular.interactive(), in: .circle)
     } else {
       content
         .background(.regularMaterial, in: Circle())
