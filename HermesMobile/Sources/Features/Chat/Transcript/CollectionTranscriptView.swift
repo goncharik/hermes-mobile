@@ -85,6 +85,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     collectionView.backgroundColor = .clear
     collectionView.keyboardDismissMode = .interactive
     collectionView.alwaysBounceVertical = true
+    // Rows are never "selected" as cells; turning this off stops the cell's tap/long-press
+    // highlight gesture from competing with text selection inside hosted UITextViews.
+    collectionView.allowsSelection = false
     collectionView.delegate = context.coordinator
     collectionView.onViewportHeightShrink = { [weak coordinator = context.coordinator] in
       coordinator?.viewportDidShrink()

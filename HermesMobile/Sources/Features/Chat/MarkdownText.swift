@@ -47,13 +47,12 @@ struct MarkdownText: View {
     .textSelection(.enabled)
   }
 
+  /// A contiguous prose block, rendered as one selectable `UITextView` so a long-press
+  /// drag-selects any range across the whole block (not just a single line). See
+  /// `SelectableText`. List bullets and inline Markdown are baked into the attributed text.
   private func prose(_ value: String) -> some View {
-    let lines = value.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    return VStack(alignment: .leading, spacing: 3) {
-      ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-        lineView(line)
-      }
-    }
+    SelectableText(attributed: ProseAttributedBuilder.make(value))
+      .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   /// An ATX header: scaled bold text, level 1–6 mapping to decreasing font sizes.
@@ -116,22 +115,6 @@ struct MarkdownText: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  @ViewBuilder
-  private func lineView(_ line: String) -> some View {
-    let trimmed = line.trimmingCharacters(in: .whitespaces)
-    if trimmed.isEmpty {
-      // Paragraph break: a small gap, no empty Text (which would collapse).
-      Spacer().frame(height: 2)
-    } else if let bullet = Self.listMarker(trimmed) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        Text(bullet.marker).foregroundStyle(.secondary)
-        Text(inline(bullet.content)).frame(maxWidth: .infinity, alignment: .leading)
-      }
-    } else {
-      Text(inline(trimmed)).frame(maxWidth: .infinity, alignment: .leading)
-    }
   }
 
   /// Inline-only Markdown so bold/code/links render but block layout (which `Text`
