@@ -154,14 +154,23 @@ struct ChatView: View {
 
   @ViewBuilder
   private func transcriptCell(_ row: ChatRow) -> some View {
-    rowView(row)
-      .contextMenu {
-        Button {
-          store.send(.copyRow(id: row.id))
-        } label: {
-          Label("Copy", systemImage: "doc.on.doc")
+    // Only user messages get the long-press "Copy whole message" menu (mirrors their bubble).
+    // Assistant/tool/thinking rows render bubble-less plain text — no context menu, so a
+    // long-press starts native text selection (select any range → system Copy/Share) instead
+    // of grabbing the entire row. The menu's long-press gesture would otherwise pre-empt
+    // `.textSelection`.
+    if row.kind.role == .user {
+      rowView(row)
+        .contextMenu {
+          Button {
+            store.send(.copyRow(id: row.id))
+          } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+          }
         }
-      }
+    } else {
+      rowView(row)
+    }
   }
 
   @ViewBuilder
