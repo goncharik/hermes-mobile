@@ -154,10 +154,10 @@ public extension HermesRESTClient {
       },
       authProviders: { baseURL in
         do {
-          let providers: [AuthProvider] = try await get(
+          let response: AuthProvidersResponse = try await get(
             makeURL(baseURL, "/api/auth/providers"), token: nil, session: session
           )
-          return providers
+          return response.providers
         } catch RESTError.notFound {
           // Older servers don't expose this endpoint — capability falls back to token-only.
           return nil
@@ -459,6 +459,23 @@ func send(
 private struct SessionsResponse: Decodable {
   let sessions: [SessionListDTO]
   let total: Int?
+}
+
+/// `GET /api/auth/providers`. The server wraps the list in an object
+/// (`{"providers":[…]}`); we also tolerate a bare top-level array for safety.
+private struct AuthProvidersResponse: Decodable {
+  let providers: [AuthProvider]
+
+  init(from decoder: Decoder) throws {
+    if let array = try? [AuthProvider](from: decoder) {
+      providers = array
+      return
+    }
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    providers = try c.decodeIfPresent([AuthProvider].self, forKey: .providers) ?? []
+  }
+
+  enum CodingKeys: String, CodingKey { case providers }
 }
 
 // `internal` so sibling clients (e.g. `HermesProfileClient`'s scoped-session list,

@@ -69,8 +69,9 @@ struct HermesRESTClientTests {
   }
 
   @Test func authProvidersDecodesList() async throws {
+    // The real server wraps the list in an object (`{"providers":[…]}`).
     MockURLProtocol.set(json: #"""
-    [{"name":"basic","display_name":"Username & password","supports_password":true},{"name":"google","display_name":"Google","supports_password":false}]
+    {"providers":[{"name":"basic","display_name":"Username & password","supports_password":true},{"name":"google","display_name":"Google","supports_password":false}]}
     """#)
     let providers = try await makeClient().authProviders(baseURL)
     #expect(providers == [
@@ -80,6 +81,17 @@ struct HermesRESTClientTests {
     #expect(MockURLProtocol.lastRequest?.url?.path == "/api/auth/providers")
     // Public probe — no auth header.
     #expect(MockURLProtocol.lastRequest?.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+  }
+
+  @Test func authProvidersDecodesBareArray() async throws {
+    // Tolerate a bare top-level array too (defensive against server variations).
+    MockURLProtocol.set(json: #"""
+    [{"name":"basic","display_name":"Username & password","supports_password":true}]
+    """#)
+    let providers = try await makeClient().authProviders(baseURL)
+    #expect(providers == [
+      AuthProvider(name: "basic", displayName: "Username & password", supportsPassword: true),
+    ])
   }
 
   @Test func authProvidersReturnsNilOnNotFound() async throws {
