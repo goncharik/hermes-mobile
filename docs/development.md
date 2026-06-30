@@ -48,7 +48,8 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
   `SIM_NAME="iPhone 16" make run` or `scripts/run-sim.sh "iPhone 16"`.
 - **Device** (`scripts/run-device.sh`) needs automatic signing —
   `DEVELOPMENT_TEAM=<your 10-char team id> make run-device`. The team is baked in at
-  generate time.
+  generate time. See **Signing & contributor setup** below for running on your own
+  device with your own Apple Developer account.
 - **Tests** (`scripts/test.sh`) wrap `swift test` in a pseudo-TTY so output streams
   live (a bare pipe buffers until exit).
 - **Snapshots** (`scripts/snapshot.sh`) render the SwiftUI views via SnapshotTesting
@@ -67,6 +68,70 @@ SERVER_URL=http://<tailnet-host>:9119 HERMES_TOKEN=<token> swift Probe/main.swif
 
 Expect `✅ streaming loop confirmed`. See [`../Probe/README.md`](../Probe/README.md) for
 details.
+
+## Signing & contributor setup
+
+**No signing assets are committed to this repo.** Certificates, private keys,
+provisioning profiles (`*.p12` / `*.cer` / `*.key` / `*.mobileprovision`) and App Store
+Connect API keys (`*.p8`) are all gitignored and live only on the signer's machine and
+keychain. Every contributor signs with **their own** Apple Developer account — there is
+no shared identity to clone.
+
+### Run on your own device
+
+You only need a free or paid Apple Developer account and your 10-character Team ID
+(Apple Developer portal → Membership, or Xcode → Settings → Accounts).
+
+```sh
+# Sign in once: Xcode → Settings → Accounts → "+" → add your Apple ID.
+# Then build, install, and launch on a connected device with automatic signing:
+DEVELOPMENT_TEAM=<your team id> make run-device
+```
+
+`make run-device` uses **automatic** signing with `-allowProvisioningUpdates`, so Xcode
+creates the development certificate and a matching provisioning profile for your team on
+the fly — nothing to set up by hand. The bundle id (`me.honcharenko.HermesMobile`) is
+fine to build under any team for local/dev runs; only App Store/TestFlight distribution
+needs the registered id. If you hit a bundle-id conflict, change `bundleId` in
+`Project.swift` to something unique to you and re-run `make generate`.
+
+The default server URL can be baked in at generate time (otherwise enter it in the app's
+onboarding screen):
+
+```sh
+HERMES_DEFAULT_SERVER_URL=http://<tailnet-host>:9119 make generate
+```
+
+### Maintainer: distribution signing assets
+
+App Store / TestFlight signing (Apple Distribution cert + App Store profile) is **only**
+needed by maintainers who upload builds, and is managed through the `asc` CLI rather than
+checked in. If the Apple Distribution certificate is missing or expired (they last one
+year), recreate it and the profile:
+
+```sh
+# 1. new private key + CSR (kept out of git — see .gitignore)
+openssl req -new -newkey rsa:2048 -nodes -keyout dist.key -out dist.csr \
+  -subj "/CN=Apple Distribution/O=<your name>/C=US"
+
+# 2. create the cert, then download its content and import key+cert into the keychain
+asc --profile hermes certificates create --certificate-type DISTRIBUTION --csr ./dist.csr
+#   …write the returned certificateContent to dist.cer (DER), then:
+openssl x509 -inform DER -in dist.cer -out dist.pem
+openssl pkcs12 -export -inkey dist.key -in dist.pem -out dist.p12 -passout pass:<pw> \
+  -legacy -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1   # macOS-importable
+security import dist.p12 -k ~/Library/Keychains/login.keychain-db -P <pw> -T /usr/bin/codesign
+
+# 3. new App Store provisioning profile referencing that cert, installed locally
+asc --profile hermes profiles create --name "HermesMobile AppStore" \
+  --profile-type IOS_APP_STORE --bundle <bundle-id asc id> --certificate <cert id>
+asc --profile hermes profiles download --id <profile id> \
+  --output "$HOME/Library/MobileDevice/Provisioning Profiles/<UUID>.mobileprovision"
+```
+
+The `-legacy …` PBE flags on the `.p12` export matter: OpenSSL 3's default MAC algorithm
+fails macOS `security import` with "MAC verification failed". Apple Distribution certs
+are capped at 2 per account.
 
 ## TestFlight distribution
 

@@ -20,6 +20,18 @@ xcuserdata/
 # TestFlight build artifacts (archive / IPA / ExportOptions) — regenerable
 build/
 
+# Signing secrets — NEVER commit. Private keys, certs, profiles, and App Store
+# Connect API keys live only on the signer's machine / keychain (see
+# docs/development.md → "Signing & contributor setup").
+*.p12
+*.p8
+*.key
+*.cer
+*.certSigningRequest
+*.csr
+*.mobileprovision
+*.keychain-db
+
 # M0 probe artifacts — regenerable, and the captured session.info frame contains
 # the local machine's skills/tools inventory + home paths. Keep out of git.
 Probe/fixtures/
