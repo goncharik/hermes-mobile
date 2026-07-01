@@ -96,8 +96,23 @@ import Testing
   // MARK: Interactive requests (synthetic — shapes verified later in M2)
 
   @Test func approvalRequest() throws {
-    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"s","payload":{"request_id":"r1","command":"rm -rf /tmp/x"}}}"#)
-    #expect(f == .event(sessionID: "s", .approvalRequest(ApprovalRequest(requestID: "r1", command: "rm -rf /tmp/x"))))
+    // Real wire shape (hermes-agent tools/approval.py): command/description/pattern_key(s),
+    // and crucially NO request_id — approvals are session-queue-resolved.
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"s","payload":{"command":"rm -rf /tmp/x","description":"Delete /tmp/x","pattern_key":"rm","pattern_keys":["rm"]}}}"#)
+    #expect(f == .event(sessionID: "s", .approvalRequest(ApprovalRequest(
+      command: "rm -rf /tmp/x", detail: "Delete /tmp/x", patternKey: "rm", patternKeys: ["rm"]
+    ))))
+  }
+
+  // Regression (#approval-hang): a payload without `request_id` must still decode to
+  // `.approvalRequest` — previously the required `request_id` made it fall through to
+  // `.unknown`, so the approval card never appeared and the turn hung on "Thinking".
+  @Test func approvalRequestWithoutRequestIDStillDecodes() throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"s","payload":{"command":"rm foo"}}}"#)
+    guard case .event(_, .approvalRequest) = f else {
+      Issue.record("expected .approvalRequest, got \(f)")
+      return
+    }
   }
 
   @Test func clarifyRequestWithChoices() throws {

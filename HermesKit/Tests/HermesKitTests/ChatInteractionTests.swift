@@ -7,7 +7,7 @@ import Testing
 @MainActor
 struct ChatInteractionTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
-  private let request = ApprovalRequest(requestID: "r1", command: "rm -rf /tmp/x")
+  private let request = ApprovalRequest(command: "rm -rf /tmp/x", detail: "Delete /tmp/x")
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
@@ -51,8 +51,9 @@ struct ChatInteractionTests {
     await store.finish()
 
     #expect(sent.value?["method"]?.stringValue == "approval.respond")
-    #expect(sent.value?["params"]?["request_id"]?.stringValue == "r1")
-    #expect(sent.value?["params"]?["choice"]?.stringValue == "approve")
+    // Approvals are session-queue-resolved: no request_id is sent.
+    #expect(sent.value?["params"]?["request_id"] == nil)
+    #expect(sent.value?["params"]?["choice"]?.stringValue == "once")
     #expect(sent.value?["params"]?["all"]?.boolValue == false)
   }
 
@@ -75,6 +76,8 @@ struct ChatInteractionTests {
     await store.finish()
 
     #expect(sent.value?["all"]?.boolValue == true)
+    // "Approve all in this session" persists the pattern for the session.
+    #expect(sent.value?["choice"]?.stringValue == "session")
   }
 
   @Test func denySendsDenyChoice() async {

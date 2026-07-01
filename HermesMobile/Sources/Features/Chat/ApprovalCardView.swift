@@ -15,6 +15,13 @@ struct ApprovalCardView: View {
       Label("Approval requested", systemImage: "lock.shield")
         .font(.subheadline.weight(.semibold))
 
+      if let detail = request.detail, !detail.isEmpty {
+        Text(detail)
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
       if let command = request.command, !command.isEmpty {
         Text(command)
           .font(.callout.monospaced())

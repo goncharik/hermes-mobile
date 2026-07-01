@@ -645,19 +645,22 @@ public struct ChatFeature {
         )
 
       case let .respondToApproval(approve, all):
-        guard case let .approval(request) = state.pendingInteraction,
+        guard case .approval = state.pendingInteraction,
               let sessionID = state.liveSessionID
         else { return .none }
         state.pendingInteraction = nil
         state.transcript.append(
           ChatRow(id: uuid(), kind: .status(kind: "approval", text: approve ? "Approved" : "Denied"))
         )
-        let requestID = request.requestID
-        let choice = approve ? "approve" : "deny"
+        // Choice vocabulary matches `tools/approval.py`: "deny" blocks; "once" allows
+        // just this command; "session" persists the pattern for the rest of the session
+        // (the "Approve all in this session" toggle). Approvals are resolved by the
+        // server's per-session queue, so NO `request_id` is sent (unlike clarify/secret);
+        // `all` maps to `resolve_all` to clear any other queued approvals at once.
+        let choice = approve ? (all ? "session" : "once") : "deny"
         return .run { [gateway] _ in
           _ = try? await gateway.send("approval.respond", .object([
             "session_id": .string(sessionID),
-            "request_id": .string(requestID),
             "choice": .string(choice),
             "all": .bool(all),
           ]))

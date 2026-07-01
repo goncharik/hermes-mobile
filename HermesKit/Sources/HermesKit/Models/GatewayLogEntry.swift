@@ -62,7 +62,7 @@ public extension GatewayEvent {
     case let .toolComplete(_, name, _, _, _, _, durationS):
       let d = durationS.map { String(format: " (%.1fs)", $0) } ?? ""
       return (name ?? "") + d
-    case let .approvalRequest(req): return req.command ?? req.requestID
+    case let .approvalRequest(req): return req.command ?? req.detail ?? "approval"
     case let .clarifyRequest(req): return req.question
     case let .sudoRequest(p): return p.prompt ?? p.requestID
     case let .secretRequest(p): return p.prompt ?? p.requestID
