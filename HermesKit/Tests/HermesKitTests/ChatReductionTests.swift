@@ -618,20 +618,32 @@ struct ChatReductionTests {
     #expect(didSend.value == false)
   }
 
-  // The visible send button becomes the interrupt button mid-turn, but a hardware-keyboard
-  // return still fires the TextField's `.onSubmit`. A submit while a turn streams must be a
-  // strict no-op — a second in-flight submit corrupts `isSending`, and if it later failed it
-  // would emit a spurious `runningChanged(false)` that tears down a detached slot whose
-  // first turn is still genuinely running. Exhaustive: any state change or effect fails this.
-  @Test func submitWhileSendingIsNoOp() async {
+  // Hardware return while a turn streams is queue input, never a second prompt.submit.
+  // The active turn stays running while the draft is captured and the composer clears.
+  @Test func submitWhileSendingQueuesWithoutSecondRPC() async {
+    let didSend = LockIsolated(false)
     var initial = ChatFeature.State(connection: conn, status: .ready)
     initial.liveSessionID = "live"
     initial.composerText = "second message typed mid-turn"
     initial.isSending = true
-    let store = TestStore(initialState: initial) { ChatFeature() }
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { @Sendable _, _ in
+        didSend.setValue(true)
+        return .object([:])
+      }
+    }
 
     #expect(initial.canSend == false)
-    await store.send(.composerSubmitted)
+    #expect(initial.canQueue)
+    await store.send(.composerSubmitted) {
+      $0.composerText = ""
+      $0.queuedPrompts = [.init(
+        id: self.uuid(0), text: "second message typed mid-turn", attachments: []
+      )]
+    }
+    #expect(store.state.isSending)
+    #expect(didSend.value == false)
   }
 
   // MARK: Bootstrap (create on first ready)
@@ -2045,5 +2057,204 @@ struct ChatReductionTests {
     #expect(store.state.expectsPendingApproval == false)
 
     await store.send(.teardown)
+  }
+
+  @Test func capturedComposerSubmitClearsFieldAndSubmitsExactlyOnce() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.composerText = "send once"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        return .object(["status": .string("streaming")])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.finish()
+
+    #expect(store.state.composerText.isEmpty)
+    #expect(store.state.transcript.filter { $0.kind == .message(role: .user, text: "send once", isComplete: true) }.count == 1)
+    #expect(calls.value == ["prompt.submit"])
+  }
+
+  @Test func busySubmitQueuesTextAndAttachmentsWithoutSecondRPC() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.isSending = true
+    initial.composerText = "next task"
+    initial.attachments = [ComposerAttachment(
+      id: uuid(99), kind: .image, filename: "screen.png", mimeType: "image/png", data: Data([1])
+    )]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        return .object([:])
+      }
+    }
+
+    await store.send(.composerSubmitted) {
+      $0.queuedPrompts = [.init(
+        id: self.uuid(0), text: "next task",
+        attachments: [ComposerAttachment(
+          id: self.uuid(99), kind: .image, filename: "screen.png", mimeType: "image/png", data: Data([1])
+        )]
+      )]
+      $0.composerText = ""
+      $0.attachments = []
+    }
+    #expect(store.state.isSending)
+    #expect(calls.value.isEmpty)
+  }
+
+  @Test func queuedPromptAutoDrainsAfterCurrentTurnCompletes() async {
+    let submitted = LockIsolated<[String]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.isSending = true
+    initial.queuedPrompts = [.init(id: uuid(80), text: "follow up", attachments: [])]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method == "prompt.submit", let text = params["text"]?.stringValue {
+          submitted.withValue { $0.append(text) }
+        }
+        return .object(["status": .string("streaming")])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "done", usage: nil)))
+    await store.receive(\.queuedPromptDrainRequested)
+    await store.receive(\.composerSubmitted)
+    await store.finish()
+
+    #expect(store.state.queuedPrompts.isEmpty)
+    #expect(store.state.composerText.isEmpty)
+    #expect(store.state.isSending)
+    #expect(submitted.value == ["follow up"])
+  }
+
+  @Test func newDraftCannotOvertakeAnOlderQueuedPrompt() async {
+    let submitted = LockIsolated<[String]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.composerText = "newer draft"
+    initial.queuedPrompts = [.init(id: uuid(80), text: "older queued", attachments: [])]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method == "prompt.submit", let text = params["text"]?.stringValue {
+          submitted.withValue { $0.append(text) }
+        }
+        return .object(["status": .string("streaming")])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.queuedPromptDrainRequested)
+    await store.receive(\.composerSubmitted)
+    await store.finish()
+
+    #expect(submitted.value == ["older queued"])
+    #expect(store.state.queuedPrompts.map(\.text) == ["newer draft"])
+    #expect(store.state.isSending)
+  }
+
+  @Test func hydrateDrainsQueueWhenCompletionWasMissedOffline() async {
+    let submitted = LockIsolated<[String]>([])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.isSending = true
+    initial.queuedPrompts = [.init(id: uuid(80), text: "offline follow up", attachments: [])]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method == "prompt.submit", let text = params["text"]?.stringValue {
+          submitted.withValue { $0.append(text) }
+        }
+        return .object(["status": .string("streaming")])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.activateResult(.success(activateResponse(running: false))))
+    await store.receive(\.queuedPromptDrainRequested)
+    await store.receive(\.composerSubmitted)
+    await store.receive(\.queuedPromptAccepted)
+    await store.finish()
+
+    #expect(submitted.value == ["offline follow up"])
+    #expect(store.state.queuedPrompts.isEmpty)
+    #expect(store.state.activeQueuedPrompt == nil)
+    #expect(store.state.isSending)
+  }
+
+  @Test func queuedSubmitFailureRestoresHeadWithoutLosingFIFO() async {
+    let failed = ChatFeature.State.QueuedPrompt(id: uuid(80), text: "retry me", attachments: [])
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.isSending = true
+    initial.activeQueuedPrompt = failed
+    initial.queuedPrompts = [.init(id: uuid(81), text: "later", attachments: [])]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.promptSubmitFailed(message: "offline"))
+    await store.finish()
+
+    #expect(store.state.activeQueuedPrompt == nil)
+    #expect(store.state.queuedPrompts.map(\.text) == ["retry me", "later"])
+    #expect(!store.state.isSending)
+  }
+
+  @Test func completedQueuedSlashCommandDrainsNextPrompt() async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.isSending = true
+    initial.slashExecInFlight = true
+    initial.activeQueuedPrompt = .init(id: uuid(80), text: "/title New", attachments: [])
+    initial.queuedPrompts = [.init(id: uuid(81), text: "continue", attachments: [])]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in
+        .object(["status": .string("streaming")])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.slashCommandFailed(message: "finished"))
+    await store.receive(\.queuedPromptDrainRequested)
+    await store.receive(\.composerSubmitted)
+    await store.receive(\.queuedPromptAccepted)
+    await store.finish()
+
+    #expect(store.state.activeQueuedPrompt == nil)
+    #expect(store.state.queuedPrompts.isEmpty)
+    #expect(store.state.isSending)
   }
 }

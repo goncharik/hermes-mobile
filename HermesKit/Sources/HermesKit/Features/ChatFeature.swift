@@ -36,6 +36,12 @@ public struct ChatFeature {
     /// replace (hydrate). The view renders `visibleRows`, never `transcript` directly.
     public var windowStart: Int
     public var composerText: String
+    /// Messages composed while a turn is running. Held client-side and submitted FIFO
+    /// after each `message.complete`, matching Hermes Desktop/TUI queue semantics.
+    public var queuedPrompts: [QueuedPrompt]
+    /// Queue head currently moving through the existing submit/upload pipeline. Kept until
+    /// the server acknowledges it so failures can restore reliable FIFO delivery.
+    public var activeQueuedPrompt: QueuedPrompt?
     public var status: Status
     public var errorBanner: String?
     public var isSending: Bool
@@ -118,6 +124,18 @@ public struct ChatFeature {
     /// a second tap on the branch button is a no-op until the RPC resolves. Public so the
     /// view can dim the affordance while it runs.
     public var isBranching: Bool
+
+    public struct QueuedPrompt: Equatable, Identifiable, Sendable {
+      public let id: UUID
+      public var text: String
+      public var attachments: [ComposerAttachment]
+
+      public init(id: UUID, text: String, attachments: [ComposerAttachment]) {
+        self.id = id
+        self.text = text
+        self.attachments = attachments
+      }
+    }
 
     /// Whether the branch affordance is enabled (#34): the session must have a PERSISTED
     /// id (`parent_session_id` has to match a REST list row id for the branch to nest —
@@ -316,6 +334,8 @@ public struct ChatFeature {
       self.title = title
       self.transcript = transcript
       self.composerText = composerText
+      self.queuedPrompts = []
+      self.activeQueuedPrompt = nil
       self.status = status
       self.errorBanner = nil
       self.isSending = false
@@ -395,10 +415,12 @@ public struct ChatFeature {
       return transcript.elements[start..<count]
     }
 
+    public var hasComposerPayload: Bool {
+      !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
+
     public var canSend: Bool {
-      let hasContent = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        || !attachments.isEmpty
-      return hasContent
+      hasComposerPayload
         // `liveSessionID` is `nil` both before the first successful attach/hydrate AND
         // for the whole duration of a branch reap-recovery probe/replay (2026-07-24
         // review, finding 1) — `.activateResult(.failure)` nils it the instant a
@@ -425,6 +447,13 @@ public struct ChatFeature {
         // to open the replacement chat, and a just-submitted turn would be silently lost
         // (its socket/effects cancelled with no server response ever observed).
         && !isBranching
+    }
+
+    /// A real turn can accept additional client-side work without interrupting it.
+    /// Slash execution and blocking interactions remain exclusive operations.
+    public var canQueue: Bool {
+      hasComposerPayload && isSending && liveSessionID != nil && pendingInteraction == nil
+        && !slashExecInFlight && !isBranching
     }
 
     /// Rename is only meaningful once we have a live session id (otherwise `confirmRename`
@@ -511,6 +540,9 @@ public struct ChatFeature {
     case activateResult(Result<ActivateResponse, GatewayError>)
     case usageResponse(Usage)
     case composerSubmitted
+    case queuedPromptDrainRequested
+    case queuedPromptAccepted(id: UUID)
+    case removeQueuedPrompt(id: UUID)
     case promptSubmitFailed(message: String)
     /// A self-heal re-resume/recreate landed a fresh live session id for an outbound RPC that
     /// failed with "session not found" (#17). Apply it WITHOUT a wholesale transcript rebuild
@@ -833,7 +865,9 @@ public struct ChatFeature {
         return .none
 
       case let .activateResult(.success(response)):
-        return applyActivate(response, into: &state)
+        let effect = applyActivate(response, into: &state)
+        guard !state.isSending, !state.queuedPrompts.isEmpty else { return effect }
+        return .merge(effect, .send(.queuedPromptDrainRequested))
 
       case let .activateResult(.failure(error)):
         // Structural fix (2026-07-24 review) — see the `hasReplayedBranchSeed`/probe doc
@@ -872,7 +906,9 @@ public struct ChatFeature {
         state.attachLiveSessionID = nil
         state.branchSeed = nil
         state.hasReplayedBranchSeed = false
-        return applyActivate(response, into: &state)
+        let effect = applyActivate(response, into: &state)
+        guard !state.isSending, !state.queuedPrompts.isEmpty else { return effect }
+        return .merge(effect, .send(.queuedPromptDrainRequested))
 
       case let .branchResumeProbeResult(.failure(error)):
         // Structural fix (2026-07-24 review): there is no budget to refund here (see the
@@ -963,6 +999,38 @@ public struct ChatFeature {
         return hydrate(sessionID: sessionID, profile: state.scopedProfile)
 
       case .composerSubmitted:
+        // If an older queued item is waiting and the user has already drafted another one,
+        // preserve FIFO: append the new draft to the tail, then drain the original head.
+        if !state.isSending, state.activeQueuedPrompt == nil,
+           !state.queuedPrompts.isEmpty, state.hasComposerPayload {
+          let text = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+          let attachments = state.attachments.map { attachment in
+            var copy = attachment
+            copy.uploadState = .pending
+            return copy
+          }
+          state.queuedPrompts.append(.init(id: uuid(), text: text, attachments: attachments))
+          state.composerText = ""
+          state.attachments = []
+          return .send(.queuedPromptDrainRequested)
+        }
+
+        // Busy input queues instead of issuing a second prompt.submit. Keep attachments with
+        // their message, reset transient upload state, and clear the live composer at once.
+        if state.isSending {
+          guard state.canQueue else { return .none }
+          let text = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+          let attachments = state.attachments.map { attachment in
+            var copy = attachment
+            copy.uploadState = .pending
+            return copy
+          }
+          state.queuedPrompts.append(.init(id: uuid(), text: text, attachments: attachments))
+          state.composerText = ""
+          state.attachments = []
+          state.errorBanner = nil
+          return .none
+        }
         guard state.canSend, let sessionID = state.liveSessionID else { return .none }
         // Trim stray leading/trailing whitespace/newlines (soft-wrap, dictation, accidental
         // returns) before submitting; interior formatting is preserved (#31). `canSend`
@@ -1151,10 +1219,12 @@ public struct ChatFeature {
         let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
         let seed = state.branchSeed
         let profile = state.scopedProfile
+        let queuedPromptID = state.activeQueuedPrompt?.id
         return .merge(anchor, .run { [gateway] send in
           await submitPrompt(
             sessionID: sessionID, storedSessionID: stored, branchSeed: seed,
-            profile: profile, gateway: gateway, send: send
+            profile: profile, gateway: gateway, send: send,
+            queuedPromptID: queuedPromptID
           ) { healedID in
             _ = try await gateway.send("prompt.submit", .object([
               "session_id": .string(healedID), "text": .string(text),
@@ -1162,9 +1232,37 @@ public struct ChatFeature {
           }
         })
 
+      case .queuedPromptDrainRequested:
+        // Do not overwrite a draft started while the previous turn was finishing. The queue
+        // remains visible; once the composer is clear the next completion/drain sends FIFO.
+        guard !state.isSending, state.pendingInteraction == nil,
+              state.activeQueuedPrompt == nil,
+              state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              state.attachments.isEmpty, !state.queuedPrompts.isEmpty
+        else { return .none }
+        let next = state.queuedPrompts.removeFirst()
+        state.activeQueuedPrompt = next
+        state.composerText = next.text
+        state.attachments = next.attachments
+        return .send(.composerSubmitted)
+
+      case let .queuedPromptAccepted(id):
+        if state.activeQueuedPrompt?.id == id { state.activeQueuedPrompt = nil }
+        return .none
+
+      case let .removeQueuedPrompt(id):
+        state.queuedPrompts.removeAll { $0.id == id }
+        return .none
+
       case let .promptSubmitFailed(message):
         state.errorBanner = "Prompt failed: \(message)"
         state.isSending = false
+        // A queued head is not consumed until prompt.submit acknowledges it. Put a failed
+        // head back at the front so retry/removal preserves FIFO and never loses the text.
+        if let active = state.activeQueuedPrompt {
+          state.queuedPrompts.insert(active, at: 0)
+          state.activeQueuedPrompt = nil
+        }
         // The anchor was written on submit; a failed submit never starts a turn (no
         // `message.start`/`complete` to clear it), so clear it here. This keeps every
         // `setTurnAnchor` paired with a clear, so anchors can't accumulate for sessions that
@@ -1611,6 +1709,7 @@ public struct ChatFeature {
         maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
         state.composerText = ""
         state.attachments = []
+        state.activeQueuedPrompt = nil
         return .none
 
       case let .attachmentUploadFailed(message):
@@ -1668,6 +1767,7 @@ public struct ChatFeature {
         // and a REAL turn now owns `isSending` (it stays locked, driven by the turn's own
         // lifecycle). Only the mid-exec hydrate guard is released — nothing else changes.
         state.slashExecInFlight = false
+        state.activeQueuedPrompt = nil
         return .none
 
       case let .slashCommandPrefill(message, notice):
@@ -1930,8 +2030,12 @@ public struct ChatFeature {
       // finished chat isn't stuck behind a phantom card locking the composer.
       clearStaleApproval(into: &state)
       // Turn ended — drop the anchor so a later hydrate doesn't resurrect a phantom timer,
-      // and tell the list to clear this session's working glow immediately.
-      return .merge(.cancel(id: CancelID.thinkingTimer), clearTurnAnchor(state), runningChanged(false, state))
+      // tell the list to clear this session's working glow, then auto-drain one queued prompt.
+      let drain: Effect<Action> = state.queuedPrompts.isEmpty ? .none : .send(.queuedPromptDrainRequested)
+      return .merge(
+        .cancel(id: CancelID.thinkingTimer), clearTurnAnchor(state),
+        runningChanged(false, state), drain
+      )
 
     case let .thinkingDelta(text):
       appendToThinking(text, into: &state)
@@ -2822,12 +2926,19 @@ public struct ChatFeature {
   /// hydrate (output/prefill land history changes; a failure passes `refresh: false`).
   private func finishSlashExec(refresh: Bool, into state: inout State) -> Effect<Action> {
     state.slashExecInFlight = false
+    state.activeQueuedPrompt = nil
     guard state.thinkingRowID == nil else { return .none }
     state.isSending = false
-    guard refresh, let sessionID = state.liveSessionID else { return runningChanged(false, state) }
+    let drain: Effect<Action> = state.queuedPrompts.isEmpty
+      ? .none
+      : .send(.queuedPromptDrainRequested)
+    guard refresh, let sessionID = state.liveSessionID else {
+      return .merge(runningChanged(false, state), drain)
+    }
     return .merge(
       runningChanged(false, state),
-      refreshAfterSlashCommand(sessionID: sessionID, profile: state.scopedProfile)
+      refreshAfterSlashCommand(sessionID: sessionID, profile: state.scopedProfile),
+      drain
     )
   }
 
@@ -3441,6 +3552,7 @@ private func submitPrompt(
   profile: String?,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
+  queuedPromptID: UUID? = nil,
   submit: @escaping (_ targetID: String) async throws -> Void
 ) async {
   do {
@@ -3448,6 +3560,7 @@ private func submitPrompt(
       submit, sessionID: sessionID, storedSessionID: storedSessionID,
       branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
     )
+    if let queuedPromptID { await send(.queuedPromptAccepted(id: queuedPromptID)) }
   } catch let error as GatewayError {
     await send(.promptSubmitFailed(message: error.message))
   } catch {

@@ -20,12 +20,14 @@ struct ChatView: View {
         }
       footer
       pendingCard
+      queuedPromptBar
       suggestionPanel
       Divider()
       ComposerView(
         text: $store.composerText,
         isSending: store.isSending,
         canSend: store.canSend,
+        canQueue: store.canQueue,
         model: store.model,
         reasoningEffort: store.reasoningEffort,
         usage: store.usage,
@@ -95,6 +97,44 @@ struct ChatView: View {
           onDone: { store.send(.modelPickerDismissed) }
         )
       }
+    }
+  }
+
+  @ViewBuilder
+  private var queuedPromptBar: some View {
+    if let first = store.queuedPrompts.first {
+      HStack(spacing: 8) {
+        Image(systemName: "square.stack.3d.up.fill")
+          .foregroundStyle(Color.hermesAccent)
+        Text("Queued \(store.queuedPrompts.count)")
+          .font(.caption.weight(.semibold))
+        Text(first.text.isEmpty ? first.attachments.map(\.filename).joined(separator: ", ") : first.text)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+        Spacer(minLength: 4)
+        if !store.isSending {
+          Button {
+            store.send(.queuedPromptDrainRequested)
+          } label: {
+            Image(systemName: "play.circle.fill")
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(Color.hermesAccent)
+          .accessibilityLabel("Send next queued message")
+        }
+        Button {
+          store.send(.removeQueuedPrompt(id: first.id))
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Remove next queued message")
+      }
+      .padding(.horizontal, 18)
+      .padding(.vertical, 7)
+      .background(Color(uiColor: .secondarySystemBackground))
     }
   }
 

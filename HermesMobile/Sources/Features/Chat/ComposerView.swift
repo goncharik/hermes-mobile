@@ -9,6 +9,7 @@ struct ComposerView: View {
   @Binding var text: String
   let isSending: Bool
   let canSend: Bool
+  var canQueue: Bool = false
   let model: String?
   let reasoningEffort: String?
   /// Context-window usage (#4): a compact gauge beside the model chip. Hidden when nil or
@@ -53,7 +54,7 @@ struct ComposerView: View {
       TextField("Message", text: $text, axis: .vertical)
         .lineLimit(1 ... 6)
         .focused(focused)
-        .onSubmit(onSend)
+        .onSubmit(submitDraft)
 
       HStack(spacing: 12) {
         // Let the model chip claim its ideal width before the Spacer, so the model name
@@ -163,16 +164,35 @@ struct ComposerView: View {
   @ViewBuilder
   private var sendButton: some View {
     if isSending {
+      if canQueue {
+        Button(action: submitDraft) {
+          Image(systemName: "square.stack.3d.up.fill").font(.title2)
+        }
+        .foregroundStyle(Color.hermesAccent)
+        .accessibilityLabel("Queue message")
+      }
       Button(action: onInterrupt) {
         Image(systemName: "stop.circle.fill").font(.title)
       }
       .foregroundStyle(.red)
+      .accessibilityLabel("Stop current task")
     } else {
-      Button(action: onSend) {
+      Button(action: submitDraft) {
         Image(systemName: "arrow.up.circle.fill").font(.title)
       }
       .foregroundStyle(Color.hermesAccent)
       .disabled(!canSend)
+    }
+  }
+
+  /// Submit synchronously and reinforce an accepted reducer clear at the focused field
+  /// boundary. Rejected submissions and attachment uploads intentionally keep their draft.
+  private func submitDraft() {
+    let original = text
+    onSend()
+    if text.isEmpty || text != original {
+      // A second binding write closes iOS's TextField/onSubmit stale-repaint race.
+      text = ""
     }
   }
 
