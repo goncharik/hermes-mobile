@@ -2473,14 +2473,26 @@ public struct ChatFeature {
     // so the next `message.delta` mutates it in place under the same id.
     if let inflight = response.inflight {
       if let user = inflight.user?.nonEmpty {
-        let userKind = ChatRow.Kind.message(role: .user, text: user, isComplete: true)
-        state.transcript.append(ChatRow(
-          id: ChatRow.deterministicID(
-            sequenceIndex: state.transcript.count, role: userKind.role,
-            kindDiscriminator: userKind.discriminator
-          ),
-          kind: userKind
-        ))
+        // Some backend versions include the active turn's submitted prompt in BOTH the
+        // authoritative message history and `inflight.user`. Re-appending it here produces
+        // two adjacent user bubbles after a foreground/reconnect hydrate. Only seed the
+        // in-flight user when the rebuilt history does not already end with that exact row.
+        let historyAlreadyEndsWithUser = state.transcript.last.map { row in
+          if case let .message(role, text, _) = row.kind {
+            return role == .user && text == user
+          }
+          return false
+        } ?? false
+        if !historyAlreadyEndsWithUser {
+          let userKind = ChatRow.Kind.message(role: .user, text: user, isComplete: true)
+          state.transcript.append(ChatRow(
+            id: ChatRow.deterministicID(
+              sequenceIndex: state.transcript.count, role: userKind.role,
+              kindDiscriminator: userKind.discriminator
+            ),
+            kind: userKind
+          ))
+        }
       }
       // Seed the streaming row eagerly when the turn is still streaming so the next
       // `message.delta` reuses it (avoids a duplicate from the lazy first-delta path).

@@ -1032,6 +1032,58 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
+  @Test func activateDoesNotDuplicateInflightUserAlreadyInMessages() async {
+    // Regression: during a running turn the backend may expose the submitted user prompt in
+    // both authoritative `messages` and `inflight.user`. A hydrate must render one bubble.
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.hermesGateway.send = { @Sendable _, _ in
+        .object([
+          "session_id": .string("live123"),
+          "stored_session_id": .string("stored123"),
+          "messages": .array([
+            .object([
+              "id": .number(1),
+              "role": .string("user"),
+              "content": .string("What are your thoughts on this current rule set?"),
+            ]),
+          ]),
+          "running": .bool(true),
+          "info": .object([
+            "model": .string("gpt-5.6-sol"),
+            "usage": .object([
+              "context_used": .number(5),
+              "context_max": .number(200_000),
+              "context_percent": .number(0),
+            ]),
+          ]),
+          "inflight": .object([
+            "user": .string("What are your thoughts on this current rule set?"),
+            "assistant": .string(""),
+            "streaming": .bool(true),
+          ]),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    let matchingUserRows = store.state.transcript.filter { row in
+      if case let .message(role, text, _) = row.kind {
+        return role == .user && text == "What are your thoughts on this current rule set?"
+      }
+      return false
+    }
+    #expect(matchingUserRows.count == 1)
+    await store.send(.teardown)
+  }
+
   @Test func unknownEventIsInertInTheFold() async {
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
