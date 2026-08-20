@@ -17,8 +17,20 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
   public var skillCount: Int
   /// Whether the profile has an `.env` (env overrides) configured.
   public var hasEnv: Bool
+  /// The desktop Bot Mode plugin's `ui_meta['hermes-bots']` block, when present
+  /// (`GET /api/profiles` — NOT YET VERIFIED to forward `ui_meta`; the gateway RPC
+  /// `profiles.list` does per `tui_gateway/methods_profiles.py`, but the REST route's
+  /// `_profile_to_dict` needs confirming against a live Bot-Mode agent before this is
+  /// relied on for anything beyond a best-effort roster hint — see
+  /// `docs/plans/YYYYMMDD-bot-mode-support.md` Task 1). `nil` for a plain profile,
+  /// which is the overwhelming majority of installs and every non-Bot-Mode agent.
+  public var botMeta: BotMeta?
 
   public var id: String { name }
+
+  /// Whether this profile is Bot-Mode-managed (has a `ui_meta['hermes-bots']` block).
+  /// Mirrors `tools/bot_mode_probe.py::_is_bot_managed`'s definition on the backend.
+  public var isBotManaged: Bool { botMeta != nil }
 
   enum CodingKeys: String, CodingKey {
     case name
@@ -27,6 +39,14 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     case provider
     case skillCount = "skill_count"
     case hasEnv = "has_env"
+    case uiMeta = "ui_meta"
+  }
+
+  /// The `ui_meta` object is NOT flat — the Bot Mode block sits under its own key,
+  /// mirroring `profile.yaml`'s `ui_meta: { 'hermes-bots': {...} }` shape used by
+  /// `profiles.configure` on the backend.
+  enum UIMetaKeys: String, CodingKey {
+    case hermesBots = "hermes-bots"
   }
 
   public init(
@@ -35,7 +55,8 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     model: String? = nil,
     provider: String? = nil,
     skillCount: Int = 0,
-    hasEnv: Bool = false
+    hasEnv: Bool = false,
+    botMeta: BotMeta? = nil
   ) {
     self.name = name
     self.isDefault = isDefault
@@ -43,6 +64,7 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     self.provider = provider
     self.skillCount = skillCount
     self.hasEnv = hasEnv
+    self.botMeta = botMeta
   }
 
   public init(from decoder: Decoder) throws {
@@ -53,5 +75,10 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     provider = try? c.decodeIfPresent(String.self, forKey: .provider)
     skillCount = (try? c.decodeIfPresent(Int.self, forKey: .skillCount)) ?? 0
     hasEnv = (try? c.decodeIfPresent(Bool.self, forKey: .hasEnv)) ?? false
+    if let uiMeta = try? c.nestedContainer(keyedBy: UIMetaKeys.self, forKey: .uiMeta) {
+      botMeta = try? uiMeta.decodeIfPresent(BotMeta.self, forKey: .hermesBots)
+    } else {
+      botMeta = nil
+    }
   }
 }
