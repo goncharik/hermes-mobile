@@ -1,64 +1,73 @@
 import Foundation
 
-/// The `ui_meta['hermes-bots']` block the desktop's Bot Mode plugin writes onto a
-/// profile's `profile.yaml`. Surfaced here so mobile can render the same avatar/title/
-/// description a Bot shows on desktop, without owning any Bot Mode business logic.
+/// The `ui_meta['hermes-bots']` block the desktop Bot Mode plugin writes to a
+/// profile's `profile.yaml`.
 ///
-/// NOT verified against a live payload yet — the desktop plugin defines this shape
-/// (`apps/desktop/src/plugins/hermes-bots/plugin.js`) but only via `profiles.configure`
-/// (gateway RPC), not a documented REST contract. Every field is optional and decoding
-/// is maximally lenient (unknown/missing keys never fail the whole `Profile` decode) —
-/// see the TODO on `Profile.botMeta` before shipping.
-///
-/// Field names are BEST-EFFORT guesses from the plugin.js `ui_meta` shape
-/// (`title`, `description`, `avatar`, `pinned`, `hidden`, `groups`) and MUST be
-/// confirmed against a live `GET /api/profiles` / `profiles.list` response from a
-/// Bot-Mode-managed agent before this ships. Treat as a draft contract.
+/// The wire shape is deliberately kept separate from the profile's `description` and
+/// avatar asset: description is a top-level profile field, while the avatar is exposed
+/// by `profiles.list` as `has_avatar` and fetched with `profiles.get_asset`. All fields
+/// are optional so newer desktop-only metadata does not break profile decoding.
 public struct BotMeta: Equatable, Sendable, Decodable {
   /// Friendly display title (distinct from the raw profile `name` slug).
   public var title: String?
-  /// One-line description shown under the bot's name in the roster.
-  public var description: String?
-  /// Avatar descriptor — kept as an opaque JSONValue for now since the desktop supports
-  /// several avatar kinds (blob face seed, geometric shape+color, uploaded image ref,
-  /// AI-generated portrait ref, pixel pet id) and mobile doesn't need to interpret the
-  /// kind to do the Phase 1 minimum (name + description only). Revisit once the exact
-  /// avatar payload shape is confirmed.
-  public var avatar: JSONValue?
-  /// Whether the bot is hidden from the roster (desktop's "Hide Bot").
+  public var shape: String?
+  public var color: String?
+  public var imageKind: String?
+  public var custom: Bool?
+  public var created: Int?
+  public var pinned: Bool?
   public var hidden: Bool?
-  /// Group-chat room names this bot is a member of (Phase 2 — unused by Phase 1 UI).
   public var groups: [String]?
+  /// Legacy single-group value still read by the desktop plugin.
+  public var group: String?
+
+  private var hasPayload: Bool
+
+  /// Whether the `hermes-bots` object contained at least one key. The backend uses
+  /// non-empty metadata as the Bot Mode marker; an empty object is not a bot.
+  public var isManaged: Bool { hasPayload }
 
   enum CodingKeys: String, CodingKey {
-    case title, description, avatar, hidden, groups
+    case title, shape, color, imageKind, custom, created, pinned, hidden, groups, group
   }
 
   public init(
     title: String? = nil,
-    description: String? = nil,
-    avatar: JSONValue? = nil,
+    shape: String? = nil,
+    color: String? = nil,
+    imageKind: String? = nil,
+    custom: Bool? = nil,
+    created: Int? = nil,
+    pinned: Bool? = nil,
     hidden: Bool? = nil,
-    groups: [String]? = nil
+    groups: [String]? = nil,
+    group: String? = nil
   ) {
     self.title = title
-    self.description = description
-    self.avatar = avatar
+    self.shape = shape
+    self.color = color
+    self.imageKind = imageKind
+    self.custom = custom
+    self.created = created
+    self.pinned = pinned
     self.hidden = hidden
     self.groups = groups
+    self.group = group
+    self.hasPayload = title != nil || shape != nil || color != nil || imageKind != nil || custom != nil || created != nil || pinned != nil || hidden != nil || groups != nil || group != nil
   }
 
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     title = try? c.decodeIfPresent(String.self, forKey: .title)
-    description = try? c.decodeIfPresent(String.self, forKey: .description)
-    avatar = try? c.decodeIfPresent(JSONValue.self, forKey: .avatar)
+    shape = try? c.decodeIfPresent(String.self, forKey: .shape)
+    color = try? c.decodeIfPresent(String.self, forKey: .color)
+    imageKind = try? c.decodeIfPresent(String.self, forKey: .imageKind)
+    custom = try? c.decodeIfPresent(Bool.self, forKey: .custom)
+    created = try? c.decodeIfPresent(Int.self, forKey: .created)
+    pinned = try? c.decodeIfPresent(Bool.self, forKey: .pinned)
     hidden = try? c.decodeIfPresent(Bool.self, forKey: .hidden)
     groups = try? c.decodeIfPresent([String].self, forKey: .groups)
+    group = try? c.decodeIfPresent(String.self, forKey: .group)
+    hasPayload = !c.allKeys.isEmpty
   }
-
-  /// Whether this profile is Bot-Mode-managed at all — mirrors the backend's own
-  /// cheap check in `tools/bot_mode_probe.py::_is_bot_managed` (any non-empty
-  /// `ui_meta['hermes-bots']` block, decodable or not).
-  public var isBotManaged: Bool { true }
 }

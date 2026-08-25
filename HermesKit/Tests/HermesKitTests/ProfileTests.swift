@@ -28,6 +28,7 @@ struct ProfileTests {
     #expect(profile.provider == "openai")
     #expect(profile.skillCount == 12)
     #expect(profile.hasEnv == true)
+    #expect(profile.hasAvatar == false)
     #expect(profile.id == "default")
   }
 
@@ -39,8 +40,11 @@ struct ProfileTests {
         "is_default": false,
         "model": "claude-opus-4-8",
         "provider": "anthropic",
+        "display_name": "Work",
+        "description": "Writing and editing",
         "skill_count": 3,
-        "has_env": false
+        "has_env": false,
+        "has_avatar": true
       }
       """
     )
@@ -49,8 +53,11 @@ struct ProfileTests {
     #expect(profile.isDefault == false)
     #expect(profile.model == "claude-opus-4-8")
     #expect(profile.provider == "anthropic")
+    #expect(profile.displayName == "Work")
+    #expect(profile.description == "Writing and editing")
     #expect(profile.skillCount == 3)
     #expect(profile.hasEnv == false)
+    #expect(profile.hasAvatar == true)
   }
 
   @Test func decodesWithMissingOptionalsSucceeds() throws {
@@ -67,8 +74,10 @@ struct ProfileTests {
     #expect(profile.isDefault == false)
     #expect(profile.model == nil)
     #expect(profile.provider == nil)
+    #expect(profile.description == nil)
     #expect(profile.skillCount == 0)
     #expect(profile.hasEnv == false)
+    #expect(profile.hasAvatar == false)
   }
 
   @Test func decodesProfilesArrayWrapper() throws {
@@ -91,24 +100,26 @@ struct ProfileTests {
     #expect(wrapper.profiles[1].isDefault == false)
   }
 
-  // MARK: - Bot Mode (`ui_meta['hermes-bots']`) — draft contract, see BotMeta.swift
-
-  @Test func decodesBotManagedProfileWithFullMeta() throws {
+  @Test func decodesActualBotModeMetadataAndTopLevelDescription() throws {
     let profile = try decode(
       """
       {
         "name": "researcher",
         "is_default": false,
-        "model": "gpt-5",
-        "provider": "openai",
-        "skill_count": 4,
-        "has_env": true,
+        "description": "Digs through papers and summarizes findings",
+        "has_avatar": true,
         "ui_meta": {
           "hermes-bots": {
             "title": "Research Buddy",
-            "description": "Digs through papers and summarizes findings",
+            "shape": "blob",
+            "color": "blue",
+            "imageKind": "shape",
+            "custom": true,
+            "created": 1755710000000,
+            "pinned": false,
             "hidden": false,
-            "groups": ["research-team"]
+            "groups": ["research-team"],
+            "group": "legacy-team"
           }
         }
       }
@@ -116,10 +127,16 @@ struct ProfileTests {
     )
 
     #expect(profile.isBotManaged == true)
+    #expect(profile.description == "Digs through papers and summarizes findings")
+    #expect(profile.hasAvatar == true)
     #expect(profile.botMeta?.title == "Research Buddy")
-    #expect(profile.botMeta?.description == "Digs through papers and summarizes findings")
-    #expect(profile.botMeta?.hidden == false)
+    #expect(profile.botMeta?.shape == "blob")
+    #expect(profile.botMeta?.color == "blue")
+    #expect(profile.botMeta?.imageKind == "shape")
+    #expect(profile.botMeta?.custom == true)
+    #expect(profile.botMeta?.pinned == false)
     #expect(profile.botMeta?.groups == ["research-team"])
+    #expect(profile.botMeta?.group == "legacy-team")
   }
 
   @Test func plainProfileWithoutUIMetaIsNotBotManaged() throws {
@@ -133,14 +150,25 @@ struct ProfileTests {
     #expect(profile.botMeta == nil)
   }
 
+  @Test func emptyHermesBotsBlockIsNotBotManaged() throws {
+    let profile = try decode(
+      """
+      {
+        "name": "empty",
+        "ui_meta": { "hermes-bots": {} }
+      }
+      """
+    )
+
+    #expect(profile.isBotManaged == false)
+    #expect(profile.botMeta != nil)
+  }
+
   @Test func uiMetaWithoutHermesBotsKeyIsNotBotManaged() throws {
-    // Some OTHER plugin might use ui_meta for its own purposes — must not be
-    // misread as Bot Mode.
     let profile = try decode(
       """
       {
         "name": "custom",
-        "is_default": false,
         "ui_meta": { "some-other-plugin": { "foo": "bar" } }
       }
       """
@@ -151,12 +179,10 @@ struct ProfileTests {
   }
 
   @Test func malformedHermesBotsBlockDecodesToNilRatherThanCrashing() throws {
-    // hermes-bots present but not an object — must never fail the whole Profile decode.
     let profile = try decode(
       """
       {
         "name": "weird",
-        "is_default": false,
         "ui_meta": { "hermes-bots": "not-an-object" }
       }
       """
@@ -166,21 +192,17 @@ struct ProfileTests {
     #expect(profile.botMeta == nil)
   }
 
-  @Test func botMetaWithOnlyPartialFieldsDecodesLeniently() throws {
+  @Test func unknownBotMetadataStillMarksProfileAsManaged() throws {
     let profile = try decode(
       """
       {
-        "name": "minimal-bot",
-        "is_default": false,
-        "ui_meta": { "hermes-bots": { "title": "Just A Title" } }
+        "name": "future-bot",
+        "ui_meta": { "hermes-bots": { "new_desktop_field": true } }
       }
       """
     )
 
-    #expect(profile.botMeta?.title == "Just A Title")
-    #expect(profile.botMeta?.description == nil)
-    #expect(profile.botMeta?.hidden == nil)
-    #expect(profile.botMeta?.groups == nil)
     #expect(profile.isBotManaged == true)
+    #expect(profile.botMeta?.title == nil)
   }
 }
