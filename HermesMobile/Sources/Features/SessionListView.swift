@@ -157,8 +157,9 @@ struct SessionListView: View {
     }
     // Cron-scheduled sessions live in their own always-on section below the
     // interactive list, in both grouping modes (filtered out of pinned/groups/
-    // chronological by the reducer). Hidden when there are none.
-    if !store.cronSessions.isEmpty {
+    // chronological by the reducer). Hidden when there are none, or when the
+    // user turned the section off in the organize menu.
+    if store.showCronSection, !store.cronSessions.isEmpty {
       cronJobsSection
     }
   }
@@ -432,6 +433,15 @@ struct SessionListView: View {
         Label("Chronological", systemImage: "clock").tag(SessionGroupingMode.chronological)
       }
       .pickerStyle(.inline)
+
+      Divider()
+
+      Toggle(isOn: Binding(
+        get: { store.showCronSection },
+        set: { store.send(.setShowCronSection($0)) }
+      )) {
+        Label("Cron Jobs section", systemImage: "clock")
+      }
 
       Divider()
 

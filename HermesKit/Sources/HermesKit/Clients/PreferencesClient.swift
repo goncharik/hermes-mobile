@@ -24,6 +24,10 @@ public struct PreferencesClient: Sendable {
   /// (archive vs permanent delete). Device-local UI pref; reset on logout.
   public var loadDefaultSessionSwipeAction: @Sendable () -> SessionSwipeAction = { .default }
   public var saveDefaultSessionSwipeAction: @Sendable (_ action: SessionSwipeAction) -> Void
+  /// Whether the session list shows the always-on "Cron Jobs" section. Device-local UI
+  /// pref; defaults to `true` (shown) so the section stays visible until the user opts out.
+  public var loadShowCronSection: @Sendable () -> Bool = { true }
+  public var saveShowCronSection: @Sendable (_ show: Bool) -> Void
   /// Currently selected Hermes profile name. Device-local — we never change the server's
   /// sticky active profile. `nil` means the default profile.
   public var loadSelectedProfileID: @Sendable () -> String? = { nil }
@@ -63,6 +67,7 @@ public extension PreferencesClient {
     let pinnedKey = "hermes.pinned-session-ids"
     let groupingKey = "hermes.session-grouping-mode"
     let swipeActionKey = "hermes.default-session-swipe-action"
+    let showCronSectionKey = "hermes.show-cron-section"
     let selectedProfileKey = "hermes.selected-profile-id"
     let pushTokenKey = "hermes.push-device-token"
     let pushSnoozeCountKey = "hermes.push-prompt-snooze-count"
@@ -85,6 +90,13 @@ public extension PreferencesClient {
         store.string(forKey: swipeActionKey).flatMap(SessionSwipeAction.init(rawValue:)) ?? .default
       },
       saveDefaultSessionSwipeAction: { store.set($0.rawValue, forKey: swipeActionKey) },
+      loadShowCronSection: {
+        // Absent key (never toggled) means shown — the section is on by default.
+        store.object(forKey: showCronSectionKey) == nil
+          ? true
+          : store.bool(forKey: showCronSectionKey)
+      },
+      saveShowCronSection: { store.set($0, forKey: showCronSectionKey) },
       loadSelectedProfileID: { store.string(forKey: selectedProfileKey) },
       saveSelectedProfileID: { store.set($0, forKey: selectedProfileKey) },
       clearSelectedProfileID: { store.removeObject(forKey: selectedProfileKey) },
@@ -115,6 +127,7 @@ public extension PreferencesClient {
     let pinned = LockIsolated<[String]>([])
     let grouping = LockIsolated<SessionGroupingMode>(.default)
     let swipeAction = LockIsolated<SessionSwipeAction>(.default)
+    let showCronSection = LockIsolated<Bool>(true)
     let selectedProfile = LockIsolated<String?>(nil)
     let pushToken = LockIsolated<String?>(nil)
     let pushSnooze = LockIsolated<(count: Int, until: Date)?>(nil)
@@ -130,6 +143,8 @@ public extension PreferencesClient {
       saveGroupingMode: { grouping.setValue($0) },
       loadDefaultSessionSwipeAction: { swipeAction.value },
       saveDefaultSessionSwipeAction: { swipeAction.setValue($0) },
+      loadShowCronSection: { showCronSection.value },
+      saveShowCronSection: { showCronSection.setValue($0) },
       loadSelectedProfileID: { selectedProfile.value },
       saveSelectedProfileID: { selectedProfile.setValue($0) },
       clearSelectedProfileID: { selectedProfile.setValue(nil) },

@@ -62,6 +62,9 @@ public struct SessionListFeature {
     /// loaded with the other prefs. Views must read `effectiveSwipeAction`, which clamps
     /// this to `.archive` while the agent lacks the DELETE capability.
     public var defaultSwipeAction: SessionSwipeAction
+    /// Whether the always-on "Cron Jobs" section is shown. Device-local UI pref, seeded
+    /// from prefs on load; toggled from the organize menu. Defaults to `true` (shown).
+    public var showCronSection: Bool
     /// Ids whose rename PATCH is currently IN FLIGHT. Transient: added when the PATCH starts,
     /// removed on success/failure. While non-empty the poll skips (like `archivingIDs`) so a
     /// fetch landing mid-PATCH can't clobber the optimistic title with the server's old one.
@@ -157,6 +160,7 @@ public struct SessionListFeature {
       deletingIDs: Set<String> = [],
       deleteSupported: Bool = true,
       defaultSwipeAction: SessionSwipeAction = .default,
+      showCronSection: Bool = true,
       renamingInFlightIDs: Set<String> = [],
       renamingID: Session.ID? = nil,
       renameDraft: String = "",
@@ -189,6 +193,7 @@ public struct SessionListFeature {
       self.deletingIDs = deletingIDs
       self.deleteSupported = deleteSupported
       self.defaultSwipeAction = defaultSwipeAction
+      self.showCronSection = showCronSection
       self.renamingInFlightIDs = renamingInFlightIDs
       self.renamingID = renamingID
       self.renameDraft = renameDraft
@@ -394,6 +399,8 @@ public struct SessionListFeature {
     case toggleGroupExpansion(groupID: String)
     /// Switch the list grouping (workspace/chronological) and persist the choice.
     case setGroupingMode(SessionGroupingMode)
+    /// Toggle the always-on "Cron Jobs" section and persist the choice.
+    case setShowCronSection(Bool)
     case archiveButtonTapped(id: Session.ID)
     /// Archive RPC succeeded — clear the transient in-flight guard and cancel (or, when
     /// one is pending, restart — see `cancelOrRestartFetch`) any fetch that started
@@ -899,6 +906,11 @@ public struct SessionListFeature {
         guard state.groupingMode != mode else { return .none }
         state.groupingMode = mode
         return .run { [preferences] _ in preferences.saveGroupingMode(mode) }
+
+      case let .setShowCronSection(show):
+        guard state.showCronSection != show else { return .none }
+        state.showCronSection = show
+        return .run { [preferences] _ in preferences.saveShowCronSection(show) }
 
       case let .toggleGroupExpansion(groupID):
         if !state.expandedGroups.insert(groupID).inserted {
@@ -1455,6 +1467,7 @@ public struct SessionListFeature {
     state.pinnedIDs = preferences.loadPinnedIDs()
     state.groupingMode = preferences.loadGroupingMode()
     state.defaultSwipeAction = preferences.loadDefaultSessionSwipeAction()
+    state.showCronSection = preferences.loadShowCronSection()
   }
 
   /// Refresh "now", clear errors, reload persisted prefs, and fetch the session list
