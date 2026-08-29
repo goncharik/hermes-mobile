@@ -34,6 +34,7 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSeenCounts() == [:]) // unread state cleared too
     #expect(preferences.loadGroupingMode() == .workspace) // grouping pref reset on logout
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive) // swipe pref reset on logout
+    #expect(preferences.loadShowCronSection() == true) // cron-section visibility reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
   }
 
