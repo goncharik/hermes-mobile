@@ -169,6 +169,8 @@ To run on a physical device, see [`docs/development.md`](docs/development.md).
 
 ## Documentation
 
+- [**Website**](https://goncharik.github.io/hermes-mobile/) — features,
+  screenshots, quick start, and current progress (served from [`site/`](site/)).
 - [**Architecture**](docs/architecture.md) — how the app is structured, the TCA
   feature tree, dependency clients, and the wire protocol.
 - [**Development**](docs/development.md) — building, running on device, testing,
