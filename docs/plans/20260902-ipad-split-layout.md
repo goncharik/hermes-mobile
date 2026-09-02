@@ -381,15 +381,31 @@ case .home:
 - Modify: `HermesMobile/Sources/AppView.swift`
 - Modify: `HermesMobileTests/SessionSnapshotTests.swift`
 
-- [ ] add `highlightedSessionID: String? = nil` to `SessionListView`; tint the matching
+- [x] add `highlightedSessionID: String? = nil` to `SessionListView`; tint the matching
   row's `listRowBackground` with the brand accent at low opacity (respecting
-  reduce-transparency)
-- [ ] pass `store.layout == .regular ? store.currentViewingSessionID : nil` from `AppView`
-- [ ] snapshot test: a list with one highlighted row (pinned width/height) — two
-  `make snapshot` runs to record
-- [ ] verify on iPad that the highlight tracks the detail after open, new session (no
-  highlight), and archive of the on-screen session
-- [ ] run tests — must pass before task 10
+  reduce-transparency) — `SelectedRowBackground`: inset 12pt rounded rect, accent at 0.18
+  opacity; with Reduce Transparency on, the equivalent OPAQUE colour (system background
+  `.mix(with: .hermesAccent, by: 0.18)`, iOS 18 API). Every other row passes `nil` so the
+  iPhone list render is unchanged (all 25 existing session-list baselines still pass)
+- [x] pass `store.layout == .regular ? store.currentViewingSessionID : nil` from `AppView`
+  — `currentViewingSessionID` made `public` (was internal) so the app target can read it
+- [x] snapshot test: a list with one highlighted row (pinned width/height) — two
+  `make snapshot` runs to record — `testSessionList_highlightedRow` + `_light` via
+  `deviceImage()` (device layout pins both dimensions; a `.sizeThatFits` layer render of
+  the `List` painted no rows at all, so the plan's component-style render was dropped);
+  `deviceImage` gained a defaulted `appearance:` parameter like `componentImage`
+- [x] verify on iPad that the highlight tracks the detail after open, new session (no
+  highlight), and archive of the on-screen session — iPad Pro 13-inch (M4) / iOS 26.5,
+  portrait overlay sidebar, demo `sessions`: seated new chat → no row highlighted; tap
+  "Draft a thank-you note to Sarah" → that row gets the inset wash and the detail title
+  changes (the bordered working glow on "Summarize" stays visually distinct); "New
+  session" → hero returns, highlight gone; full-swipe → Archive → confirm on the open
+  session → detail refills with the hero and the restored row (demo PATCH fails, rollback
+  banner) carries no highlight. Dark appearance also observed mid-pass. Landscape still
+  unverifiable (no rotate in `simctl`; see Task 8)
+- [x] run tests — must pass before task 10 — 1254 HermesKit tests green; full
+  HermesMobileTests 211 run / 36 failed, the same equal-render-size drift set (zero size
+  mismatches), both new snapshots pass
 
 ### Task 10: Verify acceptance criteria
 

@@ -315,6 +315,61 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: deviceImage())
   }
 
+  // MARK: Selected-row highlight (iPad sidebar, #80)
+
+  /// The list as the split view's sidebar column renders it: `highlightedSessionID` tints
+  /// the row of the session open in the detail column (`SelectedRowBackground`) — the
+  /// middle row here, so both plain neighbours show the untouched default background.
+  /// Rendered with `deviceImage()` like every other list snapshot: the device layout pins
+  /// BOTH dimensions of the scrollable `List`, and the key-window host is what lays the
+  /// rows out at all — a `.sizeThatFits` layer render of this list paints the section
+  /// header and the FAB but no rows (tried first; the recorded image had no highlight to
+  /// show). The phone width stands in for the 320pt sidebar; the tint is what's under test.
+  private func highlightedListHost() -> some View {
+    let now = self.now
+    let mobile = "/Users/me/dev/hermes-mobile"
+    let sessions: [Session] = (0..<3).map { i in
+      Session(id: "m\(i)",
+              title: ["Refactor the streaming parser", "Plan the iOS MVP", "UX polish pass"][i],
+              updatedAt: Date(timeIntervalSince1970: 1_749_556_800 - Double(i) * 86_400),
+              cwd: mobile,
+              startedAt: Date(timeIntervalSince1970: 1_749_556_800 - Double(i) * 86_400),
+              messageCount: 10)
+    }
+    let seen = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.messageCount ?? 0) })
+
+    return NavigationStack {
+      SessionListView(
+        store: Store(
+          initialState: SessionListFeature.State(
+            connection: connection,
+            sessions: IdentifiedArray(uniqueElements: sessions),
+            now: now,
+            seenCounts: seen,
+            expandedGroups: [mobile]
+          )
+        ) {
+          SessionListFeature().ignoring(\.task)
+        } withDependencies: {
+          $0.hermesREST.sessions = { _, _, _, _ in sessions }
+          $0.continuousClock = ImmediateClock()
+          $0.date = .constant(now)
+        },
+        highlightedSessionID: "m1" // "Plan the iOS MVP" is open in the detail column
+      )
+    }
+  }
+
+  func testSessionList_highlightedRow() {
+    assertSnapshot(of: highlightedListHost(), as: deviceImage())
+  }
+
+  /// The same highlight over a light background — the accent wash is the case most likely
+  /// to read wrong (too loud, or invisible) in the other appearance.
+  func testSessionList_highlightedRow_light() {
+    assertSnapshot(of: highlightedListHost(), as: deviceImage(appearance: .light))
+  }
+
   // MARK: Cron Jobs section
 
   /// A mix of interactive + cron sessions: the cron rows are pulled out into a dedicated

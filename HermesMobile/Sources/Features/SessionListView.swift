@@ -8,6 +8,11 @@ import SwiftUI
 /// bottom search field).
 struct SessionListView: View {
   @Bindable var store: StoreOf<SessionListFeature>
+  /// The session shown in the split view's detail column (#80), whose row gets the
+  /// brand-tinted `SelectedRowBackground`. `nil` (the default, and always in compact
+  /// width) highlights nothing — the iPhone list is unchanged. Passed in by `AppView` from
+  /// `AppFeature.State.currentViewingSessionID`; the list itself never tracks selection.
+  var highlightedSessionID: String? = nil
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -514,6 +519,9 @@ struct SessionListView: View {
     }
     .buttonStyle(.plain)
     .listRowSeparator(.hidden)
+    // `nil` for every row but the highlighted one, so non-highlighted rows keep the
+    // list's default background (a `Color.clear` here would change the iPhone render).
+    .listRowBackground(session.id == highlightedSessionID ? SelectedRowBackground() : nil)
     .swipeActions(edge: .leading) {
       pinButton(session, isPinned: isPinned)
         .tint(.orange)
@@ -571,6 +579,31 @@ struct SessionListView: View {
   private func renameButton(_ session: Session) -> some View {
     Button("Rename", systemImage: "pencil") {
       store.send(.renameButtonTapped(id: session.id))
+    }
+  }
+
+  /// The selected-row highlight for the split view's sidebar (#80): an inset, rounded
+  /// brand-accent tint behind the row that mirrors the detail column — the iPad Mail /
+  /// Notes idiom. A `listRowBackground`, so the row content, its natural height, and its
+  /// swipe/context affordances are untouched; the corner radius matches the working glow's.
+  ///
+  /// Reduce Transparency: the tint is a translucent accent wash by default; with the
+  /// setting on it becomes the equivalent OPAQUE colour (the accent mixed into the system
+  /// background), so the highlight reads the same without any see-through layer.
+  private struct SelectedRowBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(fill)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+    }
+
+    private var fill: Color {
+      reduceTransparency
+        ? Color(uiColor: .systemBackground).mix(with: .hermesAccent, by: 0.18)
+        : Color.hermesAccent.opacity(0.18)
     }
   }
 

@@ -109,8 +109,11 @@ public struct AppFeature {
     /// (`storedSessionID ?? liveSessionID`) while its chat is on screen, or `nil` when no
     /// chat is on screen (or a new chat whose id hasn't resolved yet). A detached slot
     /// (user on the list) reads `nil` so pushes for that session are NOT suppressed.
-    /// Drives foreground push suppression via `.onChange`.
-    var currentViewingSessionID: String? {
+    /// Drives foreground push suppression via `.onChange`, and — in regular width only,
+    /// where the list and the chat are on screen together — the sidebar's selected-row
+    /// highlight (#80): `AppView` passes it to `SessionListView` as a plain optional. A
+    /// new chat whose id hasn't resolved yet reads `nil`, so no row is highlighted for it.
+    public var currentViewingSessionID: String? {
       guard !isChatDetached else { return nil }
       return liveChat?.sessionKey
     }

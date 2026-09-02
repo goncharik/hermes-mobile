@@ -58,7 +58,16 @@ struct AppView: View {
         // (`AppFeature.isChatDetached`), so the chat is never rendered twice.
         NavigationSplitView(columnVisibility: $columnVisibility) {
           NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
-            SessionListView(store: homeStore)
+            // The sidebar highlights the detail column's session only in regular width,
+            // where both are on screen together; in compact the list is never visible
+            // alongside the chat, so the row stays plain (byte-identical to the iPhone
+            // list). A plain optional, deliberately NOT `List(selection:)`: selection
+            // would become a second source of truth for which session is open, racing the
+            // reducer-owned slot on push taps, archive refills, and layout changes.
+            SessionListView(
+              store: homeStore,
+              highlightedSessionID: store.layout == .regular ? store.currentViewingSessionID : nil
+            )
           } destination: { _ in
             // The path holds only thin session-key markers — the REAL chat state lives in
             // the app-level live-chat slot, so a running turn's socket survives pops.

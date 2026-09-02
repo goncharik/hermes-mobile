@@ -55,13 +55,19 @@ class SnapshotTestCase: XCTestCase {
   /// `ConnectionFailedSnapshotTests.testConnectionFailedView_retrying`). A budget is fungible
   /// — it can absorb a small regression ANYWHERE on the screen, not only in the region it was
   /// sized for — so pair it with a structural assertion of whatever it could hide.
-  func deviceImage<V: SwiftUI.View>(precision: Float = 0.98) -> Snapshotting<V, UIImage> {
+  ///
+  /// Dark by default (see `darkTraits`); `appearance: .light` only for a screen whose light
+  /// rendering is itself under test (the sidebar's accent highlight over a light list).
+  func deviceImage<V: SwiftUI.View>(
+    precision: Float = 0.98,
+    appearance: UIUserInterfaceStyle = .dark
+  ) -> Snapshotting<V, UIImage> {
     .image(
       drawHierarchyInKeyWindow: true,
       precision: precision,
       perceptualPrecision: 0.98,
       layout: .device(config: device),
-      traits: Self.darkTraits
+      traits: appearance == .dark ? Self.darkTraits : UITraitCollection(userInterfaceStyle: appearance)
     )
   }
 
