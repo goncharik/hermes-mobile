@@ -110,6 +110,28 @@ struct PreferencesClientTests {
     #expect(prefs.loadDefaultSessionSwipeAction() == .archive) // unknown raw value → default
   }
 
+  @Test func inMemoryShowCronSectionRoundTripAndDefault() {
+    let prefs = PreferencesClient.inMemory()
+    #expect(prefs.loadShowCronSection() == true) // default when unset: shown
+
+    prefs.saveShowCronSection(false)
+    #expect(prefs.loadShowCronSection() == false)
+
+    prefs.saveShowCronSection(true)
+    #expect(prefs.loadShowCronSection() == true)
+  }
+
+  @Test func liveShowCronSectionBacksOntoProvidedDefaults() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.showcron")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.showcron")
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    #expect(prefs.loadShowCronSection() == true) // default when unset: shown
+    prefs.saveShowCronSection(false)
+    #expect(suite.bool(forKey: "hermes.show-cron-section") == false)
+    #expect(prefs.loadShowCronSection() == false)
+  }
+
   @Test func inMemorySelectedProfileRoundTripAndClear() {
     let prefs = PreferencesClient.inMemory()
     #expect(prefs.loadSelectedProfileID() == nil)

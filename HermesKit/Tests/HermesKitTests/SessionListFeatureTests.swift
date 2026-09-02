@@ -2263,6 +2263,56 @@ struct SessionListFeatureTests {
     await store.send(.onDisappear)
   }
 
+  // MARK: - Cron section visibility
+
+  @Test func setShowCronSectionUpdatesStateAndPersists() async {
+    let prefs = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = prefs
+    }
+
+    #expect(store.state.showCronSection == true) // default: shown
+    await store.send(.setShowCronSection(false)) {
+      $0.showCronSection = false
+    }
+    #expect(prefs.loadShowCronSection() == false) // persisted
+
+    // Re-sending the same value is a no-op (no state change).
+    await store.send(.setShowCronSection(false))
+  }
+
+  @Test func loadSeedsShowCronSectionFromPreferences() async {
+    let prefs = PreferencesClient.inMemory()
+    prefs.saveShowCronSection(false)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = prefs
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+    }
+
+    await store.send(.task) {
+      $0.now = self.now
+      $0.isLoading = true
+      $0.showCronSection = false // seeded from prefs on load
+    }
+    await store.receive(\.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.profilesResponse.failure)
+    await store.receive(\.sessionsResponse.success) { $0.isLoading = false }
+    await store.receive(\.cronJobsResponse.failure) {
+      $0.cronJobsSupported = false
+    }
+    await store.send(.onDisappear)
+  }
+
   @Test func chronologicalSessionsAreRecencyOrderedAndExcludePinned() {
     var state = SessionListFeature.State(connection: connection)
     state.sessions = [
