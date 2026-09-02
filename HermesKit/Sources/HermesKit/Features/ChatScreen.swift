@@ -15,8 +15,14 @@ public struct ChatScreen {
     /// never from this marker.
     public var sessionKey: String?
 
-    public init(sessionKey: String? = nil) {
+    /// Monotonic identity of the app-owned live-chat slot this marker was created for.
+    /// A delayed `onDisappear` from an outgoing destination carries this value so the
+    /// parent can ignore it after slot replacement instead of cleaning up the new chat.
+    public var generation: UInt
+
+    public init(sessionKey: String? = nil, generation: UInt = 0) {
       self.sessionKey = sessionKey
+      self.generation = generation
     }
   }
 
