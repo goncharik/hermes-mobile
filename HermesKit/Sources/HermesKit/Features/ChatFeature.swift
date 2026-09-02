@@ -228,16 +228,20 @@ public struct ChatFeature {
     /// into it), and an idle pop must not destroy a parked queue.
     public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
 
-    /// No prompt has been sent yet — but the composer may hold a draft. No DB row
-    /// (`storedSessionID == nil`; the server creates one lazily on the first prompt),
-    /// nothing rendered, no turn in flight, no queued prompts. The app-level "new session"
+    /// No prompt has been sent yet — but the composer may hold a draft. This chat was
+    /// created as a NEW session (`resumesStoredSession` false, no branch attach), nothing is
+    /// rendered, no turn is in flight, no prompts are queued. The app-level "new session"
     /// policy reads this: filling a fresh chat over one that has never been prompted would
     /// tear down and redial a socket for an identical result, so it clears the composer
     /// draft instead — the draft and staged attachments are exactly what that no-op clears.
-    /// A connected-but-unprompted chat (`liveSessionID` set) still qualifies: the live
-    /// session holds nothing worth keeping.
+    /// A connected-but-unprompted chat still qualifies: its `session.create` handshake holds
+    /// nothing worth keeping (the server creates the DB row lazily, on the first prompt).
+    /// That handshake is also why the test is `resumesStoredSession`, not
+    /// `storedSessionID == nil` — the handle carries a `stored_session_id` the moment the
+    /// socket is ready, so the id alone stops telling a fresh seat from a resumed session.
     public var isUnpromptedNewChat: Bool {
-      storedSessionID == nil && transcript.isEmpty && !isSending && !hasQueuedWork
+      !resumesStoredSession && attachLiveSessionID == nil && branchSeed == nil
+        && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
     /// Nothing typed, staged, or sent at all — an `isUnpromptedNewChat` with an empty
@@ -246,6 +250,17 @@ public struct ChatFeature {
     /// over the session list.
     public var isPristineNewChat: Bool {
       isUnpromptedNewChat && composerText.isEmpty && attachments.isEmpty
+    }
+
+    /// Composer input still resolving outside the draft itself: a clipboard load whose batch
+    /// lands later (#54, paired by `pendingPasteCount`) or voice input mid
+    /// permission/recording/transcription. Clearing `composerText`/`attachments` under either
+    /// is not a reset — the in-flight result appends into the supposedly fresh composer, and
+    /// the mic keeps running. The app-level "new session" no-op excludes such a chat and does
+    /// a real slot replacement instead, whose `.teardown` releases the mic and whose fresh
+    /// state drops the paste (the pairing token is per-`State`).
+    public var hasInFlightComposerInput: Bool {
+      pendingPasteCount > 0 || recording.isBusy
     }
 
     /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the
@@ -358,6 +373,12 @@ public struct ChatFeature {
     // Bookkeeping (internal).
     var liveSessionID: String?
     var storedSessionID: String?
+    /// This chat was opened to RESUME an existing session (a list tap, a push tap, a branch
+    /// primed from its create) rather than created as a new chat. Fixed at init from
+    /// `resumeStoredID` and never mutated — `storedSessionID` can't answer the question
+    /// after the fact, because a new chat's `session.create` handshake writes one too.
+    /// Read only by `isUnpromptedNewChat` (and through it the regular-width seat policy).
+    let resumesStoredSession: Bool
     /// Set when this chat was opened from a branch `session.create` (#34): the session is
     /// live in server memory but has NO DB row until its first prompt (the server creates
     /// it lazily), so every hydrate must attach by THIS live id via `session.activate` —
@@ -489,6 +510,7 @@ public struct ChatFeature {
       self.connection = connection
       self.profileName = profileName
       self.storedSessionID = resumeStoredID
+      self.resumesStoredSession = resumeStoredID != nil
       self.title = title
       self.transcript = transcript
       self.composerText = composerText

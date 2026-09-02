@@ -554,6 +554,71 @@ struct AppFeatureTests {
     await store.finish()
   }
 
+  /// The identity teardowns drop the slot by ASSIGNMENT, so no `ChatFeature.teardown` runs to
+  /// release the mic — and `ifLet`'s auto-cancel reaches the level/tick EFFECTS but not the
+  /// `AVAudioRecorder` and audio session the client holds. In the split layout Settings is on
+  /// screen beside a recording composer, so each of these must cancel the recorder itself.
+  @Test func identityTeardownsReleaseARecordingSlotsMicrophone() async {
+    var recording = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    recording.recording = .recording
+
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: freshCookieConnection(username: "bob"), sameUser: false
+      )))),
+    ] {
+      let cancelled = LockIsolated(0)
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          path: StackState([ChatScreen.State(sessionKey: "s1")]),
+          liveChat: recording,
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .password,
+            provider: "basic", previousUsername: "alice"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.audioRecorder.cancel = { cancelled.withValue { $0 += 1 } }
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(cancelled.value == 1, "\(action) left the recorder running")
+    }
+  }
+
+  /// The same teardowns raise no recorder call for an IDLE slot — no audio session is touched
+  /// on an ordinary logout.
+  @Test func identityTeardownsLeaveAnIdleSlotsRecorderAlone() async {
+    let cancelled = LockIsolated(0)
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1")
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+      $0.audioRecorder.cancel = { cancelled.withValue { $0 += 1 } }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.disconnect)))
+    await store.finish()
+    #expect(cancelled.value == 0)
+  }
+
   /// Popping mid-turn KEEPS the slot untouched — no persist/teardown/clear fires (the send
   /// is exhaustive: any follow-up action would fail it), and the detached slot's fold still
   /// reduces streaming events, so rows keep accumulating while the user sits on the list.
@@ -1345,6 +1410,50 @@ struct AppFeatureTests {
       $0.liveChat?.status = .reconnecting
     }
     // Tear down the live socket the resume opened.
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// A same-user re-auth must refresh the LIST's connection too, not just the slot's: it is
+  /// the snapshot every later chat is built from (a row tap, the regular-width archive/delete
+  /// refill, the profile reseat) and the one its own REST calls carry. Left stale, those
+  /// reconnect under the dead credentials and, in cookie mode, `wsTicket` pushes the expired
+  /// jar back into the shared cookie storage — undoing the login that just succeeded.
+  @Test func sameUserReauthRefreshesTheListsConnectionToo() async {
+    let fresh = freshCookieConnection(username: "alice")
+    var seat = ChatFeature.State(connection: cookieConnection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: cookieConnection),
+        liveChat: seat,
+        layout: .regular,
+        reauth: ReauthFeature.State(
+          serverURL: URL(string: "http://mac.tailnet:9119")!, method: .password,
+          provider: "basic", previousUsername: "alice"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.reauth(.presented(.delegate(.reauthenticated(connection: fresh, sameUser: true))))) {
+      $0.reauth = nil
+      $0.home?.connection = fresh
+    }
+    await store.receive(\.liveChat.resumeAfterReauth)
+
+    // The refill the sidebar can trigger while the fresh login is still new now carries the
+    // fresh credentials, not the expired jar.
+    await store.send(.home(.delegate(.sessionArchived(id: "live-new"))))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.connection == fresh)
+
     await store.send(.liveChat(.teardown))
   }
 
@@ -3615,9 +3724,10 @@ struct AppFeatureTests {
   }
 
   /// In regular the chat view's disappearance (it moved between the stack and the detail
-  /// column on a layout change) must NEVER tear the slot down — even for an idle chat that
-  /// the compact pop policy would clear. Only the view-session cleanup is forwarded.
-  @Test func chatViewDisappearedInRegularNeverTearsDownIdleSlot() async {
+  /// column on a layout change, or the `slotGeneration` key re-created it) must NEVER tear
+  /// the slot down — even for an idle chat that the compact pop policy would clear — and
+  /// must not forward the view-session cleanup either: the chat is still the visible detail.
+  @Test func chatViewDisappearedInRegularIsAFullNoOp() async {
     var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
     chat.liveSessionID = "live1"
     chat.status = .ready
@@ -3631,16 +3741,15 @@ struct AppFeatureTests {
       AppFeature()
     }
 
+    // Exhaustive: no `viewDisappeared` / `persistNow` / `teardown` / `clearLiveChat`.
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
-    // Exhaustive: no `persistNow` / `teardown` / `clearLiveChat` may follow.
     #expect(store.state.liveChat == chat)
   }
 
-  /// Compact guard for the same policy, untouched by the predicate rewrite: an idle
-  /// chat whose view disappeared while a marker is STILL on the path (slot replacement)
-  /// gets cleanup only.
-  @Test func chatViewDisappearedInCompactWithMarkerIsCleanupOnly() async {
+  /// Compact counterpart: a chat whose view disappeared while a marker is STILL on the path
+  /// is on screen (a narrowing column move) or was already torn down by the slot replacement
+  /// that swapped the marker — either way nothing is forwarded.
+  @Test func chatViewDisappearedInCompactWithMarkerIsANoOp() async {
     let chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
     let store = TestStore(
       initialState: AppFeature.State(
@@ -3653,8 +3762,49 @@ struct AppFeatureTests {
     }
 
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat == chat)
+  }
+
+  /// The reason the cleanup is not forwarded while the chat is on screen: crossing the
+  /// regular/compact threshold mid-recording used to cancel the mic under a visible
+  /// composer (`.viewDisappeared` → `releaseVoiceResources`). Both directions, with the
+  /// recording state intact afterwards.
+  @Test func columnMoveWhileRecordingKeepsTheRecording() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.status = .ready
+    chat.recording = .recording
+    chat.recordingSeconds = 4
+    chat.waveformLevels = [0.3, 0.6]
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+    }
+
+    // Widen: the marker clears, the detail column takes over, the mic keeps running.
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.path = .init()
+    }
+    await store.send(.chatViewDisappeared)
+    #expect(store.state.liveChat?.recording == .recording)
+    #expect(store.state.liveChat?.recordingSeconds == 4)
+
+    // Narrow back: the marker returns, the chat is on the stack, still recording.
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
+    }
+    await store.send(.chatViewDisappeared)
+    #expect(store.state.liveChat?.recording == .recording)
+    #expect(store.state.liveChat?.recordingSeconds == 4)
   }
 
   /// A turn ending in regular routes the glow only: the slot is the visible detail (never
@@ -3950,10 +4100,9 @@ struct AppFeatureTests {
     }
   }
 
-  /// The seat's CONNECTION is deliberately not part of the reuse rule: a same-user cookie
-  /// re-auth hands the chat fresh cookies while `home` keeps the snapshot it was built with,
-  /// and a mismatch there would redial the seat under the stale credentials. "New session"
-  /// over it still only resets the composer. Exhaustive: a teardown would fail the send.
+  /// The seat's CONNECTION is deliberately not part of the reuse rule — it is not what makes a
+  /// seat "the chat the list would build now". Even with the two out of step, "New session"
+  /// only resets the composer. Exhaustive: a teardown would fail the send.
   @Test func newSessionOverUnpromptedChatWithFresherCookiesStillOnlyResetsComposer() async {
     var seat = ChatFeature.State(connection: freshCookieConnection(username: "alice"))
     seat.composerText = "half-typed"
@@ -4009,6 +4158,106 @@ struct AppFeatureTests {
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The seat's `session.create` handshake writes a `stored_session_id` seconds after it is
+  /// seated, with no prompt and no DB row behind it. "New session" over such a seat must
+  /// still be the composer reset, not a redial. Exhaustive: a teardown would fail the send.
+  @Test func newSessionOverAConnectedSeatStillOnlyResetsComposer() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "typed")
+    seat.liveSessionID = "live-new"
+    seat.storedSessionID = "20260610_seat" // what `session.create` handed back
+    seat.status = .ready
+    seat.hasHydrated = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil)))) {
+      $0.liveChat?.composerText = ""
+    }
+    #expect(store.state.liveChat?.liveSessionID == "live-new", "the live session survives")
+    #expect(store.state.slotGeneration == 0, "no refill — the seat was reused")
+  }
+
+  /// A clipboard load still resolving (#54) cannot be undone by clearing the draft: its batch
+  /// lands later and would append into the "fresh" composer. Such a seat takes the real
+  /// refill, whose replacement starts at `pendingPasteCount == 0` and drops the batch.
+  @Test func newSessionOverASeatWithAPendingPasteRefillsInstead() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "typed")
+    seat.liveSessionID = "live-new"
+    seat.pendingPasteCount = 1
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.slotGeneration = 1
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    #expect(store.state.liveChat?.pendingPasteCount == 0, "the pending paste can no longer land")
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// Same for voice: a recording (or its transcription) in flight outlives a draft reset —
+  /// the mic keeps running and the transcript appends afterwards. The real refill's
+  /// `.teardown` releases the mic and the replacement is idle.
+  @Test func newSessionOverARecordingSeatRefillsInstead() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.recording = .recording
+    seat.recordingSeconds = 3
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown) {
+      $0.liveChat?.recording = .idle
+      $0.liveChat?.recordingSeconds = 0
+    }
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.slotGeneration = 1
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    #expect(store.state.liveChat?.recording == .idle)
     await store.send(.liveChat(.teardown))
   }
 
@@ -4585,7 +4834,7 @@ struct AppFeatureTests {
   /// A layout change MID-TURN keeps the socket: widening (compact stack → split) and
   /// narrowing back (split → Slide Over / stack) only reconcile the path — the running
   /// slot's one socket is never terminated or redialled, and the `chatViewDisappeared`
-  /// the chat view fires while moving between columns is cleanup-only in BOTH directions.
+  /// the chat view fires while moving between columns is a no-op in BOTH directions.
   /// Exhaustive from the first layout change on: any teardown-chain action would fail it.
   @Test func layoutChangeMidTurnKeepsSocketAndSlotBothWays() async {
     let connectCount = LockIsolated(0)
@@ -4626,9 +4875,8 @@ struct AppFeatureTests {
       $0.layout = .regular
       $0.path = .init()
     }
-    // The chat view left the stack for the detail column: cleanup only, no teardown.
+    // The chat view left the stack for the detail column: a no-op, no teardown.
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat == running)
 
     // Narrow (Slide Over / a narrow window): the marker comes back, the slot stays.
@@ -4636,9 +4884,8 @@ struct AppFeatureTests {
       $0.layout = .compact
       $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
     }
-    // The detail column's view left for the stack: cleanup only again.
+    // The detail column's view left for the stack: a no-op again.
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat == running)
 
     // Widen once more (the round-trip the plan's manual pass describes).
@@ -4680,7 +4927,6 @@ struct AppFeatureTests {
       $0.path = .init()
     }
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat == chat)
 
     await store.send(.layoutChanged(.compact)) {
@@ -4688,7 +4934,6 @@ struct AppFeatureTests {
       $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
     }
     await store.send(.chatViewDisappeared)
-    await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat == chat)
   }
 
@@ -4805,6 +5050,58 @@ struct AppFeatureTests {
     // The list's own scoped refetch lands independently of the reseat.
     await store.receive(\.home.sessionsResponse)
     await store.receive(\.home.cronJobsResponse)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The same reseat for the seat as it actually exists a second after launch: dialled, with
+  /// the `stored_session_id` its `session.create` handshake returned. Nothing has been
+  /// prompted, so the profile switch must still reseat it — otherwise the first prompt is
+  /// scoped to the profile the user just left.
+  @Test func profileSwitchInRegularReseatsTheSeatThatAlreadyCreatedItsSession() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.storedSessionID = "20260610_seat"
+    seat.status = .ready
+    seat.hasHydrated = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work"))) {
+      $0.home?.selectedProfileName = "work"
+    }
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    #expect(store.state.liveChat?.profileName == "work")
     await store.send(.liveChat(.teardown))
   }
 

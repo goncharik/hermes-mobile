@@ -2366,6 +2366,41 @@ struct ChatReductionTests {
     #expect(!state.isUnpromptedNewChat)
   }
 
+  /// The regular-width seat dials the moment it is seated, and `session.create` hands back a
+  /// `stored_session_id` before a single prompt or DB row exists. The predicate must survive
+  /// that handshake — otherwise the seat stops qualifying for the "new session" reset, the
+  /// profile reseat, and the narrowing drop seconds after launch.
+  @Test func isUnpromptedNewChatSurvivesTheSessionCreateHandshake() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn))
+    #expect(store.state.isUnpromptedNewChat)
+
+    await store.send(.sessionResult(.success(
+      SessionHandle(sessionID: "live-1", storedSessionID: "20260610_seat")
+    ))) {
+      $0.liveSessionID = "live-1"
+      $0.storedSessionID = "20260610_seat"
+      $0.status = .ready
+      $0.hasHydrated = true
+    }
+    #expect(store.state.isUnpromptedNewChat)
+    #expect(store.state.isPristineNewChat)
+
+    await store.send(.teardown)
+  }
+
+  /// A branch primed straight from its `session.create` (#34) carries seeded history the
+  /// server holds in memory: never a "new chat", even before its first hydrate paints a row.
+  /// Modern agents return a `stored_session_id` at create (so the chat resumes one); older
+  /// ones don't, which is what the attach/seed clauses cover.
+  @Test func isUnpromptedNewChatFalseForAnUnpersistedBranch() {
+    var state = ChatFeature.State(connection: conn)
+    state.attachLiveSessionID = "live-branch"
+    state.branchSeed = ChatFeature.State.BranchSeed(text: "seed", parentSessionID: "parent")
+    #expect(state.transcript.isEmpty)
+    #expect(!state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
   @Test func isUnpromptedNewChatFalseWithTranscriptRow() {
     var state = ChatFeature.State(connection: conn)
     state.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
@@ -2423,6 +2458,28 @@ struct ChatReductionTests {
   @Test func isPristineNewChatFalseForPromptedChat() {
     let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
     #expect(!state.isPristineNewChat)
+  }
+
+  // MARK: In-flight composer input (#80 — what a draft reset cannot reach)
+
+  /// A pending paste and every busy voice phase count; a plain draft does not. These are the
+  /// states where clearing `composerText`/`attachments` is not a reset — the batch or the
+  /// transcription lands afterwards, in the supposedly fresh composer.
+  @Test func hasInFlightComposerInputCoversPendingPasteAndVoice() {
+    var draft = ChatFeature.State(connection: conn)
+    draft.composerText = "typed"
+    draft.attachments = [imageAttachment(0)]
+    #expect(!draft.hasInFlightComposerInput)
+
+    var pasting = ChatFeature.State(connection: conn)
+    pasting.pendingPasteCount = 1
+    #expect(pasting.hasInFlightComposerInput)
+
+    for phase in [ChatFeature.State.RecordingState.requestingPermission, .recording, .transcribing] {
+      var voice = ChatFeature.State(connection: conn)
+      voice.recording = phase
+      #expect(voice.hasInFlightComposerInput, "\(phase) is composer input still resolving")
+    }
   }
 
   // MARK: Empty-chat hero (iPad split view, #80 — `showsEmptyHero` truth table)

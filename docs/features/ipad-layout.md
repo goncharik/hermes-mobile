@@ -37,10 +37,14 @@ detached-turn-end teardown, the `openSession` re-open marker push, and the #32 p
 Compact is byte-identical by construction: with `layout == .compact` the predicate reduces to
 the old `path.isEmpty`.
 
-Consequences in regular: `chatViewDisappeared` is always cleanup-only (the view fires it when
-it moves between the stack and the detail column on a size-class change — never a teardown);
-`runningChanged(false)` only updates the glow; the slot survives every layout flip with its
-socket (one dial, zero terminations across compact→regular→compact→regular, mid-turn).
+Consequences in regular: `chatViewDisappeared` acts ONLY on a detached slot, so it is a full
+no-op here — the view fires it when the chat moves between the stack and the detail column on a
+size-class change, and when `slotGeneration` re-creates the detail view over an already-replaced
+chat. Forwarding the view-session cleanup (`.viewDisappeared` → `releaseVoiceResources`) in
+either case would cancel a live recording under a still-visible composer; a replaced chat had
+its `.teardown` instead. `runningChanged(false)` only updates the glow; the slot survives every
+layout flip with its socket (one dial, zero terminations across compact→regular→compact→regular,
+mid-turn).
 
 ## The `ChatScreen` marker is compact-only
 
@@ -93,16 +97,23 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
   off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
-  `ChatFeature.State.isUnpromptedNewChat` (`storedSessionID == nil && transcript.isEmpty &&
-  !isSending && !hasQueuedWork` — a draft, staged attachments, or a connected-but-unprompted
-  live id do NOT make it prompted) AND the same `scopedProfileName`. Tearing it down to fill an
-  identical fresh one would redial the socket for nothing, so it resets the composer draft
-  (text → the `initialComposerText` seed or empty; attachments cleared) and returns `.none`. A
-  stale profile falls through to a real refill. The CONNECTION is deliberately not compared: it
-  only diverges after a same-user cookie re-auth, which hands the chat fresh cookies while
-  `home` keeps the snapshot it was built with, and a refill there would redial under the stale
-  credentials. Compact safety net: a detached empty chat in that branch gets its marker
-  re-pushed so a "New" tap always lands on a screen.
+  `ChatFeature.State.isUnpromptedNewChat` (`!resumesStoredSession && attachLiveSessionID == nil
+  && branchSeed == nil && transcript.isEmpty && !isSending && !hasQueuedWork` — a draft, staged
+  attachments, or a connected-but-unprompted live session do NOT make it prompted) AND the same
+  `scopedProfileName`. Tearing it down to fill an identical fresh one would redial the socket
+  for nothing, so it resets the composer draft (text → the `initialComposerText` seed or empty;
+  attachments cleared) and returns `.none`. A stale profile falls through to a real refill, and
+  so does a seat with `hasInFlightComposerInput` (a clipboard load still resolving, or voice
+  mid permission/recording/transcription): a draft reset cannot reach the batch that lands
+  later or the running mic, so those need the real teardown. The CONNECTION is deliberately not
+  compared — it is not part of "which chat the list would seat", and a same-user re-auth
+  refreshes the list's copy alongside the chat's anyway. Compact safety net: a detached empty
+  chat in that branch gets its marker re-pushed so a "New" tap always lands on a screen.
+
+  `resumesStoredSession` is fixed at init (`resumeStoredID != nil`) and is what makes the
+  predicate durable: the seat dials immediately in regular, and its `session.create` handshake
+  writes a `stored_session_id` back before any prompt or DB row exists — so `storedSessionID`
+  alone stops telling a fresh seat from a resumed session seconds after launch.
 
 **Dialling a regular-width fill, and view identity.** The initial connect is the chat view's
 `.task`. In compact the fresh marker's destination is a NEW view, so it fires there. In regular
@@ -243,6 +254,9 @@ the compact layout. Deployment target stays iOS 18.
   `layoutChangedToRegularWithNilSlotFillsNewChat`, `layoutChangedToCompactWithNilSlotDoesNotFill`,
   `newSessionOverUnpromptedChatClearsComposerOnly`, `newSessionOverUnpromptedChatUnderStaleProfileRefills`,
   `newSessionOverUnpromptedChatWithFresherCookiesStillOnlyResetsComposer`,
+  `newSessionOverAConnectedSeatStillOnlyResetsComposer`,
+  `newSessionOverASeatWithAPendingPasteRefillsInstead`,
+  `newSessionOverARecordingSeatRefillsInstead`,
   `newSessionOverNonEmptyChatInRegularTearsDownAndRefills`,
   `openingSessionInRegularOverUnpromptedChatReplacesItWithoutMarker`,
   `slotReplacementInRegularDialsReplacementExactlyOnce`, `archivingOnScreenSessionInRegularRefillsNewChat`,
@@ -252,12 +266,16 @@ the compact layout. Deployment target stays iOS 18.
   cold-launch replay in regular); `differentUserReauthInRegularSeatsNewChatForNewUser` (the
   seat arrives through `.fillLiveChat` and is dialled exactly once); "Acceptance edge cases"
   (`layoutChangeMidTurnKeepsSocketAndSlotBothWays`, `chatViewDisappearedDuringColumnMoveKeepsIdleSlotBothWays`,
+  `columnMoveWhileRecordingKeepsTheRecording`, `identityTeardownsReleaseARecordingSlotsMicrophone`,
+  `sameUserReauthRefreshesTheListsConnectionToo`,
   `logoutInRegularLandsOnOnboardingWithNoSlot`, `profileSwitchInRegularReseatsEmptyChatUnderNewProfile`,
+  `profileSwitchInRegularReseatsTheSeatThatAlreadyCreatedItsSession`,
   `profileSwitchInRegularCarriesTheSeatsDraftAcrossTheReseat`,
   `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`).
   Every pre-existing compact test is untouched — that is the byte-identical guard.
-- `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isUnpromptedNewChat*` (5),
-  `isPristineNewChat*` (4) and the
+- `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isUnpromptedNewChat*` (7,
+  including `…SurvivesTheSessionCreateHandshake` and `…FalseForAnUnpersistedBranch`),
+  `isPristineNewChat*` (4), `hasInFlightComposerInputCoversPendingPasteAndVoice` and the
   `showsEmptyHero*` truth table + `hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt`,
   `hydrateOfRunningTurnWithEmptyHistoryHidesHero`, `createHandshakeMarksHydratedSoStoredIDKeepsHero`.
 - `HermesMobileTests/ChatColumnLayoutTests.swift` — measured `UIWindow`-hosted: 1024pt window →
