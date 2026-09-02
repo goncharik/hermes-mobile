@@ -117,6 +117,7 @@ struct HydrateTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       // Model + usage overwritten by the server (not merged with the cache).
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 42, contextMax: 200_000, contextPercent: 0)

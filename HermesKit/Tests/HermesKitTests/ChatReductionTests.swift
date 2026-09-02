@@ -679,6 +679,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // New sessions create with no title so the server auto-names from the first message.
     #expect(sent.value?["method"]?.stringValue == "session.create")
@@ -722,6 +723,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("work")]))
@@ -764,6 +766,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     #expect(sent.value?["params"] == .object([:]))
     await store.send(.teardown)
@@ -805,6 +808,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
     }
@@ -853,6 +857,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(
         input: 120_000, output: 30_000, total: 150_000,
@@ -904,6 +909,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // The synchronous delegate send lands before the async usage fetch resolves.
     await store.receive(\.delegate.runningChanged)
@@ -955,6 +961,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 10, contextMax: 200_000, contextPercent: 0)
       // Rows carry deterministic, content-derived ids (matching `reconstructTranscript`).
@@ -1007,6 +1014,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 5, contextMax: 200_000, contextPercent: 0)
       // running == true → working indicator on.
@@ -2378,5 +2386,121 @@ struct ChatReductionTests {
     var draining = ChatFeature.State(connection: conn)
     draining.drainingEntry = QueuedPrompt(id: uuid(1), text: "now")
     #expect(!draining.isEmptyNewChat)
+  }
+
+  // MARK: Empty-chat hero (iPad split view, #80 — `showsEmptyHero` truth table)
+
+  /// A brand-new chat has nothing to wait for: the hero shows at once, before any
+  /// handshake, and a composer draft does not hide it.
+  @Test func showsEmptyHeroTrueForFreshNewChat() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(!state.hasHydrated)
+    #expect(state.showsEmptyHero)
+
+    state.composerText = "typed but never sent"
+    state.attachments = [imageAttachment(0)]
+    #expect(state.showsEmptyHero, "a draft lives in the composer, not the transcript region")
+  }
+
+  /// A RESUMED session with no snapshot cache has an empty transcript for the round-trip
+  /// before history lands — the hero must not flash there.
+  @Test func showsEmptyHeroFalseForResumedSessionBeforeHydrate() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(state.transcript.isEmpty)
+    #expect(!state.hasHydrated)
+    #expect(!state.showsEmptyHero)
+  }
+
+  /// Once the hydrate has landed, a genuinely empty server history shows the hero.
+  @Test func showsEmptyHeroTrueForResumedSessionAfterHydrateWithEmptyHistory() {
+    var state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    state.hasHydrated = true
+    #expect(state.showsEmptyHero)
+  }
+
+  @Test func showsEmptyHeroFalseWithAnyTranscriptRow() {
+    var fresh = ChatFeature.State(connection: conn)
+    fresh.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
+    #expect(!fresh.showsEmptyHero)
+
+    var hydrated = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    hydrated.hasHydrated = true
+    hydrated.transcript = [
+      ChatRow(id: uuid(1), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))
+    ]
+    #expect(!hydrated.showsEmptyHero, "a live thinking row is transcript content too")
+  }
+
+  @Test func showsEmptyHeroFalseWhileSending() {
+    var state = ChatFeature.State(connection: conn)
+    state.isSending = true
+    #expect(!state.showsEmptyHero)
+  }
+
+  @Test func showsEmptyHeroFalseWithStreamingRow() {
+    var state = ChatFeature.State(connection: conn)
+    state.streamingRowID = uuid(0)
+    #expect(!state.showsEmptyHero)
+  }
+
+  /// Reducer path: the resumed chat hides the hero until `activateResult(.success)` with
+  /// an empty history lands (`applyActivate` flips `hasHydrated`); the hero then shows;
+  /// the next turn's `message.start` + first delta hide it again (`isSending`, then the
+  /// lazily created streaming row).
+  @Test func hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt() async {
+    let initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    let store = recoveryStore(initial)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.activateResult(.success(activateResponse(running: false)))) {
+      $0.hasHydrated = true
+    }
+    #expect(store.state.transcript.isEmpty)
+    #expect(store.state.showsEmptyHero)
+
+    await store.send(.gatewayEvent(.messageStart))
+    #expect(store.state.isSending)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.gatewayEvent(.messageDelta(text: "Hel")))
+    #expect(store.state.streamingRowID != nil)
+    #expect(!store.state.transcript.isEmpty)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.teardown)
+  }
+
+  /// A hydrate reporting a STILL-RUNNING turn with empty history hides the hero through
+  /// `isSending` even though the transcript is empty (the eager thinking row is added by
+  /// `reconcileTurnTimer` — either way, nothing to hero over).
+  @Test func hydrateOfRunningTurnWithEmptyHistoryHidesHero() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn, resumeStoredID: "stored123"))
+
+    await store.send(.activateResult(.success(activateResponse(running: true))))
+    #expect(store.state.hasHydrated)
+    #expect(store.state.isSending)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.teardown)
+  }
+
+  /// The fresh-session `session.create` handle is that chat's hydrate: a handle carrying
+  /// a `stored_session_id` must not flip the hero off for a chat the server just created
+  /// empty.
+  @Test func createHandshakeMarksHydratedSoStoredIDKeepsHero() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn))
+    #expect(store.state.showsEmptyHero)
+
+    await store.send(.sessionResult(.success(
+      SessionHandle(sessionID: "live456", storedSessionID: "20260610_fresh")
+    ))) {
+      $0.liveSessionID = "live456"
+      $0.storedSessionID = "20260610_fresh"
+      $0.status = .ready
+      $0.hasHydrated = true
+    }
+    #expect(store.state.showsEmptyHero)
+
+    await store.send(.teardown)
   }
 }

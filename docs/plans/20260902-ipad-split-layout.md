@@ -267,15 +267,15 @@ case .home:
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatFeatureTests.swift` (closest existing file)
 
-- [ ] add `hasHydrated` (set on `activateResult(.success)` and on the fresh-session
+- [x] add `hasHydrated` (set on `activateResult(.success)` and on the fresh-session
   `.ready`/create path; cleared never — per-slot lifetime)
-- [ ] add `showsEmptyHero` and `ChatLayout.readableMaxWidth = 760`
-- [ ] write the truth-table tests: fresh new chat → true; resumed + not hydrated + empty
+- [x] add `showsEmptyHero` and `ChatLayout.readableMaxWidth = 760`
+- [x] write the truth-table tests: fresh new chat → true; resumed + not hydrated + empty
   transcript → false; resumed + hydrated + empty → true; any transcript row → false;
   `isSending` → false; `streamingRowID != nil` → false
-- [ ] write a reducer test: `activateResult(.success(empty history))` flips `hasHydrated`
+- [x] write a reducer test: `activateResult(.success(empty history))` flips `hasHydrated`
   and the hero shows; a delta then hides it
-- [ ] run `make test` — must pass before task 5
+- [x] run `make test` — must pass before task 5
 
 ### Task 5: Project manifest — iPad destination and orientations
 

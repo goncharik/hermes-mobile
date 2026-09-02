@@ -1,6 +1,17 @@
 import ComposableArchitecture
 import Foundation
 
+/// Layout constants for the chat column (#80). Lives in HermesKit so the view and the
+/// measured layout tests read ONE value.
+public enum ChatLayout {
+  /// The readable-width cap on the chat column in wide (iPad regular) layouts: the
+  /// transcript, footer, cards, panels, and composer are wrapped in one OUTER container
+  /// limited to this width and centered. Phone widths are below the cap, so compact
+  /// rendering is unchanged. The cap is never applied to table cells — those stay under
+  /// `CappedWidthLayout` (see `docs/features/markdown-rendering.md`).
+  public static let readableMaxWidth: CGFloat = 760
+}
+
 /// The live chat surface for one session. Owns the WebSocket lifecycle, folds the
 /// gateway event stream into a transcript, sends prompts, and reconnects with backoff.
 ///
@@ -229,6 +240,21 @@ public struct ChatFeature {
       storedSessionID == nil && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
+    /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the
+    /// transcript. True only when there is provably nothing to show: no rows, no turn in
+    /// flight, no streaming row — and, for a RESUMED session (`storedSessionID != nil`),
+    /// only once its first hydrate has landed. A resumed chat opened without a snapshot
+    /// cache has an empty transcript for the round-trip before history arrives; without
+    /// the `hasHydrated` clause the hero would flash and be replaced by the history. A
+    /// resumed session whose server history is genuinely empty shows the hero after the
+    /// hydrate (correct). A brand-new chat (`storedSessionID == nil`) shows it at once.
+    /// Pure state — `CollectionTranscriptView` stays the only transcript renderer; the
+    /// view swaps the region, it never derives this.
+    public var showsEmptyHero: Bool {
+      transcript.isEmpty && !isSending && streamingRowID == nil
+        && (storedSessionID == nil || hasHydrated)
+    }
+
     /// Pastes whose clipboard providers are still loading (#54) — a counter, not a flag,
     /// because two pastes in quick succession chain in the view's coordinator and both must
     /// be outstanding at once.
@@ -421,6 +447,12 @@ public struct ChatFeature {
     /// over the SAME socket; only a second consecutive timeout concludes half-open and
     /// redials. Reset on hydrate success and at every fresh hydrate issuance.
     var hydrateRetriedAfterTimeout: Bool
+    /// Set once this slot's first server handshake has landed: a successful
+    /// `activateResult` (the `session.resume`/`session.activate` hydrate — `applyActivate`)
+    /// or the fresh-session `session.create` handle (`sessionResult`). Never cleared —
+    /// per-slot lifetime, unpersisted. Only `showsEmptyHero` reads it: "the transcript is
+    /// empty because the server said so" vs "empty because history hasn't arrived yet".
+    var hasHydrated: Bool
 
     public enum Status: Equatable, Sendable {
       case connecting
@@ -468,6 +500,7 @@ public struct ChatFeature {
       self.hasStarted = false
       self.awaitingReauth = false
       self.hydrateRetriedAfterTimeout = false
+      self.hasHydrated = false
       self.pendingInteraction = nil
       self.pendingInteractionToken = 0
       self.expectsPendingApproval = false
@@ -1024,6 +1057,10 @@ public struct ChatFeature {
         state.liveSessionID = handle.sessionID
         state.storedSessionID = handle.storedSessionID ?? state.storedSessionID
         state.status = .ready
+        // The create handshake IS this chat's hydrate (#80): the handle may carry a
+        // `stored_session_id`, which would otherwise flip `showsEmptyHero` off for a chat
+        // whose only history is the nothing the server just created.
+        state.hasHydrated = true
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
@@ -2659,6 +2696,7 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
+    state.hasHydrated = true // the transcript below is now server-authoritative (#80 hero gate)
     // A successful hydrate means we're connected — clear any stale connection banner.
     state.errorBanner = nil
 
