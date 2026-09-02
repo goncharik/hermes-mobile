@@ -18,6 +18,13 @@ public struct AppFeature {
     /// persist are slot-rooted and survive navigation pops. One live session at a time —
     /// opening a different session replaces the slot.
     public var liveChat: ChatFeature.State?
+    /// The horizontal layout the app shell is rendering in, mirrored from SwiftUI's
+    /// horizontal size class by the thin app shell (`layoutChanged`) — size class, NOT
+    /// device idiom, so Slide Over and narrow iPadOS windows get the stack. Defaults to
+    /// `.compact` (the iPhone layout): in compact the chat is a pushed screen whose thin
+    /// marker sits on `path`; in `.regular` (iPad split view) the slot IS the detail
+    /// column and the path stays empty — a chat there is never "detached".
+    public var layout: Layout
     /// True during the launch auto-connect probe — `AppView` shows a brief placeholder
     /// instead of flashing the onboarding screen.
     public var autoConnecting: Bool
@@ -73,6 +80,7 @@ public struct AppFeature {
       home: SessionListFeature.State? = nil,
       path: StackState<ChatScreen.State> = .init(),
       liveChat: ChatFeature.State? = nil,
+      layout: Layout = .compact,
       autoConnecting: Bool = false,
       connectionFailed: ConnectionFailedFeature.State? = nil,
       reauth: ReauthFeature.State? = nil,
@@ -82,19 +90,28 @@ public struct AppFeature {
       self.home = home
       self.path = path
       self.liveChat = liveChat
+      self.layout = layout
       self.autoConnecting = autoConnecting
       self.connectionFailed = connectionFailed
       self.reauth = reauth
       self.pendingApprovalSessionIDs = pendingApprovalSessionIDs
     }
 
+    /// Whether the live chat slot is off screen — the user is on the session list with the
+    /// chat popped. The ONE definition every "is the chat detached?" read goes through
+    /// (`currentViewingSessionID`, the pop-teardown policy, the detached-turn-end
+    /// teardown, the re-open marker push, #32 push-tap dedup): in compact an empty path
+    /// means the chat was popped; in regular the slot is always the visible detail column,
+    /// so a chat there can never be detached — whatever the path holds.
+    public var isChatDetached: Bool { layout == .compact && path.isEmpty }
+
     /// The session the user is currently viewing — the live chat's session key
-    /// (`storedSessionID ?? liveSessionID`) while its marker is pushed, or `nil` when no
+    /// (`storedSessionID ?? liveSessionID`) while its chat is on screen, or `nil` when no
     /// chat is on screen (or a new chat whose id hasn't resolved yet). A detached slot
     /// (user on the list) reads `nil` so pushes for that session are NOT suppressed.
     /// Drives foreground push suppression via `.onChange`.
     var currentViewingSessionID: String? {
-      guard !path.isEmpty else { return nil }
+      guard !isChatDetached else { return nil }
       return liveChat?.sessionKey
     }
 
@@ -129,6 +146,16 @@ public struct AppFeature {
     case background
   }
 
+  /// Horizontal layout regime, mirrored from SwiftUI's `UserInterfaceSizeClass` by the thin
+  /// app shell (`layoutChanged`). `.compact` = the navigation-stack layout (iPhone, Slide
+  /// Over, narrow iPad windows); `.regular` = the split view with the chat as the detail
+  /// column. Size class — not device idiom — is the input, so the same iPad flips between
+  /// the two as its window narrows and widens.
+  public enum Layout: Equatable, Sendable {
+    case compact
+    case regular
+  }
+
   public enum Action {
     case task
     case autoConnectSucceeded(ServerConnection)
@@ -144,6 +171,13 @@ public struct AppFeature {
     /// `.background` with a RUNNING turn additionally requests a finite background window
     /// (`BackgroundTaskClient`) so the socket keeps streaming ~30s past suspension.
     case scenePhaseChanged(ScenePhase)
+    /// The horizontal size class changed (reported by the app shell, `initial: true`). Sets
+    /// `layout` FIRST — so the `chatViewDisappeared` the chat view fires while moving between
+    /// the stack and the detail column is a no-op through `isChatDetached` — then reconciles
+    /// the path with the slot: regular→compact pushes the live chat's marker (the stack must
+    /// show it); compact→regular clears the path (the slot is the detail; a marker would
+    /// double-render the chat). Same layout twice is a no-op.
+    case layoutChanged(Layout)
     /// A push notification was tapped — deep-link to its session, routed by comparing the
     /// tapped id against the live slot + path (#32): already on screen → badge bookkeeping
     /// only; detached slot match → re-attach push; different session → replace the slot and
@@ -363,6 +397,25 @@ public struct AppFeature {
           return state.liveChat != nil ? .send(.liveChat(.persistNow)) : .none
         }
 
+      case let .layoutChanged(layout):
+        guard layout != state.layout else { return .none }
+        // Layout first: the view's column move fires `chatViewDisappeared`, which must read
+        // the NEW layout through `isChatDetached` and leave the slot alone.
+        state.layout = layout
+        guard let chat = state.liveChat else { return .none }
+        switch layout {
+        case .compact:
+          // The stack now owns the screen — a live slot (attached detail moments ago, or
+          // a running turn) needs its marker so the chat stays visible. SET, never append:
+          // one slot ↔ one marker.
+          state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey)])
+        case .regular:
+          // The slot IS the detail column; a lingering marker would render the chat twice
+          // (sidebar stack + detail). The slot itself — socket, rows, ticker — is untouched.
+          state.path.removeAll()
+        }
+        return .none
+
       case .backgroundGraceExpired:
         // The background window ran out while still backgrounded. Final flush, then cancel
         // the socket ONLY — `liveChat` stays in memory so the foreground re-hydrate can
@@ -461,10 +514,13 @@ public struct AppFeature {
           if expectsApproval {
             state.liveChat?.expectsPendingApproval = true
           }
-          // Defensive guard: the path is normally empty here (re-opens come from the list,
-          // and an on-screen match short-circuits in `pushTapped` before reaching this
-          // delegate) — but a double-delivered open must not stack a second marker.
-          if state.path.isEmpty {
+          // Marker only when the chat is actually detached (compact + empty path) — in
+          // regular the slot is already the visible detail and the path stays empty.
+          // Defensive guard too: the path is normally empty here in compact (re-opens come
+          // from the list, and an on-screen match short-circuits in `pushTapped` before
+          // reaching this delegate) — but a double-delivered open must not stack a second
+          // marker.
+          if state.isChatDetached {
             state.path.append(ChatScreen.State(sessionKey: session.id))
           }
           return .merge(badge, .send(.liveChat(.reattached)))
@@ -530,8 +586,11 @@ public struct AppFeature {
         // accumulate, and the list's row glow tracks via `runningChanged` (whose
         // `running: false` while detached tears the slot down below). An idle detached
         // chat has nothing to keep alive — flush the snapshot, cancel everything, clear
-        // the slot. A non-empty path means the disappearance came from a slot replacement
-        // (the new chat is on screen) → cleanup only. No slot (logout/quit/teardown
+        // the slot. A chat that is NOT detached (`isChatDetached` false) → cleanup only:
+        // in compact a non-empty path means the disappearance came from a slot replacement
+        // (the new chat is on screen); in regular the view left because it moved between
+        // the stack and the detail column on a layout change — the slot is still the
+        // visible detail and must never be torn down. No slot (logout/quit/teardown
         // already cleared it) → no-op.
         guard let chat = state.liveChat else { return .none }
         let cleanup: Effect<Action> = .send(.liveChat(.viewDisappeared))
@@ -540,7 +599,7 @@ public struct AppFeature {
         // queue, or the gap before a drain's turn starts) must not destroy them — the
         // drain fires the next turn into the detached slot, and teardown comes when the
         // queue empties and that turn ends (the `runningChanged` policy below).
-        guard state.path.isEmpty, !chat.isRunning, !chat.hasQueuedWork else { return cleanup }
+        guard state.isChatDetached, !chat.isRunning, !chat.hasQueuedWork else { return cleanup }
         return .concatenate(cleanup, teardownSlot())
 
       case let .home(.delegate(.sessionArchived(id))):
@@ -685,8 +744,9 @@ public struct AppFeature {
         let glow: Effect<Action> = state.home != nil
           ? .send(.home(.setSessionRunning(id: sessionID, running: running)))
           : .none
-        // A DETACHED slot (no marker in the path — the user popped to the list) only
-        // outlives the pop while its turn runs. The turn ending — `message.complete`,
+        // A DETACHED slot (`isChatDetached`: compact with no marker in the path — the user
+        // popped to the list; never the case in regular, where the slot is the visible
+        // detail column) only outlives the pop while its turn runs. The turn ending — `message.complete`,
         // `.error`, or a foreground hydrate confirming `running == false` — means there's
         // nothing left to keep alive: flush the snapshot, then tear the slot down.
         // UNLESS the queue still owes work (#66): the chat's own reducer drained (or
@@ -696,7 +756,7 @@ public struct AppFeature {
         // turn's own end (queue empty by then) re-enters here and tears down normally;
         // a queue parked by an error while detached deliberately keeps the slot (bounded
         // by the user re-opening or archiving the session).
-        guard !running, state.path.isEmpty, let chat = state.liveChat, !chat.hasQueuedWork
+        guard !running, state.isChatDetached, let chat = state.liveChat, !chat.hasQueuedWork
         else { return glow }
         return .concatenate(glow, teardownSlot())
 
@@ -837,11 +897,15 @@ public struct AppFeature {
 
   /// Fill the live-chat slot and (re)set the navigation path to that chat's single marker.
   /// One slot ↔ one marker: the path never holds more than one chat screen, so replacing the
-  /// contents (rather than appending) can't stack duplicates.
+  /// contents (rather than appending) can't stack duplicates. The marker is COMPACT-ONLY:
+  /// in regular the slot is the detail column, so the path is left empty — a marker there
+  /// would render the chat in the sidebar stack as well.
   private func fillLiveChat(_ chat: ChatFeature.State, into state: inout State) {
     state.liveChat = chat
     state.path.removeAll()
-    state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+    if state.layout == .compact {
+      state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+    }
   }
 
   /// The prefilled-onboarding landing for a connection that needs *editing* rather than

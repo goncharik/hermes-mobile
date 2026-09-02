@@ -206,19 +206,19 @@ case .home:
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] add `Layout` enum, `layout` state (default `.compact`), `isChatDetached`, and the
+- [x] add `Layout` enum, `layout` state (default `.compact`), `isChatDetached`, and the
   `layoutChanged(Layout)` action with the transition rules (set layout first; push marker
   regular→compact with a slot; clear path compact→regular)
-- [ ] replace `path.isEmpty` reads with `isChatDetached` in `currentViewingSessionID`,
+- [x] replace `path.isEmpty` reads with `isChatDetached` in `currentViewingSessionID`,
   `openSession` re-open guard, `chatViewDisappeared`, `runningChanged`
-- [ ] make the marker compact-only in `fillLiveChat` and the re-open branch
-- [ ] write tests: default layout compact + full existing suite green untouched;
+- [x] make the marker compact-only in `fillLiveChat` and the re-open branch
+- [x] write tests: default layout compact + full existing suite green untouched;
   `layoutChanged(.regular)` with a pushed marker clears the path and keeps the slot;
   `layoutChanged(.compact)` with a live slot pushes its marker; same layout twice is a no-op
-- [ ] write tests: in regular, `chatViewDisappeared` never tears down (idle slot);
+- [x] write tests: in regular, `chatViewDisappeared` never tears down (idle slot);
   `runningChanged(false)` in regular keeps the slot; `currentViewingSessionID` in regular
   reads the slot key with an empty path
-- [ ] run `make test` — must pass before task 2
+- [x] run `make test` — must pass before task 2
 
 ### Task 2: New-chat filling rules for regular width
 

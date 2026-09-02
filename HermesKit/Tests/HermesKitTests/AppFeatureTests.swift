@@ -3369,4 +3369,293 @@ struct AppFeatureTests {
     let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
     await store.send(.scenePhaseChanged(.active))
   }
+
+  // MARK: - Layout regime + the detached predicate (iPad split view, #80)
+
+  /// The default layout is compact (the iPhone stack), so every pre-existing behaviour is
+  /// byte-identical: "detached" is exactly "compact with an empty path".
+  @Test func defaultLayoutIsCompactAndDetachedMeansEmptyPath() {
+    var state = AppFeature.State(
+      home: SessionListFeature.State(connection: connection),
+      liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    )
+    #expect(state.layout == .compact)
+    #expect(state.isChatDetached, "compact + empty path = the chat was popped")
+    #expect(state.currentViewingSessionID == nil)
+
+    state.path.append(ChatScreen.State(sessionKey: "s1"))
+    #expect(!state.isChatDetached, "compact + marker = the chat is on screen")
+    #expect(state.currentViewingSessionID == "s1")
+  }
+
+  /// In regular the slot IS the detail column: the chat is never detached and the
+  /// current-viewing id reads the slot key even though the path is empty.
+  @Test func currentViewingSessionInRegularReadsSlotWithEmptyPath() {
+    let state = AppFeature.State(
+      home: SessionListFeature.State(connection: connection),
+      liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1"),
+      layout: .regular
+    )
+    #expect(state.path.isEmpty)
+    #expect(!state.isChatDetached)
+    #expect(state.currentViewingSessionID == "s1")
+  }
+
+  /// compact → regular with a pushed marker: the path clears (the slot becomes the detail;
+  /// a marker would render the chat twice) and the slot — socket, rows, everything — stays.
+  @Test func layoutChangedToRegularClearsPathAndKeepsSlot() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.isSending = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.path = .init()
+    }
+    #expect(store.state.liveChat == chat, "the slot is untouched by the column move")
+    #expect(store.state.currentViewingSessionID == "s1")
+  }
+
+  /// regular → compact with a live slot: the stack now owns the screen, so the slot's
+  /// marker is pushed (SET to exactly one) and the slot stays as-is.
+  @Test func layoutChangedToCompactWithLiveSlotPushesMarker() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
+    }
+    #expect(store.state.liveChat == chat)
+    #expect(store.state.currentViewingSessionID == "s1")
+  }
+
+  /// A marker for a brand-new chat carries its (still nil) session key, exactly like
+  /// `fillLiveChat` would have pushed in compact.
+  @Test func layoutChangedToCompactWithNewChatPushesNilKeyMarker() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection, profileName: nil, composerText: ""),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Reporting the same layout twice (the shell's `initial: true` fires on every view
+  /// re-creation) is a no-op — no path churn, no effects.
+  @Test func layoutChangedToSameLayoutIsNoOp() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1")
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact))
+
+    let regular = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1"),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await regular.send(.layoutChanged(.regular))
+  }
+
+  /// With no slot and no list (onboarding / retry screen), a layout change records the
+  /// layout only — there is nothing to reconcile.
+  @Test func layoutChangedWithoutSlotOrHomeOnlyRecordsLayout() async {
+    let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+    }
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat == nil)
+  }
+
+  /// The push bridge's "currently viewing" follows the predicate: a compact slot left
+  /// detached (running turn, popped to the list) becomes the on-screen detail the moment
+  /// the layout widens, so pushes for it are suppressed again — and released on narrowing.
+  @Test func layoutChangeUpdatesCurrentViewingSessionForPushSuppression() async {
+    let push = PushClient.inMemory()
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.isSending = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: chat // detached: compact + empty path
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = push.client
+    }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+    }
+    await store.finish()
+    #expect(push.currentSession == "s1")
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
+    }
+    await store.finish()
+    #expect(push.currentSession == "s1", "the marker keeps the chat on screen in compact")
+  }
+
+  /// In regular the chat view's disappearance (it moved between the stack and the detail
+  /// column on a layout change) must NEVER tear the slot down — even for an idle chat that
+  /// the compact pop policy would clear. Only the view-session cleanup is forwarded.
+  @Test func chatViewDisappearedInRegularNeverTearsDownIdleSlot() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.status = .ready
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    // Exhaustive: no `persistNow` / `teardown` / `clearLiveChat` may follow.
+    #expect(store.state.liveChat == chat)
+  }
+
+  /// Compact guard for the same policy, untouched by the predicate rewrite: an idle
+  /// chat whose view disappeared while a marker is STILL on the path (slot replacement)
+  /// gets cleanup only.
+  @Test func chatViewDisappearedInCompactWithMarkerIsCleanupOnly() async {
+    let chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    #expect(store.state.liveChat == chat)
+  }
+
+  /// A turn ending in regular routes the glow only: the slot is the visible detail (never
+  /// detached), so the detached-turn-end teardown must not run.
+  @Test func runningChangedFalseInRegularKeepsSlot() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, sessions: [Session(id: "s1", isActive: true)]
+        ),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.liveChat(.delegate(.runningChanged(sessionID: "s1", running: false))))
+    await store.receive(\.home.setSessionRunning) {
+      $0.home?.sessions[id: "s1"]?.isActive = false
+    }
+    // Exhaustive: no teardown chain follows.
+    #expect(store.state.liveChat == chat)
+  }
+
+  /// Re-opening the slot's own session in regular (tapping its sidebar row while it is the
+  /// detail) re-attaches without pushing a marker — the path stays empty.
+  @Test func reopeningOwnSessionInRegularReattachesWithoutMarker() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.status = .ready
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      // The re-attach hydrates (`session.resume`); the payload is irrelevant here.
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.openSession(Session(id: "s1")))))
+    await store.receive(\.liveChat.reattached)
+    #expect(store.state.path.isEmpty, "regular never holds a marker")
+    #expect(store.state.liveChat?.sessionKey == "s1")
+  }
+
+  /// Opening a session in regular fills the slot with NO marker (the slot is the detail).
+  @Test func openingSessionInRegularFillsSlotWithoutMarker() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.openSession(Session(id: "s1", title: "Chat"))))) {
+      $0.liveChat = ChatFeature.State(
+        connection: self.connection, resumeStoredID: "s1", profileName: nil, title: "Chat"
+      )
+    }
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.currentViewingSessionID == "s1")
+  }
 }
