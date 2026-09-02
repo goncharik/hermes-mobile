@@ -23,6 +23,15 @@ struct ModelPickerSheet: View {
   let onSelectEffort: (String) -> Void
   let onDone: () -> Void
 
+  @State private var searchText = ""
+
+  /// The providers to render: the full ordered list when the search box is empty, else the
+  /// search-filtered result (`ModelOptions.filteredProviders(matching:)`). Filtering keeps
+  /// provider sections intact, so identical model names across providers stay unambiguous.
+  private var visibleProviders: [ModelOptions.Provider] {
+    (picker.options?.filteredProviders(matching: searchText)) ?? []
+  }
+
   var body: some View {
     NavigationStack {
       Group {
@@ -46,7 +55,7 @@ struct ModelPickerSheet: View {
                   .font(.footnote).foregroundStyle(.secondary)
               }
             }
-            ForEach(picker.options?.orderedProviders ?? []) { provider in
+            ForEach(visibleProviders) { provider in
               Section(provider.name) {
                 if provider.isConfigured {
                   configuredModels(provider)
@@ -56,10 +65,20 @@ struct ModelPickerSheet: View {
               }
             }
           }
+          .overlay {
+            if visibleProviders.isEmpty && !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+              ContentUnavailableView.search(text: searchText)
+            }
+          }
         }
       }
       .navigationTitle("Model")
       .navigationBarTitleDisplayMode(.inline)
+      .searchable(
+        text: $searchText,
+        placement: .navigationBarDrawer(displayMode: .always),
+        prompt: "Search models"
+      )
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done", action: onDone)
