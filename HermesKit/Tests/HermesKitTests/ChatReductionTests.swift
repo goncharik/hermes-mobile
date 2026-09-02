@@ -2335,4 +2335,48 @@ struct ChatReductionTests {
 
     await store.send(.teardown)
   }
+
+  // MARK: Empty new chat (iPad split view, #80 — the "new session" no-op predicate)
+
+  /// Fresh state is an empty new chat; a composer draft, staged attachments, and a
+  /// connected-but-unprompted live session do NOT make it non-empty.
+  @Test func isEmptyNewChatTrueForFreshChatRegardlessOfDraftOrLiveSession() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(state.isEmptyNewChat)
+
+    state.composerText = "typed but never sent"
+    state.attachments = [imageAttachment(0)]
+    #expect(state.isEmptyNewChat, "a draft is exactly what the no-op clears")
+
+    state.liveSessionID = "live"
+    state.status = .ready
+    #expect(state.isEmptyNewChat, "a live session with no DB row holds nothing worth keeping")
+  }
+
+  @Test func isEmptyNewChatFalseWithStoredID() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!state.isEmptyNewChat)
+  }
+
+  @Test func isEmptyNewChatFalseWithTranscriptRow() {
+    var state = ChatFeature.State(connection: conn)
+    state.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
+    #expect(!state.isEmptyNewChat)
+  }
+
+  @Test func isEmptyNewChatFalseWhileSending() {
+    var state = ChatFeature.State(connection: conn)
+    state.isSending = true
+    #expect(!state.isEmptyNewChat)
+  }
+
+  @Test func isEmptyNewChatFalseWithQueuedWork() {
+    var queued = ChatFeature.State(connection: conn)
+    queued.queuedPrompts = [QueuedPrompt(id: uuid(0), text: "later")]
+    #expect(!queued.isEmptyNewChat)
+
+    var draining = ChatFeature.State(connection: conn)
+    draining.drainingEntry = QueuedPrompt(id: uuid(1), text: "now")
+    #expect(!draining.isEmptyNewChat)
+  }
 }

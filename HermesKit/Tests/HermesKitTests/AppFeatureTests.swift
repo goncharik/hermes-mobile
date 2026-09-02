@@ -3658,4 +3658,398 @@ struct AppFeatureTests {
     #expect(store.state.path.isEmpty)
     #expect(store.state.currentViewingSessionID == "s1")
   }
+
+  // MARK: - New-chat filling rules for regular width (iPad split view, #80)
+
+  /// The list appearing in regular (launch probe succeeded) seats a fresh new chat in the
+  /// otherwise-blank detail column; the path stays empty — the slot IS the detail.
+  @Test func homeAppearingInRegularFillsNewChat() async {
+    let store = TestStore(initialState: AppFeature.State(layout: .regular)) { AppFeature() }
+
+    await store.send(.autoConnectSucceeded(connection)) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.isEmptyNewChat == true)
+  }
+
+  /// Manual login (`onboarding.connected`) and the retry screen land the same way.
+  @Test func onboardingConnectedInRegularFillsNewChat() async {
+    let store = TestStore(initialState: AppFeature.State(layout: .regular)) { AppFeature() }
+
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// A stashed cold-launch tap replays FIRST: its session fills the slot, so no throwaway
+  /// new chat is seated and torn down on the way in. Regular → empty path.
+  @Test func homeAppearingInRegularWithStashedTapOpensThatSessionInstead() async {
+    var initial = AppFeature.State(layout: .regular)
+    initial.pendingPushTap = PushTap(sessionID: "s-tap")
+    let store = TestStore(initialState: initial) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off
+
+    await store.send(.autoConnectSucceeded(connection)) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingPushTap = nil
+    }
+    await store.receive(\.pushTapped)
+    await store.receive(\.home.delegate.openSession)
+    await store.finish()
+    #expect(store.state.liveChat?.storedSessionID == "s-tap")
+    #expect(store.state.liveChat?.isEmptyNewChat == false)
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// Widening onto an EMPTY slot with a list present seats a fresh new chat.
+  @Test func layoutChangedToRegularWithNilSlotFillsNewChat() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// Narrowing with a nil slot never fills — the stack shows the list.
+  @Test func layoutChangedToCompactWithNilSlotDoesNotFill() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+    }
+    #expect(store.state.liveChat == nil)
+  }
+
+  /// The regular seat is the same construction as "new session": it carries the list's
+  /// selected profile so its first prompt lands in the right `state.db`.
+  @Test func regularSeatCarriesSelectedProfile() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: "work", profilesSupported: true
+        )
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
+    }
+  }
+
+  /// "New session" over an EMPTY new chat (connected but never prompted): the composer
+  /// draft — text AND staged attachments — resets, and nothing else happens: no
+  /// `persistNow` / `teardown` / `clearLiveChat` / `fillLiveChat`, so the live socket
+  /// is not redialled.
+  @Test func newSessionOverEmptyNewChatClearsComposerOnly() async {
+    var chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
+    chat.liveSessionID = "live-new"
+    chat.status = .ready
+    chat.attachments = [
+      ComposerAttachment(
+        id: UUID(), kind: .image, filename: "p.png", mimeType: "image/png", data: Data([1])
+      )
+    ]
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: chat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil)))) {
+      $0.liveChat?.composerText = ""
+      $0.liveChat?.attachments = []
+    }
+    // Exhaustive store: any teardown chain would have failed the test above.
+    #expect(store.state.liveChat?.liveSessionID == "live-new", "the live session survives")
+    #expect(store.state.liveChat?.status == .ready)
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// A SEEDED "new session" (push "Ask agent to install") over an empty new chat seeds the
+  /// draft the same way — still no refill.
+  @Test func seededNewSessionOverEmptyNewChatSeedsComposerOnly() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection, profileName: nil, composerText: ""),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: PushSetup.installPrompt)))) {
+      $0.liveChat?.composerText = PushSetup.installPrompt
+    }
+  }
+
+  /// Compact safety net for the no-op: an empty new chat that is somehow DETACHED (no
+  /// marker) gets its marker back, so the "New" tap always lands on a screen.
+  @Test func newSessionOverDetachedEmptyNewChatInCompactReattachesMarker() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection, profileName: nil, composerText: "x")
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil)))) {
+      $0.liveChat?.composerText = ""
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// An empty new chat under a STALE profile (the selection changed under it) is not "the
+  /// same" new chat — it is torn down and refilled under the current profile.
+  @Test func newSessionOverEmptyNewChatUnderStaleProfileRefills() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: "work", profilesSupported: true
+        ),
+        liveChat: ChatFeature.State(connection: connection, profileName: nil, composerText: ""),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// "New session" over a NON-empty chat (a resumed session on screen) tears it down and
+  /// seats the fresh chat — the path stays empty in regular (no marker).
+  @Test func newSessionOverNonEmptyChatInRegularTearsDownAndRefills() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: chat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// Opening a session in regular over the seated empty new chat replaces it through the
+  /// standard teardown-then-fill (its socket may already be dialled) — no marker either way.
+  @Test func openingSessionInRegularOverEmptyNewChatReplacesItWithoutMarker() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+    }
+
+    await store.send(.home(.delegate(.openSession(Session(id: "s1", title: "Chat")))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(
+        connection: self.connection, resumeStoredID: "s1", profileName: nil, title: "Chat"
+      )
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// Archiving the ON-SCREEN session in regular tears the slot down and seats a fresh new
+  /// chat behind it — the detail column never goes blank. Path stays empty.
+  @Test func archivingOnScreenSessionInRegularRefillsNewChat() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.archive = { @Sendable _, _, _, _ in }
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.archiveButtonTapped(id: "s1")))
+    await store.send(.home(.confirmationDialog(.presented(.confirmArchive(id: "s1")))))
+    await store.receive(\.home.delegate.sessionArchived)
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    await store.finish()
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.isEmptyNewChat == true)
+  }
+
+  /// The same archive in compact leaves the slot nil — the user is on the list, nothing
+  /// needs a screen. Asserted after `finish()` so a stray refill cannot hide.
+  @Test func archivingSlotSessionInCompactLeavesSlotNil() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.archive = { @Sendable _, _, _, _ in }
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.archiveButtonTapped(id: "s1")))
+    await store.send(.home(.confirmationDialog(.presented(.confirmArchive(id: "s1")))))
+    await store.receive(\.home.delegate.sessionArchived)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.finish()
+    #expect(store.state.liveChat == nil)
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// Deleting the ON-SCREEN session in regular: teardown WITHOUT the snapshot flush (the
+  /// wipe follows), then the fresh new chat is seated and the cache entry is gone.
+  @Test func deletingOnScreenSessionInRegularRefillsNewChat() async {
+    let snapshots = ChatSnapshotClient.inMemory()
+    snapshots.saveSnapshot("s1", ChatSnapshot(model: "gpt-5", rows: []))
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.deleteSession = { @Sendable _, _, _ in }
+      $0.chatSnapshot = snapshots
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.deleteButtonTapped(id: "s1")))
+    await store.send(.home(.confirmationDialog(.presented(.confirmDelete(id: "s1")))))
+    await store.receive(\.home.delegate.sessionDeleted)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    await store.finish()
+    #expect(store.state.path.isEmpty)
+    #expect(snapshots.loadSnapshot("s1") == nil)
+  }
+
+  /// A different user re-authenticating in regular: the old slot is dropped with the old
+  /// identity and the NEW user's detail column gets its fresh new chat (under the new
+  /// connection, default profile — the prefs were just cleared).
+  @Test func differentUserReauthInRegularSeatsNewChatForNewUser() async {
+    let fresh = freshCookieConnection(username: "bob")
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: cookieConnection),
+        liveChat: ChatFeature.State(connection: cookieConnection),
+        layout: .regular,
+        reauth: ReauthFeature.State(
+          serverURL: URL(string: "http://mac.tailnet:9119")!, method: .password,
+          provider: "basic", previousUsername: "alice"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off
+
+    await store.send(.reauth(.presented(.delegate(.reauthenticated(connection: fresh, sameUser: false))))) {
+      $0.reauth = nil
+      $0.home = SessionListFeature.State(connection: fresh)
+      $0.liveChat = ChatFeature.State(connection: fresh, profileName: nil, composerText: "")
+    }
+    await store.finish()
+    #expect(store.state.path.isEmpty)
+  }
 }

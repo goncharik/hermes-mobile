@@ -176,7 +176,8 @@ public struct AppFeature {
     /// the stack and the detail column is a no-op through `isChatDetached` — then reconciles
     /// the path with the slot: regular→compact pushes the live chat's marker (the stack must
     /// show it); compact→regular clears the path (the slot is the detail; a marker would
-    /// double-render the chat). Same layout twice is a no-op.
+    /// double-render the chat). Same layout twice is a no-op. Widening with NO slot seats a
+    /// fresh new chat in the detail column — regular never shows a blank detail.
     case layoutChanged(Layout)
     /// A push notification was tapped — deep-link to its session, routed by comparing the
     /// tapped id against the live slot + path (#32): already on screen → badge bookkeeping
@@ -285,7 +286,7 @@ public struct AppFeature {
         // Defensive: a retry screen and a live list must never coexist (see the `.task` guard).
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return replayPendingPushTap(&state)
+        return landOnHome(&state)
 
       case let .autoConnectFailed(connection, error):
         state.autoConnecting = false
@@ -309,7 +310,7 @@ public struct AppFeature {
         // auto-connect, cold-launch push-tap replay included.
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return replayPendingPushTap(&state)
+        return landOnHome(&state)
 
       case let .connectionFailed(.delegate(.credentialsRejected(connection))):
         // The retry reached the server and it turned us away — retrying can't fix that, so
@@ -402,7 +403,12 @@ public struct AppFeature {
         // Layout first: the view's column move fires `chatViewDisappeared`, which must read
         // the NEW layout through `isChatDetached` and leave the slot alone.
         state.layout = layout
-        guard let chat = state.liveChat else { return .none }
+        guard let chat = state.liveChat else {
+          // Widening onto an EMPTY slot: the detail column would render blank — seat a
+          // fresh new chat (a no-op when narrowing, or with no list to build it from).
+          fillNewChatIfDetailEmpty(&state)
+          return .none
+        }
         switch layout {
         case .compact:
           // The stack now owns the screen — a live slot (attached detail moments ago, or
@@ -490,7 +496,7 @@ public struct AppFeature {
         state.home = makeHomeState(connection: connection)
         // Auto-connect failure falls back to onboarding, so a manual login must also replay
         // a stashed cold-launch tap (#46).
-        return replayPendingPushTap(&state)
+        return landOnHome(&state)
 
       case let .home(.delegate(.openSession(session))):
         guard let home = state.home else { return .none }
@@ -546,13 +552,26 @@ public struct AppFeature {
 
       case let .home(.delegate(.createSession(initialComposerText))):
         guard let home = state.home else { return .none }
+        // "New session" over a slot that is ALREADY an empty new chat under the same
+        // connection + profile (regular width keeps one seated in the detail column at all
+        // times): tearing it down to fill an identical fresh one would redial its socket
+        // for nothing. Reset the composer draft (text + staged attachments) instead — the
+        // only visible difference a fresh chat would have; `initialComposerText` still
+        // seeds it. A stale profile/connection on the empty chat (the pref changed under
+        // it) falls through to a real refill. The marker guard is the compact safety net:
+        // a detached empty chat re-attaches rather than leaving the tap without a screen.
+        if let chat = state.liveChat, chat.isEmptyNewChat,
+           chat.connection == home.connection, chat.profileName == home.scopedProfileName {
+          state.liveChat?.composerText = initialComposerText ?? ""
+          state.liveChat?.attachments = []
+          if state.isChatDetached {
+            state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+          }
+          return .none
+        }
         // New chats are created under the currently-selected profile. `initialComposerText`
         // (push "Ask agent to install") seeds the composer draft but is NOT auto-sent.
-        let chat = ChatFeature.State(
-          connection: home.connection,
-          profileName: home.scopedProfileName,
-          composerText: initialComposerText ?? ""
-        )
+        let chat = newChat(for: home, composerText: initialComposerText ?? "")
         guard state.liveChat != nil else {
           fillLiveChat(chat, into: &state)
           return .none
@@ -611,8 +630,10 @@ public struct AppFeature {
         // Deliberate asymmetry: if the archive PATCH later FAILS, the list restores the
         // row (optimistic rollback) but the slot stays torn down — re-opening simply
         // resumes the session fresh. Resurrecting live slot state for a rare failure path
-        // isn't worth replaying the teardown.
-        return teardownSlot()
+        // isn't worth replaying the teardown. In regular the torn-down chat WAS the detail
+        // column, so a fresh new chat is seated behind it (`detailRefill`); compact leaves
+        // the slot nil — the user is on the list.
+        return teardownSlot(thenFill: detailRefill(state))
 
       case let .home(.delegate(.sessionDeleted(id))):
         // The user permanently deleted a session. ALWAYS wipe its cached snapshot + turn
@@ -628,7 +649,10 @@ public struct AppFeature {
         guard let chat = state.liveChat, chat.sessionKey == id else {
           return wipeSnapshot
         }
-        return .concatenate(teardownSlot(flushSnapshot: false), wipeSnapshot)
+        // Same regular-width refill as archive: the detail column must not go blank.
+        return .concatenate(
+          teardownSlot(thenFill: detailRefill(state), flushSnapshot: false), wipeSnapshot
+        )
 
       case let .home(.delegate(.sessionDeleteSucceeded(id))):
         // The server CONFIRMED the delete — only now drop the session's pending-approval
@@ -683,6 +707,9 @@ public struct AppFeature {
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
+        // The stash was just cleared, so there is nothing to replay — but in regular the
+        // new user's detail column still needs its fresh new chat.
+        fillNewChatIfDetailEmpty(&state)
         return setBadge(state)
 
       case .reauth(.presented(.delegate(.quit))):
@@ -853,7 +880,13 @@ public struct AppFeature {
     )
   }
 
-  /// Consume the cold-launch tap stash (#46): a tap dropped while `home` was nil is
+  /// Landing on a freshly built session list (launch probe, retry screen, manual login).
+  /// Two duties, ordered: consume the cold-launch tap stash — a replayed tap opens ITS
+  /// session into the slot — and, when nothing replays, seat the regular-width detail
+  /// column with a fresh new chat (`fillNewChatIfDetailEmpty`). Replay decides first so a
+  /// replayed tap never has to tear an unused new chat down on its way in.
+  ///
+  /// Replay (#46): a tap dropped while `home` was nil is
   /// replayed through the normal `.pushTapped` routing the moment the list exists — slot
   /// compare, #32 dedup, and approval-hint arming all reuse the one code path (duplicating
   /// any of it here would drift). No stash → no effect. The replayed approval badge insert
@@ -870,18 +903,56 @@ public struct AppFeature {
   /// only other clear path), and would otherwise stick for the process lifetime. An
   /// unknown origin (`nil` — no stored URL at stash time) replays unverified; see
   /// `pendingPushTapServerURL`.
-  private func replayPendingPushTap(_ state: inout State) -> Effect<Action> {
-    guard let tap = state.pendingPushTap else { return .none }
+  private func landOnHome(_ state: inout State) -> Effect<Action> {
+    guard let tap = state.pendingPushTap else {
+      fillNewChatIfDetailEmpty(&state)
+      return .none
+    }
     let origin = state.pendingPushTapServerURL
     state.pendingPushTap = nil
     state.pendingPushTapServerURL = nil
     if let origin, let connected = state.home?.connection.baseURL,
        !Self.isSameServer(origin, connected) {
+      // Dropped, not replayed — nothing will fill the slot, so seat the detail here.
+      fillNewChatIfDetailEmpty(&state)
       guard !state.pendingApprovalSessionIDs.isEmpty else { return .none }
       state.pendingApprovalSessionIDs.removeAll()
       return setBadge(state)
     }
+    // The replayed tap's `openSession` fills the slot (marker only in compact).
     return .send(.pushTapped(tap))
+  }
+
+  /// A fresh new chat under the list's connection and currently-selected profile — the ONE
+  /// construction behind every new-chat fill ("new session", the regular-width detail seat
+  /// on list appearance / layout change / post-archive-delete refill), so they cannot drift.
+  private func newChat(
+    for home: SessionListFeature.State, composerText: String = ""
+  ) -> ChatFeature.State {
+    ChatFeature.State(
+      connection: home.connection,
+      profileName: home.scopedProfileName,
+      composerText: composerText
+    )
+  }
+
+  /// Regular width renders the detail column at all times, so an empty slot would show a
+  /// blank column: seat a fresh new chat when the layout is regular, the slot is nil, and
+  /// there is a list to take connection + profile from. Compact never fills — the stack
+  /// shows the list. Connect timing is unchanged: a never-prompted chat has no DB row and
+  /// its socket dials only when its view appears (`.task`).
+  private func fillNewChatIfDetailEmpty(_ state: inout State) {
+    guard state.layout == .regular, state.liveChat == nil, let home = state.home else { return }
+    fillLiveChat(newChat(for: home), into: &state)
+  }
+
+  /// The replacement to seat after tearing down the slot's session from the LIST (archive /
+  /// delete): a fresh new chat in regular, where the torn-down chat was the on-screen detail
+  /// and the column must not go blank; `nil` in compact, where the user is on the list and
+  /// the slot simply clears.
+  private func detailRefill(_ state: State) -> ChatFeature.State? {
+    guard state.layout == .regular, let home = state.home else { return nil }
+    return newChat(for: home)
   }
 
   /// Server identity for the stash guard: scheme + host (both case-insensitive per

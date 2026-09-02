@@ -229,21 +229,21 @@ case .home:
 - Modify: `HermesKit/Tests/HermesKitTests/ChatFeatureTests.swift` (or the closest existing
   ChatFeature state test file)
 
-- [ ] add `ChatFeature.State.isEmptyNewChat`
-- [ ] extract `newChat(for:)` helper; use it in `createSession`; `createSession(nil)`
+- [x] add `ChatFeature.State.isEmptyNewChat`
+- [x] extract `newChat(for:)` helper; use it in `createSession`; `createSession(nil)`
   over an empty new chat → clear composer only, no teardown/redial
-- [ ] fill a fresh new chat when `layout == .regular` and the slot is nil: on
+- [x] fill a fresh new chat when `layout == .regular` and the slot is nil: on
   `layoutChanged(.regular)`, when `home` becomes non-nil in regular, and after the
   archive/delete teardown of the on-screen session in regular
-- [ ] `openSession` in regular fills the slot with no marker (path stays empty)
-- [ ] write tests: home appearing in regular fills a new chat; `layoutChanged(.regular)`
+- [x] `openSession` in regular fills the slot with no marker (path stays empty)
+- [x] write tests: home appearing in regular fills a new chat; `layoutChanged(.regular)`
   with nil slot fills a new chat; new-session over empty new chat is a no-op (composer
   cleared, no `teardown` action); new-session over a non-empty chat tears down and refills;
   archive of the on-screen session in regular tears down then refills a new chat; the same
   in compact leaves the slot nil
-- [ ] write tests for `isEmptyNewChat` (true for fresh; false with stored id / transcript /
+- [x] write tests for `isEmptyNewChat` (true for fresh; false with stored id / transcript /
   sending / queued work)
-- [ ] run `make test` — must pass before task 3
+- [x] run `make test` — must pass before task 3
 
 ### Task 3: Push-tap routing under the predicate
 

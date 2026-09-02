@@ -217,6 +217,18 @@ public struct ChatFeature {
     /// into it), and an idle pop must not destroy a parked queue.
     public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
 
+    /// A brand-new chat the user has not used yet: no DB row (`storedSessionID == nil` — the
+    /// server creates one lazily on the first prompt), nothing rendered, no turn in flight,
+    /// no queued prompts. The app-level "new session" policy reads this: filling a fresh
+    /// chat over one that is already empty would tear down and redial a socket for an
+    /// identical result, so it clears the composer draft instead. A composer draft or
+    /// staged attachments do NOT make the chat non-empty — they are exactly what the
+    /// no-op clears. A connected-but-unprompted chat (`liveSessionID` set) still counts as
+    /// empty: the live session holds nothing worth keeping.
+    public var isEmptyNewChat: Bool {
+      storedSessionID == nil && transcript.isEmpty && !isSending && !hasQueuedWork
+    }
+
     /// Pastes whose clipboard providers are still loading (#54) — a counter, not a flag,
     /// because two pastes in quick succession chain in the view's coordinator and both must
     /// be outstanding at once.
