@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hermes Mobile — Your Hermes Agent, in your pocket</title>
+  <meta name="description" content="A native iOS companion for your self-hosted Hermes Agent. Chat with sessions, watch the agent work in real time, and approve its actions — all from your pocket. Open source, SwiftUI + TCA.">
+  <link rel="canonical" href="https://goncharik.github.io/hermes-mobile/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Hermes Mobile — Your Hermes Agent, in your pocket">
+  <meta property="og:description" content="Drive your self-hosted Hermes agent from your iPhone. Streaming chat, approvals, push notifications — open source, SwiftUI + TCA.">
+  <meta property="og:url" content="https://goncharik.github.io/hermes-mobile/">
+  <meta property="og:image" content="https://goncharik.github.io/hermes-mobile/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Hermes Mobile — Your Hermes Agent, in your pocket">
+  <meta name="twitter:description" content="Native iOS companion for your self-hosted Hermes Agent. Open source, SwiftUI + TCA.">
+  <meta name="twitter:image" content="https://goncharik.github.io/hermes-mobile/assets/og.png">
+  <link rel="icon" type="image/png" href="assets/icon-64.png">
+  <link rel="apple-touch-icon" href="assets/icon-180.png">
+  <meta name="theme-color" content="#0c0805">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="Hermes Mobile home">
+        <img src="assets/icon-256.png" alt="" width="28" height="28">
+        <span>Hermes&nbsp;Mobile</span>
+      </a>
+      <button class="nav-toggle" aria-expanded="false" aria-controls="site-nav" aria-label="Toggle navigation">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+      <nav id="site-nav" class="site-nav" aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#setup">Setup</a>
+        <a href="#progress">Progress</a>
+        <a href="#faq">FAQ</a>
+        <a class="nav-github" href="https://github.com/goncharik/hermes-mobile" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============ HERO ============ -->
+    <section class="hero" id="top">
+      <div class="container">
+        <p class="eyebrow">Open source · MIT · SwiftUI + TCA</p>
+        <h1>Your Hermes agent,<br><span class="accent">in your pocket.</span></h1>
+        <p class="lede">
+          Hermes Mobile is a native iOS companion for a <strong>self-hosted Hermes
+          Agent</strong>. The agent keeps running on your machine — the phone is a
+          window into it. Chat with sessions, watch the agent work in real time,
+          and approve or clarify its actions from anywhere on your network.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#setup">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/goncharik/hermes-mobile" rel="noopener">View on GitHub</a>
+        </div>
+        <ul class="hero-badges" aria-label="Quick facts">
+          <li>iOS 18+</li>
+          <li>iPhone</li>
+          <li>No agent logic on the phone</li>
+          <li>Works over LAN / VPN</li>
+        </ul>
+        <figure class="hero-visual reveal">
+          <img src="assets/hero.png" alt="Hermes Mobile marketing visual: the app running on an iPhone in front of an amber glow" width="1600" height="840">
+        </figure>
+      </div>
+    </section>
+
+    <!-- ============ FEATURES ============ -->
+    <section class="section" id="features">
+      <div class="container">
+        <h2 class="section-title">Everything the desktop loop, <span class="accent">from one thumb</span></h2>
+        <p class="section-lede">A thin remote client — the agent's real runtime stays on your Mac or server. These are the parts that make it feel like the agent is in your pocket.</p>
+        <div class="feature-grid">
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🔐</div>
+            <h3>Connect once</h3>
+            <p>Password or token sign-in, detected automatically from what your server offers. Credentials live in the iOS Keychain; the app auto-connects on launch and re-auths transparently when a gated session expires.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">📡</div>
+            <h3>Watch it work</h3>
+            <p>Streaming responses render as native Markdown — tool and skill activity rows, diffs, a live “Thinking” indicator with an elapsed timer that collapses into a reviewable reasoning disclosure.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">✅</div>
+            <h3>Approve from anywhere</h3>
+            <p>Approval, clarify, and secret prompts surface as native cards the moment they arrive — respond from your pocket, with honest “already handled elsewhere” feedback if another client got there first.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🔔</div>
+            <h3>Privacy-preserving push</h3>
+            <p>Opt in and the agent can ping your phone even when the app is closed. Only a generic title and the session id ever transit the push gateway — real content is fetched in-app over your own network.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🗂️</div>
+            <h3>Find any session</h3>
+            <p>Browse grouped by workspace, search across everything, pin, rename, archive — or permanently delete. Cron jobs group under their parent jobs; branched chats nest under their parent, desktop-style.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🎙️</div>
+            <h3>Compose hands-free</h3>
+            <p>Dictate with a live waveform — transcribed by your own agent — and attach photos, camera captures, PDFs, or any file. A copied screenshot pastes straight into the composer.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">⏭️</div>
+            <h3>Queue the next prompt</h3>
+            <p>Mid-turn, the send button comes back the moment you type: drafts queue above the composer and fire automatically when the current turn finishes. Edit, delete, or send-now from a context menu.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">⌘️</div>
+            <h3>Run slash commands</h3>
+            <p>Type <code>/</code> for the agent's real command catalog — built-ins like <code>/compress</code> and <code>/undo</code> plus your installed skills — with as-you-type filtering and tap-to-insert.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🧠</div>
+            <h3>Model &amp; effort picker</h3>
+            <p>A single <code>model · effort</code> chip switches the model and the full reasoning ladder — the server clamps per provider, failures roll back with a banner, and the context-usage pill shows exactly how full the window is.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🌿</div>
+            <h3>Branch a reply</h3>
+            <p>Every finished assistant message can branch into a fresh chat seeded with just that message — explore a tangent without derailing the original conversation.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">👥</div>
+            <h3>Multi-profile</h3>
+            <p>Keep multiple Hermes profiles on one agent and switch from a Safari-style header pill — each profile gets its own scoped session list, and new chats are created under the selected one.</p>
+          </article>
+          <article class="card reveal">
+            <div class="card-icon" aria-hidden="true">🛡️</div>
+            <h3>Stays connected</h3>
+            <p>Automatic reconnect with backoff, a clear banner when the link drops, and server-authoritative restore on every reopen — a running turn keeps streaming (and its timer ticking) even while you browse the session list.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ HOW IT WORKS ============ -->
+    <section class="section section-alt" id="how">
+      <div class="container">
+        <h2 class="section-title">How it works</h2>
+        <p class="section-lede">No cloud service in the middle of your conversations — the phone talks straight to <em>your</em> agent.</p>
+        <div class="diagram reveal" role="img" aria-label="Diagram: the iPhone app talks REST and a WebSocket to your self-hosted Hermes Agent, which talks to model providers. Push notifications flow from the agent through a plugin and a push gateway to Apple, then to the phone.">
+          <div class="diagram-row">
+            <div class="diagram-node node-phone">
+              <span class="diagram-emoji" aria-hidden="true">📱</span>
+              <strong>Hermes Mobile</strong>
+              <span class="diagram-sub">thin SwiftUI client<br>TCA reducers in HermesKit</span>
+            </div>
+            <div class="diagram-link" aria-hidden="true">
+              <span class="diagram-proto">REST · WebSocket JSON-RPC</span>
+              <span class="diagram-line"></span>
+              <span class="diagram-note">your network / VPN</span>
+            </div>
+            <div class="diagram-node node-server">
+              <span class="diagram-emoji" aria-hidden="true">🖥️</span>
+              <strong>Your Hermes Agent</strong>
+              <span class="diagram-sub">self-hosted on your Mac<br>or server</span>
+            </div>
+            <div class="diagram-link" aria-hidden="true">
+              <span class="diagram-proto">model APIs</span>
+              <span class="diagram-line"></span>
+              <span class="diagram-note">your keys, your choice</span>
+            </div>
+            <div class="diagram-node node-llm">
+              <span class="diagram-emoji" aria-hidden="true">✨</span>
+              <strong>Providers</strong>
+            </div>
+          </div>
+          <p class="diagram-push">
+            <span aria-hidden="true">🔔</span> Push: agent plugin → tiny push gateway → Apple APNs → your phone.
+            The gateway only ever sees a generic title + session id — never message content.
+          </p>
+        </div>
+        <div class="arch-points">
+          <div class="point reveal">
+            <h3>Thin client, by design</h3>
+            <p>Zero agent logic on the phone. All behavior lives in <code>HermesKit</code>, a local Swift package of models, dependency clients, and Composable Architecture reducers — unit-tested on macOS without a simulator.</p>
+          </div>
+          <div class="point reveal">
+            <h3>Server is authoritative</h3>
+            <p>Every reopen re-hydrates from the agent: transcript, running state, inflight turns — the server wins, the client never guesses. A running turn even keeps its live socket while you navigate.</p>
+          </div>
+          <div class="point reveal">
+            <h3>Capability-gated UI</h3>
+            <p>The app probes what your agent supports and hides what it doesn't — slash commands, cron sections, delete, push setup all degrade gracefully on older agents.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SCREENSHOTS ============ -->
+    <section class="section" id="screenshots">
+      <div class="container">
+        <h2 class="section-title">Screenshots</h2>
+        <p class="section-lede">Captured from the app — the same frames used on the App Store.</p>
+        <div class="shot-grid">
+          <figure class="shot reveal">
+            <img src="assets/01_chat.png" alt="Chat screen: streaming assistant reply with markdown, tool activity and the composer" loading="lazy">
+            <figcaption>Live chat with streaming Markdown</figcaption>
+          </figure>
+          <figure class="shot reveal">
+            <img src="assets/02_work.png" alt="Session screen showing the agent working with tool activity rows" loading="lazy">
+            <figcaption>Watch tools and skills as they run</figcaption>
+          </figure>
+          <figure class="shot reveal">
+            <img src="assets/03_cron.png" alt="Session list grouped by cron jobs" loading="lazy">
+            <figcaption>Cron jobs grouped in the session list</figcaption>
+          </figure>
+          <figure class="shot reveal">
+            <img src="assets/04_notify.png" alt="Lock-screen style push notification prompting for an approval" loading="lazy">
+            <figcaption>Push pings when the agent needs you</figcaption>
+          </figure>
+          <figure class="shot reveal">
+            <img src="assets/05_connect.png" alt="Connection screen with server URL and sign-in fields" loading="lazy">
+            <figcaption>Self-hosted and private by default</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SETUP ============ -->
+    <section class="section section-alt" id="setup">
+      <div class="container">
+        <h2 class="section-title">Quick start</h2>
+        <p class="section-lede">You need a Mac with Xcode 26+ and <a href="https://tuist.dev" rel="noopener">Tuist</a>, plus a running Hermes Agent. Full details in the <a href="https://github.com/goncharik/hermes-mobile#quick-start" rel="noopener">README</a>.</p>
+        <ol class="steps">
+          <li class="step reveal">
+            <h3><span class="step-num" aria-hidden="true">1</span> Expose your agent to your network</h3>
+            <p>Add credentials to the agent's <code>.env</code> (edit the username and password first):</p>
+            <div class="code-block">
+              <button class="copy-btn" type="button" aria-label="Copy command">Copy</button>
+              <pre><code>cat &gt;&gt; ~/.hermes/.env &lt;&lt;'EOF'
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=you
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=…
+EOF
+echo "HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)" &gt;&gt; ~/.hermes/.env</code></pre>
+            </div>
+          </li>
+          <li class="step reveal">
+            <h3><span class="step-num" aria-hidden="true">2</span> Launch the dashboard</h3>
+            <div class="code-block">
+              <button class="copy-btn" type="button" aria-label="Copy command">Copy</button>
+              <pre><code>hermes dashboard --host 0.0.0.0 --port 9119 --no-open</code></pre>
+            </div>
+            <p class="step-note">Password login switches on automatically as soon as the dashboard is reachable beyond the machine itself. Keep it on a trusted network or VPN — never port-forward it to the open internet.</p>
+          </li>
+          <li class="step reveal">
+            <h3><span class="step-num" aria-hidden="true">3</span> Build and run the app</h3>
+            <div class="code-block">
+              <button class="copy-btn" type="button" aria-label="Copy command">Copy</button>
+              <pre><code>make run</code></pre>
+            </div>
+            <p class="step-note">Builds and launches on a simulator — no signing needed. For a physical device or TestFlight, see <a href="https://github.com/goncharik/hermes-mobile/blob/main/docs/development.md" rel="noopener">docs/development.md</a>.</p>
+          </li>
+          <li class="step reveal">
+            <h3><span class="step-num" aria-hidden="true">4</span> Connect</h3>
+            <p>Open the app, enter your server URL (e.g. <code>http://&lt;tailnet-host&gt;:9119</code>), pick <strong>Password</strong>, and sign in with the credentials from step 1. The built-in <em>Set Up Your Agent</em> guide repeats this recipe with copyable commands.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ============ PROGRESS ============ -->
+    <section class="section" id="progress">
+      <div class="container">
+        <h2 class="section-title">Progress</h2>
+        <div class="status-banner reveal">
+          <span class="status-dot" aria-hidden="true"></span>
+          <p><strong>MVP feature-complete</strong> — the full loop (connect → browse → stream → approve) is built, tested, and <strong>shipping on TestFlight</strong>.</p>
+        </div>
+
+        <dl class="stats reveal">
+          <div class="stat"><dt>Unit tests</dt><dd>1,200</dd><span class="stat-sub">60 suites, all green</span></div>
+          <div class="stat"><dt>Swift</dt><dd>21.8k</dd><span class="stat-sub">lines in HermesKit + app</span></div>
+          <div class="stat"><dt>Commits</dt><dd><span data-token="COMMITS" data-fallback="486">{{COMMITS}}</span></dd><span class="stat-sub">since June 2026</span></div>
+          <div class="stat"><dt>Feature plans shipped</dt><dd>33</dd><span class="stat-sub">designed → built → reviewed</span></div>
+          <div class="stat"><dt>Platform</dt><dd>iOS 18+</dd><span class="stat-sub">iPhone · SwiftUI · TCA</span></div>
+          <div class="stat"><dt>License</dt><dd>MIT</dd><span class="stat-sub">free and open source</span></div>
+        </dl>
+
+        <div class="progress-columns">
+          <div class="shipped reveal">
+            <h3>Shipped</h3>
+            <ul class="checklist">
+              <li>Capability-aware password &amp; token auth, Keychain storage, auto-reconnect + session self-heal</li>
+              <li>Server-authoritative hydration — reopen any session exactly as the agent left it</li>
+              <li>Live streaming chat with native Markdown, panning tables, and tool/skill activity rows</li>
+              <li>“Thinking” indicator with elapsed timer and reviewable reasoning disclosure</li>
+              <li>Approval / clarify / secret cards — including approval recovery from a push tap</li>
+              <li>Privacy-preserving push notifications with cold-launch tap replay</li>
+              <li>Session list: search, pins, archive, delete, workspace grouping, cron sections, branch nesting</li>
+              <li>Voice dictation, photo/PDF/file attachments, clipboard paste</li>
+              <li>Mid-turn prompt queuing with edit / delete / send-now</li>
+              <li>Slash commands against the agent's real command catalog</li>
+              <li>Context-usage pill and model · reasoning-effort picker</li>
+              <li>Message branching, copy message / code block / session id</li>
+              <li>Multi-profile switching with per-profile session scoping</li>
+              <li>Connection-failed retry screen that never mistakes a VPN hiccup for bad credentials</li>
+            </ul>
+          </div>
+          <div class="timeline-wrap reveal">
+            <h3>Recent ships</h3>
+            <ol class="timeline">
+              <li><time datetime="2026-08-25">Aug 25</time> Reasoning-effort levels in the model picker</li>
+              <li><time datetime="2026-08-14">Aug 14</time> Session delete &amp; swipe-action polish</li>
+              <li><time datetime="2026-08-13">Aug 13</time> Mid-turn prompt queuing</li>
+              <li><time datetime="2026-08-07">Aug 7</time> Connection-failed screen, approval-card overflow, subagent push filter</li>
+              <li><time datetime="2026-08-03">Aug 3</time> Markdown table rendering fixes</li>
+              <li><time datetime="2026-07-25">Jul 25</time> Paste images into the composer</li>
+              <li><time datetime="2026-07-24">Jul 24</time> Slash commands, copy/branch buttons, review-summary row, cold-launch push replay</li>
+              <li><time datetime="2026-07-20">Jul 20</time> Built-in agent setup guide</li>
+            </ol>
+            <p class="timeline-more">All <a href="https://github.com/goncharik/hermes-mobile/tree/main/docs/plans/completed" rel="noopener">33 completed plans</a> are documented in the repo.</p>
+          </div>
+        </div>
+
+        <div class="ongoing reveal">
+          <h3>Ongoing</h3>
+          <p>Development is active — check the <a href="https://github.com/goncharik/hermes-mobile/issues" rel="noopener">issue tracker</a> for what's brewing, and the <a href="https://github.com/goncharik/hermes-mobile/blob/main/docs/architecture.md" rel="noopener">architecture doc</a> if you'd like to contribute. Known chore on the books: a global snapshot-baseline re-record to match the current simulator runtime.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FAQ ============ -->
+    <section class="section section-alt" id="faq">
+      <div class="container container-narrow">
+        <h2 class="section-title">FAQ</h2>
+        <div class="faq">
+          <details class="reveal">
+            <summary>Does my data leave my network?</summary>
+            <p>Your conversations never do. The phone talks directly to <em>your</em> agent. The only third-party hop is optional push notifications, where the gateway sees just a generic title and a session id — message content is always fetched in-app over your own network. The app contains no analytics or tracking SDKs.</p>
+          </details>
+          <details class="reveal">
+            <summary>Does the app run the agent?</summary>
+            <p>No — deliberately. Hermes Mobile is a thin remote control. The agent, its tools, files, and model keys all stay on your machine; the phone is a window into it.</p>
+          </details>
+          <details class="reveal">
+            <summary>Can I use it over the internet?</summary>
+            <p>It's designed for a private network or VPN (Tailscale works great). The trust boundary is your network — don't port-forward the dashboard to the open internet.</p>
+          </details>
+          <details class="reveal">
+            <summary>Which sign-in methods are supported?</summary>
+            <p>Password login (recommended) when the agent runs gated auth, or a static session token on fully trusted networks. The app detects which methods your server offers and shows the right fields. Credentials live in the iOS Keychain.</p>
+          </details>
+          <details class="reveal">
+            <summary>Is it on the App Store?</summary>
+            <p>It's currently distributed via TestFlight while the project matures. The app itself is free and MIT-licensed; you supply (and pay for, if applicable) your own model providers behind the agent.</p>
+          </details>
+          <details class="reveal">
+            <summary>What about Android or iPad?</summary>
+            <p>iPhone today. The wire protocol is fully documented in <a href="https://github.com/goncharik/hermes-mobile/blob/main/docs/architecture.md" rel="noopener">docs/architecture.md</a>, so other clients are possible — contributions welcome.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <img src="assets/icon-256.png" alt="" width="24" height="24">
+        <p><strong>Hermes Mobile</strong><br>An open-source companion for the open-source <a href="https://github.com/NousResearch/hermes-agent" rel="noopener">Hermes Agent</a>.</p>
+      </div>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="https://github.com/goncharik/hermes-mobile" rel="noopener">GitHub</a>
+        <a href="https://github.com/goncharik/hermes-mobile/blob/main/docs/architecture.md" rel="noopener">Architecture</a>
+        <a href="https://github.com/goncharik/hermes-mobile/blob/main/docs/development.md" rel="noopener">Development</a>
+        <a href="https://github.com/goncharik/hermes-mobile/blob/main/LICENSE" rel="noopener">MIT License</a>
+      </nav>
+      <p class="footer-meta">© Eugene Honcharenko · Site updated <span data-token="LAST_UPDATED" data-fallback="2026-08-30">{{LAST_UPDATED}}</span><span data-token="SHORT_SHA" data-fallback=""> · {{SHORT_SHA}}</span> · <a href="https://github.com/goncharik/hermes-mobile/tree/main/site" rel="noopener">site source</a></p>
+    </div>
+  </footer>
+
+  <script src="site.js"></script>
+</body>
+</html>
