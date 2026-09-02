@@ -4052,4 +4052,213 @@ struct AppFeatureTests {
     await store.finish()
     #expect(store.state.path.isEmpty)
   }
+
+  // MARK: Push-tap routing in regular width (#32 under `isChatDetached`)
+
+  /// Regular: the slot is the visible detail with an EMPTY path, so a tap for its session is
+  /// "already on screen" through `isChatDetached` — no `openSession`, no marker, no slot
+  /// re-init. Exhaustive: any follow-up action would fail the send.
+  @Test func pushTapForOnScreenSessionInRegularHydratesInPlaceWithEmptyPath() async {
+    let push = PushClient.inMemory()
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.composerText = "unsent draft"
+
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = push.client
+    }
+
+    await store.send(.pushTapped(PushTap(sessionID: "s1")))
+    await store.finish()
+    // Path stays EMPTY — the compact re-attach branch (marker push) must never fire here.
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.storedSessionID == "s1")
+    #expect(store.state.liveChat?.composerText == "unsent draft")
+    #expect(store.state.liveChat?.expectsPendingApproval == false)
+  }
+
+  /// Regular, approval tap for the on-screen session: the #30 hint is armed and the
+  /// consuming `.foreground` hydrate is driven directly — the same in-place shape as
+  /// compact, still with an empty path and the badge netting zero.
+  @Test func approvalTapForOnScreenSessionInRegularDrivesForegroundHydrate() async {
+    let push = PushClient.inMemory()
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.status = .ready
+    chat.hasRequestedSession = true
+    chat.hasStarted = true
+
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = push.client
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        guard method == "session.resume" else { return .object([:]) }
+        return .object([
+          "session_id": .string("live1"),
+          "stored_session_id": .string("s1"),
+          "messages": .array([]),
+          "running": .bool(true),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.pushTapped(PushTap(sessionID: "s1", type: "approval"))) {
+      $0.liveChat?.expectsPendingApproval = true
+      $0.pendingApprovalSessionIDs = []
+    }
+    await store.receive(\.liveChat.foreground)
+    await store.skipReceivedActions()
+    #expect(
+      store.state.liveChat?.pendingInteraction
+        == .approval(ChatFeature.recoveredApprovalRequest)
+    )
+    #expect(store.state.liveChat?.expectsPendingApproval == false)
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.storedSessionID == "s1")
+    #expect(push.badgeCount == 0)
+
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// Regular: a tap for a DIFFERENT session replaces the occupied slot through the full
+  /// teardown chain (persist → teardown → nil-out → fill) and leaves the path EMPTY — the
+  /// new slot is the detail column; a marker would double-render it in the sidebar stack.
+  @Test func pushTapForDifferentSessionInRegularReplacesSlotWithEmptyPath() async {
+    var liveChat = ChatFeature.State(connection: connection, resumeStoredID: "old")
+    liveChat.liveSessionID = "old-live"
+
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: liveChat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pushTapped(PushTap(sessionID: "new")))
+    await store.receive(\.home.delegate.openSession)
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat)
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.storedSessionID == "new")
+    #expect(store.state.liveChat?.expectsPendingApproval == false)
+  }
+
+  /// Regular: the seated EMPTY new chat (the detail column's default) counts as an occupied
+  /// slot for a tap — it may hold a dialled socket — so the tap replaces it via the teardown
+  /// chain rather than a direct swap, still with an empty path.
+  @Test func pushTapOverSeatedEmptyChatInRegularReplacesSeatWithEmptyPath() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: ChatFeature.State(connection: connection),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pushTapped(PushTap(sessionID: "s1")))
+    await store.receive(\.home.delegate.openSession)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat)
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.liveChat?.storedSessionID == "s1")
+    #expect(store.state.liveChat?.isEmptyNewChat == false)
+  }
+
+  /// Regular cold launch via manual login: the stashed tap replays through the one
+  /// `.pushTapped` path (#46, unchanged in shape) and ends with the tapped session filling
+  /// the slot and an EMPTY path — no throwaway new-chat seat on the way in.
+  @Test func coldLaunchTapReplayedAfterManualLoginInRegularFillsSlotWithEmptyPath() async {
+    let store = TestStore(initialState: AppFeature.State(layout: .regular)) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pushTapped(PushTap(sessionID: "s-manual"))) {
+      $0.pendingPushTap = PushTap(sessionID: "s-manual")
+    }
+    #expect(store.state.liveChat == nil)
+
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingPushTap = nil
+    }
+    await store.receive(\.pushTapped)
+    await store.receive(\.home.delegate.openSession)
+    await store.finish()
+    #expect(store.state.liveChat?.storedSessionID == "s-manual")
+    #expect(store.state.liveChat?.isEmptyNewChat == false)
+    #expect(store.state.path.isEmpty)
+    #expect(store.state.pendingApprovalSessionIDs.isEmpty)
+  }
+
+  /// Regular cold launch, approval tap: the replay arms the #30 recovery hint on the fresh
+  /// slot and the mark-then-clear badge bookkeeping nets zero — identical to compact except
+  /// for the empty path.
+  @Test func coldLaunchApprovalTapReplayInRegularArmsHintWithEmptyPath() async {
+    let push = PushClient.inMemory()
+    let store = TestStore(initialState: AppFeature.State(layout: .regular, autoConnecting: true)) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = push.client
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pushTapped(PushTap(sessionID: "s-approve", type: "approval"))) {
+      $0.pendingApprovalSessionIDs = ["s-approve"]
+      $0.pendingPushTap = PushTap(sessionID: "s-approve", type: "approval")
+    }
+    await store.finish()
+    #expect(push.badgeCount == 1)
+
+    await store.send(.autoConnectSucceeded(connection)) {
+      $0.autoConnecting = false
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingPushTap = nil
+    }
+    await store.receive(\.pushTapped)
+    await store.receive(\.home.delegate.openSession) {
+      $0.pendingApprovalSessionIDs = []
+    }
+    await store.finish()
+    #expect(push.badgeCount == 0)
+    #expect(store.state.liveChat?.expectsPendingApproval == true)
+    #expect(store.state.liveChat?.storedSessionID == "s-approve")
+    #expect(store.state.path.isEmpty)
+  }
 }

@@ -180,9 +180,11 @@ public struct AppFeature {
     /// fresh new chat in the detail column — regular never shows a blank detail.
     case layoutChanged(Layout)
     /// A push notification was tapped — deep-link to its session, routed by comparing the
-    /// tapped id against the live slot + path (#32): already on screen → badge bookkeeping
-    /// only; detached slot match → re-attach push; different session → replace the slot and
-    /// SET the path (never stack). Approval taps clear their pending-badge entry on view.
+    /// tapped id against the live slot under `isChatDetached` (#32): slot match + not
+    /// detached (on screen — a compact marker, or any slot in regular) → badge bookkeeping
+    /// + in-place hydrate only; slot match + detached (compact only) → re-attach push;
+    /// different session → replace the slot and SET the path (one marker in compact, empty
+    /// in regular; never stack). Approval taps clear their pending-badge entry on view.
     case pushTapped(PushTap)
     case onboarding(ConnectionFeature.Action)
     /// The launch retry screen's actions (present only while the slot is filled).
@@ -439,8 +441,13 @@ public struct AppFeature {
 
       case let .pushTapped(tap):
         // Deep-link a tapped push to its session — routed by comparing `tap.sessionID`
-        // against the live slot + path (#32) so a tap for the already-open session never
-        // stacks a duplicate chat screen.
+        // against the live slot through `isChatDetached` (#32) so a tap for the already-open
+        // session never stacks a duplicate chat screen. Three outcomes, in order below:
+        // slot match + not detached → in-place; slot match + detached (compact only) →
+        // re-attach via `openSession`; different session → `fillLiveChat` replacement
+        // (marker only in compact). Cold-launch replay (#46, `landOnHome`) re-enters here
+        // unchanged in shape — the same three rules decide, under whichever layout the
+        // list landed in.
         //
         // Badge bookkeeping: an approval tap first MARKS the session pending (it's a relevant
         // approval), then opening it CLEARS that entry below — so a tap that opens nets to zero,
@@ -458,11 +465,13 @@ public struct AppFeature {
           state.pendingPushTapServerURL = preferences.loadServerURL().flatMap(parseServerURL)
           return setBadge(state)
         }
-        // The tapped session is the one ALREADY on screen (slot match + marker on the
-        // path) → NO navigation. Badge bookkeeping only: the user is now viewing it, so
-        // the pending entry clears (mark-then-clear nets zero); the content update arrives
-        // in place — the live socket is already streaming, and the tap's app activation
-        // fires the existing `.foreground` re-hydrate.
+        // The tapped session is the one ALREADY on screen (`currentViewingSessionID` — the
+        // slot key when NOT detached: in compact that means its marker is on the path, in
+        // regular the slot is always the visible detail) → NO navigation, path untouched
+        // (empty in regular). Badge bookkeeping only: the user is now viewing it, so the
+        // pending entry clears (mark-then-clear nets zero); the content update arrives in
+        // place — the live socket is already streaming, and the tap's app activation fires
+        // the existing `.foreground` re-hydrate.
         if state.currentViewingSessionID == tap.sessionID {
           state.pendingApprovalSessionIDs.remove(tap.sessionID)
           // Approval-recovery hint (#30 workaround): the socket may have been down when the
@@ -478,9 +487,11 @@ public struct AppFeature {
           }
           return setBadge(state)
         }
-        // Otherwise share the SAME `openSession` flow a list tap uses: a detached slot match
-        // (user on the list) pushes the marker back and re-attaches live (no re-init, no dup);
-        // a different session replaces the slot and SETS the path to the single new marker
+        // Otherwise share the SAME `openSession` flow a list tap uses: a DETACHED slot match
+        // (compact only — the user popped to the list; in regular a slot match always took
+        // the branch above) pushes the marker back and re-attaches live (no re-init, no
+        // dup); a different session replaces the slot and SETS the path — the single new
+        // marker in compact, left empty in regular where the slot IS the detail column
         // (`fillLiveChat` resets rather than appends — no stacking on cold launch either).
         // Prefer the loaded `Session` (carries a title); fall back to a minimal `Session(id:)`
         // if it isn't in the list (the chat resumes by stored id and hydrates the title).

@@ -251,15 +251,15 @@ case .home:
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] rewrite the #32 rules on `isChatDetached`: match + not detached → in-place
+- [x] rewrite the #32 rules on `isChatDetached`: match + not detached → in-place
   hydrate; match + detached (compact only) → push marker + `.reattached`; different →
   `fillLiveChat` (marker only in compact); cold-launch `replayPendingPushTap` unchanged in
   shape
-- [ ] write tests in regular: tap for the on-screen session hydrates in place with empty
+- [x] write tests in regular: tap for the on-screen session hydrates in place with empty
   path; tap for a different session replaces the slot with empty path; cold-launch replay
   in regular ends with empty path and filled slot
-- [ ] re-run the existing compact push-tap tests untouched (they define the compact rules)
-- [ ] run `make test` — must pass before task 4
+- [x] re-run the existing compact push-tap tests untouched (they define the compact rules)
+- [x] run `make test` — must pass before task 4
 
 ### Task 4: `showsEmptyHero` predicate in `ChatFeature`
 
