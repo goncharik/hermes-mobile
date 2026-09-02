@@ -282,14 +282,15 @@ case .home:
 **Files:**
 - Modify: `Project.swift`
 
-- [ ] add `.iPad` to the `HermesMobile` and `HermesMobileTests` destinations
-- [ ] add `UISupportedInterfaceOrientations~ipad` (all four); confirm no
+- [x] add `.iPad` to the `HermesMobile` and `HermesMobileTests` destinations
+- [x] add `UISupportedInterfaceOrientations~ipad` (all four); confirm no
   `UIRequiresFullScreen`
-- [ ] `tuist generate --no-open` and `make build` — the app builds for
+- [x] `tuist generate --no-open` and `make build` — the app builds for
   `generic/platform=iOS Simulator`
-- [ ] run `make snapshot` to confirm the test target still builds and the failure set is
-  unchanged from `main` (baseline-drift only; see CLAUDE.md)
-- [ ] run tests — must pass before task 6
+- [x] run `make snapshot` to confirm the test target still builds and the failure set is
+  unchanged from `main` (baseline-drift only; see CLAUDE.md) — 199 run / 36 failed, every
+  failure equal render size (pixel residual only)
+- [x] run tests — must pass before task 6
 
 ### Task 6: `ChatEmptyHeroView` and the transcript-region swap
 
