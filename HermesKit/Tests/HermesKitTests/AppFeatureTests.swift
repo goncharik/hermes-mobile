@@ -3466,9 +3466,9 @@ struct AppFeatureTests {
     #expect(store.state.currentViewingSessionID == "s1")
   }
 
-  /// Narrowing onto an UNTOUCHED detail seat drops it: the stack shows the list, not an empty
+  /// Narrowing onto a PRISTINE detail seat drops it: the stack shows the list, not an empty
   /// chat with a Back button. Widening seats a fresh one again.
-  @Test func layoutChangedToCompactDropsUntouchedSeat() async {
+  @Test func layoutChangedToCompactDropsPristineSeat() async {
     var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
     seat.liveSessionID = "live-new"
     let store = TestStore(
@@ -3516,6 +3516,29 @@ struct AppFeatureTests {
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }
     #expect(store.state.liveChat?.composerText == "half-typed")
+  }
+
+  /// Staged attachments with NO typed text are equally the user's work: the seat keeps its
+  /// marker on narrowing rather than being dropped, so the picked files survive.
+  @Test func layoutChangedToCompactWithStagedAttachmentsPushesMarker() async {
+    let attachment = ComposerAttachment(
+      id: UUID(0), kind: .image, filename: "p.png", mimeType: "image/png", data: Data([1])
+    )
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.attachments = [attachment]
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+    #expect(store.state.liveChat?.attachments == [attachment])
   }
 
   /// Reporting the same layout twice (the shell's `initial: true` fires on every view
@@ -3725,7 +3748,7 @@ struct AppFeatureTests {
       $0.slotGeneration = 1
     }
     #expect(store.state.path.isEmpty)
-    #expect(store.state.liveChat?.isEmptyNewChat == true)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == true)
     #expect(store.state.highlightedSessionID == nil, "an unresolved new chat highlights no row")
   }
 
@@ -3780,7 +3803,7 @@ struct AppFeatureTests {
     await store.receive(\.home.delegate.openSession)
     await store.finish()
     #expect(store.state.liveChat?.storedSessionID == "s-tap")
-    #expect(store.state.liveChat?.isEmptyNewChat == false)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == false)
     #expect(store.state.path.isEmpty)
   }
 
@@ -3860,11 +3883,11 @@ struct AppFeatureTests {
     }
   }
 
-  /// "New session" over an EMPTY new chat (connected but never prompted): the composer
+  /// "New session" over an UNPROMPTED new chat (connected but never prompted): the composer
   /// draft — text AND staged attachments — resets, and nothing else happens: no
   /// `persistNow` / `teardown` / `clearLiveChat` / `fillLiveChat`, so the live socket
   /// is not redialled.
-  @Test func newSessionOverEmptyNewChatClearsComposerOnly() async {
+  @Test func newSessionOverUnpromptedChatClearsComposerOnly() async {
     var chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
     chat.liveSessionID = "live-new"
     chat.status = .ready
@@ -3891,9 +3914,9 @@ struct AppFeatureTests {
     #expect(store.state.path.isEmpty)
   }
 
-  /// A SEEDED "new session" (push "Ask agent to install") over an empty new chat seeds the
+  /// A SEEDED "new session" (push "Ask agent to install") over an unprompted new chat seeds the
   /// draft the same way — still no refill.
-  @Test func seededNewSessionOverEmptyNewChatSeedsComposerOnly() async {
+  @Test func seededNewSessionOverUnpromptedChatSeedsComposerOnly() async {
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: connection),
@@ -3909,9 +3932,9 @@ struct AppFeatureTests {
     }
   }
 
-  /// Compact safety net for the no-op: an empty new chat that is somehow DETACHED (no
+  /// Compact safety net for the no-op: an unprompted new chat that is somehow DETACHED (no
   /// marker) gets its marker back, so the "New" tap always lands on a screen.
-  @Test func newSessionOverDetachedEmptyNewChatInCompactReattachesMarker() async {
+  @Test func newSessionOverDetachedUnpromptedChatInCompactReattachesMarker() async {
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: connection),
@@ -3931,7 +3954,7 @@ struct AppFeatureTests {
   /// re-auth hands the chat fresh cookies while `home` keeps the snapshot it was built with,
   /// and a mismatch there would redial the seat under the stale credentials. "New session"
   /// over it still only resets the composer. Exhaustive: a teardown would fail the send.
-  @Test func newSessionOverEmptyNewChatWithFresherCookiesThanTheListStillOnlyResetsComposer() async {
+  @Test func newSessionOverUnpromptedChatWithFresherCookiesStillOnlyResetsComposer() async {
     var seat = ChatFeature.State(connection: freshCookieConnection(username: "alice"))
     seat.composerText = "half-typed"
     seat.liveSessionID = "live-new"
@@ -3952,9 +3975,9 @@ struct AppFeatureTests {
     #expect(store.state.slotGeneration == 0, "no refill — the seat was reused")
   }
 
-  /// An empty new chat under a STALE profile (the selection changed under it) is not "the
+  /// An unprompted new chat under a STALE profile (the selection changed under it) is not "the
   /// same" new chat — it is torn down and refilled under the current profile.
-  @Test func newSessionOverEmptyNewChatUnderStaleProfileRefills() async {
+  @Test func newSessionOverUnpromptedChatUnderStaleProfileRefills() async {
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(
@@ -4024,9 +4047,9 @@ struct AppFeatureTests {
     await store.send(.liveChat(.teardown))
   }
 
-  /// Opening a session in regular over the seated empty new chat replaces it through the
+  /// Opening a session in regular over the seated unprompted new chat replaces it through the
   /// standard teardown-then-fill (its socket may already be dialled) — no marker either way.
-  @Test func openingSessionInRegularOverEmptyNewChatReplacesItWithoutMarker() async {
+  @Test func openingSessionInRegularOverUnpromptedChatReplacesItWithoutMarker() async {
     var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
     seat.liveSessionID = "live-new"
     let store = TestStore(
@@ -4159,7 +4182,55 @@ struct AppFeatureTests {
     await store.send(.liveChat(.teardown))
     await store.finish()
     #expect(store.state.path.isEmpty)
-    #expect(store.state.liveChat?.isEmptyNewChat == true)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == true)
+  }
+
+  /// ACCEPTED COST of the always-seated detail column (see `docs/features/ipad-layout.md`):
+  /// the reducer-side dial takes the seat's socket to `.ready`, where `ChatFeature`'s
+  /// no-stored-id branch sends a `session.create` — a server-side handle nobody asked for.
+  /// It is deliberate: the created session gets no DB row until its first prompt, so an
+  /// abandoned seat never reaches the session list.
+  @Test func regularSeatRefillCreatesServerSessionWithoutUserAction() async {
+    let methods = LockIsolated<[String]>([])
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "s1")]),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.preferences = .inMemory()
+      $0.hermesREST.archive = { @Sendable _, _, _, _ in }
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.send = { @Sendable method, _ in
+        methods.withValue { $0.append(method) }
+        return .object([
+          "session_id": .string("seat-live"),
+          "stored_session_id": .string("seat-stored"),
+          "message_count": .number(0),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.archiveButtonTapped(id: "s1")))
+    await store.send(.home(.confirmationDialog(.presented(.confirmArchive(id: "s1")))))
+    await store.receive(\.home.delegate.sessionArchived)
+    await store.receive(\.fillLiveChat)
+    // The reducer dials the replacement seat; nothing but the archive was ever tapped.
+    await store.receive(\.liveChat.task)
+    await store.receive(\.liveChat.gatewayEvent)
+    await store.receive(\.liveChat.sessionResult.success)
+    #expect(methods.value.contains("session.create"))
+    #expect(store.state.liveChat?.liveSessionID == "seat-live")
+    await store.send(.liveChat(.teardown))
   }
 
   /// The same archive in compact leaves the slot nil — the user is on the list, nothing
@@ -4413,7 +4484,7 @@ struct AppFeatureTests {
     await store.send(.liveChat(.teardown))
   }
 
-  /// Regular: the seated EMPTY new chat (the detail column's default) counts as an occupied
+  /// Regular: the seated UNPROMPTED new chat (the detail column's default) counts as an occupied
   /// slot for a tap — it may hold a dialled socket — so the tap replaces it via the teardown
   /// chain rather than a direct swap, still with an empty path.
   @Test func pushTapOverSeatedEmptyChatInRegularReplacesSeatWithEmptyPath() async {
@@ -4443,7 +4514,7 @@ struct AppFeatureTests {
     }
     #expect(store.state.path.isEmpty)
     #expect(store.state.liveChat?.storedSessionID == "s1")
-    #expect(store.state.liveChat?.isEmptyNewChat == false)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == false)
     await store.send(.liveChat(.teardown))
   }
 
@@ -4469,7 +4540,7 @@ struct AppFeatureTests {
     await store.receive(\.home.delegate.openSession)
     await store.finish()
     #expect(store.state.liveChat?.storedSessionID == "s-manual")
-    #expect(store.state.liveChat?.isEmptyNewChat == false)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == false)
     #expect(store.state.path.isEmpty)
     #expect(store.state.pendingApprovalSessionIDs.isEmpty)
   }
@@ -4685,7 +4756,7 @@ struct AppFeatureTests {
     #expect(store.state.liveChat == nil)
   }
 
-  /// Switching the sidebar's profile in regular reseats the EMPTY new chat under the new
+  /// Switching the sidebar's profile in regular reseats the UNPROMPTED new chat under the new
   /// profile — through the standard teardown chain (the seat's socket is dialled in regular),
   /// never a direct swap — so its first prompt lands in the new profile's `state.db`. The
   /// path stays empty and the parent starts the replacement (regular has no marker).
@@ -4857,7 +4928,7 @@ struct AppFeatureTests {
     #expect(store.state.liveChat == chat)
   }
 
-  /// Compact has no seat rule: an empty new chat left in the slot is untouched by a profile
+  /// Compact has no seat rule: an unprompted new chat left in the slot is untouched by a profile
   /// switch (the iPhone path stays byte-identical; "New session" applies the stale-profile
   /// refill there when tapped).
   @Test func profileSwitchInCompactLeavesEmptyChatAlone() async {

@@ -228,23 +228,24 @@ public struct ChatFeature {
     /// into it), and an idle pop must not destroy a parked queue.
     public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
 
-    /// A brand-new chat the user has not used yet: no DB row (`storedSessionID == nil` — the
-    /// server creates one lazily on the first prompt), nothing rendered, no turn in flight,
-    /// no queued prompts. The app-level "new session" policy reads this: filling a fresh
-    /// chat over one that is already empty would tear down and redial a socket for an
-    /// identical result, so it clears the composer draft instead. A composer draft or
-    /// staged attachments do NOT make the chat non-empty — they are exactly what the
-    /// no-op clears. A connected-but-unprompted chat (`liveSessionID` set) still counts as
-    /// empty: the live session holds nothing worth keeping.
-    public var isEmptyNewChat: Bool {
+    /// No prompt has been sent yet — but the composer may hold a draft. No DB row
+    /// (`storedSessionID == nil`; the server creates one lazily on the first prompt),
+    /// nothing rendered, no turn in flight, no queued prompts. The app-level "new session"
+    /// policy reads this: filling a fresh chat over one that has never been prompted would
+    /// tear down and redial a socket for an identical result, so it clears the composer
+    /// draft instead — the draft and staged attachments are exactly what that no-op clears.
+    /// A connected-but-unprompted chat (`liveSessionID` set) still qualifies: the live
+    /// session holds nothing worth keeping.
+    public var isUnpromptedNewChat: Bool {
       storedSessionID == nil && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
-    /// An `isEmptyNewChat` whose composer is untouched too — the regular-width detail seat
-    /// exactly as it was seated, holding nothing the user would miss. Narrowing to the stack
-    /// drops such a seat instead of pushing an empty chat over the session list.
-    public var isUntouchedNewChat: Bool {
-      isEmptyNewChat && composerText.isEmpty && attachments.isEmpty
+    /// Nothing typed, staged, or sent at all — an `isUnpromptedNewChat` with an empty
+    /// composer and no attachments, i.e. the regular-width detail seat exactly as it was
+    /// seated. Narrowing to the stack drops such a seat instead of pushing an empty chat
+    /// over the session list.
+    public var isPristineNewChat: Bool {
+      isUnpromptedNewChat && composerText.isEmpty && attachments.isEmpty
     }
 
     /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the

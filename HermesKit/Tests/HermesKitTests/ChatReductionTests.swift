@@ -2344,48 +2344,85 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
-  // MARK: Empty new chat (iPad split view, #80 — the "new session" no-op predicate)
+  // MARK: Unprompted new chat (iPad split view, #80 — the "new session" no-op predicate)
 
-  /// Fresh state is an empty new chat; a composer draft, staged attachments, and a
-  /// connected-but-unprompted live session do NOT make it non-empty.
-  @Test func isEmptyNewChatTrueForFreshChatRegardlessOfDraftOrLiveSession() {
+  /// Fresh state is an unprompted new chat; a composer draft, staged attachments, and a
+  /// connected-but-unprompted live session do NOT make it prompted.
+  @Test func isUnpromptedNewChatTrueForFreshChatRegardlessOfDraftOrLiveSession() {
     var state = ChatFeature.State(connection: conn)
-    #expect(state.isEmptyNewChat)
+    #expect(state.isUnpromptedNewChat)
 
     state.composerText = "typed but never sent"
     state.attachments = [imageAttachment(0)]
-    #expect(state.isEmptyNewChat, "a draft is exactly what the no-op clears")
+    #expect(state.isUnpromptedNewChat, "a draft is exactly what the no-op clears")
 
     state.liveSessionID = "live"
     state.status = .ready
-    #expect(state.isEmptyNewChat, "a live session with no DB row holds nothing worth keeping")
+    #expect(state.isUnpromptedNewChat, "a live session with no DB row holds nothing worth keeping")
   }
 
-  @Test func isEmptyNewChatFalseWithStoredID() {
+  @Test func isUnpromptedNewChatFalseWithStoredID() {
     let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
-    #expect(!state.isEmptyNewChat)
+    #expect(!state.isUnpromptedNewChat)
   }
 
-  @Test func isEmptyNewChatFalseWithTranscriptRow() {
+  @Test func isUnpromptedNewChatFalseWithTranscriptRow() {
     var state = ChatFeature.State(connection: conn)
     state.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
-    #expect(!state.isEmptyNewChat)
+    #expect(!state.isUnpromptedNewChat)
   }
 
-  @Test func isEmptyNewChatFalseWhileSending() {
+  @Test func isUnpromptedNewChatFalseWhileSending() {
     var state = ChatFeature.State(connection: conn)
     state.isSending = true
-    #expect(!state.isEmptyNewChat)
+    #expect(!state.isUnpromptedNewChat)
   }
 
-  @Test func isEmptyNewChatFalseWithQueuedWork() {
+  @Test func isUnpromptedNewChatFalseWithQueuedWork() {
     var queued = ChatFeature.State(connection: conn)
     queued.queuedPrompts = [QueuedPrompt(id: uuid(0), text: "later")]
-    #expect(!queued.isEmptyNewChat)
+    #expect(!queued.isUnpromptedNewChat)
 
     var draining = ChatFeature.State(connection: conn)
     draining.drainingEntry = QueuedPrompt(id: uuid(1), text: "now")
-    #expect(!draining.isEmptyNewChat)
+    #expect(!draining.isUnpromptedNewChat)
+  }
+
+  // MARK: Pristine new chat (iPad split view, #80 — the narrowing-drop predicate)
+
+  /// The regular-width seat exactly as it was seated: nothing typed, staged, or sent.
+  @Test func isPristineNewChatTrueForFreshChat() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(state.isPristineNewChat)
+
+    // A dialled-but-unprompted socket is still pristine — the live session holds nothing.
+    state.liveSessionID = "live"
+    state.status = .ready
+    #expect(state.isPristineNewChat)
+  }
+
+  /// A typed draft makes the seat worth keeping: narrowing must push its marker, not drop it.
+  @Test func isPristineNewChatFalseWithComposerDraft() {
+    var state = ChatFeature.State(connection: conn)
+    state.composerText = "typed but never sent"
+    #expect(state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
+  /// Staged attachments alone (no typed text) are equally the user's work — dropping such a
+  /// seat on narrowing would silently discard the picked files.
+  @Test func isPristineNewChatFalseWithStagedAttachmentsOnly() {
+    var state = ChatFeature.State(connection: conn)
+    state.attachments = [imageAttachment(0)]
+    #expect(state.composerText.isEmpty)
+    #expect(state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
+  /// Every non-unprompted chat is non-pristine too (the predicate is a strict narrowing).
+  @Test func isPristineNewChatFalseForPromptedChat() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!state.isPristineNewChat)
   }
 
   // MARK: Empty-chat hero (iPad split view, #80 — `showsEmptyHero` truth table)

@@ -57,12 +57,13 @@ a not-yet-created new chat gets a nil-key marker); compact→regular clears the 
 itself (socket, rows, ticker) is untouched either way. Widening with NO slot falls into the
 new-chat fill below.
 
-**Narrowing drops an untouched seat.** Regular always keeps a seat in the detail column, and
+**Narrowing drops a pristine seat.** Regular always keeps a seat in the detail column, and
 pushing an unused one onto the stack would land the user on an empty chat with a Back button
 instead of the list — then popping it would tear it down anyway, so a rotate cycle would cost a
-`session.create` round-trip each way. `ChatFeature.State.isUntouchedNewChat` (`isEmptyNewChat`
-with an empty composer and no staged attachments) is torn down instead, with no marker;
-widening seats a fresh one. Anything the user has touched — a draft included — keeps its marker.
+`session.create` round-trip each way. `ChatFeature.State.isPristineNewChat`
+(`isUnpromptedNewChat` with an empty composer and no staged attachments) is torn down instead,
+with no marker; widening seats a fresh one. Anything the user has touched — a draft or staged
+attachments — keeps its marker.
 
 ## New-chat fill rules for regular width
 
@@ -83,18 +84,18 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   seat is dialled.
 - **Profile-switch reseat** — a reducer-level `.onChange(of: \.home?.scopedProfileName)`,
   evaluated after the list reducer so it reads the new selection. In regular only, an
-  `isEmptyNewChat` slot whose `profileName` no longer matches the list's is reseated through the
-  standard teardown chain (its socket may already be dialled) so its first prompt lands in the
-  right profile's `state.db`; its composer draft and staged attachments ride across into the
+  `isUnpromptedNewChat` slot that is no longer `isReusableNewChat` for the list is reseated
+  through the standard teardown chain (its socket may already be dialled) so its first prompt
+  lands in the right profile's `state.db`; its draft and staged attachments ride across into the
   replacement — unlike "New session", a profile switch is not a request to clear them. A chat
   with anything in it is left alone — the profile is the LIST's scope, not the open chat's.
   Observing the value (not `.selectProfile`) covers every path that changes it: the profiles-404
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
   off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
-  `ChatFeature.State.isEmptyNewChat` (`storedSessionID == nil && transcript.isEmpty &&
+  `ChatFeature.State.isUnpromptedNewChat` (`storedSessionID == nil && transcript.isEmpty &&
   !isSending && !hasQueuedWork` — a draft, staged attachments, or a connected-but-unprompted
-  live id do NOT make it non-empty) AND the same `scopedProfileName`. Tearing it down to fill an
+  live id do NOT make it prompted) AND the same `scopedProfileName`. Tearing it down to fill an
   identical fresh one would redial the socket for nothing, so it resets the composer draft
   (text → the `initialComposerText` seed or empty; attachments cleared) and returns `.none`. A
   stale profile falls through to a real refill. The CONNECTION is deliberately not compared: it
@@ -112,15 +113,22 @@ things follow, and both are needed:
 - `.fillLiveChat` returns `.send(.liveChat(.task))` when `layout == .regular` (`.none` in
   compact, unchanged) — the half `swift test` can assert, so "a seat is always connected" is a
   pinned guarantee rather than a property of view code.
-- `State.slotGeneration` is bumped by every regular-width `fillLiveChat`, and `AppView` keys the
+- `State.slotGeneration` is bumped by every regular-width `seatLiveChat`, and `AppView` keys the
   detail `ChatView` on it (`.id`). Without it the detail view survives the swap and the incoming
   session inherits the outgoing one's transcript scroll offset (row ids are FNV-1a of
   `(sequenceIndex, role, kind)` with no session component, so two ordinary transcripts diff as an
   append, not a `.reset` — the open-at-bottom contract would be skipped) and its composer focus.
   A counter, not `sessionKey`: that flips nil → id on create and would recreate the view mid-turn.
 
-`hasStarted` makes the resulting pair of `.task`s one dial, never a redial. Connect timing for a
-never-prompted seat is otherwise unchanged — it has no DB row until the first prompt.
+`hasStarted` makes the resulting pair of `.task`s one dial, never a redial.
+
+**Accepted cost.** Every regular-width seat therefore opens a socket and, on `.ready`, sends a
+`session.create` with no user action — at launch, on widening, after an archive/delete refill,
+and after a profile switch. Accepted rather than deferred: a never-prompted create yields a
+live handle with NO database row, so an abandoned seat never reaches the session list, while
+deferring the dial until the first prompt would entangle the #17 self-heal, the model chip, and
+slash commands, all of which assume a connected chat. Pinned by
+`regularSeatRefillCreatesServerSessionWithoutUserAction`.
 
 ## One `NavigationSplitView` for both widths
 
@@ -140,10 +148,12 @@ system's own toggle (no binding — nothing in the app reads or sets it).
 (`layout == .regular ? currentViewingSessionID : nil`, unit-tested for both layouts) is passed
 into `SessionListView` (`highlightedSessionID: String? = nil`) and the matching row gets
 `.listRowBackground(SelectedRowBackground())` — an inset 12pt continuous rounded rect in
-`hermesAccent` at 0.18 opacity; every other row passes `nil` (a `Color.clear` would change the
-iPhone render). Compact reads nil because `currentViewingSessionID` is non-nil for the whole
-life of the marker, including the pop animation and an interactive swipe-back, when the iPhone
-list is visible again. `List(selection:)` was rejected because selection would be a
+`hermesAccent` at 0.18 opacity plus `.accessibilityAddTraits(.isSelected)` (the tint alone says
+nothing to VoiceOver or Switch Control); every other row passes `nil` / an empty trait set (a
+`Color.clear` would change the iPhone render). Compact reads nil because
+`currentViewingSessionID` is non-nil for the whole life of the marker, including the pop
+animation and an interactive swipe-back, when the iPhone list is visible again.
+`List(selection:)` was rejected because selection would be a
 SECOND source of truth for "which session is open", racing the reducer-owned slot on push
 taps, archive/delete refills, and layout changes; a new chat whose id hasn't resolved reads
 `nil` and highlights nothing. In compact the list is never visible alongside the chat, so the
@@ -223,19 +233,20 @@ the compact layout. Deployment target stays iOS 18.
   predicate" (`defaultLayoutIsCompactAndDetachedMeansEmptyPath`,
   `highlightedSessionIsNilInCompactEvenWithTheChatOnScreen`,
   `layoutChangedToRegularClearsPathAndKeepsSlot`, `layoutChangedToCompactWithLiveSlotPushesMarker`,
-  `layoutChangedToCompactDropsUntouchedSeat`, `layoutChangedToCompactWithDraftedSeatPushesNilKeyMarker`,
-  `layoutChangedToSameLayoutIsNoOp`,
+  `layoutChangedToCompactDropsPristineSeat`, `layoutChangedToCompactWithDraftedSeatPushesNilKeyMarker`,
+  `layoutChangedToCompactWithStagedAttachmentsPushesMarker`, `layoutChangedToSameLayoutIsNoOp`,
   regular `chatViewDisappeared` / `runningChanged` / `currentViewingSessionID`); "New-chat
   filling rules for regular width" (`homeAppearingInRegularFillsNewChat`,
   `onboardingConnectedInRegularFillsNewChat`, `connectionFailedRetryInRegularFillsNewChat`,
   `homeAppearingInRegularWithStashedTapOpensThatSessionInstead`,
   `homeAppearingInRegularWithForeignStashedTapStillSeatsTheDetail`,
   `layoutChangedToRegularWithNilSlotFillsNewChat`, `layoutChangedToCompactWithNilSlotDoesNotFill`,
-  `newSessionOverEmptyNewChatClearsComposerOnly`, `newSessionOverEmptyNewChatUnderStaleProfileRefills`,
-  `newSessionOverEmptyNewChatWithFresherCookiesThanTheListStillOnlyResetsComposer`,
+  `newSessionOverUnpromptedChatClearsComposerOnly`, `newSessionOverUnpromptedChatUnderStaleProfileRefills`,
+  `newSessionOverUnpromptedChatWithFresherCookiesStillOnlyResetsComposer`,
   `newSessionOverNonEmptyChatInRegularTearsDownAndRefills`,
-  `openingSessionInRegularOverEmptyNewChatReplacesItWithoutMarker`,
-  `slotReplacementInRegularDialsReplacementExactlyOnce`, `archivingOnScreenSessionInRegularRefillsNewChat`
+  `openingSessionInRegularOverUnpromptedChatReplacesItWithoutMarker`,
+  `slotReplacementInRegularDialsReplacementExactlyOnce`, `archivingOnScreenSessionInRegularRefillsNewChat`,
+  `regularSeatRefillCreatesServerSessionWithoutUserAction`
   + the compact/delete counterparts); "Push-tap routing in regular width" (on-screen tap
   hydrates in place with an empty path; different session replaces with an empty path;
   cold-launch replay in regular); `differentUserReauthInRegularSeatsNewChatForNewUser` (the
@@ -245,7 +256,8 @@ the compact layout. Deployment target stays iOS 18.
   `profileSwitchInRegularCarriesTheSeatsDraftAcrossTheReseat`,
   `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`).
   Every pre-existing compact test is untouched — that is the byte-identical guard.
-- `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isEmptyNewChat*` (5) and the
+- `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isUnpromptedNewChat*` (5),
+  `isPristineNewChat*` (4) and the
   `showsEmptyHero*` truth table + `hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt`,
   `hydrateOfRunningTurnWithEmptyHistoryHidesHero`, `createHandshakeMarksHydratedSoStoredIDKeepsHero`.
 - `HermesMobileTests/ChatColumnLayoutTests.swift` — measured `UIWindow`-hosted: 1024pt window →

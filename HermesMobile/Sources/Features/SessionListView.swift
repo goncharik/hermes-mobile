@@ -522,6 +522,9 @@ struct SessionListView: View {
     // `nil` for every row but the highlighted one, so non-highlighted rows keep the
     // list's default background (a `Color.clear` here would change the iPhone render).
     .listRowBackground(session.id == highlightedSessionID ? SelectedRowBackground() : nil)
+    // The tint alone is invisible to VoiceOver/Switch Control — the trait is what announces
+    // which session the detail column is showing. Empty option set = no trait added.
+    .accessibilityAddTraits(session.id == highlightedSessionID ? [.isSelected] : [])
     .swipeActions(edge: .leading) {
       pinButton(session, isPinned: isPinned)
         .tint(.orange)

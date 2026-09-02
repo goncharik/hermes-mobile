@@ -424,35 +424,7 @@ public struct AppFeature {
         }
 
       case let .layoutChanged(layout):
-        guard layout != state.layout else { return .none }
-        // Layout first: the view's column move fires `chatViewDisappeared`, which must read
-        // the NEW layout through `isChatDetached` and leave the slot alone.
-        state.layout = layout
-        guard let chat = state.liveChat else {
-          // Widening onto an EMPTY slot: the detail column would render blank — seat a
-          // fresh new chat (a no-op when narrowing, or with no list to build it from).
-          fillNewChatIfDetailEmpty(&state)
-          return .none
-        }
-        switch layout {
-        case .compact:
-          // An UNTOUCHED detail seat (regular always keeps one — a new chat with nothing in
-          // it, not even a draft) has nothing to show in the stack: pushing it would land the
-          // user on an empty chat with a Back button instead of the list, and popping it would
-          // tear it down anyway. Drop it here; widening seats a fresh one.
-          if chat.isUntouchedNewChat {
-            return teardownSlot()
-          }
-          // Any other live slot (attached detail moments ago, a running turn, a typed draft)
-          // needs its marker so the chat stays visible. SET, never append: one slot ↔ one
-          // marker.
-          state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey)])
-        case .regular:
-          // The slot IS the detail column; a lingering marker would render the chat twice
-          // (sidebar stack + detail). The slot itself — socket, rows, ticker — is untouched.
-          state.path.removeAll()
-        }
-        return .none
+        return reduceLayoutChanged(&state, to: layout)
 
       case .backgroundGraceExpired:
         // The background window ran out while still backgrounded. Final flush, then cancel
@@ -470,64 +442,7 @@ public struct AppFeature {
         )
 
       case let .pushTapped(tap):
-        // Deep-link a tapped push to its session — routed by comparing `tap.sessionID`
-        // against the live slot through `isChatDetached` (#32) so a tap for the already-open
-        // session never stacks a duplicate chat screen. Three outcomes, in order below:
-        // slot match + not detached → in-place; slot match + detached (compact only) →
-        // re-attach via `openSession`; different session → `fillLiveChat` replacement
-        // (marker only in compact). Cold-launch replay (#46, `landOnHome`) re-enters here
-        // unchanged in shape — the same three rules decide, under whichever layout the
-        // list landed in.
-        //
-        // Badge bookkeeping: an approval tap first MARKS the session pending (it's a relevant
-        // approval), then opening it CLEARS that entry below — so a tap that opens nets to zero,
-        // while an approval that can't be opened (no list yet) stays badged until viewed.
-        if tap.isApproval {
-          state.pendingApprovalSessionIDs.insert(tap.sessionID)
-        }
-        guard state.home != nil else {
-          // No session list yet (cold launch still auto-connecting or on onboarding) — can't
-          // open. Stash the tap for replay once the list exists (#46), remembering which
-          // server it belongs to (the stored URL — the agent this device's push
-          // registration points at) so a login to a DIFFERENT server drops it instead of
-          // replaying; the badge reflects the now-pending approval either way.
-          state.pendingPushTap = tap
-          state.pendingPushTapServerURL = preferences.loadServerURL().flatMap(parseServerURL)
-          return setBadge(state)
-        }
-        // The tapped session is the one ALREADY on screen (`currentViewingSessionID` — the
-        // slot key when NOT detached: in compact that means its marker is on the path, in
-        // regular the slot is always the visible detail) → NO navigation, path untouched
-        // (empty in regular). Badge bookkeeping only: the user is now viewing it, so the
-        // pending entry clears (mark-then-clear nets zero); the content update arrives in
-        // place — the live socket is already streaming, and the tap's app activation fires
-        // the existing `.foreground` re-hydrate.
-        if state.currentViewingSessionID == tap.sessionID {
-          state.pendingApprovalSessionIDs.remove(tap.sessionID)
-          // Approval-recovery hint (#30 workaround): the socket may have been down when the
-          // `approval.request` fired, so arm the one-shot hint AND drive the consuming
-          // hydrate ourselves — the tap's scene activation is delivered independently of
-          // this action, so a `.foreground` that reduced BEFORE the tap (or never fires)
-          // would otherwise leave the hint armed for an arbitrary later hydrate.
-          // `.foreground` is idempotent: it never cancel-and-redials a healthy socket,
-          // just re-hydrates. Nil slot guarded (the hint is meaningless without one).
-          if tap.isApproval, state.liveChat != nil {
-            state.liveChat?.expectsPendingApproval = true
-            return .merge(setBadge(state), .send(.liveChat(.foreground)))
-          }
-          return setBadge(state)
-        }
-        // Otherwise share the SAME `openSession` flow a list tap uses: a DETACHED slot match
-        // (compact only — the user popped to the list; in regular a slot match always took
-        // the branch above) pushes the marker back and re-attaches live (no re-init, no
-        // dup); a different session replaces the slot and SETS the path — the single new
-        // marker in compact, left empty in regular where the slot IS the detail column
-        // (`fillLiveChat` resets rather than appends — no stacking on cold launch either).
-        // Prefer the loaded `Session` (carries a title); fall back to a minimal `Session(id:)`
-        // if it isn't in the list (the chat resumes by stored id and hydrates the title).
-        let session = state.home?.sessions[id: tap.sessionID] ?? Session(id: tap.sessionID)
-        // Opening clears the badge entry + marks current-viewing (handled in the openSession case).
-        return .send(.home(.delegate(.openSession(session))))
+        return reducePushTapped(&state, tap: tap)
 
       case let .onboarding(.delegate(.connected(connection))):
         // Defensive, mirroring `.autoConnectSucceeded`: a retry screen and a live list must
@@ -583,7 +498,7 @@ public struct AppFeature {
         )
         chat.expectsPendingApproval = expectsApproval
         guard state.liveChat != nil else {
-          fillLiveChat(chat, into: &state)
+          seatLiveChat(chat, into: &state)
           return badge
         }
         // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
@@ -593,14 +508,13 @@ public struct AppFeature {
 
       case let .home(.delegate(.createSession(initialComposerText))):
         guard let home = state.home else { return .none }
-        // "New session" over a slot that is ALREADY an empty new chat under the same
-        // connection + profile (regular width keeps one seated in the detail column at all
-        // times): tearing it down to fill an identical fresh one would redial its socket
-        // for nothing. Reset the composer draft (text + staged attachments) instead — the
-        // only visible difference a fresh chat would have; `initialComposerText` still
-        // seeds it. A stale profile/connection on the empty chat (the pref changed under
-        // it) falls through to a real refill. The marker guard is the compact safety net:
-        // a detached empty chat re-attaches rather than leaving the tap without a screen.
+        // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
+        // — regular width keeps one such seat in the detail column at all times): tearing it
+        // down to fill an identical fresh one would redial its socket for nothing. Reset the
+        // composer draft (text + staged attachments) instead — the only visible difference a
+        // fresh chat would have; `initialComposerText` still seeds it. A seat under a stale
+        // profile falls through to a real refill. The marker guard is the compact safety
+        // net: a detached seat re-attaches rather than leaving the tap without a screen.
         if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
           state.liveChat?.composerText = initialComposerText ?? ""
           state.liveChat?.attachments = []
@@ -613,7 +527,7 @@ public struct AppFeature {
         // (push "Ask agent to install") seeds the composer draft but is NOT auto-sent.
         let chat = newChat(for: home, composerText: initialComposerText ?? "")
         guard state.liveChat != nil else {
-          fillLiveChat(chat, into: &state)
+          seatLiveChat(chat, into: &state)
           return .none
         }
         // Slot occupied: flush + fully tear the old chat down before filling (same rule
@@ -621,7 +535,7 @@ public struct AppFeature {
         return teardownSlot(thenFill: chat)
 
       case let .fillLiveChat(chat):
-        fillLiveChat(chat, into: &state)
+        seatLiveChat(chat, into: &state)
         // The initial connect is the chat view's `.task` (first appearance). In compact the
         // fresh marker's destination is a NEW view, so it fires there. In regular the whole
         // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so SwiftUI
@@ -809,7 +723,7 @@ public struct AppFeature {
         chat.branchSeed = creation.seed
         let reload: Effect<Action> = .send(.home(.pulledToRefresh))
         guard state.liveChat != nil else {
-          fillLiveChat(chat, into: &state)
+          seatLiveChat(chat, into: &state)
           return reload
         }
         return .concatenate(teardownSlot(thenFill: chat), reload)
@@ -865,7 +779,7 @@ public struct AppFeature {
         .run { [push] _ in push.setCurrentSession(newValue) }
       }
     }
-    // The regular-width seat follows the list's selected profile (#80): the seated empty new
+    // The regular-width seat follows the list's selected profile (#80): the seated unprompted
     // chat exists only as "the next new chat", so when the sidebar's profile changes under
     // it — `selectProfile`, a server verdict re-homing to default, a rename/delete of the
     // selected profile, or the profiles capability flipping — it is reseated under the NEW
@@ -873,34 +787,131 @@ public struct AppFeature {
     // the first prompt lands in the right `state.db`. A chat with anything in it (a resumed
     // session, a running or prompted new chat) is left alone exactly as in compact — the
     // profile is the LIST's scope, not the open chat's. Compact never has a seat (a popped
-    // empty chat is torn down), so the rule is regular-only and the iPhone path is untouched.
+    // unprompted chat is torn down), so the rule is regular-only and the iPhone path is untouched.
     // Evaluated AFTER the list reducer so it reads the new selection; landing on a fresh
     // `home` also trips it, but the seat `landOnHome` just filled already matches → no-op.
     .onChange(of: \.home?.scopedProfileName) { _, _ in
-      Reduce { state, _ in
-        guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
-              chat.isEmptyNewChat, chat.profileName != home.scopedProfileName
-        else { return .none }
-        // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
-        // attachments belong to the user, not to the profile, and unlike "New session" the
-        // switch is not a request to clear them.
-        var replacement = newChat(for: home, composerText: chat.composerText)
-        replacement.attachments = chat.attachments
-        return teardownSlot(thenFill: replacement)
-      }
+      Reduce { state, _ in reduceProfileReseat(&state) }
     }
   }
 
+  /// The layout regime changed: set `layout` FIRST (the view's column move fires
+  /// `chatViewDisappeared`, which must read the NEW layout through `isChatDetached` and
+  /// leave the slot alone), then reconcile the path with the slot.
+  private func reduceLayoutChanged(_ state: inout State, to layout: Layout) -> Effect<Action> {
+    guard layout != state.layout else { return .none }
+    state.layout = layout
+    guard let chat = state.liveChat else {
+      // Widening onto an EMPTY slot: the detail column would render blank — seat a
+      // fresh new chat (a no-op when narrowing, or with no list to build it from).
+      fillNewChatIfDetailEmpty(&state)
+      return .none
+    }
+    switch layout {
+    case .compact:
+      // A PRISTINE detail seat (regular always keeps one — a new chat with nothing in it,
+      // not even a draft) has nothing to show in the stack: pushing it would land the user
+      // on an empty chat with a Back button instead of the list, and popping it would tear
+      // it down anyway. Drop it here; widening seats a fresh one.
+      if chat.isPristineNewChat {
+        return teardownSlot()
+      }
+      // Any other live slot (attached detail moments ago, a running turn, a typed draft)
+      // needs its marker so the chat stays visible. SET, never append: one slot ↔ one
+      // marker.
+      state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey)])
+    case .regular:
+      // The slot IS the detail column; a lingering marker would render the chat twice
+      // (sidebar stack + detail). The slot itself — socket, rows, ticker — is untouched.
+      state.path.removeAll()
+    }
+    return .none
+  }
+
+  /// Deep-link a tapped push to its session — routed by comparing `tap.sessionID` against
+  /// the live slot through `isChatDetached` (#32) so a tap for the already-open session
+  /// never stacks a duplicate chat screen. Three outcomes, in order below: slot match + not
+  /// detached → in-place; slot match + detached (compact only) → re-attach via
+  /// `openSession`; different session → slot replacement (marker only in compact).
+  /// Cold-launch replay (#46, `landOnHome`) re-enters here unchanged in shape — the same
+  /// three rules decide, under whichever layout the list landed in.
+  ///
+  /// Badge bookkeeping: an approval tap first MARKS the session pending (it's a relevant
+  /// approval), then opening it CLEARS that entry below — so a tap that opens nets to zero,
+  /// while an approval that can't be opened (no list yet) stays badged until viewed.
+  private func reducePushTapped(_ state: inout State, tap: PushTap) -> Effect<Action> {
+    if tap.isApproval {
+      state.pendingApprovalSessionIDs.insert(tap.sessionID)
+    }
+    guard state.home != nil else {
+      // No session list yet (cold launch still auto-connecting or on onboarding) — can't
+      // open. Stash the tap for replay once the list exists (#46), remembering which
+      // server it belongs to (the stored URL — the agent this device's push
+      // registration points at) so a login to a DIFFERENT server drops it instead of
+      // replaying; the badge reflects the now-pending approval either way.
+      state.pendingPushTap = tap
+      state.pendingPushTapServerURL = preferences.loadServerURL().flatMap(parseServerURL)
+      return setBadge(state)
+    }
+    // The tapped session is the one ALREADY on screen (`currentViewingSessionID` — the
+    // slot key when NOT detached: in compact that means its marker is on the path, in
+    // regular the slot is always the visible detail) → NO navigation, path untouched
+    // (empty in regular). Badge bookkeeping only: the user is now viewing it, so the
+    // pending entry clears (mark-then-clear nets zero); the content update arrives in
+    // place — the live socket is already streaming, and the tap's app activation fires
+    // the existing `.foreground` re-hydrate.
+    if state.currentViewingSessionID == tap.sessionID {
+      state.pendingApprovalSessionIDs.remove(tap.sessionID)
+      // Approval-recovery hint (#30 workaround): the socket may have been down when the
+      // `approval.request` fired, so arm the one-shot hint AND drive the consuming
+      // hydrate ourselves — the tap's scene activation is delivered independently of
+      // this action, so a `.foreground` that reduced BEFORE the tap (or never fires)
+      // would otherwise leave the hint armed for an arbitrary later hydrate.
+      // `.foreground` is idempotent: it never cancel-and-redials a healthy socket,
+      // just re-hydrates. Nil slot guarded (the hint is meaningless without one).
+      if tap.isApproval, state.liveChat != nil {
+        state.liveChat?.expectsPendingApproval = true
+        return .merge(setBadge(state), .send(.liveChat(.foreground)))
+      }
+      return setBadge(state)
+    }
+    // Otherwise share the SAME `openSession` flow a list tap uses: a DETACHED slot match
+    // (compact only — the user popped to the list; in regular a slot match always took
+    // the branch above) pushes the marker back and re-attaches live (no re-init, no
+    // dup); a different session replaces the slot and SETS the path — the single new
+    // marker in compact, left empty in regular where the slot IS the detail column
+    // (`seatLiveChat` resets rather than appends — no stacking on cold launch either).
+    // Prefer the loaded `Session` (carries a title); fall back to a minimal `Session(id:)`
+    // if it isn't in the list (the chat resumes by stored id and hydrates the title).
+    let session = state.home?.sessions[id: tap.sessionID] ?? Session(id: tap.sessionID)
+    // Opening clears the badge entry + marks current-viewing (handled in the openSession case).
+    return .send(.home(.delegate(.openSession(session))))
+  }
+
+  /// Body of the `scopedProfileName` `onChange` above (see it for when and why): reseat an
+  /// unprompted regular-width seat that is no longer the one the list would build now.
+  private func reduceProfileReseat(_ state: inout State) -> Effect<Action> {
+    guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
+          chat.isUnpromptedNewChat, !Self.isReusableNewChat(chat, for: home)
+    else { return .none }
+    // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
+    // attachments belong to the user, not to the profile, and unlike "New session" the
+    // switch is not a request to clear them.
+    var replacement = newChat(for: home, composerText: chat.composerText)
+    replacement.attachments = chat.attachments
+    return teardownSlot(thenFill: replacement)
+  }
+
   /// Whether the slot's chat is ALREADY the fresh new chat the list would seat right now: an
-  /// empty new chat (`isEmptyNewChat`) under the list's currently-selected profile. "New
-  /// session" over it resets the composer instead of redialling. The connection is
-  /// deliberately NOT compared: it only ever diverges after a same-user cookie re-auth, which
-  /// hands the *chat* fresh cookies while `home` keeps the snapshot it was built with — a
-  /// mismatch there would redial the seat under the stale credentials.
+  /// `isUnpromptedNewChat` under the list's currently-selected profile. "New session" over it
+  /// resets the composer instead of redialling; the profile reseat is its negation. The
+  /// connection is deliberately NOT compared: it only ever diverges after a same-user cookie
+  /// re-auth, which hands the *chat* fresh cookies while `home` keeps the snapshot it was
+  /// built with — a mismatch there would redial the seat under the stale credentials.
   private static func isReusableNewChat(
     _ chat: ChatFeature.State, for home: SessionListFeature.State
   ) -> Bool {
-    chat.isEmptyNewChat && chat.profileName == home.scopedProfileName
+    chat.isUnpromptedNewChat && chat.profileName == home.scopedProfileName
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn
@@ -1024,11 +1035,11 @@ public struct AppFeature {
 
   /// Seat the detail column when it would otherwise be blank (landing on a fresh list,
   /// widening). No-op when the slot is already filled; `detailRefill` is the one rule for
-  /// what the regular-width seat is. Connect timing is unchanged: a never-prompted chat has
-  /// no DB row and its socket dials only when its view appears (`.task`).
+  /// what the regular-width seat is. The slot was nil, so the detail `ChatView` is created
+  /// fresh and its `.task` dials — no reducer-side dial needed (see `seatLiveChat`).
   private func fillNewChatIfDetailEmpty(_ state: inout State) {
     guard state.liveChat == nil, let seat = detailRefill(state) else { return }
-    fillLiveChat(seat, into: &state)
+    seatLiveChat(seat, into: &state)
   }
 
   /// The regular-width detail seat for the current list — a fresh new chat under its
@@ -1057,7 +1068,12 @@ public struct AppFeature {
   /// contents (rather than appending) can't stack duplicates. The marker is COMPACT-ONLY:
   /// in regular the slot is the detail column, so the path is left empty — a marker there
   /// would render the chat in the sidebar stack as well.
-  private func fillLiveChat(_ chat: ChatFeature.State, into state: inout State) {
+  ///
+  /// State only — this does NOT start the chat's socket, so it may be called directly only
+  /// where the slot was NIL and SwiftUI therefore creates a view whose `.task` dials. Every
+  /// non-nil→non-nil replacement must go through the `.fillLiveChat` ACTION instead, which
+  /// wraps this and adds the regular-width dial.
+  private func seatLiveChat(_ chat: ChatFeature.State, into state: inout State) {
     state.liveChat = chat
     state.path.removeAll()
     if state.layout == .compact {

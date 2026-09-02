@@ -21,6 +21,9 @@ final class ChatEmptyHeroSnapshotTests: SnapshotTestCase {
   private let columnWidth = ChatLayout.readableMaxWidth
   /// Tall enough that the hero's vertical centering is visible, short enough to read.
   private let regionHeight: CGFloat = 480
+  /// The simulator's own width (the column below the cap), with the iPhone 17 Pro's as the
+  /// fallback when the runtime doesn't report one.
+  private var phoneWidth: CGFloat { device.size?.width ?? 390 }
 
   private func host(width: CGFloat, dynamicType: DynamicTypeSize = .large) -> some View {
     ChatEmptyHeroView()
@@ -32,11 +35,11 @@ final class ChatEmptyHeroSnapshotTests: SnapshotTestCase {
   // MARK: Phone width (the column below the cap)
 
   func testHero_phoneWidth_dark() {
-    assertSnapshot(of: host(width: device.size?.width ?? 390), as: componentImage())
+    assertSnapshot(of: host(width: phoneWidth), as: componentImage())
   }
 
   func testHero_phoneWidth_light() {
-    assertSnapshot(of: host(width: device.size?.width ?? 390), as: componentImage(appearance: .light))
+    assertSnapshot(of: host(width: phoneWidth), as: componentImage(appearance: .light))
   }
 
   // MARK: 760pt column (the readable-width cap on iPad)
@@ -55,7 +58,7 @@ final class ChatEmptyHeroSnapshotTests: SnapshotTestCase {
   /// truncating, and the tagline stays legible and centered under it.
   func testHero_phoneWidth_accessibility3() {
     assertSnapshot(
-      of: host(width: device.size?.width ?? 390, dynamicType: .accessibility3),
+      of: host(width: phoneWidth, dynamicType: .accessibility3),
       as: componentImage()
     )
   }
@@ -64,7 +67,7 @@ final class ChatEmptyHeroSnapshotTests: SnapshotTestCase {
 
   /// A brand-new chat (no stored id, empty transcript) renders the hero in the transcript's
   /// region with the composer pinned below — the swap `ChatView.transcript` performs on
-  /// `showsEmptyHero`. The fixed 390×700 frame stands in for the device: `deviceImage()`
+  /// `showsEmptyHero`. The fixed `phoneWidth`×700 frame stands in for the device: `deviceImage()`
   /// hosts in the key window and would fire `.task` (a real connect attempt) — this stays a
   /// deterministic layer render. The state is seeded `.ready` so no banner shares the frame.
   func testChatView_newChat_showsHero() {
@@ -78,7 +81,7 @@ final class ChatEmptyHeroSnapshotTests: SnapshotTestCase {
         }
       )
     }
-    .frame(width: device.size?.width ?? 390, height: 700)
+    .frame(width: phoneWidth, height: 700)
     .dynamicTypeSize(.large)
     assertSnapshot(of: view, as: componentImage())
   }
