@@ -240,6 +240,13 @@ public struct ChatFeature {
       storedSessionID == nil && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
+    /// An `isEmptyNewChat` whose composer is untouched too — the regular-width detail seat
+    /// exactly as it was seated, holding nothing the user would miss. Narrowing to the stack
+    /// drops such a seat instead of pushing an empty chat over the session list.
+    public var isUntouchedNewChat: Bool {
+      isEmptyNewChat && composerText.isEmpty && attachments.isEmpty
+    }
+
     /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the
     /// transcript. True only when there is provably nothing to show: no rows, no turn in
     /// flight, no streaming row — and, for a RESUMED session (`storedSessionID != nil`),

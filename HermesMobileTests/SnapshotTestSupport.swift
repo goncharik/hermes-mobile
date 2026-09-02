@@ -30,11 +30,6 @@ class SnapshotTestCase: XCTestCase {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
 
-  /// Dark appearance is pinned (the app is designed dark-first) so renders don't drift
-  /// with the simulator's appearance setting. Without this the baselines flip to light
-  /// mode on a light-mode simulator and every pixel mismatches.
-  private static let darkTraits = UITraitCollection(userInterfaceStyle: .dark)
-
   /// Whole-screen snapshot: composites the iOS 26 system chrome (`drawHierarchyInKeyWindow`),
   /// so it needs the host app and isn't pixel-exact — runs at `perceptualPrecision: 0.98`.
   ///
@@ -56,8 +51,10 @@ class SnapshotTestCase: XCTestCase {
   /// — it can absorb a small regression ANYWHERE on the screen, not only in the region it was
   /// sized for — so pair it with a structural assertion of whatever it could hide.
   ///
-  /// Dark by default (see `darkTraits`); `appearance: .light` only for a screen whose light
-  /// rendering is itself under test (the sidebar's accent highlight over a light list).
+  /// The appearance is PINNED (dark — the app is designed dark-first) so baselines don't flip
+  /// with the simulator's setting and mismatch every pixel; pass `.light` only for a screen
+  /// whose light rendering is itself under test (the sidebar's accent highlight over a light
+  /// list).
   func deviceImage<V: SwiftUI.View>(
     precision: Float = 0.98,
     appearance: UIUserInterfaceStyle = .dark
@@ -67,19 +64,19 @@ class SnapshotTestCase: XCTestCase {
       precision: precision,
       perceptualPrecision: 0.98,
       layout: .device(config: device),
-      traits: appearance == .dark ? Self.darkTraits : UITraitCollection(userInterfaceStyle: appearance)
+      traits: UITraitCollection(userInterfaceStyle: appearance)
     )
   }
 
   /// Singular component snapshot: fast, deterministic layer render at `.sizeThatFits`.
-  /// Dark by default (see `darkTraits`); pass `.light` only for a view whose light
+  /// Appearance pinned like `deviceImage`; pass `.light` only for a view whose light
   /// appearance is itself under test (the hero, brand colours over a light background).
   func componentImage<V: SwiftUI.View>(
     appearance: UIUserInterfaceStyle = .dark
   ) -> Snapshotting<V, UIImage> {
     .image(
       layout: .sizeThatFits,
-      traits: appearance == .dark ? Self.darkTraits : UITraitCollection(userInterfaceStyle: appearance)
+      traits: UITraitCollection(userInterfaceStyle: appearance)
     )
   }
 

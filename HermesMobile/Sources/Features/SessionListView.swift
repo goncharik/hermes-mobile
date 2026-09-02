@@ -586,24 +586,13 @@ struct SessionListView: View {
   /// brand-accent tint behind the row that mirrors the detail column — the iPad Mail /
   /// Notes idiom. A `listRowBackground`, so the row content, its natural height, and its
   /// swipe/context affordances are untouched; the corner radius matches the working glow's.
-  ///
-  /// Reduce Transparency: the tint is a translucent accent wash by default; with the
-  /// setting on it becomes the equivalent OPAQUE colour (the accent mixed into the system
-  /// background), so the highlight reads the same without any see-through layer.
+  /// A flat tint, not a material, so Reduce Transparency has nothing to strip.
   private struct SelectedRowBackground: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
     var body: some View {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .fill(fill)
+        .fill(Color.hermesAccent.opacity(0.18))
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
-    }
-
-    private var fill: Color {
-      reduceTransparency
-        ? Color(uiColor: .systemBackground).mix(with: .hermesAccent, by: 0.18)
-        : Color.hermesAccent.opacity(0.18)
     }
   }
 

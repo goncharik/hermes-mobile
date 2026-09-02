@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import HermesKit
 import SwiftUI
+import UIKit
 
 /// Root view: the onboarding screen until connected, then a `NavigationSplitView` whose
 /// sidebar is the session list (inside the navigation stack that pushes chat screens in
@@ -12,11 +13,6 @@ struct AppView: View {
   // reports `.compact` even on a 13" iPad, which would flip the reducer into the stack
   // layout for the whole window.
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-  /// Presentation only — which split-view columns are showing (the sidebar toggle in
-  /// portrait, the overlay's dismissal). Deliberately view-local `@State`, not reducer
-  /// state: it affects nothing the reducer decides (`layout` does that), and mirroring it
-  /// would only add a binding round-trip for the system's own toggle button.
-  @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
   var body: some View {
     content
@@ -30,14 +26,13 @@ struct AppView: View {
       .onChange(of: scenePhase) { _, newPhase in
         store.send(.scenePhaseChanged(newPhase.appPhase))
       }
-      // Same pattern for the layout regime (#80): the size class — NOT the device idiom, so
-      // Slide Over and narrow iPadOS windows get the stack — is reported to the reducer,
-      // which owns every consequence (marker push/clear, the regular-width new-chat seat).
-      // `initial: true` so the layout is known BEFORE the home screen lands: the landing
-      // fills and the cold-launch push replay read `state.layout` at that moment. Attached
-      // to `content` (every root branch) rather than the split view for the same reason.
+      // Same pattern for the layout regime (#80): `appLayout` decides, the reducer owns every
+      // consequence (marker push/clear, the regular-width new-chat seat). `initial: true` so
+      // the layout is known BEFORE the home screen lands: the landing fills and the cold-launch
+      // push replay read `state.layout` at that moment. Attached to `content` (every root
+      // branch) rather than the split view for the same reason.
       .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
-        store.send(.layoutChanged(sizeClass.appLayout))
+        store.send(.layoutChanged(appLayout(for: sizeClass)))
       }
   }
 
@@ -56,18 +51,14 @@ struct AppView: View {
         // to the pre-#80 root. In regular the sidebar shows the list and the detail column
         // shows the live-chat slot directly: the path holds no marker there
         // (`AppFeature.isChatDetached`), so the chat is never rendered twice.
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        NavigationSplitView {
           NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
-            // The sidebar highlights the detail column's session only in regular width,
-            // where both are on screen together; in compact the list is never visible
-            // alongside the chat, so the row stays plain (byte-identical to the iPhone
-            // list). A plain optional, deliberately NOT `List(selection:)`: selection
-            // would become a second source of truth for which session is open, racing the
-            // reducer-owned slot on push taps, archive refills, and layout changes.
-            SessionListView(
-              store: homeStore,
-              highlightedSessionID: store.layout == .regular ? store.currentViewingSessionID : nil
-            )
+            // Which row is highlighted is `AppFeature.State.highlightedSessionID` (nil in
+            // compact — unit-tested there). A plain optional, deliberately NOT
+            // `List(selection:)`: selection would become a second source of truth for which
+            // session is open, racing the reducer-owned slot on push taps, archive refills,
+            // and layout changes.
+            SessionListView(store: homeStore, highlightedSessionID: store.highlightedSessionID)
           } destination: { _ in
             // The path holds only thin session-key markers — the REAL chat state lives in
             // the app-level live-chat slot, so a running turn's socket survives pops.
@@ -75,9 +66,17 @@ struct AppView: View {
           }
           .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
         } detail: {
-          chatDetail
+          // Empty in compact, where the collapsed split view renders the sidebar's stack
+          // alone: leaving the detail column with no content is what stops the collapsed
+          // split from pushing a SECOND copy of the chat over the marker's destination.
+          if store.layout == .regular {
+            chatDetail
+              // A slot replacement in regular has no new marker to give the chat a new view,
+              // so key it on the fill counter: without it the incoming session inherits the
+              // outgoing one's transcript scroll offset and composer focus.
+              .id(store.slotGeneration)
+          }
         }
-        .navigationSplitViewStyle(.automatic)
       }
     case .connecting:
       ProgressView("Connecting…")
@@ -129,13 +128,16 @@ private extension ScenePhase {
   }
 }
 
-private extension Optional where Wrapped == UserInterfaceSizeClass {
-  /// Map the horizontal size class onto HermesKit's `AppFeature.Layout`. Only `.regular`
-  /// is the split layout; `.compact` and an unresolved (`nil`) class both mean the stack —
-  /// the reducer's default, so an early `nil` never flips anything.
-  var appLayout: AppFeature.Layout {
-    self == .regular ? .regular : .compact
-  }
+/// Decide the layout regime for a horizontal size class. The split layout needs BOTH a
+/// regular width and the pad idiom: a Plus/Max iPhone reports `.regular` in landscape, and
+/// rotating a phone must not swap it into a split view. On an iPad the size class is what
+/// varies, so a narrow window (Slide Over, Stage Manager) still gets the stack — as does an
+/// unresolved (`nil`) class, which is the reducer's default, so an early `nil` never flips
+/// anything.
+@MainActor
+private func appLayout(for sizeClass: UserInterfaceSizeClass?) -> AppFeature.Layout {
+  guard sizeClass == .regular, UIDevice.current.userInterfaceIdiom == .pad else { return .compact }
+  return .regular
 }
 
 #Preview {

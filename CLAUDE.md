@@ -71,17 +71,16 @@ bullets below are the compressed rules.
   View disappearance is `AppFeature.chatViewDisappeared`, handled AFTER the pop
   animation, never at `.popFrom` time. A slot with `hasQueuedWork` stays alive.
 - **"Detached" means `isChatDetached` = `layout == .compact && path.isEmpty` (#80)** —
-  never a bare `path.isEmpty`. `layout` mirrors the horizontal SIZE CLASS (not the idiom:
-  Slide Over = phone layout) via `layoutChanged`, set FIRST so the column-move
-  `chatViewDisappeared` is a no-op. The `ChatScreen` marker is COMPACT-ONLY: in regular
-  the slot IS the `NavigationSplitView` detail, the path stays empty, and the chat is never
-  detached (no pop/turn-end teardown). Regular never shows a blank detail — a fresh
-  `newChat(for:)` is seated on home landing / widening / archive-delete refill /
-  profile-switch reseat (`.onChange(of: \.home?.scopedProfileName)`); "New session" over an
-  `isReusableNewChat` seat only resets the composer; `.fillLiveChat` sends `.liveChat(.task)`
-  in regular (the detail view keeps its identity, so its own `.task` never re-fires). Sidebar
-  highlight is a plain optional (`currentViewingSessionID`), never `List(selection:)`.
-  Details: `docs/features/ipad-layout.md`.
+  never a bare `path.isEmpty`. `.regular` needs a regular size class AND the pad idiom (a
+  Max iPhone in landscape stays on the stack; Slide Over does too), reported via
+  `layoutChanged` and set FIRST so the column-move `chatViewDisappeared` is a no-op. The
+  `ChatScreen` marker is COMPACT-ONLY: in regular the slot IS the `NavigationSplitView`
+  detail, the path stays empty, and the chat is never detached (no pop/turn-end teardown).
+  Regular never shows a blank detail — every seat comes from `detailRefill`; narrowing drops
+  an untouched seat instead of pushing it. A regular fill dials its chat from the reducer AND
+  bumps `slotGeneration`, which the detail view is `.id`-keyed on so nothing leaks between
+  sessions. Sidebar highlight is a plain optional (`highlightedSessionID`), never
+  `List(selection:)`. Details: `docs/features/ipad-layout.md`.
 - **Backgrounding gets ~30s grace** via `BackgroundTaskClient`: running slot →
   `persistNow` + begin; expiry while backgrounded → final persist +
   `.teardownSocketOnly` (state stays in memory for the #26 catch-up); a stale expiry

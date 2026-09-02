@@ -18,13 +18,20 @@ public struct AppFeature {
     /// persist are slot-rooted and survive navigation pops. One live session at a time —
     /// opening a different session replaces the slot.
     public var liveChat: ChatFeature.State?
-    /// The horizontal layout the app shell is rendering in, mirrored from SwiftUI's
-    /// horizontal size class by the thin app shell (`layoutChanged`) — size class, NOT
-    /// device idiom, so Slide Over and narrow iPadOS windows get the stack. Defaults to
-    /// `.compact` (the iPhone layout): in compact the chat is a pushed screen whose thin
-    /// marker sits on `path`; in `.regular` (iPad split view) the slot IS the detail
-    /// column and the path stays empty — a chat there is never "detached".
+    /// The horizontal layout the app shell is rendering in, reported by the thin app shell
+    /// (`layoutChanged`). Defaults to `.compact` (the iPhone layout): in compact the chat is
+    /// a pushed screen whose thin marker sits on `path`; in `.regular` (iPad split view) the
+    /// slot IS the detail column and the path stays empty — a chat there is never "detached".
+    /// The shell decides which one a window is (see `Layout`).
     public var layout: Layout
+    /// Bumped on every regular-width slot fill. The app shell keys the detail column's
+    /// `ChatView` on it (`.id`), so a slot replacement always gets a FRESH view: a fresh
+    /// transcript coordinator (scroll offset, pin state) and a fresh composer. Without it the
+    /// detail view survives the swap and the incoming session inherits the outgoing one's
+    /// scroll position — transcript row ids carry no session component, so two ordinary
+    /// transcripts diff as an append, not a reset — and its first-responder state.
+    /// Compact never bumps: there a fill pushes a new marker, whose destination is a new view.
+    public internal(set) var slotGeneration: Int = 0
     /// True during the launch auto-connect probe — `AppView` shows a brief placeholder
     /// instead of flashing the onboarding screen.
     public var autoConnecting: Bool
@@ -109,13 +116,21 @@ public struct AppFeature {
     /// (`storedSessionID ?? liveSessionID`) while its chat is on screen, or `nil` when no
     /// chat is on screen (or a new chat whose id hasn't resolved yet). A detached slot
     /// (user on the list) reads `nil` so pushes for that session are NOT suppressed.
-    /// Drives foreground push suppression via `.onChange`, and — in regular width only,
-    /// where the list and the chat are on screen together — the sidebar's selected-row
-    /// highlight (#80): `AppView` passes it to `SessionListView` as a plain optional. A
-    /// new chat whose id hasn't resolved yet reads `nil`, so no row is highlighted for it.
+    /// Drives foreground push suppression via `.onChange`; the sidebar highlight reads
+    /// `highlightedSessionID` below.
     public var currentViewingSessionID: String? {
       guard !isChatDetached else { return nil }
       return liveChat?.sessionKey
+    }
+
+    /// The sidebar row to highlight (#80) — the session the detail column is showing, and
+    /// only in regular width, where the list and the chat are on screen together. Compact
+    /// always reads `nil`: `currentViewingSessionID` is non-nil there whenever the marker is
+    /// on the path, which includes the pop animation and an interactive swipe-back, when the
+    /// list IS visible — the iPhone list must stay unhighlighted. A new chat whose id hasn't
+    /// resolved yet reads `nil` too, so no row is highlighted for it.
+    public var highlightedSessionID: String? {
+      layout == .regular ? currentViewingSessionID : nil
     }
 
     /// Which root branch the app shell renders. The precedence is **logic, not layout**, so it
@@ -149,11 +164,13 @@ public struct AppFeature {
     case background
   }
 
-  /// Horizontal layout regime, mirrored from SwiftUI's `UserInterfaceSizeClass` by the thin
-  /// app shell (`layoutChanged`). `.compact` = the navigation-stack layout (iPhone, Slide
-  /// Over, narrow iPad windows); `.regular` = the split view with the chat as the detail
-  /// column. Size class — not device idiom — is the input, so the same iPad flips between
-  /// the two as its window narrows and widens.
+  /// Horizontal layout regime, decided by the thin app shell and reported via
+  /// `layoutChanged`. `.compact` = the navigation-stack layout; `.regular` = the split view
+  /// with the chat as the detail column. The shell reads a regular horizontal size class on
+  /// the **pad idiom**: the same iPad flips between the two as its window narrows and widens
+  /// (Slide Over and narrow Stage Manager windows get the stack), while a Plus/Max iPhone —
+  /// which also reports a regular width in landscape — stays on the stack in both
+  /// orientations. See `docs/features/ipad-layout.md`.
   public enum Layout: Equatable, Sendable {
     case compact
     case regular
@@ -174,13 +191,14 @@ public struct AppFeature {
     /// `.background` with a RUNNING turn additionally requests a finite background window
     /// (`BackgroundTaskClient`) so the socket keeps streaming ~30s past suspension.
     case scenePhaseChanged(ScenePhase)
-    /// The horizontal size class changed (reported by the app shell, `initial: true`). Sets
-    /// `layout` FIRST — so the `chatViewDisappeared` the chat view fires while moving between
-    /// the stack and the detail column is a no-op through `isChatDetached` — then reconciles
-    /// the path with the slot: regular→compact pushes the live chat's marker (the stack must
-    /// show it); compact→regular clears the path (the slot is the detail; a marker would
-    /// double-render the chat). Same layout twice is a no-op. Widening with NO slot seats a
-    /// fresh new chat in the detail column — regular never shows a blank detail.
+    /// The layout regime changed (reported by the app shell, `initial: true`). Sets `layout`
+    /// FIRST — so the `chatViewDisappeared` the chat view fires while moving between the
+    /// stack and the detail column is a no-op through `isChatDetached` — then reconciles the
+    /// path with the slot: regular→compact pushes the live chat's marker (the stack must show
+    /// it) unless the slot is an untouched detail seat, which is torn down instead;
+    /// compact→regular clears the path (the slot is the detail; a marker would double-render
+    /// the chat). Same layout twice is a no-op. Widening with NO slot seats a fresh new chat
+    /// in the detail column — regular never shows a blank detail.
     case layoutChanged(Layout)
     /// A push notification was tapped — deep-link to its session, routed by comparing the
     /// tapped id against the live slot under `isChatDetached` (#32): slot match + not
@@ -208,9 +226,8 @@ public struct AppFeature {
     /// Used when opening while the slot is occupied — sequenced after the old slot's
     /// `.teardown` AND `.clearLiveChat` (the nil-out is what cancels the outgoing chat's
     /// un-ID'd one-shot RPC effects) so nothing can leak into the replacement. In regular
-    /// width the replacement is also STARTED here (`.liveChat(.task)`): the detail column
-    /// keeps its view identity across the synchronous clear→fill swap, so the chat view's
-    /// own `.task` never re-fires the way a fresh compact marker's destination does.
+    /// width the replacement is also STARTED here (`.liveChat(.task)`) — the one half of the
+    /// dial `swift test` can assert.
     case fillLiveChat(ChatFeature.State)
     /// Internal: clear the slot after its `.teardown` ran (`teardownSlot`). Nil-ing the
     /// slot makes `ifLet` cancel every remaining child effect — including one-shot RPCs
@@ -419,9 +436,16 @@ public struct AppFeature {
         }
         switch layout {
         case .compact:
-          // The stack now owns the screen — a live slot (attached detail moments ago, or
-          // a running turn) needs its marker so the chat stays visible. SET, never append:
-          // one slot ↔ one marker.
+          // An UNTOUCHED detail seat (regular always keeps one — a new chat with nothing in
+          // it, not even a draft) has nothing to show in the stack: pushing it would land the
+          // user on an empty chat with a Back button instead of the list, and popping it would
+          // tear it down anyway. Drop it here; widening seats a fresh one.
+          if chat.isUntouchedNewChat {
+            return teardownSlot()
+          }
+          // Any other live slot (attached detail moments ago, a running turn, a typed draft)
+          // needs its marker so the chat stays visible. SET, never append: one slot ↔ one
+          // marker.
           state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey)])
         case .regular:
           // The slot IS the detail column; a lingering marker would render the chat twice
@@ -599,12 +623,11 @@ public struct AppFeature {
       case let .fillLiveChat(chat):
         fillLiveChat(chat, into: &state)
         // The initial connect is the chat view's `.task` (first appearance). In compact the
-        // fresh marker's destination is a NEW view, so it fires. In regular there is no
-        // marker: the detail column renders the slot directly, and the whole
-        // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so
-        // SwiftUI never observes the nil slot, the `ChatView` keeps its identity, and its
-        // `.task` stays silent — the replacement would sit undialled. Start it here;
-        // `hasStarted` makes a later view `.task` a no-op, never a redial.
+        // fresh marker's destination is a NEW view, so it fires there. In regular the whole
+        // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so SwiftUI
+        // never observes the nil slot — the detail view is re-created by `slotGeneration`
+        // instead, off state the shell has to be keyed on correctly. Dial here so the seat is
+        // connected regardless; `hasStarted` makes the view's `.task` a no-op, never a redial.
         return state.layout == .regular ? .send(.liveChat(.task)) : .none
 
       case .clearLiveChat:
@@ -730,10 +753,14 @@ public struct AppFeature {
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
-        // The stash was just cleared, so there is nothing to replay — but in regular the
-        // new user's detail column still needs its fresh new chat.
-        fillNewChatIfDetailEmpty(&state)
-        return setBadge(state)
+        let badge = setBadge(state)
+        // The stash was just cleared, so there is nothing to replay — but in regular the new
+        // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
+        // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
+        // cancels the expired chat's remaining effects (a non-nil→non-nil swap compares equal
+        // and cancels nothing), and the action is what starts the replacement's socket.
+        guard let seat = detailRefill(state) else { return badge }
+        return .merge(badge, .send(.fillLiveChat(seat)))
 
       case .reauth(.presented(.delegate(.quit))):
         // "Quit to start" → full logout (Keychain session + every pref) → onboarding.
@@ -852,23 +879,28 @@ public struct AppFeature {
     .onChange(of: \.home?.scopedProfileName) { _, _ in
       Reduce { state, _ in
         guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
-              chat.isEmptyNewChat, !Self.isReusableNewChat(chat, for: home)
+              chat.isEmptyNewChat, chat.profileName != home.scopedProfileName
         else { return .none }
-        return teardownSlot(thenFill: newChat(for: home))
+        // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
+        // attachments belong to the user, not to the profile, and unlike "New session" the
+        // switch is not a request to clear them.
+        var replacement = newChat(for: home, composerText: chat.composerText)
+        replacement.attachments = chat.attachments
+        return teardownSlot(thenFill: replacement)
       }
     }
   }
 
   /// Whether the slot's chat is ALREADY the fresh new chat the list would seat right now: an
-  /// empty new chat (`isEmptyNewChat`) under the list's connection and currently-selected
-  /// profile. "New session" over it resets the composer instead of redialling; a profile
-  /// change under the regular-width seat reseats it because this turns false.
+  /// empty new chat (`isEmptyNewChat`) under the list's currently-selected profile. "New
+  /// session" over it resets the composer instead of redialling. The connection is
+  /// deliberately NOT compared: it only ever diverges after a same-user cookie re-auth, which
+  /// hands the *chat* fresh cookies while `home` keeps the snapshot it was built with — a
+  /// mismatch there would redial the seat under the stale credentials.
   private static func isReusableNewChat(
     _ chat: ChatFeature.State, for home: SessionListFeature.State
   ) -> Bool {
-    chat.isEmptyNewChat
-      && chat.connection == home.connection
-      && chat.profileName == home.scopedProfileName
+    chat.isEmptyNewChat && chat.profileName == home.scopedProfileName
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn
@@ -990,20 +1022,20 @@ public struct AppFeature {
     )
   }
 
-  /// Regular width renders the detail column at all times, so an empty slot would show a
-  /// blank column: seat a fresh new chat when the layout is regular, the slot is nil, and
-  /// there is a list to take connection + profile from. Compact never fills — the stack
-  /// shows the list. Connect timing is unchanged: a never-prompted chat has no DB row and
-  /// its socket dials only when its view appears (`.task`).
+  /// Seat the detail column when it would otherwise be blank (landing on a fresh list,
+  /// widening). No-op when the slot is already filled; `detailRefill` is the one rule for
+  /// what the regular-width seat is. Connect timing is unchanged: a never-prompted chat has
+  /// no DB row and its socket dials only when its view appears (`.task`).
   private func fillNewChatIfDetailEmpty(_ state: inout State) {
-    guard state.layout == .regular, state.liveChat == nil, let home = state.home else { return }
-    fillLiveChat(newChat(for: home), into: &state)
+    guard state.liveChat == nil, let seat = detailRefill(state) else { return }
+    fillLiveChat(seat, into: &state)
   }
 
-  /// The replacement to seat after tearing down the slot's session from the LIST (archive /
-  /// delete): a fresh new chat in regular, where the torn-down chat was the on-screen detail
-  /// and the column must not go blank; `nil` in compact, where the user is on the list and
-  /// the slot simply clears.
+  /// The regular-width detail seat for the current list — a fresh new chat under its
+  /// connection and selected profile — or `nil` in compact, where the stack shows the list
+  /// and an empty slot is exactly right. The ONE rule behind every seat: the landing fill,
+  /// the widening fill, the post-archive/delete refill (`teardownSlot(thenFill:)`), and the
+  /// different-user re-auth reseat.
   private func detailRefill(_ state: State) -> ChatFeature.State? {
     guard state.layout == .regular, let home = state.home else { return nil }
     return newChat(for: home)
@@ -1030,6 +1062,10 @@ public struct AppFeature {
     state.path.removeAll()
     if state.layout == .compact {
       state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+    } else {
+      // Regular has no marker to give the incoming chat a new view — `slotGeneration` does
+      // (`AppView` keys the detail column's `ChatView` on it).
+      state.slotGeneration &+= 1
     }
   }
 
