@@ -577,8 +577,7 @@ public struct AppFeature {
         // seeds it. A stale profile/connection on the empty chat (the pref changed under
         // it) falls through to a real refill. The marker guard is the compact safety net:
         // a detached empty chat re-attaches rather than leaving the tap without a screen.
-        if let chat = state.liveChat, chat.isEmptyNewChat,
-           chat.connection == home.connection, chat.profileName == home.scopedProfileName {
+        if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
           state.liveChat?.composerText = initialComposerText ?? ""
           state.liveChat?.attachments = []
           if state.isChatDetached {
@@ -839,6 +838,37 @@ public struct AppFeature {
         .run { [push] _ in push.setCurrentSession(newValue) }
       }
     }
+    // The regular-width seat follows the list's selected profile (#80): the seated empty new
+    // chat exists only as "the next new chat", so when the sidebar's profile changes under
+    // it — `selectProfile`, a server verdict re-homing to default, a rename/delete of the
+    // selected profile, or the profiles capability flipping — it is reseated under the NEW
+    // profile through the standard teardown chain (its socket may already be dialled), so
+    // the first prompt lands in the right `state.db`. A chat with anything in it (a resumed
+    // session, a running or prompted new chat) is left alone exactly as in compact — the
+    // profile is the LIST's scope, not the open chat's. Compact never has a seat (a popped
+    // empty chat is torn down), so the rule is regular-only and the iPhone path is untouched.
+    // Evaluated AFTER the list reducer so it reads the new selection; landing on a fresh
+    // `home` also trips it, but the seat `landOnHome` just filled already matches → no-op.
+    .onChange(of: \.home?.scopedProfileName) { _, _ in
+      Reduce { state, _ in
+        guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
+              chat.isEmptyNewChat, !Self.isReusableNewChat(chat, for: home)
+        else { return .none }
+        return teardownSlot(thenFill: newChat(for: home))
+      }
+    }
+  }
+
+  /// Whether the slot's chat is ALREADY the fresh new chat the list would seat right now: an
+  /// empty new chat (`isEmptyNewChat`) under the list's connection and currently-selected
+  /// profile. "New session" over it resets the composer instead of redialling; a profile
+  /// change under the regular-width seat reseats it because this turns false.
+  private static func isReusableNewChat(
+    _ chat: ChatFeature.State, for home: SessionListFeature.State
+  ) -> Bool {
+    chat.isEmptyNewChat
+      && chat.connection == home.connection
+      && chat.profileName == home.scopedProfileName
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn

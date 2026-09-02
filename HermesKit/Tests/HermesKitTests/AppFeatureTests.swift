@@ -4361,4 +4361,349 @@ struct AppFeatureTests {
     #expect(store.state.liveChat?.storedSessionID == "s-approve")
     #expect(store.state.path.isEmpty)
   }
+
+  // MARK: - Acceptance edge cases (iPad split view, #80 — Task 10)
+
+  /// A layout change MID-TURN keeps the socket: widening (compact stack → split) and
+  /// narrowing back (split → Slide Over / stack) only reconcile the path — the running
+  /// slot's one socket is never terminated or redialled, and the `chatViewDisappeared`
+  /// the chat view fires while moving between columns is cleanup-only in BOTH directions.
+  /// Exhaustive from the first layout change on: any teardown-chain action would fail it.
+  @Test func layoutChangeMidTurnKeepsSocketAndSlotBothWays() async {
+    let connectCount = LockIsolated(0)
+    let cancelCount = LockIsolated(0)
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.isSending = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        connectCount.withValue { $0 += 1 }
+        return AsyncStream { continuation in
+          continuation.onTermination = { _ in cancelCount.withValue { $0 += 1 } }
+        }
+      }
+    }
+
+    // The pushed chat dialled its one socket on first appearance (a silent stream).
+    await store.send(.liveChat(.task)) {
+      $0.liveChat?.hasStarted = true
+    }
+    await waitUntil { connectCount.value == 1 }
+    let running = store.state.liveChat
+
+    // Widen: the marker clears, the slot (and its socket) is untouched.
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.path = .init()
+    }
+    // The chat view left the stack for the detail column: cleanup only, no teardown.
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    #expect(store.state.liveChat == running)
+
+    // Narrow (Slide Over / a narrow window): the marker comes back, the slot stays.
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
+    }
+    // The detail column's view left for the stack: cleanup only again.
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    #expect(store.state.liveChat == running)
+
+    // Widen once more (the round-trip the plan's manual pass describes).
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.path = .init()
+    }
+    #expect(store.state.currentViewingSessionID == "s1")
+
+    // One dial, zero terminations across the whole sequence — the socket survived.
+    #expect(connectCount.value == 1)
+    #expect(cancelCount.value == 0)
+
+    await store.send(.liveChat(.teardown))
+    await waitUntil { cancelCount.value == 1 }
+  }
+
+  /// The column move's `chatViewDisappeared` is a no-op for an IDLE chat too — the case the
+  /// compact pop policy would otherwise tear down. Regular reads the new layout through
+  /// `isChatDetached` (set first); the marker pushed on narrowing protects the other way.
+  @Test func chatViewDisappearedDuringColumnMoveKeepsIdleSlotBothWays() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.status = .ready
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+    }
+
+    await store.send(.layoutChanged(.regular)) {
+      $0.layout = .regular
+      $0.path = .init()
+    }
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    #expect(store.state.liveChat == chat)
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
+    }
+    await store.send(.chatViewDisappeared)
+    await store.receive(\.liveChat.viewDisappeared)
+    #expect(store.state.liveChat == chat)
+  }
+
+  /// Logout from Settings in regular lands on onboarding with NO slot and an empty path — the
+  /// regular-width seat rule must not refill a chat behind the onboarding screen (there is
+  /// no list to seat it from).
+  @Test func logoutInRegularLandsOnOnboardingWithNoSlot() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+    }
+
+    await store.send(.home(.delegate(.disconnect))) {
+      $0.home = nil
+      $0.liveChat = nil
+      $0.path = .init()
+      $0.onboarding = .init()
+    }
+    await store.finish()
+    #expect(store.state.rootScreen == .onboarding)
+    #expect(store.state.layout == .regular, "the layout is the window's, not the identity's")
+    #expect(store.state.liveChat == nil)
+  }
+
+  /// The other full logout — "Quit to start" from the re-auth modal — in regular: same
+  /// landing, no slot, empty path.
+  @Test func quitFromReauthInRegularLandsOnOnboardingWithNoSlot() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: cookieConnection),
+        liveChat: ChatFeature.State(connection: cookieConnection),
+        layout: .regular,
+        reauth: ReauthFeature.State(
+          serverURL: URL(string: "http://mac.tailnet:9119")!, method: .password,
+          provider: "basic", previousUsername: "alice"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.deleteSession = { @Sendable in }
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+    }
+
+    await store.send(.reauth(.presented(.delegate(.quit)))) {
+      $0.reauth = nil
+      $0.home = nil
+      $0.liveChat = nil
+      $0.path = .init()
+      $0.onboarding = .init()
+    }
+    await store.finish()
+    #expect(store.state.rootScreen == .onboarding)
+    #expect(store.state.liveChat == nil)
+  }
+
+  /// Switching the sidebar's profile in regular reseats the EMPTY new chat under the new
+  /// profile — through the standard teardown chain (the seat's socket is dialled in regular),
+  /// never a direct swap — so its first prompt lands in the new profile's `state.db`. The
+  /// path stays empty and the parent starts the replacement (regular has no marker).
+  @Test func profileSwitchInRegularReseatsEmptyChatUnderNewProfile() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work"))) {
+      $0.home?.selectedProfileName = "work"
+    }
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    #expect(store.state.path.isEmpty)
+    // The list's own scoped refetch lands independently of the reseat.
+    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.cronJobsResponse)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The profiles capability flipping OFF (a 404 verdict) makes a seat under a custom profile
+  /// stale in the same way — `scopedProfileName` becomes `nil` — so it is reseated unscoped.
+  @Test func profilesUnsupportedVerdictInRegularReseatsScopedEmptyChat() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: "work", profilesSupported: true
+        ),
+        liveChat: ChatFeature.State(connection: connection, profileName: "work", composerText: ""),
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.profilesResponse(.failure(.notFound)))) {
+      $0.home?.profilesSupported = false
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.cronJobsResponse)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// A profile switch never touches a chat with anything in it: a resumed session on screen
+  /// in regular belongs to ITS profile, so switching the list's scope leaves the slot alone
+  /// (exhaustive — no teardown chain, no refill).
+  @Test func profileSwitchInRegularLeavesNonEmptyChatAlone() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+
+    await store.send(.home(.selectProfile(name: "work"))) {
+      $0.home?.selectedProfileName = "work"
+      $0.home?.now = Date(timeIntervalSince1970: 0)
+      $0.home?.isLoading = true
+    }
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.isLoading = false
+    }
+    await store.receive(\.home.cronJobsResponse) {
+      $0.home?.cronJobsSupported = false
+    }
+    #expect(store.state.liveChat == chat)
+  }
+
+  /// Compact has no seat rule: an empty new chat left in the slot is untouched by a profile
+  /// switch (the iPhone path stays byte-identical; "New session" applies the stale-profile
+  /// refill there when tapped).
+  @Test func profileSwitchInCompactLeavesEmptyChatAlone() async {
+    let chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: chat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+
+    await store.send(.home(.selectProfile(name: "work"))) {
+      $0.home?.selectedProfileName = "work"
+      $0.home?.now = Date(timeIntervalSince1970: 0)
+      $0.home?.isLoading = true
+    }
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.isLoading = false
+    }
+    await store.receive(\.home.cronJobsResponse) {
+      $0.home?.cronJobsSupported = false
+    }
+    #expect(store.state.liveChat == chat)
+    #expect(store.state.path.isEmpty)
+  }
 }

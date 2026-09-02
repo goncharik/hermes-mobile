@@ -409,16 +409,48 @@ case .home:
 
 ### Task 10: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented (split layout, hero on both
-  devices, cap, compact behaviour byte-identical)
-- [ ] verify edge cases: layout change mid-turn keeps the socket; `chatViewDisappeared`
+- [x] verify all requirements from Overview are implemented (split layout, hero on both
+  devices, cap, compact behaviour byte-identical) — split layout: `AppView`
+  `NavigationSplitView` + the `layout`/`isChatDetached` tests (`defaultLayoutIsCompact…`,
+  `layoutChangedTo*`, `openingSessionInRegularFillsSlotWithoutMarker`) + the Task 8/9 iPad
+  portrait passes; hero on both devices: `showsEmptyHero` truth table (ChatReductionTests)
+  + `ChatEmptyHeroSnapshotTests` (phone 390pt AND 760pt column, 6 snapshots incl. the
+  `ChatView` region swap); cap: `ChatColumnLayoutTests` (4 measured tests, 760pt centered
+  at 1024, uncapped at 390); compact byte-identical: `layout` defaults to `.compact`, every
+  pre-existing HermesKit test passes untouched (1262 green), all 25 pre-existing
+  session-list baselines + every other non-drift baseline still pass, `AppView` passes a
+  `nil` highlight in compact. ⚠️ iPad LANDSCAPE side-by-side columns and rotation remain
+  unverified on a simulator (no `simctl` rotate; the Simulator window-orientation pref
+  did not rotate the device; System Events is denied assistive access in this sandbox) —
+  left for the user's manual pass (Post-Completion)
+- [x] verify edge cases: layout change mid-turn keeps the socket; `chatViewDisappeared`
   during the column move is a no-op; logout in regular lands on onboarding with no slot;
   profile switch in regular refills a new chat under the new profile; Slide Over (compact)
-  on iPad behaves like the phone
-- [ ] run full test suite: `make test`
-- [ ] run `make snapshot` and confirm every new snapshot asserts clean; pre-existing
-  failures are baseline drift only (equal render size)
-- [ ] run `make build`
+  on iPad behaves like the phone — new `AppFeatureTests` section "Acceptance edge cases":
+  `layoutChangeMidTurnKeepsSocketAndSlotBothWays` (one dial, zero terminations across
+  compact→regular→compact→regular with the column-move `chatViewDisappeared` each way),
+  `chatViewDisappearedDuringColumnMoveKeepsIdleSlotBothWays`,
+  `logoutInRegularLandsOnOnboardingWithNoSlot`, `quitFromReauthInRegularLandsOnOnboardingWithNoSlot`,
+  `profileSwitchInRegularReseatsEmptyChatUnderNewProfile`,
+  `profilesUnsupportedVerdictInRegularReseatsScopedEmptyChat`,
+  `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`.
+  ➕ Defect fixed: a profile switch did NOT touch the regular-width seat (Task 2 flagged
+  it) — the seated empty chat kept the old profile, so its first prompt would have landed
+  in the old profile's `state.db`; `AppFeature` now reseats an empty new chat whose
+  profile no longer matches the list's (`.onChange(of: \.home?.scopedProfileName)`,
+  regular-only, teardown chain, shared `isReusableNewChat` with the "new session" no-op).
+  Slide Over = the compact size class, so it is the phone path by construction: `AppView`
+  maps `.compact`/`nil` → `.compact`; `layoutChangedToCompactWithLiveSlotPushesMarker`,
+  `layoutChangedToCompactWithNilSlotDoesNotFill`, and every compact test define it;
+  widening back is `layoutChangedToRegularClearsPathAndKeepsSlot` + the round-trip above
+- [x] run full test suite: `make test` — 1262 tests in 60 suites passed (was 1254; +8)
+- [x] run `make snapshot` and confirm every new snapshot asserts clean; pre-existing
+  failures are baseline drift only (equal render size) — iPhone 17 Pro / iOS 26.5:
+  211 executed / 36 failed / 0 unexpected; the 36 are the identical per-suite drift set
+  (Auth 2, Chat 16, Composer 7, ContextUsage 4, Hydration 2, ThinkingIndicator 5) with
+  zero size-mismatch messages in the log; all 6 `ChatEmptyHeroSnapshotTests`, both
+  `testSessionList_highlightedRow*`, and the 4 `ChatColumnLayoutTests` pass
+- [x] run `make build` — generic iOS Simulator, exit 0, no errors
 
 ### Task 11: [Final] Update documentation
 
