@@ -3650,6 +3650,50 @@ struct AppFeatureTests {
     #expect(store.state.liveChat?.attachments == [attachment])
   }
 
+  /// A seat with an EMPTY composer is not automatically disposable: a recording (or its
+  /// transcription) is composer input still arriving, and the narrowing teardown would cut
+  /// the mic and lose it. Such a seat keeps its marker — exhaustive, so any teardown fails.
+  @Test func layoutChangedToCompactWithARecordingSeatPushesMarker() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.recording = .recording
+    seat.recordingSeconds = 3
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: "live-new")])
+    }
+    #expect(store.state.liveChat?.recording == .recording)
+    #expect(store.state.liveChat?.recordingSeconds == 3)
+  }
+
+  /// Same for a clipboard load still resolving (#54): the batch lands into the seat, so the
+  /// seat has to still be there. Marker, not teardown.
+  @Test func layoutChangedToCompactWithAPendingPasteSeatPushesMarker() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.pendingPasteCount = 1
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.layoutChanged(.compact)) {
+      $0.layout = .compact
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+    #expect(store.state.liveChat?.pendingPasteCount == 1, "the paste can still land")
+  }
+
   /// Reporting the same layout twice (the shell's `initial: true` fires on every view
   /// re-creation) is a no-op — no path churn, no effects.
   @Test func layoutChangedToSameLayoutIsNoOp() async {
@@ -4258,6 +4302,46 @@ struct AppFeatureTests {
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.liveChat?.recording == .idle)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// A seat whose `session.create` FAILED looks unprompted but is unusable: no live session,
+  /// no retry until the socket drops, and a banner on screen. "New session" over it must be
+  /// the real refill (a fresh seat that dials again), not a composer reset that leaves the
+  /// user tapping New on a dead chat.
+  @Test func newSessionOverASeatWhoseSessionCreateFailedRefillsInstead() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.hasStarted = true
+    seat.hasRequestedSession = true
+    seat.status = .ready
+    seat.errorBanner = "Server error: could not create session"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.slotGeneration = 1
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    #expect(store.state.liveChat?.errorBanner == nil, "the failure is gone with the dead seat")
+    #expect(store.state.liveChat?.hasRequestedSession == false, "the replacement dials again")
     await store.send(.liveChat(.teardown))
   }
 
@@ -5145,6 +5229,90 @@ struct AppFeatureTests {
     #expect(store.state.liveChat?.composerText == "half-typed")
     #expect(store.state.liveChat?.attachments == [attachment])
     await store.send(.liveChat(.teardown))
+  }
+
+  /// A reseat mid-paste would tear the seat down before the batch lands (the pairing token is
+  /// per-`State`, so the replacement drops it). The switch DEFERS instead: the seat keeps its
+  /// stale profile while the load runs, and the reseat fires the moment the batch lands —
+  /// carrying the draft AND the freshly pasted attachment under the new profile.
+  @Test func profileSwitchDuringAPendingPasteDefersTheReseatUntilTheBatchLands() async {
+    let pasted = PickedItem(
+      data: Data([0x89, 0x50]), filename: "pasted.png", mimeType: "image/png", kind: .image
+    )
+    let seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.uuid = .incrementing
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.liveChat(.attachmentsPasting))
+    await store.send(.home(.selectProfile(name: "work")))
+    #expect(store.state.liveChat?.profileName == nil, "the reseat waits for the paste")
+    #expect(store.state.liveChat?.pendingPasteCount == 1)
+
+    await store.send(.liveChat(.attachmentsPasted(PickedBatch(items: [pasted]))))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.profileName == "work")
+    #expect(store.state.liveChat?.composerText == "half-typed")
+    #expect(store.state.liveChat?.attachments.count == 1, "the pasted image rode across")
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The recording half of the same rule: switching profiles while the mic is live leaves the
+  /// seat (and the recording) alone rather than tearing it down mid-sentence.
+  @Test func profileSwitchDuringARecordingLeavesTheSeatAlone() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.recording = .recording
+    seat.recordingSeconds = 5
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work")))
+    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.cronJobsResponse)
+    #expect(store.state.liveChat?.recording == .recording)
+    #expect(store.state.liveChat?.recordingSeconds == 5)
+    #expect(store.state.liveChat?.profileName == nil)
   }
 
   /// The profiles capability flipping OFF (a 404 verdict) makes a seat under a custom profile

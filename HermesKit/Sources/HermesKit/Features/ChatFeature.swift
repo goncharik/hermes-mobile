@@ -244,23 +244,31 @@ public struct ChatFeature {
         && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
-    /// Nothing typed, staged, or sent at all — an `isUnpromptedNewChat` with an empty
-    /// composer and no attachments, i.e. the regular-width detail seat exactly as it was
-    /// seated. Narrowing to the stack drops such a seat instead of pushing an empty chat
+    /// Nothing typed, staged, sent, or still arriving — an `isDiscardableNewChat` with an
+    /// empty composer and no attachments, i.e. the regular-width detail seat exactly as it
+    /// was seated. Narrowing to the stack drops such a seat instead of pushing an empty chat
     /// over the session list.
     public var isPristineNewChat: Bool {
-      isUnpromptedNewChat && composerText.isEmpty && attachments.isEmpty
+      isDiscardableNewChat && composerText.isEmpty && attachments.isEmpty
     }
 
     /// Composer input still resolving outside the draft itself: a clipboard load whose batch
     /// lands later (#54, paired by `pendingPasteCount`) or voice input mid
     /// permission/recording/transcription. Clearing `composerText`/`attachments` under either
     /// is not a reset — the in-flight result appends into the supposedly fresh composer, and
-    /// the mic keeps running. The app-level "new session" no-op excludes such a chat and does
-    /// a real slot replacement instead, whose `.teardown` releases the mic and whose fresh
-    /// state drops the paste (the pairing token is per-`State`).
+    /// the mic keeps running; tearing the chat down loses the result outright (the paste's
+    /// pairing token is per-`State`, and `.teardown` releases the mic).
     public var hasInFlightComposerInput: Bool {
       pendingPasteCount > 0 || recording.isBusy
+    }
+
+    /// The seat holds nothing the user would lose: an `isUnpromptedNewChat` whose composer
+    /// input has all landed. This is the single predicate every app-level "this seat can be
+    /// reused, dropped, or reseated" decision is built on (`isPristineNewChat` here; the
+    /// "New session" reuse shortcut and the regular-width profile reseat in `AppFeature`),
+    /// so the three cannot judge the same seat differently.
+    public var isDiscardableNewChat: Bool {
+      isUnpromptedNewChat && !hasInFlightComposerInput
     }
 
     /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the

@@ -133,6 +133,23 @@ public struct AppFeature {
       layout == .regular ? currentViewingSessionID : nil
     }
 
+    /// What the regular-width seat reseat (`reduceProfileReseat`) is watching: the list's
+    /// scoped profile, plus whether the seat's composer input is still resolving. The second
+    /// member DEFERS rather than skips a reseat that would land mid-paste or mid-recording —
+    /// the teardown would drop the batch and cut the mic — because the signal changes again
+    /// the moment that input lands, and the reseat then carries the resolved draft across.
+    var profileReseatSignal: ProfileReseatSignal {
+      ProfileReseatSignal(
+        profileName: home?.scopedProfileName,
+        composerInputInFlight: liveChat?.hasInFlightComposerInput ?? false
+      )
+    }
+
+    struct ProfileReseatSignal: Equatable, Sendable {
+      var profileName: String?
+      var composerInputInFlight: Bool
+    }
+
     /// Which root branch the app shell renders. The precedence is **logic, not layout**, so it
     /// lives here rather than in `AppView`: the connection-failed screen (#62) is reachable
     /// purely by sitting between the `autoConnecting` spinner and the onboarding fallback, and
@@ -520,13 +537,11 @@ public struct AppFeature {
         // — regular width keeps one such seat in the detail column at all times): tearing it
         // down to fill an identical fresh one would redial its socket for nothing. Reset the
         // composer draft (text + staged attachments) instead — the only visible difference a
-        // fresh chat would have; `initialComposerText` still seeds it. A seat under a stale
-        // profile falls through to a real refill, and so does one with input still in flight
-        // (`hasInFlightComposerInput`): a draft reset can't reach a pending paste's batch or
-        // a live mic, so those need the real teardown. The marker guard is the compact safety
-        // net: a detached seat re-attaches rather than leaving the tap without a screen.
-        if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home),
-           !chat.hasInFlightComposerInput {
+        // fresh chat would have; `initialComposerText` still seeds it. Anything the shortcut
+        // can't reproduce (a stale profile, in-flight composer input, a failed handshake)
+        // falls through to the real refill. The marker guard is the compact safety net: a
+        // detached seat re-attaches rather than leaving the tap without a screen.
+        if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
           state.liveChat?.composerText = initialComposerText ?? ""
           state.liveChat?.attachments = []
           if state.isChatDetached {
@@ -816,7 +831,7 @@ public struct AppFeature {
     // unprompted chat is torn down), so the rule is regular-only and the iPhone path is untouched.
     // Evaluated AFTER the list reducer so it reads the new selection; landing on a fresh
     // `home` also trips it, but the seat `landOnHome` just filled already matches → no-op.
-    .onChange(of: \.home?.scopedProfileName) { _, _ in
+    .onChange(of: \.profileReseatSignal) { _, _ in
       Reduce { state, _ in reduceProfileReseat(&state) }
     }
   }
@@ -914,11 +929,15 @@ public struct AppFeature {
     return .send(.home(.delegate(.openSession(session))))
   }
 
-  /// Body of the `scopedProfileName` `onChange` above (see it for when and why): reseat an
-  /// unprompted regular-width seat that is no longer the one the list would build now.
+  /// Body of the `profileReseatSignal` `onChange` above (see it for when and why): reseat a
+  /// discardable regular-width seat that is no longer scoped to the profile the list would
+  /// build it under. `isDiscardableNewChat` is the same seat predicate the "New session"
+  /// shortcut and the narrowing drop read, so a seat with a paste or a recording still in
+  /// flight is not reseated out from under the user — the signal re-fires when that input
+  /// lands and the reseat carries it across then.
   private func reduceProfileReseat(_ state: inout State) -> Effect<Action> {
     guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
-          chat.isUnpromptedNewChat, !Self.isReusableNewChat(chat, for: home)
+          chat.isDiscardableNewChat, chat.profileName != home.scopedProfileName
     else { return .none }
     // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
     // attachments belong to the user, not to the profile, and unlike "New session" the
@@ -928,15 +947,24 @@ public struct AppFeature {
     return teardownSlot(thenFill: replacement)
   }
 
-  /// Whether the slot's chat is ALREADY the fresh new chat the list would seat right now: an
-  /// `isUnpromptedNewChat` under the list's currently-selected profile. "New session" over it
-  /// resets the composer instead of redialling; the profile reseat is its negation. The
-  /// connection is deliberately NOT compared: it is not part of "which chat the list would
-  /// seat", and a same-user re-auth refreshes the list's copy alongside the chat's.
+  /// Whether the slot's chat is ALREADY the fresh, WORKING new chat the list would seat right
+  /// now: an `isDiscardableNewChat` (the shared seat predicate — see `ChatFeature.State`)
+  /// under the list's currently-selected profile, with no surfaced failure. "New session"
+  /// over such a seat resets the composer instead of redialling.
+  ///
+  /// The banner clause is what keeps the shortcut honest: a seat whose `session.create`
+  /// failed keeps `liveSessionID == nil` with `hasRequestedSession` still true, so it can
+  /// neither send nor retry until the socket drops — a composer reset would leave the user
+  /// tapping "New session" on a dead chat. Any other banner sends it down the same real
+  /// refill, which costs one redial and clears the failure.
+  ///
+  /// The connection is deliberately NOT compared: it is not part of "which chat the list
+  /// would seat", and a same-user re-auth refreshes the list's copy alongside the chat's.
   private static func isReusableNewChat(
     _ chat: ChatFeature.State, for home: SessionListFeature.State
   ) -> Bool {
-    chat.isUnpromptedNewChat && chat.profileName == home.scopedProfileName
+    chat.isDiscardableNewChat && chat.profileName == home.scopedProfileName
+      && chat.errorBanner == nil
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn

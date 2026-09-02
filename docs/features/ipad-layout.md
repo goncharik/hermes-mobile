@@ -61,13 +61,26 @@ a not-yet-created new chat gets a nil-key marker); compact→regular clears the 
 itself (socket, rows, ticker) is untouched either way. Widening with NO slot falls into the
 new-chat fill below.
 
+**One seat predicate.** `ChatFeature.State.isDiscardableNewChat` — `isUnpromptedNewChat`
+(`!resumesStoredSession && attachLiveSessionID == nil && branchSeed == nil &&
+transcript.isEmpty && !isSending && !hasQueuedWork`; a draft, staged attachments, or a
+connected-but-unprompted live session do NOT make it prompted) AND no
+`hasInFlightComposerInput` (a clipboard load still resolving, or voice mid
+permission/recording/transcription — neither survives a draft reset or a teardown) — is what
+all three seat decisions below read, so they cannot judge the same seat differently.
+
+`resumesStoredSession` is fixed at init (`resumeStoredID != nil`) and is what makes the
+predicate durable: the seat dials immediately in regular, and its `session.create` handshake
+writes a `stored_session_id` back before any prompt or DB row exists — so `storedSessionID`
+alone stops telling a fresh seat from a resumed session seconds after launch.
+
 **Narrowing drops a pristine seat.** Regular always keeps a seat in the detail column, and
 pushing an unused one onto the stack would land the user on an empty chat with a Back button
 instead of the list — then popping it would tear it down anyway, so a rotate cycle would cost a
 `session.create` round-trip each way. `ChatFeature.State.isPristineNewChat`
-(`isUnpromptedNewChat` with an empty composer and no staged attachments) is torn down instead,
-with no marker; widening seats a fresh one. Anything the user has touched — a draft or staged
-attachments — keeps its marker.
+(`isDiscardableNewChat` with an empty composer and no staged attachments) is torn down instead,
+with no marker; widening seats a fresh one. Anything the user has touched — a draft, staged
+attachments, or input still resolving — keeps its marker.
 
 ## New-chat fill rules for regular width
 
@@ -86,34 +99,32 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   slot nil (so `ifLet` cancels the expired chat's effects), then seats the new user's chat by
   RETURNING `.send(.fillLiveChat(detailRefill(state)))` — the action, not a direct fill, so the
   seat is dialled.
-- **Profile-switch reseat** — a reducer-level `.onChange(of: \.home?.scopedProfileName)`,
-  evaluated after the list reducer so it reads the new selection. In regular only, an
-  `isUnpromptedNewChat` slot that is no longer `isReusableNewChat` for the list is reseated
+- **Profile-switch reseat** — a reducer-level `.onChange(of: \.profileReseatSignal)` (the
+  list's `scopedProfileName` plus whether the seat's composer input is in flight), evaluated
+  after the list reducer so it reads the new selection. In regular only, an
+  `isDiscardableNewChat` slot whose `profileName` no longer matches the list is reseated
   through the standard teardown chain (its socket may already be dialled) so its first prompt
   lands in the right profile's `state.db`; its draft and staged attachments ride across into the
   replacement — unlike "New session", a profile switch is not a request to clear them. A chat
   with anything in it is left alone — the profile is the LIST's scope, not the open chat's.
+  A switch that lands mid-paste or mid-recording is DEFERRED, not skipped: the teardown would
+  drop the batch and cut the mic, and the signal's second member re-fires the reseat the moment
+  that input lands, carrying the resolved draft across then.
   Observing the value (not `.selectProfile`) covers every path that changes it: the profiles-404
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
   off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
-  `ChatFeature.State.isUnpromptedNewChat` (`!resumesStoredSession && attachLiveSessionID == nil
-  && branchSeed == nil && transcript.isEmpty && !isSending && !hasQueuedWork` — a draft, staged
-  attachments, or a connected-but-unprompted live session do NOT make it prompted) AND the same
-  `scopedProfileName`. Tearing it down to fill an identical fresh one would redial the socket
-  for nothing, so it resets the composer draft (text → the `initialComposerText` seed or empty;
-  attachments cleared) and returns `.none`. A stale profile falls through to a real refill, and
-  so does a seat with `hasInFlightComposerInput` (a clipboard load still resolving, or voice
-  mid permission/recording/transcription): a draft reset cannot reach the batch that lands
-  later or the running mic, so those need the real teardown. The CONNECTION is deliberately not
+  `isDiscardableNewChat` AND the same `scopedProfileName` AND `errorBanner == nil`. Tearing
+  such a seat down to fill an identical fresh one would redial the socket for nothing, so it
+  resets the composer draft (text → the `initialComposerText` seed or empty; attachments
+  cleared) and returns `.none`. Everything the reset cannot reproduce falls through to a real
+  refill: a stale profile, in-flight composer input, and a surfaced failure — a seat whose
+  `session.create` failed keeps `liveSessionID == nil` with `hasRequestedSession` still true,
+  so it can neither send nor retry until the socket drops, and a composer reset would leave the
+  user tapping "New" on a dead chat. The CONNECTION is deliberately not
   compared — it is not part of "which chat the list would seat", and a same-user re-auth
   refreshes the list's copy alongside the chat's anyway. Compact safety net: a detached empty
   chat in that branch gets its marker re-pushed so a "New" tap always lands on a screen.
-
-  `resumesStoredSession` is fixed at init (`resumeStoredID != nil`) and is what makes the
-  predicate durable: the seat dials immediately in regular, and its `session.create` handshake
-  writes a `stored_session_id` back before any prompt or DB row exists — so `storedSessionID`
-  alone stops telling a fresh seat from a resumed session seconds after launch.
 
 **Dialling a regular-width fill, and view identity.** The initial connect is the chat view's
 `.task`. In compact the fresh marker's destination is a NEW view, so it fires there. In regular
@@ -271,11 +282,17 @@ the compact layout. Deployment target stays iOS 18.
   `logoutInRegularLandsOnOnboardingWithNoSlot`, `profileSwitchInRegularReseatsEmptyChatUnderNewProfile`,
   `profileSwitchInRegularReseatsTheSeatThatAlreadyCreatedItsSession`,
   `profileSwitchInRegularCarriesTheSeatsDraftAcrossTheReseat`,
-  `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`).
+  `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`);
+  the shared-seat-predicate set (`layoutChangedToCompactWithARecordingSeatPushesMarker`,
+  `layoutChangedToCompactWithAPendingPasteSeatPushesMarker`,
+  `newSessionOverASeatWhoseSessionCreateFailedRefillsInstead`,
+  `profileSwitchDuringAPendingPasteDefersTheReseatUntilTheBatchLands`,
+  `profileSwitchDuringARecordingLeavesTheSeatAlone`).
   Every pre-existing compact test is untouched — that is the byte-identical guard.
 - `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isUnpromptedNewChat*` (7,
   including `…SurvivesTheSessionCreateHandshake` and `…FalseForAnUnpersistedBranch`),
-  `isPristineNewChat*` (4), `hasInFlightComposerInputCoversPendingPasteAndVoice` and the
+  `isPristineNewChat*` (5), `hasInFlightComposerInputCoversPendingPasteAndVoice`,
+  `isDiscardableNewChatCoversUnpromptedSeatsWithNothingInFlight` and the
   `showsEmptyHero*` truth table + `hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt`,
   `hydrateOfRunningTurnWithEmptyHistoryHidesHero`, `createHandshakeMarksHydratedSoStoredIDKeepsHero`.
 - `HermesMobileTests/ChatColumnLayoutTests.swift` — measured `UIWindow`-hosted: 1024pt window →

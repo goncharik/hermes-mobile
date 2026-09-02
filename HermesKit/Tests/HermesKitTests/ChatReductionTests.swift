@@ -2460,6 +2460,33 @@ struct ChatReductionTests {
     #expect(!state.isPristineNewChat)
   }
 
+  /// An empty composer is NOT proof the seat is disposable: a paste still loading or a live
+  /// mic will fill it in a moment, and neither survives the narrowing teardown. Both must
+  /// read non-pristine so the seat keeps its marker instead.
+  @Test func isPristineNewChatFalseWithInFlightComposerInput() {
+    var pasting = ChatFeature.State(connection: conn)
+    pasting.pendingPasteCount = 1
+    #expect(pasting.composerText.isEmpty && pasting.attachments.isEmpty)
+    #expect(!pasting.isDiscardableNewChat)
+    #expect(!pasting.isPristineNewChat)
+
+    var recording = ChatFeature.State(connection: conn)
+    recording.recording = .recording
+    #expect(!recording.isDiscardableNewChat)
+    #expect(!recording.isPristineNewChat)
+  }
+
+  /// The shared seat predicate: unprompted AND nothing still resolving. A plain draft is
+  /// discardable (the "New session" reset clears it deliberately); a prompted chat is not.
+  @Test func isDiscardableNewChatCoversUnpromptedSeatsWithNothingInFlight() {
+    var draft = ChatFeature.State(connection: conn)
+    draft.composerText = "typed"
+    #expect(draft.isDiscardableNewChat)
+
+    let resumed = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!resumed.isDiscardableNewChat)
+  }
+
   // MARK: In-flight composer input (#80 — what a draft reset cannot reach)
 
   /// A pending paste and every busy voice phase count; a plain draft does not. These are the
