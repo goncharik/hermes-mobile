@@ -66,8 +66,15 @@ class SnapshotTestCase: XCTestCase {
   }
 
   /// Singular component snapshot: fast, deterministic layer render at `.sizeThatFits`.
-  func componentImage<V: SwiftUI.View>() -> Snapshotting<V, UIImage> {
-    .image(layout: .sizeThatFits, traits: Self.darkTraits)
+  /// Dark by default (see `darkTraits`); pass `.light` only for a view whose light
+  /// appearance is itself under test (the hero, brand colours over a light background).
+  func componentImage<V: SwiftUI.View>(
+    appearance: UIUserInterfaceStyle = .dark
+  ) -> Snapshotting<V, UIImage> {
+    .image(
+      layout: .sizeThatFits,
+      traits: appearance == .dark ? Self.darkTraits : UITraitCollection(userInterfaceStyle: appearance)
+    )
   }
 
   /// Solid-color PNG so image-chip thumbnails render deterministically.

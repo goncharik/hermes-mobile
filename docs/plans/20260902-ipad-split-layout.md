@@ -299,15 +299,18 @@ case .home:
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Create: `HermesMobileTests/ChatEmptyHeroSnapshotTests.swift`
 
-- [ ] create `ChatEmptyHeroView` (wordmark + one tagline constant, centered, Dynamic Type,
+- [x] create `ChatEmptyHeroView` (wordmark + one tagline constant, centered, Dynamic Type,
   combined accessibility element, light/dark)
-- [ ] in `ChatView.transcript`, render the hero instead of `CollectionTranscriptView` when
+- [x] in `ChatView.transcript`, render the hero instead of `CollectionTranscriptView` when
   `store.showsEmptyHero`, keeping the copy-toast overlay and the layout priority behaviour
-- [ ] snapshot tests: phone width (390pt) and 760pt column, light + dark, pinned
+- [x] snapshot tests: phone width (390pt) and 760pt column, light + dark, pinned
   `.dynamicTypeSize(.large)`; one at `.accessibility3` — pin BOTH width and height (the
-  hero fills a scrollable region's slot)
-- [ ] record each new snapshot with two `make snapshot` runs; verify the images by eye
-- [ ] run `make test` + `make snapshot` — must pass (new ones clean) before task 7
+  hero fills a scrollable region's slot); plus one fixed-frame `ChatView` render of a
+  brand-new chat proving the region swap (hero above the pinned composer)
+- [x] record each new snapshot with two `make snapshot` runs; verify the images by eye
+- [x] run `make test` + `make snapshot` — must pass (new ones clean) before task 7 —
+  1253 HermesKit tests green; snapshot 205 run / 36 failed, the same equal-render-size
+  drift set as Task 5, the 6 new hero snapshots assert clean
 
 ### Task 7: Readable-width cap on the chat column
 
