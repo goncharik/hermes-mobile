@@ -24,6 +24,18 @@ up from mobile), and `supportsReasoning(_:)` hides the effort rows for a model w
 says `reasoning: false` — unknown models default to `?? true`, so the control is never hidden on a
 guess.
 
+### Search
+
+The sheet has a `.searchable` field (drawer placement, always visible) that filters in place without
+collapsing the provider grouping. `ModelOptions.filteredProviders(matching:)` — pure and unit-tested,
+the view stays thin — keeps a provider section whose NAME matches the query (all of its models stay),
+else keeps only the models whose name matches, dropping a provider left with no matches. An empty or
+whitespace-only query returns the full `orderedProviders` unchanged. Matching is case- and
+diacritic-insensitive substring (`"dee"` matches `deepseek-…`), so a user with many providers/models
+can jump straight to one instead of scrolling. Zero matches shows a `ContentUnavailableView.search`.
+Because filtering keeps sections intact, identical model names across providers stay unambiguous —
+the section header disambiguates.
+
 ## The scale is always full — the server clamps, the client offers
 
 `ModelOptions.reasoningEfforts` mirrors `hermes_constants.VALID_REASONING_EFFORTS` verbatim with

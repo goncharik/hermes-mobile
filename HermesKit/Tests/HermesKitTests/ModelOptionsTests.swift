@@ -81,4 +81,64 @@ struct ModelOptionsTests {
     #expect(ModelOptions.extendedReasoningEfforts.isSubset(of: Set(ModelOptions.reasoningEfforts)))
     #expect(ModelOptions.extendedReasoningEfforts == ["max", "ultra"])
   }
+
+  // MARK: filteredProviders(matching:)
+
+  private let searchableOptions = ModelOptions(providers: [
+    .init(name: "Anthropic", slug: "anthropic", models: ["claude-opus-4-8", "claude-haiku-4-5"], authenticated: true),
+    .init(name: "DeepSeek", slug: "deepseek", models: ["deepseek-v4-flash", "deepseek-reasoner"], authenticated: true),
+    .init(name: "OpenAI", slug: "openai", models: ["gpt-5.6", "gpt-5.6-mini"], authenticated: true),
+    .init(name: "Groq", slug: "groq", models: [], authenticated: false, warning: "paste GROQ_API_KEY to activate"),
+  ])
+
+  @Test func emptyQueryReturnsTheFullOrderedList() {
+    #expect(searchableOptions.filteredProviders(matching: "").map(\.name) ==
+      searchableOptions.orderedProviders.map(\.name))
+    #expect(searchableOptions.filteredProviders(matching: "   ").map(\.name) ==
+      searchableOptions.orderedProviders.map(\.name))
+  }
+
+  @Test func modelNameSubstringMatchKeepsOnlyMatchingModelsWithinTheirProvider() {
+    // "dee" matches both DeepSeek models but no other provider's models.
+    let result = searchableOptions.filteredProviders(matching: "dee")
+    #expect(result.map(\.name) == ["DeepSeek"])
+    #expect(result.first?.models == ["deepseek-v4-flash", "deepseek-reasoner"])
+  }
+
+  @Test func modelNameMatchDropsNonMatchingModelsButKeepsTheProviderSection() {
+    let result = searchableOptions.filteredProviders(matching: "reasoner")
+    #expect(result.map(\.name) == ["DeepSeek"])
+    #expect(result.first?.models == ["deepseek-reasoner"])
+  }
+
+  @Test func providerNameMatchKeepsAllOfThatProvidersModels() {
+    // "openai" matches the provider name, so every OpenAI model survives even though
+    // none of them contain the substring.
+    let result = searchableOptions.filteredProviders(matching: "openai")
+    #expect(result.map(\.name) == ["OpenAI"])
+    #expect(result.first?.models == ["gpt-5.6", "gpt-5.6-mini"])
+  }
+
+  @Test func unconfiguredProviderWithWarningMatchesByNameOnly() {
+    // Groq has no models, so only a provider-name match can surface it.
+    let result = searchableOptions.filteredProviders(matching: "groq")
+    #expect(result.map(\.name) == ["Groq"])
+    #expect(result.first?.models.isEmpty == true)
+  }
+
+  @Test func matchingIsCaseAndDiacriticInsensitive() {
+    #expect(searchableOptions.filteredProviders(matching: "DEEP").map(\.name) == ["DeepSeek"])
+    #expect(searchableOptions.filteredProviders(matching: "claude").map(\.name) == ["Anthropic"])
+  }
+
+  @Test func noMatchReturnsAnEmptyList() {
+    #expect(searchableOptions.filteredProviders(matching: "zzz").isEmpty)
+  }
+
+  @Test func filteringPreservesProviderOrdering() {
+    // "a" matches Anthropic and OpenAI by provider name and DeepSeek by model name; all
+    // three configured providers survive in their original (configured-first) order.
+    let result = searchableOptions.filteredProviders(matching: "a")
+    #expect(result.map(\.name) == ["Anthropic", "DeepSeek", "OpenAI"])
+  }
 }

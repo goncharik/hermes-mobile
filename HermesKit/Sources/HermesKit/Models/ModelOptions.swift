@@ -86,6 +86,41 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
     return configured + unconfigured
   }
 
+  /// Filters `orderedProviders` against a free-text query while preserving the picker's
+  /// provider grouping. A provider whose NAME matches the query keeps all of its models;
+  /// otherwise only models whose name matches are kept, and a provider left with no
+  /// matching models is dropped. An empty or whitespace-only query returns the full
+  /// ordered list unchanged. Matching is a case- and diacritic-insensitive substring
+  /// (`"dee"` matches `deepseek-…`, `"cafe"` matches `café-…`).
+  public func filteredProviders(matching query: String) -> [Provider] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return orderedProviders }
+    let needle = ModelOptions.normalizedForSearch(trimmed)
+
+    return orderedProviders.compactMap { provider in
+      if ModelOptions.normalizedForSearch(provider.name).contains(needle) {
+        return provider
+      }
+      let matchingModels = provider.models.filter {
+        ModelOptions.normalizedForSearch($0).contains(needle)
+      }
+      guard !matchingModels.isEmpty else { return nil }
+      return Provider(
+        name: provider.name,
+        slug: provider.slug,
+        models: matchingModels,
+        authenticated: provider.authenticated,
+        warning: provider.warning,
+        capabilities: provider.capabilities
+      )
+    }
+  }
+
+  /// Case- and diacritic-insensitive form used for search comparison.
+  private static func normalizedForSearch(_ string: String) -> String {
+    string.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+  }
+
   /// Whether `model` supports reasoning, per the provider capabilities map. Defaults to
   /// `true` when the model isn't found or has no capability entry (matches the desktop's
   /// `caps?.reasoning ?? true`), so the effort control isn't hidden on unknown models.
