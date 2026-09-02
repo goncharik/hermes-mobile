@@ -3843,6 +3843,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
     await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
@@ -3854,7 +3855,12 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
     }
+    // Regular: the parent starts the replacement (the detail column's view never re-appears).
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
     #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
   }
 
   /// "New session" over a NON-empty chat (a resumed session on screen) tears it down and
@@ -3871,6 +3877,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
     await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
@@ -3882,7 +3889,12 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
     }
+    // Regular: the parent starts the replacement (the detail column's view never re-appears).
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
     #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
   }
 
   /// Opening a session in regular over the seated empty new chat replaces it through the
@@ -3899,6 +3911,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
     await store.send(.home(.delegate(.openSession(Session(id: "s1", title: "Chat")))))
@@ -3912,7 +3925,70 @@ struct AppFeatureTests {
         connection: self.connection, resumeStoredID: "s1", profileName: nil, title: "Chat"
       )
     }
+    // Regular: the parent starts the replacement (the detail column's view never re-appears).
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
     #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// Regular has no marker, so a slot replacement gives the detail column no NEW view whose
+  /// `.task` would dial: the parent's `.fillLiveChat` starts the replacement itself — exactly
+  /// one socket, the old one cancelled first — and the view's own `.task`, if it does fire
+  /// (a column move), is a no-op through `hasStarted`, never a redial.
+  @Test func slotReplacementInRegularDialsReplacementExactlyOnce() async {
+    let connectCount = LockIsolated(0)
+    let cancelCount = LockIsolated(0)
+    var old = ChatFeature.State(connection: connection, resumeStoredID: "old")
+    old.liveSessionID = "old-live"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: old, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        connectCount.withValue { $0 += 1 }
+        return AsyncStream { continuation in
+          continuation.onTermination = { _ in cancelCount.withValue { $0 += 1 } }
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    // The old chat is on screen and dialled (its first appearance).
+    await store.send(.liveChat(.task))
+    await waitUntil { connectCount.value == 1 }
+
+    // The whole chain reduces synchronously (`.send` is a `Just`), so the counts are asserted
+    // after it: the old socket terminated exactly once, the replacement dialled exactly once.
+    await store.send(.home(.delegate(.openSession(Session(id: "new")))))
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat)
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    await waitUntil { connectCount.value == 2 }
+    await waitUntil { cancelCount.value == 1 }
+    #expect(store.state.liveChat?.storedSessionID == "new")
+    #expect(store.state.path.isEmpty)
+
+    // A view `.task` on the same slot (the column re-created on a size-class change) must
+    // not cancel-and-redial the healthy socket.
+    await store.send(.liveChat(.task))
+    #expect(connectCount.value == 2)
+    #expect(cancelCount.value == 1)
+
+    await store.send(.liveChat(.teardown))
+    await waitUntil { cancelCount.value == 2 }
   }
 
   /// Archiving the ON-SCREEN session in regular tears the slot down and seats a fresh new
@@ -3933,6 +4009,7 @@ struct AppFeatureTests {
       $0.hermesREST.archive = { @Sendable _, _, _, _ in }
       $0.chatSnapshot = .inMemory()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
     store.exhaustivity = .off
 
@@ -3947,6 +4024,11 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
     }
+    // Regular: the parent starts the seated chat; cancel its socket before finishing.
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    await store.send(.liveChat(.teardown))
     await store.finish()
     #expect(store.state.path.isEmpty)
     #expect(store.state.liveChat?.isEmptyNewChat == true)
@@ -4003,6 +4085,7 @@ struct AppFeatureTests {
       $0.hermesREST.deleteSession = { @Sendable _, _, _ in }
       $0.chatSnapshot = snapshots
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
     store.exhaustivity = .off
 
@@ -4016,6 +4099,11 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
     }
+    // Regular: the parent starts the seated chat; cancel its socket before finishing.
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
+    await store.send(.liveChat(.teardown))
     await store.finish()
     #expect(store.state.path.isEmpty)
     #expect(snapshots.loadSnapshot("s1") == nil)
@@ -4158,6 +4246,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.chatSnapshot = .inMemory()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
     store.exhaustivity = .off
 
@@ -4167,9 +4256,14 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat)
     await store.receive(\.fillLiveChat)
+    // Regular: the parent starts the replacement (no marker, so no fresh view `.task`).
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
     #expect(store.state.path.isEmpty)
     #expect(store.state.liveChat?.storedSessionID == "new")
     #expect(store.state.liveChat?.expectsPendingApproval == false)
+    await store.send(.liveChat(.teardown))
   }
 
   /// Regular: the seated EMPTY new chat (the detail column's default) counts as an occupied
@@ -4187,6 +4281,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.chatSnapshot = .inMemory()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
     store.exhaustivity = .off
 
@@ -4195,9 +4290,14 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat)
     await store.receive(\.fillLiveChat)
+    // Regular: the parent starts the replacement (no marker, so no fresh view `.task`).
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.hasStarted = true
+    }
     #expect(store.state.path.isEmpty)
     #expect(store.state.liveChat?.storedSessionID == "s1")
     #expect(store.state.liveChat?.isEmptyNewChat == false)
+    await store.send(.liveChat(.teardown))
   }
 
   /// Regular cold launch via manual login: the stashed tap replays through the one

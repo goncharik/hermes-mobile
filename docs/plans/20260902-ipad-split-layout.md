@@ -340,20 +340,39 @@ case .home:
 **Files:**
 - Modify: `HermesMobile/Sources/AppView.swift`
 
-- [ ] replace the `.home` branch with `NavigationSplitView`: sidebar = existing
+- [x] replace the `.home` branch with `NavigationSplitView`: sidebar = existing
   `NavigationStack(path:)` block verbatim (list root, chat destination with
   `.onDisappear { store.send(.chatViewDisappeared) }`); detail = the same `chatDetail`
   builder; `columnVisibility` as `@State`, `.automatic` style, sidebar column width
   `min 280 / ideal 320 / max 400`
-- [ ] report `horizontalSizeClass` via `.onChange(of:initial:)` → `layoutChanged`
-- [ ] detail fallback when the slot is nil: empty view (section 4 guarantees a fill in
+- [x] report `horizontalSizeClass` via `.onChange(of:initial:)` → `layoutChanged` — read
+  at the `AppView` root (inside a sidebar column the environment reports `.compact`) and
+  attached to `content` so the layout is known before `home` lands
+- [x] detail fallback when the slot is nil: empty view (section 4 guarantees a fill in
   regular)
-- [ ] `make build`; launch on an iPhone simulator via `make run` and confirm the list,
+- ➕ [x] regular width has no marker, so a slot replacement gives the detail column no new
+  view whose `.task` would dial (the teardown → clear → fill chain reduces synchronously,
+  SwiftUI never sees the nil): `.fillLiveChat` now returns `.send(.liveChat(.task))` in
+  regular (compact unchanged, `.none`); `hasStarted` keeps a later view `.task` a no-op.
+  Test: `slotReplacementInRegularDialsReplacementExactlyOnce` + the seven regular
+  teardown-chain tests receive `.liveChat.task`
+- [x] `make build`; launch on an iPhone simulator via `make run` and confirm the list,
   push, pop, and running-turn keep-alive behave as on `main` (collapsed split container)
-- [ ] launch on an iPad simulator (landscape + portrait) and confirm: sidebar + detail,
+  — iPhone 17 Pro Max / iOS 26.5, demo `sessions` + `chat`: list identical, tap pushes the
+  chat full-screen with Back, pop returns to the list, the pre-pushed `chat` scenario
+  renders inside the collapsed split; running-turn keep-alive is not exercisable in demo
+  mode (no live turn; `isRunning` false) — the policy is unchanged code covered by
+  `AppFeatureTests`
+- [x] launch on an iPad simulator (landscape + portrait) and confirm: sidebar + detail,
   hero on empty detail, tapping a session fills the detail with no push, portrait shows
-  the overlay sidebar, rotating keeps the chat
-- [ ] run `make test` — must pass before task 9
+  the overlay sidebar, rotating keeps the chat — iPad Pro 13-inch (M4) / iOS 26.5
+  portrait: hero seated in the capped detail column, sidebar toggle shows the overlay
+  list, tapping a row fills the detail (title changes, sidebar list untouched — no push),
+  "New session" refills the hero, the `chat` scenario (launch-time marker) renders the
+  transcript once in the detail with the marker cleared. ⚠️ Landscape/rotation NOT
+  verified: `simctl` has no rotate and the sandbox blocks System Events (AppleEvent
+  timeout), so side-by-side columns + rotate-keeps-chat remain for the Task 10 pass
+- [x] run `make test` — must pass before task 9 — 1254 HermesKit tests green
 
 ### Task 9: Selected-row highlight in the sidebar
 

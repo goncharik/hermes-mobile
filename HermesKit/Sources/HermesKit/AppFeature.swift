@@ -204,7 +204,10 @@ public struct AppFeature {
     /// Internal: fill the live-chat slot with a fresh chat and (re)set its path marker.
     /// Used when opening while the slot is occupied — sequenced after the old slot's
     /// `.teardown` AND `.clearLiveChat` (the nil-out is what cancels the outgoing chat's
-    /// un-ID'd one-shot RPC effects) so nothing can leak into the replacement.
+    /// un-ID'd one-shot RPC effects) so nothing can leak into the replacement. In regular
+    /// width the replacement is also STARTED here (`.liveChat(.task)`): the detail column
+    /// keeps its view identity across the synchronous clear→fill swap, so the chat view's
+    /// own `.task` never re-fires the way a fresh compact marker's destination does.
     case fillLiveChat(ChatFeature.State)
     /// Internal: clear the slot after its `.teardown` ran (`teardownSlot`). Nil-ing the
     /// slot makes `ifLet` cancel every remaining child effect — including one-shot RPCs
@@ -593,7 +596,14 @@ public struct AppFeature {
 
       case let .fillLiveChat(chat):
         fillLiveChat(chat, into: &state)
-        return .none
+        // The initial connect is the chat view's `.task` (first appearance). In compact the
+        // fresh marker's destination is a NEW view, so it fires. In regular there is no
+        // marker: the detail column renders the slot directly, and the whole
+        // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so
+        // SwiftUI never observes the nil slot, the `ChatView` keeps its identity, and its
+        // `.task` stays silent — the replacement would sit undialled. Start it here;
+        // `hasStarted` makes a later view `.task` a no-op, never a redial.
+        return state.layout == .regular ? .send(.liveChat(.task)) : .none
 
       case .clearLiveChat:
         // Pop-to-list teardown completed — drop the slot state. `ifLet` auto-cancels any
