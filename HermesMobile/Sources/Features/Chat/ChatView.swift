@@ -73,6 +73,17 @@ struct ChatView: View {
         onPasteImages: { store.send(.attachmentsPasted($0)) }
       )
     }
+    // The readable-width cap (#80): in a wide column (the iPad detail pane) the whole chat —
+    // banner, transcript + toast, footer, cards, panels, and composer — lives in ONE container
+    // limited to `ChatLayout.readableMaxWidth` and centered by the greedy outer frame, so a
+    // line of prose never runs the full width of a 1024pt window and the composer sits under
+    // the text it belongs to. Every phone width is below the cap, so compact rendering is
+    // byte-identical. The cap is on this OUTER container only: table cells keep
+    // `CappedWidthLayout` (a `.frame(maxWidth:)` cannot cap anything inside a horizontal
+    // `ScrollView` — `docs/features/markdown-rendering.md`), and `MarkdownTableView` still pans
+    // inside the column. Measured in `ChatColumnLayoutTests`.
+    .frame(maxWidth: ChatLayout.readableMaxWidth)
+    .frame(maxWidth: .infinity)
     // Animates the suggestion panel in/out (and the layout shift it causes). Keyed to
     // emptiness so mere filtering while typing never animates; nil under reduce-motion,
     // so the panel then appears/disappears instantly.

@@ -318,17 +318,22 @@ case .home:
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Create: `HermesMobileTests/ChatColumnLayoutTests.swift`
 
-- [ ] wrap transcript/footer/card/panels/composer in one container limited to
+- [x] wrap transcript/footer/card/panels/composer in one container limited to
   `ChatLayout.readableMaxWidth` and centered; the connection banner and toast stay
-  within the same container
-- [ ] confirm `MarkdownTableView` panning and `CappedWidthLayout` cells are untouched (cap
-  is on the outer container)
-- [ ] measured `UIWindow`-hosted XCTest (1024×768 window, `.dynamicTypeSize(.large)`):
+  within the same container — `.frame(maxWidth: readableMaxWidth)` + `.frame(maxWidth:
+  .infinity)` on `ChatView`'s outer `VStack`, which already holds all of them
+- [x] confirm `MarkdownTableView` panning and `CappedWidthLayout` cells are untouched (cap
+  is on the outer container) — no change to `MarkdownTableView.swift`; measured: a
+  five-column prose table inside the capped 1024pt column still pans within the column
+- [x] measured `UIWindow`-hosted XCTest (1024×768 window, `.dynamicTypeSize(.large)`):
   the chat content width equals `readableMaxWidth` and is horizontally centered; at a
-  390pt window the content width equals the window width (no cap below the constant)
-- [ ] run `make snapshot` — existing chat snapshots unchanged in render size (phone widths
-  are below the cap)
-- [ ] run tests — must pass before task 8
+  390pt window the content width equals the window width (no cap below the constant) —
+  `ChatColumnLayoutTests` (4 tests, incl. the cap boundary from both sides); red-checked
+  against the un-capped view (3 of 4 go red, the phone one passes both ways by contract)
+- [x] run `make snapshot` — existing chat snapshots unchanged in render size (phone widths
+  are below the cap) — 209 run / 36 failed, zero size mismatches (all 36 are the
+  equal-render-size pixel drift set from Tasks 5–6), the 4 new layout tests pass
+- [x] run tests — must pass before task 8 — 1253 HermesKit tests green
 
 ### Task 8: `NavigationSplitView` root in `AppView`
 
