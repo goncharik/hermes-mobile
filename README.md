@@ -4,7 +4,7 @@
 
 # Hermes Agent Mobile Companion
 
-**Drive your self-hosted Hermes agent from your iPhone.**
+**Drive your self-hosted Hermes agent from your iPhone or iPad.**
 
 Chat with sessions, watch the agent work in real time, and approve or clarify its
 actions — all from your pocket, while the real runtime stays on your Mac or server.
@@ -20,8 +20,8 @@ Native SwiftUI · [The Composable Architecture](https://github.com/pointfreeco/s
 
 Hermes Mobile is a thin remote client for a self-hosted
 **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**. The agent
-keeps running on your machine; the phone is a window into it — so you can step away
-from your desk and still keep your agent moving.
+keeps running on your machine; your iPhone or iPad is a window into it — so you can step
+away from your desk and still keep your agent moving.
 
 - **Connect once.** Enter your server URL and sign in the way your agent is configured:
   a username and password when the server runs gated auth (the recommended setup), or a
@@ -85,6 +85,11 @@ from your desk and still keep your agent moving.
   tool/thinking history, and an in-progress turn that keeps streaming with its timer ticking.
   A running turn even keeps its live connection while you browse the session list, and for a
   short grace window after backgrounding — falling back to reconnect-and-restore beyond that.
+- **Native on iPad.** In a wide window the session list sits in a sidebar next to the
+  open chat (side by side in landscape, an overlay sidebar in portrait), the sidebar
+  highlights the session you're viewing, the chat column stays a readable width, and a
+  new chat opens on an empty-state hero instead of a blank screen. Slide Over and
+  narrow windows fall back to the phone layout.
 - **Get pinged when it needs you.** Opt in to push notifications and the agent can ping
   your phone — even when the app is closed — when it needs an approval, asks you to
   clarify, finishes a longer turn, or hits an error. This rides a three-part

@@ -30,7 +30,9 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │                          //   owns the LIVE-CHAT SLOT (liveChat: ChatFeature.State? via .ifLet)
 │                          //   and a nav path of thin ChatScreen markers — slot teardown (idle
 │                          //   pop, detached turn end, replacement, archive, delete, logout) is
-│                          //   AppFeature policy, never a view event
+│                          //   AppFeature policy, never a view event; owns the layout regime
+│                          //   (.compact stack | .regular split view, mirrored from the size
+│                          //   class) and isChatDetached = compact && empty path (#80)
 ├─ ConnectionFeature       // auto-validating URL + capability-aware auth toggle (Password | Token)
 ├─ ConnectionFailedFeature // launch-only "can't reach the server" retry screen (ifLet slot):
 │                          //   raised when the launch probe fails for a reason that isn't a
@@ -54,7 +56,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │  │                       //   mirrors the capability flag
 │  └─ AddProfileFeature    // create-then-PUT-soul; inline name validation + server-400 banner
 ├─ ChatScreen              // navigation-path marker ONLY (session key, no behavior) — pushing/
-│                          //   popping it never creates or destroys chat state
+│                          //   popping it never creates or destroys chat state; COMPACT-ONLY
+│                          //   (in regular the slot is the detail column, the path stays empty)
 └─ ChatFeature             // SLOT-rooted (composed via .ifLet, NOT a path element), so a running
                            //   turn's socket + streaming effects survive nav pops; owns the WS
                            //   lifecycle + streaming reduction; also folds in approvals,
@@ -380,6 +383,20 @@ session-key markers — popping to the list destroys nothing while a turn runs (
 streams on detached, and re-opening re-attaches via `.reattached` without redialing a healthy
 socket); an idle chat is torn down only after the pop animation finishes (the destination's
 disappearance routes through `AppFeature.chatViewDisappeared`).
+
+The root is ONE `NavigationSplitView` for both widths (#80): its sidebar column hosts the
+`NavigationStack(path:)` (list root, chat destination), its detail column renders the slot's
+`ChatView` directly. `AppFeature.State.layout` (`.compact` | `.regular`) mirrors the horizontal
+size class — not the device idiom, so Slide Over gets the phone layout — and **"detached" means
+compact AND empty path** (`isChatDetached`): in compact the split collapses to the stack and an
+empty path means the chat was popped; in regular the slot IS the visible detail, the path stays
+empty (the marker is compact-only — one there would render the chat twice), and a chat is never
+detached, so the pop-teardown and detached-turn-end policies never fire. A layout change sets
+`layout` first, then reconciles the path (regular→compact pushes the slot's marker,
+compact→regular clears it) and keeps the socket. Regular never shows a blank detail: a fresh new
+chat is seated on home appearance / widening / archive-delete refill / profile switch, and "New
+session" over that empty seat only resets the composer. Full contract, the empty-chat hero, the
+readable-width cap, and the known limitations: `docs/features/ipad-layout.md`.
 
 The session-list **working glow** is driven event-driven by `ChatFeature.Delegate.runningChanged`
 (emitted on `message.start`/`complete`/`error` and from the `session.resume` `running` flag),

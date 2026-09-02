@@ -454,16 +454,20 @@ case .home:
 
 ### Task 11: [Final] Update documentation
 
-- [ ] create `docs/features/ipad-layout.md`: `isChatDetached`, compact-only marker,
+- [x] create `docs/features/ipad-layout.md`: `isChatDetached`, compact-only marker,
   transition rules, new-chat fill rules, `readableMaxWidth`, `showsEmptyHero` +
   `hasHydrated`, why `List(selection:)` was rejected, why the marker stays compact-only,
-  #90 pointer for multi-slot
-- [ ] update `docs/architecture.md` navigation section (#33 paragraph) with the split view
-  and "detached means compact and empty path"
-- [ ] update `CLAUDE.md` #33 bullets with the predicate wording, the hero rule, the cap
-  rule, and add `ipad-layout.md` to the features pointer
-- [ ] update `README.md` platform line (iPhone + iPad) if it names the platform
-- [ ] move this plan to `docs/plans/completed/`
+  #90 pointer for multi-slot — plus the Task 8/10 deviations (`.fillLiveChat` dials in
+  regular, the profile-switch reseat via `isReusableNewChat`), the known limitations
+  (portrait sidebar no auto-dismiss; landscape unverified), and the pinning tests
+- [x] update `docs/architecture.md` navigation section (#33 paragraph) with the split view
+  and "detached means compact and empty path" — new paragraph after #33 + feature-tree notes
+- [x] update `CLAUDE.md` #33 bullets with the predicate wording, the hero rule, the cap
+  rule, and add `ipad-layout.md` to the features pointer — also the #32 push-tap bullet and
+  the stale "~92/161" snapshot-drift figure (now 36/211, equal render size)
+- [x] update `README.md` platform line (iPhone + iPad) if it names the platform — hero line,
+  "What it does" intro, and a "Native on iPad" feature bullet; quick-start untouched
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
