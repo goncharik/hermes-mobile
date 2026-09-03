@@ -3290,6 +3290,7 @@ struct AppFeatureTests {
     await store.send(.connectionFailed(.delegate(.logoutConfirmed))) {
       $0.connectionFailed = nil
       $0.onboarding = .init() // fresh — there is no session left to repair
+      $0.liveChatGeneration = 1 // the logout invalidates any in-flight slot generation (#93)
       $0.pendingPushTap = nil
       $0.pendingPushTapServerURL = nil
       $0.pendingApprovalSessionIDs = []

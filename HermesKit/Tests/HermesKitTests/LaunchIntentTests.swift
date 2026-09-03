@@ -346,6 +346,67 @@ struct LaunchIntentTests {
     #expect(store.state.home == nil)
   }
 
+  /// The Codex-review scenario: logout clears the slot directly (bypassing
+  /// `.clearLiveChat`), then the user fires the dictation Quick Action from the onboarding
+  /// screen and logs back in — refilling the slot at a fresh generation. The pre-logout
+  /// destination's delayed `onDisappear` must be ignored — without a generation bump on the
+  /// direct clear, the stale marker would pass the guard and cancel the new chat's dictation.
+  @Test func logoutThenReloginIntentReplayIgnoresStaleDisappearance() async {
+    var oldChat = ChatFeature.State(connection: connection, resumeStoredID: "old")
+    oldChat.isSending = true
+    var path = StackState<ChatScreen.State>()
+    path.append(ChatScreen.State(sessionKey: "old", generation: 0))
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: path,
+        liveChat: oldChat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock() // unadvanced → the recording timer never ticks
+      $0.audioRecorder.levels = { AsyncStream { $0.finish() } }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    // Logout: the slot is cleared directly and the generation advances past the old marker.
+    await store.send(.home(.delegate(.disconnect))) {
+      $0.liveChat = nil
+      $0.liveChatGeneration = 1
+    }
+    #expect(store.state.home == nil)
+
+    // The dictation intent fires from the Home Screen while logged out → stashed.
+    await store.send(.launchIntentReceived(.startNewSessionWithDictation)) {
+      $0.pendingLaunchIntent = .startNewSessionWithDictation
+    }
+
+    // Quick re-login → the stash replays into a fresh dictation-armed chat (generation 1).
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    await store.receive(\.launchIntentReceived)
+    await store.receive(\.launchIntentConfirmed)
+    await store.receive(\.home.delegate.createSession)
+    await store.finish()
+    #expect(store.state.liveChat?.pendingInitialVoiceAction == .startDictation)
+    #expect(store.state.path.last?.generation == 1)
+
+    // Dictation is running when the pre-logout destination finally delivers its delayed
+    // disappearance — generation 0 is stale, so it must NOT cancel anything.
+    await store.send(.liveChat(.recordingStarted)) {
+      $0.liveChat?.recording = .recording
+      $0.liveChat?.waveformLevels = []
+      $0.liveChat?.recordingSeconds = 0
+    }
+    await store.send(.chatViewDisappeared(generation: 0))
+    #expect(store.state.liveChat?.recording == .recording)
+
+    // The current destination still owns normal voice cleanup (and cancels the timer).
+    await store.send(.chatViewDisappeared(generation: 1))
+    await store.receive(\.liveChat.viewDisappeared)
+    await store.finish()
+  }
+
   // MARK: ChatFeature voice-action consumption
 
   /// The armed dictation fires exactly once when the chat's slot reaches `.ready` —

@@ -389,6 +389,7 @@ public struct AppFeature {
       state.connectionFailed = nil
       state.path = .init()
       state.liveChat = nil
+      state.liveChatGeneration &+= 1
       state.home = nil
       state.onboarding = .init()
       state.pendingPushTap = nil
@@ -753,6 +754,7 @@ public struct AppFeature {
       let connection = state.home?.connection
       state.path = .init()
       state.liveChat = nil
+      state.liveChatGeneration &+= 1
       state.home = nil
       state.onboarding = .init()
       state.pendingPushTap = nil
@@ -785,6 +787,7 @@ public struct AppFeature {
       preferences.clearIdentityScopedPrefs()
       state.path = .init()
       state.liveChat = nil
+      state.liveChatGeneration &+= 1
       state.pendingPushTap = nil
       state.pendingPushTapServerURL = nil
       state.pendingLaunchIntent = nil
@@ -808,6 +811,7 @@ public struct AppFeature {
       state.reauth = nil
       state.path = .init()
       state.liveChat = nil
+      state.liveChatGeneration &+= 1
       state.home = nil
       state.onboarding = .init()
       state.pendingPushTap = nil
