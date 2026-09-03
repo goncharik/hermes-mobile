@@ -4,10 +4,11 @@ import Foundation
 /// Layout constants for the chat column (#80). Lives in HermesKit so the view and the
 /// measured layout tests read ONE value.
 public enum ChatLayout {
-  /// The readable-width cap on the chat column in wide (iPad regular) layouts: the
+  /// The readable-width cap on full-width content in wide (iPad regular) layouts: the
   /// transcript, footer, cards, panels, and composer are wrapped in one OUTER container
-  /// limited to this width and centered. Phone widths are below the cap, so compact
-  /// rendering is unchanged. The cap is never applied to table cells — those stay under
+  /// limited to this width and centered, and `ConnectionView`'s onboarding form uses the
+  /// same cap for the same reason. Phone widths are below the cap, so compact rendering is
+  /// unchanged. The cap is never applied to table cells — those stay under
   /// `CappedWidthLayout` (see `docs/features/markdown-rendering.md`).
   public static let readableMaxWidth: CGFloat = 760
 }

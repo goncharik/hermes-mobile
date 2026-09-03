@@ -73,6 +73,11 @@ struct ConnectionView: View {
         methodHint
       }
     }
+    // Same readable-width cap the chat column uses (#80): a full-width form on an iPad in
+    // landscape stretches every row edge to edge, leaving each label alone on one long line.
+    // Phone widths are below the cap, so compact rendering is unchanged.
+    .frame(maxWidth: ChatLayout.readableMaxWidth)
+    .frame(maxWidth: .infinity)
     // Auto-validate a pre-filled server URL (after logout / a failed launch auto-connect)
     // so the user doesn't have to focus the field to unlock sign-in (#38).
     .onAppear { store.send(.onAppear) }
