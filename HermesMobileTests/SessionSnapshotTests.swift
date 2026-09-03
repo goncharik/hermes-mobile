@@ -50,6 +50,23 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  /// A long title wraps to a second line before truncating. One line loses the part that
+  /// distinguishes one session from the next, and the iPad sidebar is narrower than a phone's
+  /// full width — rendered here at the sidebar's own width rather than the device's.
+  func testSessionRow_longTitleWrapsToTwoLines() {
+    let view = SessionRowView(
+      session: Session(
+        id: "20260610_120231_afcca6",
+        title: "Dnipro to Bratislava travel options with train changes and border crossings",
+        updatedAt: Date(timeIntervalSince1970: 1_749_556_800)
+      ),
+      now: now
+    )
+    .padding()
+    .frame(width: 320)
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   func testSessionRow_active() {
     // A session the agent is currently working — renders the brand-tinted glow.
     let view = SessionRowView(
