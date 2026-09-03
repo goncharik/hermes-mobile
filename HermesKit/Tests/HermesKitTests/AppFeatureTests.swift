@@ -20,6 +20,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -49,6 +50,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -68,6 +70,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -93,6 +96,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -109,8 +113,10 @@ struct AppFeatureTests {
       $0.keychain.loadSession = { @Sendable _ in nil }
       $0.preferences.loadServerURL = { nil }
     }
-    // No creds → no state change, no auto-connect effect.
-    await store.send(.task)
+    // No creds → the process observers start, but no auto-connect effect is launched.
+    await store.send(.task) {
+      $0.didStartExternalObservers = true
+    }
   }
 
   /// Exhaustive — this doubles as the no-replay guard for the manual-login path (#46):
@@ -261,7 +267,7 @@ struct AppFeatureTests {
     #expect(store.state.liveChat != nil)
 
     // The view finished disappearing → mic cleanup + the idle teardown sequence.
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.liveChatGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     await store.receive(\.liveChat.persistNow)
     await store.receive(\.liveChat.teardown)
@@ -290,7 +296,7 @@ struct AppFeatureTests {
     store.exhaustivity = .off
 
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.liveChatGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat != nil, "queued work keeps the slot alive across the pop")
   }
@@ -598,7 +604,7 @@ struct AppFeatureTests {
     // The view finishing its pop animation (what the destination actually sends) forwards
     // mic/voice cleanup only — a RUNNING detached slot is still not torn down (exhaustive:
     // any teardown follow-up would fail here).
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.liveChatGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat != nil)
 
@@ -663,7 +669,7 @@ struct AppFeatureTests {
     // The idle pop's teardown (deferred until the view disappeared) terminates that one
     // stream (a leak would fail the bounded wait).
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.liveChatGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     await store.receive(\.liveChat.persistNow)
     await store.receive(\.liveChat.teardown)
@@ -2126,7 +2132,7 @@ struct AppFeatureTests {
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
     await store.finish()
     #expect(push.currentSession == nil)
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.liveChatGeneration))
     // Drain the teardown follow-ups (viewDisappeared → persistNow → teardown → clear) so
     // the asserted state reflects the completed teardown.
     await store.skipReceivedActions()
@@ -2958,6 +2964,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -2982,6 +2989,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3007,6 +3015,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3056,6 +3065,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3082,6 +3092,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3106,6 +3117,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3134,6 +3146,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3277,6 +3290,7 @@ struct AppFeatureTests {
     await store.send(.connectionFailed(.delegate(.logoutConfirmed))) {
       $0.connectionFailed = nil
       $0.onboarding = .init() // fresh — there is no session left to repair
+      $0.liveChatGeneration = 1 // the logout invalidates any in-flight slot generation (#93)
       $0.pendingPushTap = nil
       $0.pendingPushTapServerURL = nil
       $0.pendingApprovalSessionIDs = []

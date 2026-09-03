@@ -555,7 +555,9 @@ public struct SessionListFeature {
       case openSession(Session)
       /// Open a NEW chat. `initialComposerText` (when non-nil) is pre-filled in the composer
       /// but NOT sent — used by the push "Ask agent to install" flow so the user reviews + sends.
-      case createSession(initialComposerText: String?)
+      /// `initialVoiceAction` (when non-nil) arms the new chat's initial voice action (#93),
+      /// consumed once its slot reaches `.ready`.
+      case createSession(initialComposerText: String?, initialVoiceAction: InitialVoiceAction? = nil)
       case disconnect
       /// The user confirmed archiving this session (the optimistic removal + PATCH follow).
       /// Emitted FIRST so the parent can tear the live-chat slot down when it matches — a

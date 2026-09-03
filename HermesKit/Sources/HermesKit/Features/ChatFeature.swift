@@ -131,6 +131,10 @@ public struct ChatFeature {
     public var waveformLevels: [Float]
     /// Seconds elapsed while recording, for the composer's mm:ss readout.
     public var recordingSeconds: Int
+    /// A launch-intent-armed initial voice action (#93), consumed once this chat's slot
+    /// reaches `.ready` so a recording never fires into a still-bootstrapping chat.
+    /// Transient and unpersisted (a snapshot repaint must never re-arm it).
+    public var pendingInitialVoiceAction: InitialVoiceAction?
     /// Seconds elapsed in the in-flight turn's live "Thinking" indicator. Ticked by a
     /// cancellable `continuousClock` loop while a turn runs; baked into the row's
     /// `elapsedSeconds` and reset to 0 on completion. The active row's view renders this.
@@ -471,6 +475,7 @@ public struct ChatFeature {
       self.recording = .idle
       self.waveformLevels = []
       self.recordingSeconds = 0
+      self.pendingInitialVoiceAction = nil
       self.thinkingSeconds = 0
       self.attachments = []
       self.attachmentsUnsupported = false
@@ -2057,6 +2062,21 @@ public struct ChatFeature {
       case .cancelRename:
         state.renameDraft = nil
         return .none
+      }
+    }
+    // A launch-intent-armed initial voice action (#93) fires once the slot reaches
+    // `.ready` — never into a still-bootstrapping chat. Consumed (set to nil) on first
+    // fire, so a later reconnect's `.ready` can't re-arm a recording.
+    .onChange(of: \.status) { _, newStatus in
+      Reduce { state, _ in
+        guard newStatus == .ready, let voice = state.pendingInitialVoiceAction else {
+          return .none
+        }
+        state.pendingInitialVoiceAction = nil
+        switch voice {
+        case .startDictation:
+          return .send(.voiceButtonTapped)
+        }
       }
     }
   }

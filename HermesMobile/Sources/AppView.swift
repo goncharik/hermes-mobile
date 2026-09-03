@@ -14,6 +14,11 @@ struct AppView: View {
       .sheet(item: $store.scope(state: \.reauth, action: \.reauth)) { reauthStore in
         ReauthView(store: reauthStore)
       }
+      // A launch intent cannot silently replace a running chat or discard its queued
+      // prompts. Use the app's bottom-sheet presenter for the explicit slot-conflict choice.
+      .bottomActionSheet(
+        $store.scope(state: \.launchIntentConflict, action: \.launchIntentConflict)
+      )
       // Observe lifecycle here (view stays thin) and dispatch into the reducer, which fans
       // foreground out to reconnect/re-hydrate + list refresh and background out to an
       // immediate snapshot/anchor flush. Behaviour is unit-tested via `scenePhaseChanged`.
@@ -34,7 +39,7 @@ struct AppView: View {
       if let homeStore = store.scope(state: \.home, action: \.home) {
         NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
           SessionListView(store: homeStore)
-        } destination: { _ in
+        } destination: { screenStore in
           // The path holds only thin session-key markers — the REAL chat state lives in the
           // app-level live-chat slot, so a running turn's socket survives pops. Defensive
           // empty view if the slot is missing (e.g. after logout mid-pop).
@@ -45,7 +50,9 @@ struct AppView: View {
               // have cleared it while the screen was still animating away) and owns the
               // idle-pop teardown policy — deferred here until the pop animation finished,
               // so the outgoing screen stays rendered and no action hits an absent child.
-              .onDisappear { store.send(.chatViewDisappeared) }
+              .onDisappear {
+                store.send(.chatViewDisappeared(generation: screenStore.generation))
+              }
           }
         }
       }

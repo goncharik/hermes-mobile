@@ -55,6 +55,21 @@ let project = Project(
         // Wake the app to process incoming remote notifications while backgrounded —
         // the gateway socket drops in the background, so pushes are how the agent reaches us.
         "UIBackgroundModes": ["remote-notification"],
+        // Home Screen icon long-press actions (#93). AppShortcutsProvider covers Siri,
+        // Shortcuts and Spotlight, but UIKit Quick Actions are a separate surface and must
+        // be declared here. PushAppDelegate maps these stable type strings into IntentBridge.
+        "UIApplicationShortcutItems": .array([
+          .dictionary([
+            "UIApplicationShortcutItemType": .string("me.honcharenko.HermesMobile.new-session"),
+            "UIApplicationShortcutItemTitle": .string("New Hermes chat"),
+            "UIApplicationShortcutItemIconSymbolName": .string("plus.message"),
+          ]),
+          .dictionary([
+            "UIApplicationShortcutItemType": .string("me.honcharenko.HermesMobile.dictate"),
+            "UIApplicationShortcutItemTitle": .string("Dictate to Hermes"),
+            "UIApplicationShortcutItemIconSymbolName": .string("mic.badge.plus"),
+          ]),
+        ]),
       ]),
       sources: ["HermesMobile/Sources/**"],
       resources: ["HermesMobile/Resources/**"],
