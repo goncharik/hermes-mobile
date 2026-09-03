@@ -5431,4 +5431,92 @@ struct AppFeatureTests {
     #expect(store.state.liveChat == chat)
     #expect(store.state.path.isEmpty)
   }
+
+  /// A reseat that falls due while the window is narrow must not be LOST: the mismatch is
+  /// deferred, not dropped. Switch profiles mid-recording in regular (deferred), narrow (the
+  /// recording seat keeps its marker), let the transcription land in compact — where the
+  /// regular-only rule declines — then widen: the reseat fires with the dictated draft.
+  @Test func profileSwitchDeferredIntoCompactIsReseatedOnWidening() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.recording = .recording
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.uuid = .incrementing
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work")))
+    #expect(store.state.liveChat?.profileName == nil, "the reseat waits for the recording")
+
+    await store.send(.layoutChanged(.compact))
+    #expect(store.state.path.count == 1, "a recording seat is not pristine — it keeps a marker")
+
+    await store.send(.liveChat(.transcriptionSucceeded("dictated words")))
+    #expect(store.state.liveChat?.profileName == nil, "compact has no seat rule")
+    #expect(store.state.liveChat?.composerText == "dictated words")
+
+    await store.send(.layoutChanged(.regular))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.profileName == "work")
+    #expect(store.state.liveChat?.composerText == "dictated words", "the dictation rode across")
+    #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The same rule without a resize in the middle: the profiles capability flipping off while
+  /// the chat is pushed in compact leaves the seat scoped to a profile the list no longer
+  /// has — widening re-evaluates it instead of trusting the stale scope.
+  @Test func profileVerdictWhileCompactIsReseatedOnWidening() async {
+    let seat = ChatFeature.State(connection: connection, profileName: "work", composerText: "notes")
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: "work", profilesSupported: true
+        ),
+        path: StackState([ChatScreen.State(sessionKey: nil)]),
+        liveChat: seat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.profilesResponse(.failure(.notFound))))
+    #expect(store.state.liveChat?.profileName == "work", "compact declines the reseat")
+
+    await store.send(.layoutChanged(.regular))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.profileName == nil)
+    #expect(store.state.liveChat?.composerText == "notes")
+    #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
+  }
 }

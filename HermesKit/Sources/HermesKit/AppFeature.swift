@@ -25,12 +25,10 @@ public struct AppFeature {
     /// The shell decides which one a window is (see `Layout`).
     public var layout: Layout
     /// Bumped on every regular-width slot fill. The app shell keys the detail column's
-    /// `ChatView` on it (`.id`), so a slot replacement always gets a FRESH view: a fresh
-    /// transcript coordinator (scroll offset, pin state) and a fresh composer. Without it the
-    /// detail view survives the swap and the incoming session inherits the outgoing one's
-    /// scroll position — transcript row ids carry no session component, so two ordinary
-    /// transcripts diff as an append, not a reset — and its first-responder state.
-    /// Compact never bumps: there a fill pushes a new marker, whose destination is a new view.
+    /// `ChatView` on it (`.id`), so a slot replacement always gets a FRESH view — otherwise
+    /// the incoming session inherits the outgoing one's transcript scroll offset and composer
+    /// focus (`docs/features/ipad-layout.md`). Compact never bumps: there a fill pushes a new
+    /// marker, whose destination is a new view.
     public internal(set) var slotGeneration: Int = 0
     /// True during the launch auto-connect probe — `AppView` shows a brief placeholder
     /// instead of flashing the onboarding screen.
@@ -134,20 +132,25 @@ public struct AppFeature {
     }
 
     /// What the regular-width seat reseat (`reduceProfileReseat`) is watching: the list's
-    /// scoped profile, plus whether the seat's composer input is still resolving. The second
-    /// member DEFERS rather than skips a reseat that would land mid-paste or mid-recording —
-    /// the teardown would drop the batch and cut the mic — because the signal changes again
-    /// the moment that input lands, and the reseat then carries the resolved draft across.
+    /// scoped profile, whether the seat's composer input is still resolving, and the layout.
+    /// The second member DEFERS rather than skips a reseat that would land mid-paste or
+    /// mid-recording — the teardown would drop the batch and cut the mic — because the signal
+    /// changes again the moment that input lands, and the reseat then carries the resolved
+    /// draft across. The third defers the same way across a resize: the reseat is regular-only,
+    /// so a mismatch that falls due in compact (a narrowed window, a server-side rename) would
+    /// otherwise be dropped for good — widening re-fires it instead.
     var profileReseatSignal: ProfileReseatSignal {
       ProfileReseatSignal(
         profileName: home?.scopedProfileName,
-        composerInputInFlight: liveChat?.hasInFlightComposerInput ?? false
+        composerInputInFlight: liveChat?.hasInFlightComposerInput ?? false,
+        layout: layout
       )
     }
 
     struct ProfileReseatSignal: Equatable, Sendable {
       var profileName: String?
       var composerInputInFlight: Bool
+      var layout: Layout
     }
 
     /// Which root branch the app shell renders. The precedence is **logic, not layout**, so it
@@ -181,13 +184,10 @@ public struct AppFeature {
     case background
   }
 
-  /// Horizontal layout regime, decided by the thin app shell and reported via
-  /// `layoutChanged`. `.compact` = the navigation-stack layout; `.regular` = the split view
-  /// with the chat as the detail column. The shell reads a regular horizontal size class on
-  /// the **pad idiom**: the same iPad flips between the two as its window narrows and widens
-  /// (Slide Over and narrow Stage Manager windows get the stack), while a Plus/Max iPhone —
-  /// which also reports a regular width in landscape — stays on the stack in both
-  /// orientations. See `docs/features/ipad-layout.md`.
+  /// Horizontal layout regime, reported via `layoutChanged`. `.compact` = the
+  /// navigation-stack layout; `.regular` = the split view with the chat as the detail column.
+  /// WHICH one a given window is, is a shell fact the reducer never re-derives — see
+  /// `AppView.appLayout(for:)` and `docs/features/ipad-layout.md`.
   public enum Layout: Equatable, Sendable {
     case compact
     case regular
@@ -778,9 +778,10 @@ public struct AppFeature {
           : .none
         // A DETACHED slot (`isChatDetached`: compact with no marker in the path — the user
         // popped to the list; never the case in regular, where the slot is the visible
-        // detail column) only outlives the pop while its turn runs. The turn ending — `message.complete`,
-        // `.error`, or a foreground hydrate confirming `running == false` — means there's
-        // nothing left to keep alive: flush the snapshot, then tear the slot down.
+        // detail column) only outlives the pop while its turn runs. The turn ending —
+        // `message.complete`, `.error`, or a foreground hydrate confirming `running == false`
+        // — means there's nothing left to keep alive: flush the snapshot, then tear the slot
+        // down.
         // UNLESS the queue still owes work (#66): the chat's own reducer drained (or
         // parked) in the same reduction that emitted this delegate, so by now
         // `hasQueuedWork` is true exactly when a next turn is mid-drain or entries are

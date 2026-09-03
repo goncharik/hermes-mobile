@@ -731,9 +731,10 @@ public struct ChatFeature {
     /// cancel-and-redialed — the dial gap would drop streamed events). Shares its handler
     /// with `.reattached`.
     case foreground
-    /// The slot's marker was re-pushed over LIVE, surviving chat state (`AppFeature`'s
-    /// re-open policy): always re-hydrate (server authority; `applyActivate`'s #26 path
-    /// preserves a still-running turn's live thinking/tool rows), but do NOT
+    /// The slot's own session was re-opened over LIVE, surviving chat state (`AppFeature`'s
+    /// re-open policy — a re-pushed marker in compact, a plain sidebar tap on the detail
+    /// column's session in regular): always re-hydrate (server authority; `applyActivate`'s
+    /// #26 path preserves a still-running turn's live thinking/tool rows), but do NOT
     /// cancel-and-redial a healthy socket — the dial gap would drop streamed events.
     /// Only a dead/dialing socket reconnects (then `.ready` re-hydrates). Shares its
     /// handler with `.foreground`.
@@ -3500,9 +3501,12 @@ public struct ChatFeature {
   /// the single row-tail cap (`maxRowsPerSession`), so we pass the full transcript. Attachment
   /// image bytes never reach the cache: `ChatRow`'s `Codable` omits `attachmentImages` (so the
   /// store can't persist them even if we passed them through) — they can't be re-hydrated from
-  /// the server and base64 blobs would bloat the cache.
+  /// the server and base64 blobs would bloat the cache. An `isUnpromptedNewChat` is skipped
+  /// too: its key comes from a `session.create` handshake the server has no DB row for until
+  /// the first prompt, so the row would be an empty cache entry for a session the list can
+  /// never show and nothing prunes.
   private func persistSnapshotNow(_ state: State) -> Effect<Action> {
-    guard let sessionID = state.sessionKey else { return .none }
+    guard let sessionID = state.sessionKey, !state.isUnpromptedNewChat else { return .none }
     let snapshot = ChatSnapshot(
       model: state.model,
       reasoningEffort: state.reasoningEffort,
