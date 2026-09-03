@@ -15,11 +15,12 @@ needs **both** a regular `horizontalSizeClass` **and** `UIUserInterfaceIdiom.pad
 Manager window get the stack and the same iPad flips between regimes as its window narrows and
 widens — but a Plus/Max iPhone also reports a regular width in landscape, and rotating a phone
 must not swap it into a split view. So every iPhone is `.compact` in both orientations.
-`nil` (unresolved) maps to `.compact` so an early read never flips anything. The size class is read at the `AppView`
-ROOT and the `.onChange(of:initial: true)` is attached to `content` (every root branch), not
-to the split view: inside a sidebar column the environment reports `.compact` even on a 13"
-iPad, and the home-landing fills + the cold-launch push replay read `state.layout` the moment
-`home` appears, so the layout must be known before the `.home` branch exists.
+`nil` (unresolved) maps to `.compact` so an early read never flips anything. The size class is
+read at the `AppView` ROOT and the `.onChange(of:initial: true)` is attached to `content`
+(every root branch), not to the split view: inside a sidebar column the environment reports
+`.compact` even on a 13" iPad, and the home-landing fills + the cold-launch push replay read
+`state.layout` the moment `home` appears, so the layout must be known before the `.home`
+branch exists.
 
 ## `isChatDetached` — the one predicate
 
@@ -43,8 +44,8 @@ size-class change, and when `slotGeneration` re-creates the detail view over an 
 chat. Forwarding the view-session cleanup (`.viewDisappeared` → `releaseVoiceResources`) in
 either case would cancel a live recording under a still-visible composer; a replaced chat had
 its `.teardown` instead. `runningChanged(false)` only updates the glow; the slot survives every
-layout flip with its socket (one dial, zero terminations across compact→regular→compact→regular,
-mid-turn).
+layout flip with its socket (one dial, zero terminations across
+compact→regular→compact→regular, mid-turn).
 
 ## The `ChatScreen` marker is compact-only
 
@@ -76,11 +77,12 @@ alone stops telling a fresh seat from a resumed session seconds after launch.
 
 **Narrowing drops a pristine seat.** Regular always keeps a seat in the detail column, and
 pushing an unused one onto the stack would land the user on an empty chat with a Back button
-instead of the list — then popping it would tear it down anyway, so a rotate cycle would cost a
-`session.create` round-trip each way. `ChatFeature.State.isPristineNewChat`
-(`isDiscardableNewChat` with an empty composer and no staged attachments) is torn down instead,
-with no marker; widening seats a fresh one. Anything the user has touched — a draft, staged
-attachments, or input still resolving — keeps its marker.
+instead of the list — then popping it would tear it down anyway.
+`ChatFeature.State.isPristineNewChat` (`isDiscardableNewChat` with an empty composer and no
+staged attachments) is torn down instead, with no marker; widening seats a fresh one. The
+price is one `session.create` per widening (the accepted cost below) — paid to keep the
+narrow window on the list, where the user expects to be. Anything the user has touched — a
+draft, staged attachments, or input still resolving — keeps its marker.
 
 ## New-chat fill rules for regular width
 
@@ -100,19 +102,23 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   RETURNING `.send(.fillLiveChat(detailRefill(state)))` — the action, not a direct fill, so the
   seat is dialled.
 - **Profile-switch reseat** — a reducer-level `.onChange(of: \.profileReseatSignal)` (the
-  list's `scopedProfileName` plus whether the seat's composer input is in flight), evaluated
-  after the list reducer so it reads the new selection. In regular only, an
+  list's `scopedProfileName`, whether the seat's composer input is in flight, and `layout`),
+  evaluated after the list reducer so it reads the new selection. In regular only, an
   `isDiscardableNewChat` slot whose `profileName` no longer matches the list is reseated
   through the standard teardown chain (its socket may already be dialled) so its first prompt
   lands in the right profile's `state.db`; its draft and staged attachments ride across into the
   replacement — unlike "New session", a profile switch is not a request to clear them. A chat
   with anything in it is left alone — the profile is the LIST's scope, not the open chat's.
-  A switch that lands mid-paste or mid-recording is DEFERRED, not skipped: the teardown would
-  drop the batch and cut the mic, and the signal's second member re-fires the reseat the moment
-  that input lands, carrying the resolved draft across then.
+  Every mismatch is DEFERRED, never skipped — the last two signal members are what make that
+  true. A switch landing mid-paste or mid-recording would have its batch dropped and its mic
+  cut by the teardown, so it waits for the input to land and carries the resolved draft across
+  then; a mismatch that falls due while the window is narrow (the deferred case above resolving
+  in compact, or a rename/capability verdict arriving there) is re-evaluated on widening,
+  because the rule is regular-only and nothing else would ever look again.
   Observing the value (not `.selectProfile`) covers every path that changes it: the profiles-404
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
-  off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled matches → no-op.
+  off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled
+  matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
   `isDiscardableNewChat` AND the same `scopedProfileName` AND `errorBanner == nil`. Tearing
   such a seat down to fill an identical fresh one would redial the socket for nothing, so it
@@ -150,7 +156,9 @@ and after a profile switch. Accepted rather than deferred: a never-prompted crea
 live handle with NO database row, so an abandoned seat never reaches the session list, while
 deferring the dial until the first prompt would entangle the #17 self-heal, the model chip, and
 slash commands, all of which assume a connected chat. Pinned by
-`regularSeatRefillCreatesServerSessionWithoutUserAction`.
+`regularSeatRefillCreatesServerSessionWithoutUserAction`. The cache does NOT accumulate the
+matching debris: `persistSnapshotNow` skips an `isUnpromptedNewChat`, so a discarded seat
+leaves no empty snapshot row for a session that has no DB row and nothing to prune it.
 
 ## One `NavigationSplitView` for both widths
 
@@ -246,6 +254,11 @@ the compact layout. Deployment target stays iOS 18.
   change both ways — is covered by `layoutChangeMidTurnKeepsSocketAndSlotBothWays`.
 - The profile-switch reseat was not exercised live on the iPad (demo mode exposes only the
   default profile); it is covered by reducer tests.
+- **A deferred reseat that resolves through a FAILED transcription loses its banner** —
+  `voiceInputFailed` clears `recording`, so the reseat fires in the same breath and the
+  replacement seat carries the draft but not the "Couldn't transcribe the audio." message.
+  Accepted: `errorBanner` records no origin, so carrying it across would equally resurrect a
+  stale `session.create` failure over a healthy replacement.
 - Out of scope by decision: keyboard shortcuts, multi-window / Stage Manager showing two chats,
   a socket per running session (#90).
 
@@ -254,8 +267,10 @@ the compact layout. Deployment target stays iOS 18.
 - `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift` — "Layout regime + the detached
   predicate" (`defaultLayoutIsCompactAndDetachedMeansEmptyPath`,
   `highlightedSessionIsNilInCompactEvenWithTheChatOnScreen`,
-  `layoutChangedToRegularClearsPathAndKeepsSlot`, `layoutChangedToCompactWithLiveSlotPushesMarker`,
-  `layoutChangedToCompactDropsPristineSeat`, `layoutChangedToCompactWithDraftedSeatPushesNilKeyMarker`,
+  `layoutChangedToRegularClearsPathAndKeepsSlot`,
+  `layoutChangedToCompactWithLiveSlotPushesMarker`,
+  `layoutChangedToCompactDropsPristineSeat`,
+  `layoutChangedToCompactWithDraftedSeatPushesNilKeyMarker`,
   `layoutChangedToCompactWithStagedAttachmentsPushesMarker`, `layoutChangedToSameLayoutIsNoOp`,
   regular `chatViewDisappeared` / `runningChanged` / `currentViewingSessionID`); "New-chat
   filling rules for regular width" (`homeAppearingInRegularFillsNewChat`,
@@ -263,23 +278,28 @@ the compact layout. Deployment target stays iOS 18.
   `homeAppearingInRegularWithStashedTapOpensThatSessionInstead`,
   `homeAppearingInRegularWithForeignStashedTapStillSeatsTheDetail`,
   `layoutChangedToRegularWithNilSlotFillsNewChat`, `layoutChangedToCompactWithNilSlotDoesNotFill`,
-  `newSessionOverUnpromptedChatClearsComposerOnly`, `newSessionOverUnpromptedChatUnderStaleProfileRefills`,
+  `newSessionOverUnpromptedChatClearsComposerOnly`,
+  `newSessionOverUnpromptedChatUnderStaleProfileRefills`,
   `newSessionOverUnpromptedChatWithFresherCookiesStillOnlyResetsComposer`,
   `newSessionOverAConnectedSeatStillOnlyResetsComposer`,
   `newSessionOverASeatWithAPendingPasteRefillsInstead`,
   `newSessionOverARecordingSeatRefillsInstead`,
   `newSessionOverNonEmptyChatInRegularTearsDownAndRefills`,
   `openingSessionInRegularOverUnpromptedChatReplacesItWithoutMarker`,
-  `slotReplacementInRegularDialsReplacementExactlyOnce`, `archivingOnScreenSessionInRegularRefillsNewChat`,
+  `slotReplacementInRegularDialsReplacementExactlyOnce`,
+  `archivingOnScreenSessionInRegularRefillsNewChat`,
   `regularSeatRefillCreatesServerSessionWithoutUserAction`
   + the compact/delete counterparts); "Push-tap routing in regular width" (on-screen tap
   hydrates in place with an empty path; different session replaces with an empty path;
   cold-launch replay in regular); `differentUserReauthInRegularSeatsNewChatForNewUser` (the
   seat arrives through `.fillLiveChat` and is dialled exactly once); "Acceptance edge cases"
-  (`layoutChangeMidTurnKeepsSocketAndSlotBothWays`, `chatViewDisappearedDuringColumnMoveKeepsIdleSlotBothWays`,
-  `columnMoveWhileRecordingKeepsTheRecording`, `identityTeardownsReleaseARecordingSlotsMicrophone`,
+  (`layoutChangeMidTurnKeepsSocketAndSlotBothWays`,
+  `chatViewDisappearedDuringColumnMoveKeepsIdleSlotBothWays`,
+  `columnMoveWhileRecordingKeepsTheRecording`,
+  `identityTeardownsReleaseARecordingSlotsMicrophone`,
   `sameUserReauthRefreshesTheListsConnectionToo`,
-  `logoutInRegularLandsOnOnboardingWithNoSlot`, `profileSwitchInRegularReseatsEmptyChatUnderNewProfile`,
+  `logoutInRegularLandsOnOnboardingWithNoSlot`,
+  `profileSwitchInRegularReseatsEmptyChatUnderNewProfile`,
   `profileSwitchInRegularReseatsTheSeatThatAlreadyCreatedItsSession`,
   `profileSwitchInRegularCarriesTheSeatsDraftAcrossTheReseat`,
   `profileSwitchInRegularLeavesNonEmptyChatAlone`, `profileSwitchInCompactLeavesEmptyChatAlone`);
@@ -287,14 +307,19 @@ the compact layout. Deployment target stays iOS 18.
   `layoutChangedToCompactWithAPendingPasteSeatPushesMarker`,
   `newSessionOverASeatWhoseSessionCreateFailedRefillsInstead`,
   `profileSwitchDuringAPendingPasteDefersTheReseatUntilTheBatchLands`,
-  `profileSwitchDuringARecordingLeavesTheSeatAlone`).
+  `profileSwitchDuringARecordingLeavesTheSeatAlone`); the deferral-across-a-resize pair
+  (`profileSwitchDeferredIntoCompactIsReseatedOnWidening`,
+  `profileVerdictWhileCompactIsReseatedOnWidening`).
   Every pre-existing compact test is untouched — that is the byte-identical guard.
 - `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` — `isUnpromptedNewChat*` (7,
   including `…SurvivesTheSessionCreateHandshake` and `…FalseForAnUnpersistedBranch`),
   `isPristineNewChat*` (5), `hasInFlightComposerInputCoversPendingPasteAndVoice`,
   `isDiscardableNewChatCoversUnpromptedSeatsWithNothingInFlight` and the
   `showsEmptyHero*` truth table + `hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt`,
-  `hydrateOfRunningTurnWithEmptyHistoryHidesHero`, `createHandshakeMarksHydratedSoStoredIDKeepsHero`.
+  `hydrateOfRunningTurnWithEmptyHistoryHidesHero`,
+  `createHandshakeMarksHydratedSoStoredIDKeepsHero`.
+- `HermesKit/Tests/HermesKitTests/HydrateTests.swift` — `persistNowSkipsAnUnpromptedNewChat`
+  (no empty snapshot row for a discarded seat; the same flush writes once a row exists).
 - `HermesMobileTests/ChatColumnLayoutTests.swift` — measured `UIWindow`-hosted: 1024pt window →
   760pt column at x=132 with the composer centered; the cap boundary from both sides (760 fills
   edge to edge, 800 → 760 at x=20); a 390pt window is never narrowed; a five-column table inside

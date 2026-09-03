@@ -7,12 +7,12 @@
 **Drive your self-hosted Hermes agent from your iPhone or iPad.**
 
 Chat with sessions, watch the agent work in real time, and approve or clarify its
-actions — all from your pocket, while the real runtime stays on your Mac or server.
+actions — all on the go, while the real runtime stays on your Mac or server.
 
 <img src="app-store-preview.png" alt="Hermes Mobile screenshots" width="100%" />
 <br/>
 
-Native SwiftUI · [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) · no agent logic on the phone
+Native SwiftUI · [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) · no agent logic on the device
 
 </div>
 
@@ -61,7 +61,7 @@ away from your desk and still keep your agent moving.
   catalog — built-ins like `/compress`, `/undo`, `/status`, plus your installed
   skills — with as-you-type filtering and tap-to-insert. Commands execute through
   the agent's real slash pipeline (skill commands stream like a normal turn), so
-  mid-conversation session control works from your pocket. On agents without
+  mid-conversation session control works on the go. On agents without
   command support the composer simply behaves as before.
 - **See how full the context is.** A color-coded pill in the composer shows
   used/max tokens and percent (mirroring the Hermes TUI thresholds); tap it for a
@@ -91,7 +91,7 @@ away from your desk and still keep your agent moving.
   new chat opens on an empty-state hero instead of a blank screen. Slide Over and
   narrow windows fall back to the phone layout.
 - **Get pinged when it needs you.** Opt in to push notifications and the agent can ping
-  your phone — even when the app is closed — when it needs an approval, asks you to
+  your device — even when the app is closed — when it needs an approval, asks you to
   clarify, finishes a longer turn, or hits an error. This rides a three-part
   setup: a plugin on your own agent triggers the notification, a tiny stateless gateway
   the app's publisher operates forwards it to Apple Push (it's the only place the APNs

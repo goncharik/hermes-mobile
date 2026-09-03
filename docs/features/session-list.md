@@ -107,7 +107,9 @@ list's flag on present, and a verdict inside the sheet mirrors back via
 the non-authoritative cache. When the deleted id matches the live-chat slot, tear it down too
 with **`teardownSlot(flushSnapshot: false)`** — skipping the `persistNow` flush is the point:
 the flush would re-save the very snapshot the wipe deletes. Every other teardown keeps the
-flush. Same deliberate asymmetry as archive: if the DELETE later fails, the list restores the
+flush. Archive and delete both pass `thenFill: detailRefill(state)`, which reseats the
+regular-width detail column and is `nil` in compact (`docs/features/ipad-layout.md`).
+Same deliberate asymmetry as archive: if the DELETE later fails, the list restores the
 row but the slot and cache stay cleared — re-opening simply resumes the session fresh.
 The **pending-approval badge entry is the exception**: it's dropped on
 `sessionDeleteSucceeded` (server-confirmed), NOT at initiation — a failed delete leaves the

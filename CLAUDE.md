@@ -77,7 +77,9 @@ bullets below are the compressed rules.
   `ChatScreen` marker is COMPACT-ONLY: in regular the slot IS the `NavigationSplitView`
   detail, the path stays empty, and the chat is never detached (no pop/turn-end teardown).
   Regular never shows a blank detail — every seat comes from `detailRefill`; narrowing drops
-  an untouched seat instead of pushing it. A regular fill dials its chat from the reducer AND
+  an `isPristineNewChat` seat instead of pushing it, and the seat follows the list's profile
+  (`profileReseatSignal` — deferred, never dropped, while composer input is in flight or the
+  window is narrow). A regular fill dials its chat from the reducer AND
   bumps `slotGeneration`, which the detail view is `.id`-keyed on so nothing leaks between
   sessions. Sidebar highlight is a plain optional (`highlightedSessionID`), never
   `List(selection:)`. Details: `docs/features/ipad-layout.md`.
@@ -200,7 +202,8 @@ bullets below are the compressed rules.
   `PATCH`/`GET`) — silent, mirrored both ways with the archived sheet; the swipe-default
   pref (`SessionSwipeAction`, logout-cleared) clamps to Archive via
   `effectiveSwipeAction` when unsupported. Slot delete tears down with
-  `teardownSlot(flushSnapshot: false)` + snapshot wipe (flush would re-save it); the
+  `teardownSlot(flushSnapshot: false)` + snapshot wipe (flush would re-save it); archive
+  and delete both refill the regular-width detail (`thenFill: detailRefill`); the
   approval-badge entry clears only on the CONFIRMED delete (`sessionDeleteSucceeded`).
   Archived-sheet delete is immediate — no confirmation (deliberate) — and its DELETE
   round-trip runs in the parent list (a presented sheet's effects die on dismissal).
@@ -271,6 +274,9 @@ bullets below are the compressed rules.
 - **A snapshot of a SCROLLABLE view must pin an explicit size along its scroll axis** —
   `componentImage()` renders at `.sizeThatFits`, and a `ScrollView` offered nothing
   records a blank sliver. Pin both width and height for a vertical one.
+- **A `List` cannot be component-rendered at all** — `componentImage()` paints its section
+  headers and FAB but NO rows, and ignores the dark trait; list snapshots use
+  `deviceImage()` (both helpers take an `appearance:`).
 - **Layout facts a snapshot cannot prove go in a measured `UIWindow`-hosted XCTest**
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin

@@ -18,7 +18,7 @@ import SwiftUI
 /// the slot the transcript would — the composer stays pinned to the bottom and the
 /// approval-card `layoutPriority` rule in `ChatView` keeps working unchanged.
 struct ChatEmptyHeroView: View {
-  /// The one tagline. Kept as a single constant so copy lives in ONE place (tests read it too).
+  /// The one tagline. Kept as a constant so changing the copy is a one-line edit + re-record.
   static let tagline = "Start a conversation with your agent."
 
   /// The wordmark, spelled once. Rendered with tracking, so the spaces are real characters

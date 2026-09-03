@@ -388,16 +388,16 @@ The root is ONE `NavigationSplitView` for both widths (#80): its sidebar column 
 `NavigationStack(path:)` (list root, chat destination), its detail column renders the slot's
 `ChatView` directly. `AppFeature.State.layout` (`.compact` | `.regular`) is `.regular` only for a
 regular size class on the pad idiom — Slide Over and every iPhone get the phone layout — and
-**"detached" means compact AND empty path** (`isChatDetached`): in compact the split collapses to the stack and an
-empty path means the chat was popped; in regular the slot IS the visible detail, the path stays
-empty (the marker is compact-only — one there would render the chat twice), and a chat is never
-detached, so the pop-teardown and detached-turn-end policies never fire. A layout change sets
-`layout` first, then reconciles the path (regular→compact pushes the slot's marker, or drops an
-untouched seat; compact→regular clears it) and keeps the socket. Regular never shows a blank
-detail: a fresh new chat is seated on home appearance / widening / archive-delete refill /
-profile switch / different-user re-auth, and "New session" over that empty seat only resets the
-composer. Full contract, the empty-chat hero, the
-readable-width cap, and the known limitations: `docs/features/ipad-layout.md`.
+**"detached" means compact AND empty path** (`isChatDetached`): in compact the split collapses
+to the stack and an empty path means the chat was popped; in regular the slot IS the visible
+detail, the path stays empty (the marker is compact-only — one there would render the chat
+twice), and a chat is never detached, so the pop-teardown and detached-turn-end policies never
+fire. A layout change sets `layout` first, then reconciles the path (regular→compact pushes the
+slot's marker, or drops a pristine seat; compact→regular clears it) and keeps the socket.
+Regular never shows a blank detail: a fresh new chat is seated on home appearance / widening /
+archive-delete refill / profile switch / different-user re-auth, and "New session" over that
+empty seat only resets the composer. Full contract, the empty-chat hero, the readable-width
+cap, and the known limitations: `docs/features/ipad-layout.md`.
 
 The session-list **working glow** is driven event-driven by `ChatFeature.Delegate.runningChanged`
 (emitted on `message.start`/`complete`/`error` and from the `session.resume` `running` flag),

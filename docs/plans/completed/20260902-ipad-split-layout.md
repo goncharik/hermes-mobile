@@ -132,13 +132,15 @@ case layoutChanged(Layout)
   → fill a fresh new chat (same construction as `createSession(nil)`).
 - New-chat fill helper `newChat(for home:) -> ChatFeature.State` shared by
   `createSession`, `layoutChanged`, `home` appearance in regular, and the post-teardown
-  refill for archive/delete in regular. `createSession(nil)` is a no-op (clear composer
-  only) when the slot is an EMPTY new chat: `storedSessionID == nil && transcript.isEmpty
-  && !isSending && !hasQueuedWork` — exposed as `ChatFeature.State.isEmptyNewChat`.
+  refill for archive/delete in regular. `createSession(_:)` over a reusable new chat →
+  reset the composer (text → the `initialComposerText` seed or empty, attachments cleared),
+  no teardown and no redial — the seat predicate shipped as
+  `ChatFeature.State.isDiscardableNewChat`.
 - Push-tap routing: replace marker checks with the predicate; "different session" sets
   the path to one marker in compact, leaves it empty in regular (this is `fillLiveChat`).
-- Logout / profile switch / reauth-different-user already nil the slot and empty the
-  path; in regular the `home` re-appearance refills a new chat.
+- Logout and reauth-different-user already nil the slot and empty the path; in regular the
+  `home` re-appearance refills a new chat. A profile switch does NOT — Task 10 found the
+  seat kept the old profile and added the reseat (see its note below).
 
 ### `ChatFeature` additions
 
