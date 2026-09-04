@@ -45,7 +45,8 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
 ```
 
 - **Simulator** (`scripts/run-sim.sh`) needs no signing. Override the device with
-  `SIM_NAME="iPhone 16" make run` or `scripts/run-sim.sh "iPhone 16"`.
+  `SIM_NAME="iPhone 16" make run` or `scripts/run-sim.sh "iPhone 16"`. iPad is a shipped
+  destination too — `SIM_NAME="iPad Pro 13-inch (M4)" make run` for the split layout.
 - **Device** (`scripts/run-device.sh`) needs automatic signing —
   `DEVELOPMENT_TEAM=<your 10-char team id> make run-device`. The team is baked in at
   generate time. See **Signing & contributor setup** below for running on your own

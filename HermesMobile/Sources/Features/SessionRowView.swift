@@ -46,7 +46,17 @@ struct SessionRowView: View {
         Text(headline)
           .font(.headline)
           .fontWeight(isUnread ? .semibold : .regular)
-          .lineLimit(promotesSnippet ? 2 : 1)
+          // Two lines for every headline, titled or promoted: one line truncates most real
+          // titles, and the iPad sidebar is narrower than a phone's full width, so a single
+          // line loses the part that distinguishes one session from the next.
+          //
+          // `fixedSize(vertical:)` is LOAD-BEARING, not decoration: in an `HStack` every child
+          // is offered the stack's height, which is the tallest child's IDEAL height — one line
+          // for a `Text`. Without it the headline is handed a one-line height, so it truncates
+          // at the first line and `lineLimit(2)` never takes effect (the promoted-preview branch
+          // carried a dead `lineLimit(2)` for exactly this reason until #80).
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
         if isPinned {
           Image(systemName: "pin.fill")
             .font(.caption2)

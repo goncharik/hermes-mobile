@@ -4,6 +4,9 @@ import ComposableArchitecture
 /// `AppFeature.State.liveChat` (the app-owned "live chat slot"), so a running turn's
 /// socket and streaming effects survive navigation pops — the path holds only this
 /// session-key marker and carries no behavior of its own.
+///
+/// COMPACT-ONLY (#80): in regular width the slot IS the split view's detail column and the
+/// path stays empty — see `docs/features/ipad-layout.md`.
 @Reducer
 public struct ChatScreen {
   @ObservableState

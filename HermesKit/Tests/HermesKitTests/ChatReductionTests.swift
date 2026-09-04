@@ -679,6 +679,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // New sessions create with no title so the server auto-names from the first message.
     #expect(sent.value?["method"]?.stringValue == "session.create")
@@ -722,6 +723,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("work")]))
@@ -764,6 +766,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     #expect(sent.value?["params"] == .object([:]))
     await store.send(.teardown)
@@ -805,6 +808,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
     }
@@ -853,6 +857,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(
         input: 120_000, output: 30_000, total: 150_000,
@@ -904,6 +909,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // The synchronous delegate send lands before the async usage fetch resolves.
     await store.receive(\.delegate.runningChanged)
@@ -955,6 +961,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 10, contextMax: 200_000, contextPercent: 0)
       // Rows carry deterministic, content-derived ids (matching `reconstructTranscript`).
@@ -1007,6 +1014,7 @@ struct ChatReductionTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 5, contextMax: 200_000, contextPercent: 0)
       // running == true → working indicator on.
@@ -2332,6 +2340,287 @@ struct ChatReductionTests {
     await store.send(.activateResult(.success(activateResponse(running: true))))
     #expect(store.state.pendingInteraction == .approval(ChatFeature.recoveredApprovalRequest))
     #expect(store.state.expectsPendingApproval == false)
+
+    await store.send(.teardown)
+  }
+
+  // MARK: Unprompted new chat (iPad split view, #80 — the "new session" no-op predicate)
+
+  /// Fresh state is an unprompted new chat; a composer draft, staged attachments, and a
+  /// connected-but-unprompted live session do NOT make it prompted.
+  @Test func isUnpromptedNewChatTrueForFreshChatRegardlessOfDraftOrLiveSession() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(state.isUnpromptedNewChat)
+
+    state.composerText = "typed but never sent"
+    state.attachments = [imageAttachment(0)]
+    #expect(state.isUnpromptedNewChat, "a draft is exactly what the no-op clears")
+
+    state.liveSessionID = "live"
+    state.status = .ready
+    #expect(state.isUnpromptedNewChat, "a live session with no DB row holds nothing worth keeping")
+  }
+
+  @Test func isUnpromptedNewChatFalseWithStoredID() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!state.isUnpromptedNewChat)
+  }
+
+  /// The regular-width seat dials the moment it is seated, and `session.create` hands back a
+  /// `stored_session_id` before a single prompt or DB row exists. The predicate must survive
+  /// that handshake — otherwise the seat stops qualifying for the "new session" reset, the
+  /// profile reseat, and the narrowing drop seconds after launch.
+  @Test func isUnpromptedNewChatSurvivesTheSessionCreateHandshake() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn))
+    #expect(store.state.isUnpromptedNewChat)
+
+    await store.send(.sessionResult(.success(
+      SessionHandle(sessionID: "live-1", storedSessionID: "20260610_seat")
+    ))) {
+      $0.liveSessionID = "live-1"
+      $0.storedSessionID = "20260610_seat"
+      $0.status = .ready
+      $0.hasHydrated = true
+    }
+    #expect(store.state.isUnpromptedNewChat)
+    #expect(store.state.isPristineNewChat)
+
+    await store.send(.teardown)
+  }
+
+  /// A branch primed straight from its `session.create` (#34) carries seeded history the
+  /// server holds in memory: never a "new chat", even before its first hydrate paints a row.
+  /// Modern agents return a `stored_session_id` at create (so the chat resumes one); older
+  /// ones don't, which is what the attach/seed clauses cover.
+  @Test func isUnpromptedNewChatFalseForAnUnpersistedBranch() {
+    var state = ChatFeature.State(connection: conn)
+    state.attachLiveSessionID = "live-branch"
+    state.branchSeed = ChatFeature.State.BranchSeed(text: "seed", parentSessionID: "parent")
+    #expect(state.transcript.isEmpty)
+    #expect(!state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
+  @Test func isUnpromptedNewChatFalseWithTranscriptRow() {
+    var state = ChatFeature.State(connection: conn)
+    state.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
+    #expect(!state.isUnpromptedNewChat)
+  }
+
+  @Test func isUnpromptedNewChatFalseWhileSending() {
+    var state = ChatFeature.State(connection: conn)
+    state.isSending = true
+    #expect(!state.isUnpromptedNewChat)
+  }
+
+  @Test func isUnpromptedNewChatFalseWithQueuedWork() {
+    var queued = ChatFeature.State(connection: conn)
+    queued.queuedPrompts = [QueuedPrompt(id: uuid(0), text: "later")]
+    #expect(!queued.isUnpromptedNewChat)
+
+    var draining = ChatFeature.State(connection: conn)
+    draining.drainingEntry = QueuedPrompt(id: uuid(1), text: "now")
+    #expect(!draining.isUnpromptedNewChat)
+  }
+
+  // MARK: Pristine new chat (iPad split view, #80 — the narrowing-drop predicate)
+
+  /// The regular-width seat exactly as it was seated: nothing typed, staged, or sent.
+  @Test func isPristineNewChatTrueForFreshChat() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(state.isPristineNewChat)
+
+    // A dialled-but-unprompted socket is still pristine — the live session holds nothing.
+    state.liveSessionID = "live"
+    state.status = .ready
+    #expect(state.isPristineNewChat)
+  }
+
+  /// A typed draft makes the seat worth keeping: narrowing must push its marker, not drop it.
+  @Test func isPristineNewChatFalseWithComposerDraft() {
+    var state = ChatFeature.State(connection: conn)
+    state.composerText = "typed but never sent"
+    #expect(state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
+  /// Staged attachments alone (no typed text) are equally the user's work — dropping such a
+  /// seat on narrowing would silently discard the picked files.
+  @Test func isPristineNewChatFalseWithStagedAttachmentsOnly() {
+    var state = ChatFeature.State(connection: conn)
+    state.attachments = [imageAttachment(0)]
+    #expect(state.composerText.isEmpty)
+    #expect(state.isUnpromptedNewChat)
+    #expect(!state.isPristineNewChat)
+  }
+
+  /// Every non-unprompted chat is non-pristine too (the predicate is a strict narrowing).
+  @Test func isPristineNewChatFalseForPromptedChat() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!state.isPristineNewChat)
+  }
+
+  /// An empty composer is NOT proof the seat is disposable: a paste still loading or a live
+  /// mic will fill it in a moment, and neither survives the narrowing teardown. Both must
+  /// read non-pristine so the seat keeps its marker instead.
+  @Test func isPristineNewChatFalseWithInFlightComposerInput() {
+    var pasting = ChatFeature.State(connection: conn)
+    pasting.pendingPasteCount = 1
+    #expect(pasting.composerText.isEmpty && pasting.attachments.isEmpty)
+    #expect(!pasting.isDiscardableNewChat)
+    #expect(!pasting.isPristineNewChat)
+
+    var recording = ChatFeature.State(connection: conn)
+    recording.recording = .recording
+    #expect(!recording.isDiscardableNewChat)
+    #expect(!recording.isPristineNewChat)
+  }
+
+  /// The shared seat predicate: unprompted AND nothing still resolving. A plain draft is
+  /// discardable (the "New session" reset clears it deliberately); a prompted chat is not.
+  @Test func isDiscardableNewChatCoversUnpromptedSeatsWithNothingInFlight() {
+    var draft = ChatFeature.State(connection: conn)
+    draft.composerText = "typed"
+    #expect(draft.isDiscardableNewChat)
+
+    let resumed = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(!resumed.isDiscardableNewChat)
+  }
+
+  // MARK: In-flight composer input (#80 — what a draft reset cannot reach)
+
+  /// A pending paste and every busy voice phase count; a plain draft does not. These are the
+  /// states where clearing `composerText`/`attachments` is not a reset — the batch or the
+  /// transcription lands afterwards, in the supposedly fresh composer.
+  @Test func hasInFlightComposerInputCoversPendingPasteAndVoice() {
+    var draft = ChatFeature.State(connection: conn)
+    draft.composerText = "typed"
+    draft.attachments = [imageAttachment(0)]
+    #expect(!draft.hasInFlightComposerInput)
+
+    var pasting = ChatFeature.State(connection: conn)
+    pasting.pendingPasteCount = 1
+    #expect(pasting.hasInFlightComposerInput)
+
+    for phase in [ChatFeature.State.RecordingState.requestingPermission, .recording, .transcribing] {
+      var voice = ChatFeature.State(connection: conn)
+      voice.recording = phase
+      #expect(voice.hasInFlightComposerInput, "\(phase) is composer input still resolving")
+    }
+  }
+
+  // MARK: Empty-chat hero (iPad split view, #80 — `showsEmptyHero` truth table)
+
+  /// A brand-new chat has nothing to wait for: the hero shows at once, before any
+  /// handshake, and a composer draft does not hide it.
+  @Test func showsEmptyHeroTrueForFreshNewChat() {
+    var state = ChatFeature.State(connection: conn)
+    #expect(!state.hasHydrated)
+    #expect(state.showsEmptyHero)
+
+    state.composerText = "typed but never sent"
+    state.attachments = [imageAttachment(0)]
+    #expect(state.showsEmptyHero, "a draft lives in the composer, not the transcript region")
+  }
+
+  /// A RESUMED session with no snapshot cache has an empty transcript for the round-trip
+  /// before history lands — the hero must not flash there.
+  @Test func showsEmptyHeroFalseForResumedSessionBeforeHydrate() {
+    let state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    #expect(state.transcript.isEmpty)
+    #expect(!state.hasHydrated)
+    #expect(!state.showsEmptyHero)
+  }
+
+  /// Once the hydrate has landed, a genuinely empty server history shows the hero.
+  @Test func showsEmptyHeroTrueForResumedSessionAfterHydrateWithEmptyHistory() {
+    var state = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    state.hasHydrated = true
+    #expect(state.showsEmptyHero)
+  }
+
+  @Test func showsEmptyHeroFalseWithAnyTranscriptRow() {
+    var fresh = ChatFeature.State(connection: conn)
+    fresh.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hi", isComplete: true))]
+    #expect(!fresh.showsEmptyHero)
+
+    var hydrated = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
+    hydrated.hasHydrated = true
+    hydrated.transcript = [
+      ChatRow(id: uuid(1), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))
+    ]
+    #expect(!hydrated.showsEmptyHero, "a live thinking row is transcript content too")
+  }
+
+  @Test func showsEmptyHeroFalseWhileSending() {
+    var state = ChatFeature.State(connection: conn)
+    state.isSending = true
+    #expect(!state.showsEmptyHero)
+  }
+
+  @Test func showsEmptyHeroFalseWithStreamingRow() {
+    var state = ChatFeature.State(connection: conn)
+    state.streamingRowID = uuid(0)
+    #expect(!state.showsEmptyHero)
+  }
+
+  /// Reducer path: the resumed chat hides the hero until `activateResult(.success)` with
+  /// an empty history lands (`applyActivate` flips `hasHydrated`); the hero then shows;
+  /// the next turn's `message.start` + first delta hide it again (`isSending`, then the
+  /// lazily created streaming row).
+  @Test func hydrateWithEmptyHistoryShowsHeroAndADeltaHidesIt() async {
+    let initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    let store = recoveryStore(initial)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.activateResult(.success(activateResponse(running: false)))) {
+      $0.hasHydrated = true
+    }
+    #expect(store.state.transcript.isEmpty)
+    #expect(store.state.showsEmptyHero)
+
+    await store.send(.gatewayEvent(.messageStart))
+    #expect(store.state.isSending)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.gatewayEvent(.messageDelta(text: "Hel")))
+    #expect(store.state.streamingRowID != nil)
+    #expect(!store.state.transcript.isEmpty)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.teardown)
+  }
+
+  /// A hydrate reporting a STILL-RUNNING turn with empty history hides the hero through
+  /// `isSending` even though the transcript is empty (the eager thinking row is added by
+  /// `reconcileTurnTimer` — either way, nothing to hero over).
+  @Test func hydrateOfRunningTurnWithEmptyHistoryHidesHero() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn, resumeStoredID: "stored123"))
+
+    await store.send(.activateResult(.success(activateResponse(running: true))))
+    #expect(store.state.hasHydrated)
+    #expect(store.state.isSending)
+    #expect(!store.state.showsEmptyHero)
+
+    await store.send(.teardown)
+  }
+
+  /// The fresh-session `session.create` handle is that chat's hydrate: a handle carrying
+  /// a `stored_session_id` must not flip the hero off for a chat the server just created
+  /// empty.
+  @Test func createHandshakeMarksHydratedSoStoredIDKeepsHero() async {
+    let store = recoveryStore(ChatFeature.State(connection: conn))
+    #expect(store.state.showsEmptyHero)
+
+    await store.send(.sessionResult(.success(
+      SessionHandle(sessionID: "live456", storedSessionID: "20260610_fresh")
+    ))) {
+      $0.liveSessionID = "live456"
+      $0.storedSessionID = "20260610_fresh"
+      $0.status = .ready
+      $0.hasHydrated = true
+    }
+    #expect(store.state.showsEmptyHero)
 
     await store.send(.teardown)
   }

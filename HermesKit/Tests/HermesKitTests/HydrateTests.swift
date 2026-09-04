@@ -117,6 +117,7 @@ struct HydrateTests {
       $0.liveSessionID = "live123"
       $0.storedSessionID = "stored123"
       $0.status = .ready
+      $0.hasHydrated = true
       // Model + usage overwritten by the server (not merged with the cache).
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 42, contextMax: 200_000, contextPercent: 0)
@@ -736,6 +737,43 @@ struct HydrateTests {
     #expect(saved?.rows == [ChatRow(id: uuid(1), kind: .message(role: .user, text: "hi", isComplete: true))])
     // No anchor written (turn not in flight).
     #expect(snapshotClient.turnAnchor("stored123") == nil)
+  }
+
+  // A connected-but-never-prompted chat (the regular-width detail seat, #80) has a key from
+  // its `session.create` handshake and nothing to cache — the server creates the DB row on
+  // the first prompt, so a flush of the teardown chain would leave an empty entry for a
+  // session the list never shows.
+  @Test func persistNowSkipsAnUnpromptedNewChat() async {
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    var initial = ChatFeature.State(connection: conn, composerText: "half-typed", status: .ready)
+    initial.liveSessionID = "live-new"
+    initial.storedSessionID = "stored-new"
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 321))
+      $0.chatSnapshot = snapshotClient
+    }
+
+    await store.send(.persistNow)
+    #expect(snapshotClient.loadSnapshot("stored-new") == nil)
+
+    // The first prompt's row makes it a real session — the same flush now writes.
+    var prompted = initial
+    prompted.transcript = [
+      ChatRow(id: uuid(1), kind: .message(role: .user, text: "hi", isComplete: true))
+    ]
+    let promptedStore = TestStore(initialState: prompted) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 321))
+      $0.chatSnapshot = snapshotClient
+    }
+    await promptedStore.send(.persistNow)
+    #expect(snapshotClient.loadSnapshot("stored-new")?.rows == prompted.transcript.elements)
   }
 
   // `.persistNow` mid-turn (`isSending`) also reaffirms the anchor at `now`.

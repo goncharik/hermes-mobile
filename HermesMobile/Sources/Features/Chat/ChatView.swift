@@ -73,6 +73,17 @@ struct ChatView: View {
         onPasteImages: { store.send(.attachmentsPasted($0)) }
       )
     }
+    // The readable-width cap (#80): in a wide column (the iPad detail pane) the whole chat —
+    // banner, transcript + toast, footer, cards, panels, and composer — lives in ONE container
+    // limited to `ChatLayout.readableMaxWidth` and centered by the greedy outer frame, so a
+    // line of prose never runs the full width of a 1024pt window and the composer sits under
+    // the text it belongs to. Every phone width is below the cap, so compact rendering is
+    // byte-identical. The cap is on this OUTER container only: table cells keep
+    // `CappedWidthLayout` (a `.frame(maxWidth:)` cannot cap anything inside a horizontal
+    // `ScrollView` — `docs/features/markdown-rendering.md`), and `MarkdownTableView` still pans
+    // inside the column. Measured in `ChatColumnLayoutTests`.
+    .frame(maxWidth: ChatLayout.readableMaxWidth)
+    .frame(maxWidth: .infinity)
     // Animates the suggestion panel in/out (and the layout shift it causes). Keyed to
     // emptiness so mere filtering while typing never animates; nil under reduce-motion,
     // so the panel then appears/disappears instantly.
@@ -153,31 +164,41 @@ struct ChatView: View {
     )
   }
 
-  /// The transcript, rendered behind the shared renderer boundary (`SwiftUITranscriptView`).
-  /// The reducer owns no scroll state — stick-to-bottom / pin behaviour is renderer-local.
-  /// `canLoadOlder` (= `hasMoreAbove`) gates the top sentinel so it can't page past the start
-  /// and can't get stuck mid-load when already at the true top of history.
+  /// The transcript REGION: the hero while the chat is empty (#80), otherwise the transcript
+  /// rendered behind the shared renderer boundary. The reducer owns no scroll state —
+  /// stick-to-bottom / pin behaviour is renderer-local. `canLoadOlder` (= `hasMoreAbove`)
+  /// gates the top sentinel so it can't page past the start and can't get stuck mid-load
+  /// when already at the true top of history.
+  ///
+  /// The swap is on `showsEmptyHero` — a HermesKit predicate (fresh new chat, or a resumed
+  /// session whose first hydrate landed empty), so a resumed chat waiting on history never
+  /// flashes the hero. Both branches are greedy in the same way, so the copy-toast overlay
+  /// and the approval-card `layoutPriority` at the call site behave identically for either.
   @ViewBuilder
   private var transcript: some View {
-    let rows = Array(store.visibleRows)
-    let turnState: TurnState = store.isSending ? .streaming : .idle
-    let canLoadOlder = store.hasMoreAbove
-    let onLoadOlder = { _ = store.send(.loadOlderRequested) }
+    if store.showsEmptyHero {
+      ChatEmptyHeroView()
+    } else {
+      let rows = Array(store.visibleRows)
+      let turnState: TurnState = store.isSending ? .streaming : .idle
+      let canLoadOlder = store.hasMoreAbove
+      let onLoadOlder = { _ = store.send(.loadOlderRequested) }
 
-    // The transcript is rendered by the `UICollectionView`-backed engine (the only engine):
-    // a diffable data source keyed on the deterministic row id gives stable diffing, scroll
-    // restoration, and prepend-preservation that the pure-SwiftUI `ScrollView` couldn't.
-    CollectionTranscriptView(
-      rows: rows,
-      turnState: turnState,
-      canLoadOlder: canLoadOlder,
-      onLoadOlder: onLoadOlder,
-      cell: transcriptCell
-    )
-    // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a
-    // `.simultaneousGesture(TapGesture())` here: it would swallow the hosted
-    // `ScrollToBottomButton`'s tap.
-    .scrollDismissesKeyboard(.interactively)
+      // The transcript is rendered by the `UICollectionView`-backed engine (the only engine):
+      // a diffable data source keyed on the deterministic row id gives stable diffing, scroll
+      // restoration, and prepend-preservation that the pure-SwiftUI `ScrollView` couldn't.
+      CollectionTranscriptView(
+        rows: rows,
+        turnState: turnState,
+        canLoadOlder: canLoadOlder,
+        onLoadOlder: onLoadOlder,
+        cell: transcriptCell
+      )
+      // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a
+      // `.simultaneousGesture(TapGesture())` here: it would swallow the hosted
+      // `ScrollToBottomButton`'s tap.
+      .scrollDismissesKeyboard(.interactively)
+    }
   }
 
   @ViewBuilder

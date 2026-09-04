@@ -70,6 +70,19 @@ bullets below are the compressed rules.
   Never cancel-and-redial a healthy socket (`connect` only when `status != .ready`).
   View disappearance is `AppFeature.chatViewDisappeared`, handled AFTER the pop
   animation, never at `.popFrom` time. A slot with `hasQueuedWork` stays alive.
+- **"Detached" means `isChatDetached` = `layout == .compact && path.isEmpty` (#80)** —
+  never a bare `path.isEmpty`. `.regular` needs a regular size class AND the pad idiom (a
+  Max iPhone in landscape stays on the stack; Slide Over does too), reported via
+  `layoutChanged` and set FIRST so the column-move `chatViewDisappeared` is a no-op. The
+  `ChatScreen` marker is COMPACT-ONLY: in regular the slot IS the `NavigationSplitView`
+  detail, the path stays empty, and the chat is never detached (no pop/turn-end teardown).
+  Regular never shows a blank detail — every seat comes from `detailRefill`; narrowing drops
+  an `isPristineNewChat` seat instead of pushing it, and the seat follows the list's profile
+  (`profileReseatSignal` — deferred, never dropped, while composer input is in flight or the
+  window is narrow). A regular fill dials its chat from the reducer AND
+  bumps `slotGeneration`, which the detail view is `.id`-keyed on so nothing leaks between
+  sessions. Sidebar highlight is a plain optional (`highlightedSessionID`), never
+  `List(selection:)`. Details: `docs/features/ipad-layout.md`.
 - **Backgrounding gets ~30s grace** via `BackgroundTaskClient`: running slot →
   `persistNow` + begin; expiry while backgrounded → final persist +
   `.teardownSocketOnly` (state stays in memory for the #26 catch-up); a stale expiry
@@ -112,6 +125,15 @@ bullets below are the compressed rules.
   pure-SwiftUI engine was removed: it dropped tail messages). Stick-to-bottom is
   renderer-local, not reducer state; pure scroll-math helpers stay outside the
   `#if canImport(UIKit)` guard.
+- **The empty-chat hero swaps the transcript REGION on `ChatFeature.State.showsEmptyHero`**
+  (#80) — a HermesKit predicate (`transcript.isEmpty && !isSending && streamingRowID == nil
+  && (storedSessionID == nil || hasHydrated)`), never view-derived. `hasHydrated` is set on
+  `applyActivate` AND the `session.create` handshake so a resumed chat waiting on history
+  never flashes the hero; `ChatEmptyHeroView` is display-only with ONE tagline constant.
+- **The chat column is capped at `ChatLayout.readableMaxWidth` (760) on the OUTER
+  container only** — `.frame(maxWidth:)` + `.frame(maxWidth: .infinity)` on `ChatView`'s
+  outer `VStack`; phone widths are below it (compact unchanged); never on table cells
+  (`CappedWidthLayout` rule stands). Measured in `ChatColumnLayoutTests`.
 - **Markdown & tables**: block classification in `MarkdownSegment`, rendered by
   `MarkdownText`; only USER messages get a bubble; wide tables PAN in
   `MarkdownTableView` (direction-aware fade), cells capped by `CappedWidthLayout` —
@@ -180,7 +202,8 @@ bullets below are the compressed rules.
   `PATCH`/`GET`) — silent, mirrored both ways with the archived sheet; the swipe-default
   pref (`SessionSwipeAction`, logout-cleared) clamps to Archive via
   `effectiveSwipeAction` when unsupported. Slot delete tears down with
-  `teardownSlot(flushSnapshot: false)` + snapshot wipe (flush would re-save it); the
+  `teardownSlot(flushSnapshot: false)` + snapshot wipe (flush would re-save it); archive
+  and delete both refill the regular-width detail (`thenFill: detailRefill`); the
   approval-badge entry clears only on the CONFIRMED delete (`sessionDeleteSucceeded`).
   Archived-sheet delete is immediate — no confirmation (deliberate) — and its DELETE
   round-trip runs in the parent list (a presented sheet's effects die on dismissal).
@@ -223,10 +246,11 @@ bullets below are the compressed rules.
   on sessions-list appearance. Repos, capability scheme, the four trigger hooks,
   cold-launch tap replay (#46), and fork filtering (#64):
   `docs/features/push-notifications.md`.
-- **Push-tap routing dedups against the slot (#32)**: matches slot with marker on top →
-  in-place hydrate, no navigation; matches slot from the list → push marker +
-  `.reattached`; different session → replace slot + SET the path to the single new
-  marker (never stack). Cold-launch taps replay through this same path.
+- **Push-tap routing dedups against the slot (#32)** under `isChatDetached`: matches slot
+  and not detached (compact marker on top, or any slot in regular) → in-place hydrate, no
+  navigation; matches a detached slot (compact only) → push marker + `.reattached`;
+  different session → replace slot + SET the path (single new marker in compact, empty in
+  regular; never stack). Cold-launch taps replay through this same path.
 
 ## Multi-profile
 
@@ -250,14 +274,18 @@ bullets below are the compressed rules.
 - **A snapshot of a SCROLLABLE view must pin an explicit size along its scroll axis** —
   `componentImage()` renders at `.sizeThatFits`, and a `ScrollView` offered nothing
   records a blank sliver. Pin both width and height for a vertical one.
+- **A `List` cannot be component-rendered at all** — `componentImage()` paints its section
+  headers and FAB but NO rows, and ignores the dark trait; list snapshots use
+  `deviceImage()` (both helpers take an `appearance:`).
 - **Layout facts a snapshot cannot prove go in a measured `UIWindow`-hosted XCTest**
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
 - **The recorded baselines predate the current simulator runtime** — `make snapshot`
-  fails broadly (~92/161) with no code cause. Judge by size mismatch first: differing
-  render size = real regression; equal size with small pixel residual = drift. A global
-  re-record is the pending fix and must land as its own commit.
+  fails broadly (36/211 as of #80, all equal render size; the older "~92/161" figure is
+  stale) with no code cause. Judge by size mismatch first: differing render size = real
+  regression; equal size with small pixel residual = drift. A global re-record is the
+  pending fix and must land as its own commit.
 
 ## Gotchas
 

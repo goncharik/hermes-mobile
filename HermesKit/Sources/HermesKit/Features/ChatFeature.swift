@@ -1,6 +1,18 @@
 import ComposableArchitecture
 import Foundation
 
+/// Layout constants for the chat column (#80). Lives in HermesKit so the view and the
+/// measured layout tests read ONE value.
+public enum ChatLayout {
+  /// The readable-width cap on full-width content in wide (iPad regular) layouts: the
+  /// transcript, footer, cards, panels, and composer are wrapped in one OUTER container
+  /// limited to this width and centered, and `ConnectionView`'s onboarding form uses the
+  /// same cap for the same reason. Phone widths are below the cap, so compact rendering is
+  /// unchanged. The cap is never applied to table cells — those stay under
+  /// `CappedWidthLayout` (see `docs/features/markdown-rendering.md`).
+  public static let readableMaxWidth: CGFloat = 760
+}
+
 /// The live chat surface for one session. Owns the WebSocket lifecycle, folds the
 /// gateway event stream into a transcript, sends prompts, and reconnects with backoff.
 ///
@@ -217,6 +229,64 @@ public struct ChatFeature {
     /// into it), and an idle pop must not destroy a parked queue.
     public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
 
+    /// No prompt has been sent yet — but the composer may hold a draft. This chat was
+    /// created as a NEW session (`resumesStoredSession` false, no branch attach), nothing is
+    /// rendered, no turn is in flight, no prompts are queued. The app-level "new session"
+    /// policy reads this: filling a fresh chat over one that has never been prompted would
+    /// tear down and redial a socket for an identical result, so it clears the composer
+    /// draft instead — the draft and staged attachments are exactly what that no-op clears.
+    /// A connected-but-unprompted chat still qualifies: its `session.create` handshake holds
+    /// nothing worth keeping (the server creates the DB row lazily, on the first prompt).
+    /// That handshake is also why the test is `resumesStoredSession`, not
+    /// `storedSessionID == nil` — the handle carries a `stored_session_id` the moment the
+    /// socket is ready, so the id alone stops telling a fresh seat from a resumed session.
+    public var isUnpromptedNewChat: Bool {
+      !resumesStoredSession && attachLiveSessionID == nil && branchSeed == nil
+        && transcript.isEmpty && !isSending && !hasQueuedWork
+    }
+
+    /// Nothing typed, staged, sent, or still arriving — an `isDiscardableNewChat` with an
+    /// empty composer and no attachments, i.e. the regular-width detail seat exactly as it
+    /// was seated. Narrowing to the stack drops such a seat instead of pushing an empty chat
+    /// over the session list.
+    public var isPristineNewChat: Bool {
+      isDiscardableNewChat && composerText.isEmpty && attachments.isEmpty
+    }
+
+    /// Composer input still resolving outside the draft itself: a clipboard load whose batch
+    /// lands later (#54, paired by `pendingPasteCount`) or voice input mid
+    /// permission/recording/transcription. Clearing `composerText`/`attachments` under either
+    /// is not a reset — the in-flight result appends into the supposedly fresh composer, and
+    /// the mic keeps running; tearing the chat down loses the result outright (the paste's
+    /// pairing token is per-`State`, and `.teardown` releases the mic).
+    public var hasInFlightComposerInput: Bool {
+      pendingPasteCount > 0 || recording.isBusy
+    }
+
+    /// The seat holds nothing the user would lose: an `isUnpromptedNewChat` whose composer
+    /// input has all landed. This is the single predicate every app-level "this seat can be
+    /// reused, dropped, or reseated" decision is built on (`isPristineNewChat` here; the
+    /// "New session" reuse shortcut and the regular-width profile reseat in `AppFeature`),
+    /// so the three cannot judge the same seat differently.
+    public var isDiscardableNewChat: Bool {
+      isUnpromptedNewChat && !hasInFlightComposerInput
+    }
+
+    /// Whether the transcript REGION renders the empty-chat hero (#80) instead of the
+    /// transcript. True only when there is provably nothing to show: no rows, no turn in
+    /// flight, no streaming row — and, for a RESUMED session (`storedSessionID != nil`),
+    /// only once its first hydrate has landed. A resumed chat opened without a snapshot
+    /// cache has an empty transcript for the round-trip before history arrives; without
+    /// the `hasHydrated` clause the hero would flash and be replaced by the history. A
+    /// resumed session whose server history is genuinely empty shows the hero after the
+    /// hydrate (correct). A brand-new chat (`storedSessionID == nil`) shows it at once.
+    /// Pure state — `CollectionTranscriptView` stays the only transcript renderer; the
+    /// view swaps the region, it never derives this.
+    public var showsEmptyHero: Bool {
+      transcript.isEmpty && !isSending && streamingRowID == nil
+        && (storedSessionID == nil || hasHydrated)
+    }
+
     /// Pastes whose clipboard providers are still loading (#54) — a counter, not a flag,
     /// because two pastes in quick succession chain in the view's coordinator and both must
     /// be outstanding at once.
@@ -312,6 +382,12 @@ public struct ChatFeature {
     // Bookkeeping (internal).
     var liveSessionID: String?
     var storedSessionID: String?
+    /// This chat was opened to RESUME an existing session (a list tap, a push tap, a branch
+    /// primed from its create) rather than created as a new chat. Fixed at init from
+    /// `resumeStoredID` and never mutated — `storedSessionID` can't answer the question
+    /// after the fact, because a new chat's `session.create` handshake writes one too.
+    /// Read only by `isUnpromptedNewChat` (and through it the regular-width seat policy).
+    let resumesStoredSession: Bool
     /// Set when this chat was opened from a branch `session.create` (#34): the session is
     /// live in server memory but has NO DB row until its first prompt (the server creates
     /// it lazily), so every hydrate must attach by THIS live id via `session.activate` —
@@ -409,6 +485,12 @@ public struct ChatFeature {
     /// over the SAME socket; only a second consecutive timeout concludes half-open and
     /// redials. Reset on hydrate success and at every fresh hydrate issuance.
     var hydrateRetriedAfterTimeout: Bool
+    /// Set once this slot's first server handshake has landed: a successful
+    /// `activateResult` (the `session.resume`/`session.activate` hydrate — `applyActivate`)
+    /// or the fresh-session `session.create` handle (`sessionResult`). Never cleared —
+    /// per-slot lifetime, unpersisted. Only `showsEmptyHero` reads it: "the transcript is
+    /// empty because the server said so" vs "empty because history hasn't arrived yet".
+    var hasHydrated: Bool
 
     public enum Status: Equatable, Sendable {
       case connecting
@@ -437,6 +519,7 @@ public struct ChatFeature {
       self.connection = connection
       self.profileName = profileName
       self.storedSessionID = resumeStoredID
+      self.resumesStoredSession = resumeStoredID != nil
       self.title = title
       self.transcript = transcript
       self.composerText = composerText
@@ -456,6 +539,7 @@ public struct ChatFeature {
       self.hasStarted = false
       self.awaitingReauth = false
       self.hydrateRetriedAfterTimeout = false
+      self.hasHydrated = false
       self.pendingInteraction = nil
       self.pendingInteractionToken = 0
       self.expectsPendingApproval = false
@@ -648,9 +732,10 @@ public struct ChatFeature {
     /// cancel-and-redialed — the dial gap would drop streamed events). Shares its handler
     /// with `.reattached`.
     case foreground
-    /// The slot's marker was re-pushed over LIVE, surviving chat state (`AppFeature`'s
-    /// re-open policy): always re-hydrate (server authority; `applyActivate`'s #26 path
-    /// preserves a still-running turn's live thinking/tool rows), but do NOT
+    /// The slot's own session was re-opened over LIVE, surviving chat state (`AppFeature`'s
+    /// re-open policy — a re-pushed marker in compact, a plain sidebar tap on the detail
+    /// column's session in regular): always re-hydrate (server authority; `applyActivate`'s
+    /// #26 path preserves a still-running turn's live thinking/tool rows), but do NOT
     /// cancel-and-redial a healthy socket — the dial gap would drop streamed events.
     /// Only a dead/dialing socket reconnects (then `.ready` re-hydrates). Shares its
     /// handler with `.foreground`.
@@ -1012,6 +1097,10 @@ public struct ChatFeature {
         state.liveSessionID = handle.sessionID
         state.storedSessionID = handle.storedSessionID ?? state.storedSessionID
         state.status = .ready
+        // The create handshake IS this chat's hydrate (#80): the handle may carry a
+        // `stored_session_id`, which would otherwise flip `showsEmptyHero` off for a chat
+        // whose only history is the nothing the server just created.
+        state.hasHydrated = true
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
@@ -2647,6 +2736,7 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
+    state.hasHydrated = true // the transcript below is now server-authoritative (#80 hero gate)
     // A successful hydrate means we're connected — clear any stale connection banner.
     state.errorBanner = nil
 
@@ -3412,9 +3502,12 @@ public struct ChatFeature {
   /// the single row-tail cap (`maxRowsPerSession`), so we pass the full transcript. Attachment
   /// image bytes never reach the cache: `ChatRow`'s `Codable` omits `attachmentImages` (so the
   /// store can't persist them even if we passed them through) — they can't be re-hydrated from
-  /// the server and base64 blobs would bloat the cache.
+  /// the server and base64 blobs would bloat the cache. An `isUnpromptedNewChat` is skipped
+  /// too: its key comes from a `session.create` handshake the server has no DB row for until
+  /// the first prompt, so the row would be an empty cache entry for a session the list can
+  /// never show and nothing prunes.
   private func persistSnapshotNow(_ state: State) -> Effect<Action> {
-    guard let sessionID = state.sessionKey else { return .none }
+    guard let sessionID = state.sessionKey, !state.isUnpromptedNewChat else { return .none }
     let snapshot = ChatSnapshot(
       model: state.model,
       reasoningEffort: state.reasoningEffort,

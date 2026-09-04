@@ -301,6 +301,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "branch-live"
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [ChatRow(
@@ -351,6 +352,7 @@ struct ChatBranchTests {
       $0.hasRequestedSession = true
     }
     await store.receive(\.activateResult.success) {
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
     }
@@ -461,6 +463,7 @@ struct ChatBranchTests {
     }
     await store.receive(\.activateResult.success) {
       $0.status = .ready
+      $0.hasHydrated = true
       $0.hasReplayedBranchSeed = false // attach landed: the replay budget resets
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
@@ -528,6 +531,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "fresh-live"
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // The banner survives the fresh create — the degrade is honest, never silent.
     #expect(store.state.errorBanner == "Couldn’t restore the branch — starting a fresh chat.")
@@ -559,6 +563,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "plain-live"
       $0.storedSessionID = "plain-stored"
       $0.status = .ready
+      $0.hasHydrated = true
     }
   }
 
@@ -589,6 +594,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "fresh-live"
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
+      $0.hasHydrated = true
     }
   }
 
@@ -626,6 +632,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "fresh-live"
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     #expect(methods.value == ["session.create"])
   }
@@ -862,6 +869,7 @@ struct ChatBranchTests {
     }
     await store.receive(\.activateResult.success) {
       $0.status = .ready
+      $0.hasHydrated = true
       $0.hasReplayedBranchSeed = false
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
@@ -961,6 +969,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "plain-live"
       $0.storedSessionID = "plain-stored"
       $0.status = .ready
+      $0.hasHydrated = true
     }
     // With the seed gone, a later heal CANNOT mis-arm attach-by-live-id mode.
     await store.send(.liveSessionIDRefreshed(liveSessionID: "healed-live", storedSessionID: nil)) {
@@ -1018,6 +1027,7 @@ struct ChatBranchTests {
       $0.attachLiveSessionID = "fresh-live"
     }
     await store.receive(\.activateResult.success) {
+      $0.hasHydrated = true
       $0.hasReplayedBranchSeed = false
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
@@ -1089,6 +1099,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "branch-live-2"
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [
@@ -1183,6 +1194,7 @@ struct ChatBranchTests {
       $0.liveSessionID = "branch-live-2"
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
+      $0.hasHydrated = true
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [
