@@ -462,20 +462,49 @@ re-recorded — this task renders identical UI.
 - Create: `HermesKit/Sources/HermesKit/Models/NativeOAuth.swift`
 - Create: `HermesKit/Tests/HermesKitTests/NativeOAuthTests.swift`
 
-- [ ] implement `PKCEPair.generate(random:)` (S256 via CryptoKit, base64url no-pad, 43-char
-      verifier) and `generateState(random:)` with an injectable random source
-- [ ] implement `nativeAuthorizeURL(base:challenge:redirectURI:state:provider:)`,
+- [x] implement `PKCEPair.generate(random:)` (S256 via CryptoKit, base64url no-pad, 43-char
+      verifier) and `generateState(random:)` with an injectable random source — shipped as
+      `generateOAuthState(random:)` (see ➕ below); default source is `secureRandomBytes`
+- [x] implement `nativeAuthorizeURL(base:challenge:redirectURI:state:provider:)`,
       `nativeTokenURL(base:)`, `nativeRefreshURL(base:)` preserving any base path prefix and
-      omitting `provider` when nil
-- [ ] implement `parseLoopbackCallback(requestTarget:expectedState:) throws -> String` and
+      omitting `provider` when nil (an empty string counts as nil)
+- [x] implement `parseLoopbackCallback(requestTarget:expectedState:) throws -> String` and
       `OAuthLoginError` (`cancelled`, `timedOut`, `stateMismatch`, `gatewayRejected(String)`,
       `listenerFailed`, `tokenExchange(RESTError)`) with user-facing `message`
-- [ ] write tests: PKCE against the RFC 7636 appendix B vector (fixed random →
+- [x] write tests: PKCE against the RFC 7636 appendix B vector (fixed random →
       known verifier/challenge), verifier length/charset, state length; URL builders with and
       without a path prefix and provider; callback parsing success, `error` param, missing
       code, state mismatch (must throw before returning a code), non-callback targets (favicon)
       rejected as "not a callback"
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5 (1347 tests, 61 suites, all green; +23 over Task 3)
+
+➕ **`isLoopbackCallback(requestTarget:)` is a separate pure predicate**, because the two
+requirements in this task pull opposite ways: `parseLoopbackCallback` must treat a missing
+`code` as `.gatewayRejected` (the gateway answered wrong), while the Task 1 spike requires a
+blank/parameter-less target — the speculative zero-byte connections, a favicon probe — to be
+"not a callback" and NOT an error. Returning `String?` from the parser would have collapsed the
+gateway's rejection into the same nil. So Task 7's listener asks `isLoopbackCallback` whether to
+settle, and only then calls the parser. Guarded by
+`callbackClassificationAcceptsOnlyRealCallbacks`.
+
+➕ **The URL builders return `URL?` rather than throwing.** Every call site already holds a
+validated server URL, so `nil` is only reachable for a base that `URLComponents` can't
+decompose; a one-line `guard let … else { throw }` at the two call sites (Task 6's REST
+endpoints throw `RESTError`, Task 7's driver throws `OAuthLoginError`) keeps each in its own
+error domain instead of forcing a shared one into this pure file.
+
+➕ **The authorize query is percent-encoded to the unreserved set** (`percentEncodedQuery`,
+not `queryItems`) so `redirect_uri` arrives as `http%3A%2F%2F127.0.0.1%3A…` — `URLComponents`
+leaves `:` and `/` raw by default, and the desktop's `URLSearchParams` escapes them. Both are
+valid RFC 3986, but matching the known-good client keeps the two requests comparable when
+debugging against a live gateway.
+
+➕ Named `generateOAuthState`, not `generateState`: it is a package-level public function, and
+a bare `generateState` in HermesKit's namespace reads like TCA state construction.
+
+➕ ⚠️ The plan's PKCE vector reference is RFC 7636 appendix B; the challenge is
+`E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`. The test pins the appendix's raw digest octets
+alongside it and asserts the encoding, so the vector is self-checking rather than transcribed.
 
 ### Task 5: `BearerTokenStore` actor and refresh semantics
 
