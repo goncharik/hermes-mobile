@@ -1280,16 +1280,22 @@ public struct AppFeature {
   /// cannot drift apart.
   ///
   /// Both hops are best-effort and both need the credentials that are about to die, hence
-  /// `.concatenate` rather than `.merge`: the push unregister authenticates like any other
-  /// REST call (through the token store in bearer mode), then `rest.logout` runs, and only
-  /// then is the store drained. Draining first would make BOTH requests silent no-ops —
-  /// `resolveAuth` has nothing to resolve — which is exactly the trap Task 6 documented on
-  /// `HermesRESTClient.logout`.
+  /// `.concatenate` rather than `.merge`: persistence is detached, the push unregister
+  /// authenticates like any other REST call (through the token store in bearer mode), then
+  /// `rest.logout` runs, and only then is the store drained. Draining first would make BOTH
+  /// requests silent no-ops — `resolveAuth` has nothing to resolve — which is exactly the
+  /// trap Task 6 documented on `HermesRESTClient.logout`.
+  ///
+  /// The leading `detachPersistence` is what keeps that ordering safe: every caller has
+  /// already deleted the Keychain session synchronously, and either hop can rotate a pair
+  /// that is inside its refresh leeway — whose persist hook would write the entry straight
+  /// back, leaving a dead pair to be restored on the next launch.
   private func serverSideLogout(connection: ServerConnection?) -> Effect<Action> {
     // Called for its synchronous prefs clearing too, so it must run unconditionally.
     let unregister = unregisterPushOnLogout(connection: connection)
     guard let connection, case .bearer = connection.auth else { return unregister }
     return .concatenate(
+      .run { [bearerTokens] _ in await bearerTokens.detachPersistence() },
       unregister,
       .run { [rest, bearerTokens] _ in
         await rest.logout(connection)

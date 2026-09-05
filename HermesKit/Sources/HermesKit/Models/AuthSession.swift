@@ -71,20 +71,31 @@ public enum BearerSessionError: Error, Equatable, Sendable {
 }
 
 public extension BearerSession {
+  /// Assumed lifetime for a payload whose `expires_at` is missing or non-positive (an older
+  /// or partial gateway response — e.g. one that sends `expires_in`). `BearerTokenStore`
+  /// treats a non-positive expiry as already stale, so without a floor every request would
+  /// rotate the pair; against the portal's refresh-token reuse detection an unbounded
+  /// rotation treadmill is the worst possible reading of a lenient decode.
+  static let fallbackAccessTokenTTL: TimeInterval = 300
+
   /// Lenient decode of a `/auth/native/token` or `/auth/native/refresh` payload.
   ///
   /// Follows the project's decode-leniently rule: unknown fields are ignored, `expires_at`
-  /// is accepted as an Int or a Double (JSON numbers both decode to `Double`), and the
-  /// non-critical fields fall back to empty strings. Only a missing/empty `access_token`
-  /// is fatal — without it there is nothing to authenticate with.
-  init(tokenResponse data: Data) throws {
+  /// is accepted as an Int or a Double (JSON numbers both decode to `Double`), a missing or
+  /// non-positive `expires_at` becomes `now + fallbackAccessTokenTTL`, and the non-critical
+  /// fields fall back to empty strings. Only a missing/empty `access_token` is fatal —
+  /// without it there is nothing to authenticate with.
+  init(tokenResponse data: Data, now: Date = Date()) throws {
     let payload = try JSONDecoder().decode(TokenResponsePayload.self, from: data)
     let accessToken = payload.accessToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     guard !accessToken.isEmpty else { throw BearerSessionError.missingAccessToken }
+    let expiresAt = payload.expiresAt ?? 0
     self.init(
       accessToken: accessToken,
       refreshToken: payload.refreshToken ?? "",
-      expiresAt: payload.expiresAt ?? 0,
+      expiresAt: expiresAt > 0
+        ? expiresAt
+        : now.timeIntervalSince1970 + BearerSession.fallbackAccessTokenTTL,
       provider: payload.provider ?? "",
       userID: payload.userID ?? ""
     )

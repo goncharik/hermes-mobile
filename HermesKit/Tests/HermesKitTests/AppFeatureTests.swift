@@ -5543,12 +5543,22 @@ struct AppFeatureTests {
   /// Probing an unseeded store sends the request with no credentials and 401s a live session
   /// into onboarding — the assertion that carries the proof is taken from INSIDE the probe.
   @Test func bearerLaunchRestoreSeedsTheTokenStoreBeforeProbing() async {
-    let session = bearerSession()
+    // Inside the store's 120 s refresh leeway, so the rotation below is the real code path.
+    let session = BearerSession(
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: Date().timeIntervalSince1970 + 10,
+      provider: "nous",
+      userID: "user-42"
+    )
+    let rotated = bearerSession(accessToken: "rotated")
     let tokenStore = BearerTokenStore()
+    let keychain = KeychainClient.inMemory()
+    try? keychain.saveSession(.bearer(session))
     let store = TestStore(initialState: AppFeature.State()) {
       AppFeature()
     } withDependencies: {
-      $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
+      $0.keychain = keychain
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
       $0.bearerTokens = tokenStore
       $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
@@ -5566,6 +5576,13 @@ struct AppFeatureTests {
       $0.autoConnecting = false
       $0.home = SessionListFeature.State(connection: self.bearerConnection(session))
     }
+
+    // The seed installs the Keychain save as its persist hook, so the pair the server rotates
+    // to reaches disk from inside the actor. Without it the next launch would replay a
+    // refresh token the portal has already retired — which trips its reuse detection and
+    // revokes the whole session.
+    _ = try? await tokenStore.validAccessToken { _, _ in rotated }
+    #expect(keychain.loadSession(.shared) == .bearer(rotated))
   }
 
   /// A dead refresh token surfaces from the store as `RESTError.unauthorized`, so it takes
@@ -5713,7 +5730,13 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.bearerTokens = tokenStore
       $0.keychain = KeychainClient.inMemory()
-      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      // The resume dials the socket, carrying the fresh regime. `connect` is synchronous, so
+      // the store read that would pin the reseed-before-dial ordering has to happen after
+      // the receive below; the ordering itself is enforced by the reducer's `.concatenate`.
+      $0.hermesGateway.connect = { @Sendable _, auth in
+        #expect(auth == .bearer(fresh))
+        return AsyncStream { _ in }
+      }
     }
     store.exhaustivity = .off
 
@@ -5781,7 +5804,15 @@ struct AppFeatureTests {
   /// request, so it has to fire BEFORE the drain (a drained store makes it a silent no-op —
   /// see `HermesRESTClient.logout`). The assertion inside the stub is what proves the order.
   @Test func everyLogoutPathPostsLogoutBeforeDrainingTheStore() async {
-    let session = bearerSession()
+    // Deliberately inside the store's 120 s refresh leeway: the logout hops authenticate
+    // through the store, so this is the pair that rotates while the logout is in flight.
+    let session = BearerSession(
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: Date().timeIntervalSince1970 + 10,
+      provider: "nous",
+      userID: "user-42"
+    )
     let connection = bearerConnection(session)
     // `deletesKeychainSession` is pre-existing behaviour, not part of this change: the two
     // full logouts own the Keychain delete here, while Settings' "disconnect" performs it in
@@ -5794,9 +5825,16 @@ struct AppFeatureTests {
     ] {
       let tokenStore = BearerTokenStore()
       let logouts = LockIsolated(0)
+      let unregisters = LockIsolated(0)
       let keychain = KeychainClient.inMemory()
       try? keychain.saveSession(.bearer(session))
-      await tokenStore.seed(session, baseURL: connection.baseURL, persist: { _ in })
+      // The persist hook the live seed installs — a rotation during either logout hop must
+      // not be able to write the Keychain entry the reducer has already deleted.
+      await tokenStore.seed(session, baseURL: connection.baseURL, persist: {
+        try keychain.saveSession(.bearer($0))
+      })
+      let preferences = PreferencesClient.inMemory()
+      preferences.savePushDeviceToken("device-token-1")
       let store = TestStore(
         initialState: AppFeature.State(
           home: SessionListFeature.State(connection: connection),
@@ -5814,14 +5852,36 @@ struct AppFeatureTests {
       } withDependencies: {
         $0.bearerTokens = tokenStore
         $0.keychain = keychain
-        $0.preferences = .inMemory()
+        $0.preferences = preferences
         $0.push = PushClient.inMemory().client
+        $0.hermesREST.unregisterPush = { @Sendable _, deviceToken in
+          #expect(deviceToken == "device-token-1")
+          #expect(
+            await tokenStore.current == session,
+            "\(action): the store was drained before the push unregister could authenticate"
+          )
+          #expect(
+            logouts.value == 0,
+            "\(action): the unregister must run BEFORE the logout, not alongside it"
+          )
+          unregisters.withValue { $0 += 1 }
+        }
         $0.hermesREST.logout = { @Sendable posted in
           #expect(posted == connection)
           #expect(
             await tokenStore.current == session,
             "\(action): the store was drained before the logout could authenticate"
           )
+          #expect(unregisters.value == 1, "\(action): the unregister must have already run")
+          // Both hops authenticate through the store, so either can rotate a pair inside
+          // its refresh leeway. That rotation must NOT reach the Keychain entry the reducer
+          // already deleted — persistence is detached before this runs.
+          _ = try? await tokenStore.validAccessToken { _, _ in
+            BearerSession(
+              accessToken: "rotated", refreshToken: "refresh-2",
+              expiresAt: 4_000_000_000, provider: "nous", userID: "user-42"
+            )
+          }
           logouts.withValue { $0 += 1 }
         }
       }
@@ -5830,9 +5890,13 @@ struct AppFeatureTests {
       await store.send(action)
       await store.finish()
       #expect(logouts.value == 1, "\(action) posted \(logouts.value) logouts")
+      #expect(unregisters.value == 1, "\(action) sent \(unregisters.value) push unregisters")
       #expect(await tokenStore.current == nil, "\(action) left the token store seeded")
       if deletesKeychainSession {
-        #expect(keychain.loadSession(.shared) == nil, "\(action) left the Keychain session")
+        #expect(
+          keychain.loadSession(.shared) == nil,
+          "\(action) left (or re-wrote) the Keychain session"
+        )
       }
     }
   }

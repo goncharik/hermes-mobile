@@ -221,6 +221,41 @@ struct ReauthFeatureTests {
     await store.receive(\.delegate, .reauthenticated(connection: expected, sameUser: false))
   }
 
+  /// `user_id` is one of the fields the lenient token decode lets a gateway omit. Two unknown
+  /// identities are NOT a match: reading empty-vs-empty as "same user" would resume the
+  /// previous account's chat in place — pins, seen counts and selected profile intact — after
+  /// someone signed in as a different account. Unknown routes as a switch, which is the
+  /// recoverable direction.
+  @Test func oauthReauthWithNoUserIDOnEitherSideRoutesAsAUserSwitch() async {
+    let fresh = bearer(userID: "")
+    let store = TestStore(initialState: oauthState(previousUserID: "")) {
+      ReauthFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in fresh }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.bearerTokens = BearerTokenStore()
+      $0.keychain = KeychainClient.inMemory()
+    }
+
+    await store.send(.signInTapped) { $0.status = .validating }
+    let expected = ServerConnection(baseURL: url, auth: .bearer(fresh))
+    await store.receive(\.oauthResponse.success)
+    await store.receive(\.reauthResponse.success)
+    await store.receive(\.delegate, .reauthenticated(connection: expected, sameUser: false))
+  }
+
+  /// The identity compare is per-regime: a cookie session's username is typed and never
+  /// empty, so it keeps the plain equality; the bearer `user_id` may be absent.
+  @Test func theBearerIdentityCompareTreatsAnEmptyIDAsUnknown() {
+    #expect(isSameBearerUser(previous: "user-42", fresh: "USER-42 "))
+    #expect(isSameBearerUser(previous: "user-42", fresh: "user-99") == false)
+    #expect(isSameBearerUser(previous: "", fresh: "") == false)
+    #expect(isSameBearerUser(previous: "user-42", fresh: "") == false)
+    #expect(isSameBearerUser(previous: "  ", fresh: "user-42") == false)
+    // Unchanged for the cookie regime.
+    #expect(isSameUser("Ada", "ada "))
+  }
+
   /// Dismissing the browser sheet is a decision, not a failure: no status copy, no delegate —
   /// the re-auth sheet stays up so the user can retry or take "Quit to start".
   @Test func cancellingTheBrowserSheetReturnsToIdleSilently() async {

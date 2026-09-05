@@ -55,7 +55,7 @@ struct ConnectionView: View {
           Text("Token")
             .tag(AuthMethod.token)
           if store.isOAuthEnabled {
-            Text(oauthSegmentLabel)
+            Text(store.oauthSegmentLabel)
               .tag(AuthMethod.oauth)
           }
         }
@@ -133,14 +133,6 @@ struct ConnectionView: View {
     .padding(.vertical, 2)
   }
 
-  /// The OAuth segment's label: the provider's own display name when the server advertises
-  /// exactly one (the common case — "Nous Research"), a neutral "OAuth" when several would
-  /// not fit a segment. Server-supplied text only, never a brand asset (App Store 5.2.1).
-  private var oauthSegmentLabel: String {
-    let providers = store.oauthProviders
-    return providers.count == 1 ? providers[0].displayName : "OAuth"
-  }
-
   /// The OAuth segment's content: one plain-text button per advertised provider — PLAIN
   /// TEXT with the default tint, deliberately no logo, no brand colour and no imitation of
   /// a vendor's own sign-in button (App Store guideline 5.2.1) — plus a note about where
@@ -161,31 +153,16 @@ struct ConnectionView: View {
       .padding(.vertical, 2)
   }
 
-  /// The server advertises OAuth providers but this gateway doesn't serve the native
-  /// sign-in endpoints (`native_pkce` missing from `auth_flows`), so `isOAuthEnabled` hides
-  /// the segment. The footer has to say why — otherwise the token-only hint below would
-  /// claim the server "only supports token sign-in", which isn't true of the server, only
-  /// of what this app can drive.
-  private var hasUnsupportedOAuthProviders: Bool {
-    guard let capability = store.capability else { return false }
-    return !capability.oauthProviders.isEmpty && !capability.supportsNativeFlow
-  }
-
-  /// Display names of the providers this app can't drive, for the too-old-gateway hint.
-  private var unsupportedOAuthProviderNames: String {
-    (store.capability?.oauthProviders ?? []).map(\.displayName).joined(separator: " or ")
-  }
-
   /// Capability-driven hint under the auth section.
   @ViewBuilder
   private var methodHint: some View {
     if store.method == .oauth {
       Text("Sign in with the same account you use on the Hermes dashboard.")
         .foregroundStyle(.secondary)
-    } else if !store.isPasswordEnabled, hasUnsupportedOAuthProviders, store.method == .token {
+    } else if !store.isPasswordEnabled, store.hasUnsupportedOAuthProviders, store.method == .token {
       // Providers exist, but the gateway is too old for the native flow — so token really
       // is the only way in here, and the reason is actionable (update the agent).
-      Text("\(unsupportedOAuthProviderNames) sign-in needs a newer Hermes agent. "
+      Text("\(store.unsupportedOAuthProviderNames) sign-in needs a newer Hermes agent. "
         + "Update it, or sign in with a session token.")
         .foregroundStyle(.secondary)
     } else if !store.isPasswordEnabled, store.method == .token, store.capability != nil {

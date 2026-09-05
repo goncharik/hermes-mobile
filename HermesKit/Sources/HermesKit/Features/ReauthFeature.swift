@@ -187,41 +187,31 @@ public struct ReauthFeature {
           }
 
         case .oauth:
-          // Native PKCE re-login (#19) — the same three steps as `ConnectionFeature`'s OAuth
-          // connect (browser leg → seed the store → validate), minus the server-URL save
-          // (the user is already onboarded). Identity comes from the fresh token payload's
-          // `user_id`, compared against the DEAD session's — never a username, which the
-          // OAuth regime does not have.
+          // Native PKCE re-login (#19) — the shared login leg (browser → seed → validate →
+          // persist), minus the server-URL save (the user is already onboarded), plus this
+          // screen's own tail: identity comes from the fresh token payload's `user_id`,
+          // compared against the DEAD session's — never a username, which the OAuth regime
+          // does not have.
           let provider = state.provider.isEmpty ? nil : state.provider
           let previous = state.previousUserID
           return .run { [rest, keychain, oauthLogin, bearerTokens] send in
-            let bearer: BearerSession
-            do {
-              bearer = try await oauthLogin.signIn(url, provider)
-            } catch {
-              // Nothing was seeded yet — no store to clean up.
-              await send(.oauthResponse(.failure(.login(asOAuthLoginError(error)))))
-              return
+            let outcome = await performNativeOAuthLogin(
+              baseURL: url,
+              provider: provider,
+              rest: rest,
+              keychain: keychain,
+              oauthLogin: oauthLogin,
+              bearerTokens: bearerTokens
+            )
+            switch outcome {
+            case let .success(success):
+              let sameUser = isSameBearerUser(previous: previous, fresh: success.bearer.userID)
+              await send(.oauthResponse(.success(
+                .init(connection: success.connection, sameUser: sameUser)
+              )))
+            case let .failure(error):
+              await send(.oauthResponse(.failure(error)))
             }
-            // Seed BEFORE validating: the dead pair is still in the store, and a `.bearer`
-            // request resolves its `Authorization` header through it — validating without
-            // this swap would re-send the very credentials that expired.
-            await bearerTokens.seed(bearer, baseURL: url) { session in
-              try keychain.saveSession(.bearer(session))
-            }
-            let connection = ServerConnection(baseURL: url, auth: .bearer(bearer))
-            do {
-              _ = try await rest.sessions(connection, 1, 0, .recent)
-            } catch {
-              // Drain the half-built session rather than leaving credentials the server
-              // just rejected wired up for the next request.
-              await bearerTokens.clear()
-              await send(.oauthResponse(.failure(.validation(asRESTError(error)))))
-              return
-            }
-            try? keychain.saveSession(.bearer(bearer))
-            let sameUser = isSameUser(previous, bearer.userID)
-            await send(.oauthResponse(.success(.init(connection: connection, sameUser: sameUser))))
           }
         }
 
@@ -268,14 +258,29 @@ public struct ReauthFeature {
   }
 }
 
-/// Pure same-user test for re-auth routing: case-/whitespace-insensitive identity equality —
-/// a username in the cookie regime, the token payload's `user_id` in the bearer one.
-/// Empty-vs-empty counts as the same user (token-mode callers skip this entirely). Used to
-/// decide whether a successful re-auth resumes the current chat (same user) or switches
-/// accounts (different user → pop + reload + clear identity-scoped prefs).
+/// Pure same-user test for re-auth routing in the COOKIE regime: case-/whitespace-insensitive
+/// equality of the typed username, which is never empty on that path. Used to decide whether
+/// a successful re-auth resumes the current chat (same user) or switches accounts (different
+/// user → pop + reload + clear identity-scoped prefs).
 public func isSameUser(_ lhs: String, _ rhs: String) -> Bool {
   func normalize(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   }
   return normalize(lhs) == normalize(rhs)
+}
+
+/// Same-user test for the BEARER regime, where identity is the token payload's `user_id`.
+///
+/// An empty id on EITHER side is an unknown identity, never a match: `user_id` is one of the
+/// fields the lenient token decode allows a gateway to omit, and treating unknown-vs-unknown
+/// as "same user" would resume the previous account's chat — with its pins, seen counts and
+/// selected profile intact — after someone signed in as a different account. Unknown routes
+/// as a switch, which is the recoverable direction.
+public func isSameBearerUser(previous: String, fresh: String) -> Bool {
+  func normalize(_ value: String) -> String {
+    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+  let previous = normalize(previous), fresh = normalize(fresh)
+  guard !previous.isEmpty, !fresh.isEmpty else { return false }
+  return previous == fresh
 }

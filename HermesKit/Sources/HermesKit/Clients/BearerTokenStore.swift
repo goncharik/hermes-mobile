@@ -11,7 +11,7 @@ import IssueReporting
 ///
 /// A token set with no/zero `expires_at` (an older or partial payload) is treated as
 /// needing a refresh: better one wasted round trip than a silent 401 storm.
-public func bearerNeedsRefresh(
+func bearerNeedsRefresh(
   _ session: BearerSession,
   now: Date,
   leeway: TimeInterval
@@ -80,6 +80,16 @@ public actor BearerTokenStore {
     self.persist = persist
   }
 
+  /// Stop writing rotations to the Keychain while keeping the pair usable.
+  ///
+  /// The logout effect's own hops (`unregisterPush`, `logout`) authenticate through this
+  /// store, so a pair inside its leeway rotates mid-logout and the persist hook writes the
+  /// Keychain entry the reducer already deleted — resurrecting a dead pair for the next
+  /// launch. Detaching first keeps the hops authenticated and leaves the Keychain alone.
+  public func detachPersistence() {
+    persist = nil
+  }
+
   /// Drop everything (logout / session expiry). Subsequent reads throw `.authExpired`.
   public func clear() {
     invalidateInFlightRefresh()
@@ -133,8 +143,15 @@ public actor BearerTokenStore {
     do {
       rotated = try await refresh(baseURL, expiring)
     } catch {
-      // A superseding seed/clear already cleaned up; leave its state alone.
-      guard startGeneration == generation else { throw error }
+      // A superseding seed/clear cancelled this task, so `error` is almost always the
+      // cancellation — never a verdict on the credentials. Answer exactly like the success
+      // path below: hand back whatever is live, or report expiry when the store was drained.
+      // Rethrowing here would surface `URLError.cancelled` (→ a retryable transport failure)
+      // where a `clear()` means the session is over.
+      guard startGeneration == generation else {
+        guard let session else { throw GatewayError.authExpired }
+        return session
+      }
       refreshTask = nil
       guard isSessionExpiredVerdict(error) else { throw error } // tokens intact, retryable
       clear()

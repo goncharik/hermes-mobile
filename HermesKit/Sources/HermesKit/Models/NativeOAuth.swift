@@ -26,28 +26,28 @@ func base64URLEncode(_ raw: Data) -> String {
 // MARK: - PKCE
 
 /// A PKCE verifier/challenge pair for the `S256` challenge method (RFC 7636).
-public struct PKCEPair: Equatable, Sendable {
+struct PKCEPair: Equatable, Sendable {
   /// The high-entropy secret kept in the app and replayed on `POST /auth/native/token`.
-  public var verifier: String
+  var verifier: String
   /// `base64url(SHA256(ascii(verifier)))` — the only half that reaches the browser.
-  public var challenge: String
+  var challenge: String
   /// Always `S256`; the gateway rejects `plain`.
-  public var method: String
+  var method: String
 
-  public init(verifier: String, challenge: String, method: String = PKCEPair.challengeMethod) {
+  init(verifier: String, challenge: String, method: String = PKCEPair.challengeMethod) {
     self.verifier = verifier
     self.challenge = challenge
     self.method = method
   }
 
   /// The `code_challenge_method` value sent to `/auth/native/authorize`.
-  public static let challengeMethod = "S256"
+  static let challengeMethod = "S256"
 
   /// Generate a pair: 32 random bytes → a 43-character base64url verifier (inside RFC
   /// 7636's 43–128 range), challenge = `base64url(SHA256(ascii(verifier)))`.
   ///
   /// `random` is injectable so tests can pin the RFC 7636 appendix B vector.
-  public static func generate(random: @Sendable (Int) -> Data = secureRandomBytes) -> PKCEPair {
+  static func generate(random: @Sendable (Int) -> Data = secureRandomBytes) -> PKCEPair {
     let verifier = base64URLEncode(random(32))
     // The verifier is base64url, i.e. pure ASCII — `Data(verifier.utf8)` is the ASCII
     // octet sequence RFC 7636 hashes.
@@ -58,13 +58,13 @@ public struct PKCEPair: Equatable, Sendable {
 
 /// A high-entropy CSRF `state` for the loopback round trip (24 random bytes → 32 chars).
 /// Verified against the callback before any code is redeemed (RFC 6749 §10.12).
-public func generateOAuthState(random: @Sendable (Int) -> Data = secureRandomBytes) -> String {
+func generateOAuthState(random: @Sendable (Int) -> Data = secureRandomBytes) -> String {
   base64URLEncode(random(24))
 }
 
 /// Cryptographically secure random bytes. `SystemRandomNumberGenerator` is documented as
 /// a CSPRNG on Apple platforms, so this stays free of a direct `Security` dependency.
-public let secureRandomBytes: @Sendable (Int) -> Data = { count in
+let secureRandomBytes: @Sendable (Int) -> Data = { count in
   var generator = SystemRandomNumberGenerator()
   return Data((0 ..< max(0, count)).map { _ in
     UInt8.random(in: UInt8.min ... UInt8.max, using: &generator)
@@ -81,7 +81,7 @@ public let secureRandomBytes: @Sendable (Int) -> Data = { count in
 ///
 /// Returns `nil` only when `base` can't be decomposed into components (a caller-side
 /// programming error — every call site has an already-validated server URL).
-public func nativeAuthorizeURL(
+func nativeAuthorizeURL(
   base: URL,
   challenge: String,
   redirectURI: String,
@@ -111,12 +111,12 @@ public func nativeAuthorizeURL(
 }
 
 /// `POST /auth/native/token` — redeem the authorization code with the PKCE verifier.
-public func nativeTokenURL(base: URL) -> URL? {
+func nativeTokenURL(base: URL) -> URL? {
   nativeComponents(base: base, suffix: "/auth/native/token")?.url
 }
 
 /// `POST /auth/native/refresh` — rotate the token pair.
-public func nativeRefreshURL(base: URL) -> URL? {
+func nativeRefreshURL(base: URL) -> URL? {
   nativeComponents(base: base, suffix: "/auth/native/refresh")?.url
 }
 
@@ -150,7 +150,7 @@ private func percentEncodeQueryComponent(_ value: String) -> String {
 /// connections arrive before the real `GET /callback` (and a favicon probe is the same
 /// shape), so a blank/unparseable/parameter-less target is "not a callback" — never an
 /// error, never a settle.
-public func isLoopbackCallback(requestTarget: String) -> Bool {
+func isLoopbackCallback(requestTarget: String) -> Bool {
   guard let items = loopbackQueryItems(requestTarget) else { return false }
   return items.contains { ($0.name == "code" || $0.name == "error") && !($0.value ?? "").isEmpty }
 }
@@ -163,7 +163,7 @@ public func isLoopbackCallback(requestTarget: String) -> Bool {
 /// - no `code` at all → `.gatewayRejected`
 /// - `state` missing or ≠ `expectedState` → `.stateMismatch`, thrown BEFORE the code is
 ///   returned: a forged callback must never get its code redeemed (RFC 6749 §10.12).
-public func parseLoopbackCallback(requestTarget: String, expectedState: String) throws -> String {
+func parseLoopbackCallback(requestTarget: String, expectedState: String) throws -> String {
   guard let items = loopbackQueryItems(requestTarget) else {
     throw OAuthLoginError.gatewayRejected("The sign-in callback was malformed.")
   }

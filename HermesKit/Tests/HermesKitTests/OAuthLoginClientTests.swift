@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import Network
 import Testing
 
 @testable import HermesKit
@@ -96,6 +97,42 @@ struct LoopbackCallbackListenerTests {
     #expect(await targets.next() == "/favicon.ico")
   }
 
+  /// TCP does not promise the request head arrives in one segment. A lone `receive` that
+  /// landed mid-request-line parsed to `nil`: the connection was answered, closed, and the
+  /// callback never reported — the driver then sat out its entire 300 s budget waiting for a
+  /// code that had already arrived, with no diagnostic.
+  @Test(.timeLimit(.minutes(1)))
+  func aRequestHeadSplitAcrossTwoWritesIsStillReported() async throws {
+    let listener = LoopbackCallbackListener()
+    let session = try await listener.start()
+    defer { session.stop() }
+    let port = try #require(URL(string: session.redirectURI)?.port)
+
+    var targets = session.targets.makeAsyncIterator()
+    let client = NWConnection(
+      host: .ipv4(.loopback),
+      port: try #require(NWEndpoint.Port(rawValue: UInt16(port))),
+      using: .tcp
+    )
+    defer { client.cancel() }
+    client.start(queue: .global())
+
+    try await write(client, "GET /callback?code=split&stat")
+    // Long enough for the listener to have consumed the partial head before the rest lands.
+    try await Task.sleep(for: .milliseconds(200))
+    try await write(client, "e=s-2 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+
+    #expect(await targets.next() == "/callback?code=split&state=s-2")
+  }
+
+  private func write(_ connection: NWConnection, _ text: String) async throws {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+      connection.send(content: Data(text.utf8), completion: .contentProcessed { error in
+        if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+      })
+    }
+  }
+
   @Test func stoppingIsIdempotentAndFinishesTheTargetStream() async throws {
     let listener = LoopbackCallbackListener()
     let session = try await listener.start()
@@ -146,7 +183,7 @@ struct NativeLoginDriverTests {
   /// — the shape of the real one, which (per the spike) never reports its own teardown.
   private let parkedBrowser: @Sendable (URL) async -> OAuthBrowserOutcome = { _ in
     try? await Task.sleep(for: .seconds(30))
-    return .dismissed
+    return .cancelled
   }
 
   // MARK: Success
@@ -168,9 +205,13 @@ struct NativeLoginDriverTests {
         listener.targets.yield("/favicon.ico")
         listener.targets.yield("/callback?code=CODE-1&state=STATE-1")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { code, verifier in
+        // Taken HERE, not after the flow: the loopback socket must already be closed when
+        // the code is redeemed — nothing else may arrive on it once the code is in hand.
+        // Asserting after the return would be satisfied by the error-path `defer` alone.
+        #expect(listener.stops.value >= 1, "the listener must be stopped before the token hop")
         redeemed.withValue { $0.append("\(code)|\(verifier)") }
         return self.issued
       },
@@ -205,7 +246,7 @@ struct NativeLoginDriverTests {
         opened.setValue(url)
         listener.targets.yield("/callback?code=C&state=S")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in self.issued },
       clock: TestClock()
@@ -226,7 +267,7 @@ struct NativeLoginDriverTests {
       openBrowser: { _ in
         listener.targets.yield("/callback?error=access_denied&error_description=User%20said%20no&state=S")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in
         redeemed.withValue { $0 += 1 }
@@ -251,7 +292,7 @@ struct NativeLoginDriverTests {
       openBrowser: { _ in
         listener.targets.yield("/callback?code=CODE-1&state=FORGED")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in
         redeemed.withValue { $0 += 1 }
@@ -273,7 +314,7 @@ struct NativeLoginDriverTests {
     let redeemed = LockIsolated(0)
     let driver = NativeLoginDriver(
       startListener: { listener.session },
-      openBrowser: { _ in .cancelledByUser },
+      openBrowser: { _ in .cancelled },
       exchange: { _, _ in
         redeemed.withValue { $0 += 1 }
         return self.issued
@@ -352,7 +393,7 @@ struct NativeLoginDriverTests {
       openBrowser: { _ in
         listener.targets.finish()
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in self.issued },
       clock: TestClock()
@@ -371,7 +412,7 @@ struct NativeLoginDriverTests {
       openBrowser: { _ in
         listener.targets.yield("/callback?code=EXPIRED&state=S")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in throw RESTError.server(status: 400, detail: "invalid or expired code") },
       clock: TestClock()
@@ -392,7 +433,7 @@ struct NativeLoginDriverTests {
       openBrowser: { _ in
         listener.targets.yield("/callback?code=C&state=S")
         try? await Task.sleep(for: .seconds(30))
-        return .dismissed
+        return .cancelled
       },
       exchange: { _, _ in throw URLError(.notConnectedToInternet) },
       clock: TestClock()

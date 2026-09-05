@@ -49,10 +49,11 @@ public extension DependencyValues {
 /// `callbackURLScheme: nil`, so it can never match a callback itself — the loopback listener
 /// is what settles the flow, and the sheet only ever reports how it went away.
 enum OAuthBrowserOutcome: Equatable, Sendable {
-  /// The user closed the sheet (`ASWebAuthenticationSessionError.canceledLogin`).
-  case cancelledByUser
-  /// We tore it down (the flow settled elsewhere), or it vanished without a verdict.
-  case dismissed
+  /// The sheet went away without completing: the user closed it
+  /// (`ASWebAuthenticationSessionError.canceledLogin`), we tore it down because the flow
+  /// settled elsewhere, or it vanished with no verdict. All three mean the same thing here —
+  /// no callback is coming through the browser leg.
+  case cancelled
   /// The session refused to present or failed with something else, carrying its reason.
   case failed(String)
 }
@@ -63,35 +64,17 @@ enum OAuthBrowserOutcome: Equatable, Sendable {
 /// orchestration is testable on macOS without a browser (mirrors the desktop's injected
 /// driver in `apps/desktop/electron/native-oauth-login.ts`).
 struct NativeLoginDriver: Sendable {
-  var makePKCE: @Sendable () -> PKCEPair
-  var makeState: @Sendable () -> String
-  var startListener: @Sendable () async throws -> LoopbackCallbackSession
+  var makePKCE: @Sendable () -> PKCEPair = { PKCEPair.generate() }
+  var makeState: @Sendable () -> String = { generateOAuthState() }
+  var startListener: @Sendable () async throws -> LoopbackCallbackSession = {
+    try await LoopbackCallbackListener().start()
+  }
   var openBrowser: @Sendable (URL) async -> OAuthBrowserOutcome
   var exchange: @Sendable (_ code: String, _ verifier: String) async throws -> BearerSession
-  var clock: any Clock<Duration>
+  var clock: any Clock<Duration> = ContinuousClock()
   /// Whole-flow budget. The desktop uses the same 5 minutes; the gateway's pending
   /// authorization expires at 600 s, so this always fires first.
-  var timeout: Duration
-
-  init(
-    makePKCE: @escaping @Sendable () -> PKCEPair = { PKCEPair.generate() },
-    makeState: @escaping @Sendable () -> String = { generateOAuthState() },
-    startListener: @escaping @Sendable () async throws -> LoopbackCallbackSession = {
-      try await LoopbackCallbackListener().start()
-    },
-    openBrowser: @escaping @Sendable (URL) async -> OAuthBrowserOutcome,
-    exchange: @escaping @Sendable (String, String) async throws -> BearerSession,
-    clock: any Clock<Duration> = ContinuousClock(),
-    timeout: Duration = .seconds(300)
-  ) {
-    self.makePKCE = makePKCE
-    self.makeState = makeState
-    self.startListener = startListener
-    self.openBrowser = openBrowser
-    self.exchange = exchange
-    self.clock = clock
-    self.timeout = timeout
-  }
+  var timeout: Duration = .seconds(300)
 }
 
 /// Whichever of the three racing legs finished first.
@@ -185,7 +168,7 @@ private func awaitCallback(
   switch settlement {
   case let .callback(target):
     return target
-  case .browser(.cancelledByUser), .browser(.dismissed):
+  case .browser(.cancelled):
     throw OAuthLoginError.cancelled
   case let .browser(.failed(reason)):
     throw OAuthLoginError.gatewayRejected(reason)
@@ -220,7 +203,7 @@ private func awaitCallback(
     }
   }
 
-  /// Present the sheet and report how it went away. Returns `.dismissed` when the enclosing
+  /// Present the sheet and report how it went away. Returns `.cancelled` when the enclosing
   /// task is cancelled — which is the normal path: the listener won the race and we are
   /// tearing the sheet down ourselves.
   private func presentAuthenticationBrowser(url: URL) async -> OAuthBrowserOutcome {
@@ -249,7 +232,7 @@ private func awaitCallback(
     func start(url: URL, continuation: CheckedContinuation<OAuthBrowserOutcome, Never>) {
       // Cancellation can beat presentation; never open a sheet nobody is waiting on.
       guard !settled else {
-        continuation.resume(returning: .dismissed)
+        continuation.resume(returning: .cancelled)
         return
       }
       self.continuation = continuation
@@ -259,11 +242,11 @@ private func awaitCallback(
         // complete with a URL.
         let outcome: OAuthBrowserOutcome
         if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
-          outcome = .cancelledByUser
+          outcome = .cancelled
         } else if let error {
           outcome = .failed(error.localizedDescription)
         } else {
-          outcome = .dismissed
+          outcome = .cancelled
         }
         Task { @MainActor in self?.settle(outcome) }
       }
@@ -284,7 +267,7 @@ private func awaitCallback(
     /// Tear the sheet down from our side (the flow settled elsewhere, or was cancelled).
     func dismiss() {
       session?.cancel()
-      settle(.dismissed)
+      settle(.cancelled)
     }
 
     private func settle(_ outcome: OAuthBrowserOutcome) {

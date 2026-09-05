@@ -192,7 +192,8 @@ public struct HermesRESTClient: Sendable {
   /// the tokens and retry). Callers do NOT invoke this directly: `BearerTokenStore` owns the
   /// rotation and this is the transport it is handed.
   public var nativeRefresh: @Sendable (_ baseURL: URL, _ session: BearerSession) async throws -> BearerSession
-  /// Best-effort `POST /auth/logout` for the gated regimes. Non-throwing BY DESIGN — see
+  /// Best-effort `POST /auth/logout`, called only for the `.bearer` regime
+  /// (`AppFeature.serverSideLogout`). Non-throwing BY DESIGN — see
   /// the live implementation for why this is the one call that swallows its failure.
   ///
   /// Call it BEFORE `BearerTokenStore.clear()`: once the store is drained the request has

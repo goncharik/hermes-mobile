@@ -1353,11 +1353,12 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
-  /// The `.bearer` twin of `transientGatedCloseContinuesBackoff` (#19): a refresh 503 keeps the
-  /// tokens (`BearerTokenStore` rethrows, nothing is cleared) and the mint failure surfaces as
-  /// a plain finished stream — so the chat keeps its normal backoff redial rather than
-  /// treating an unreachable identity provider as an expired session.
-  @Test func bearerTransientMintFailureKeepsBackingOff() async {
+  /// The `.bearer` twin of `transientGatedCloseContinuesBackoff` (#19). A refresh 503 keeps
+  /// the tokens (`BearerTokenStore` rethrows, nothing is cleared) and reaches the reducer as a
+  /// plain finished stream, which is what this drives: a bare close on a bearer connection
+  /// must back off and redial, never latch `awaitingReauth`. The mint itself lives in the live
+  /// gateway client and is not exercised here — only the reducer's verdict on its silence.
+  @Test func bearerCloseWithoutAnExpiryVerdictKeepsBackingOff() async {
     let clock = TestClock()
     let bearerConn = ServerConnection(
       baseURL: URL(string: "http://mac.tailnet:9119")!,

@@ -48,6 +48,61 @@ func asOAuthLoginError(_ error: any Error) -> OAuthLoginError {
   error as? OAuthLoginError ?? .tokenExchange(asRESTError(error))
 }
 
+/// What a completed native OAuth login hands back: the validated connection and the bearer
+/// pair AS PERSISTED (which is not necessarily the freshly minted one — see below).
+struct NativeOAuthLoginSuccess: Equatable, Sendable {
+  var connection: ServerConnection
+  var bearer: BearerSession
+}
+
+/// The native PKCE login leg (#19), shared by onboarding (`ConnectionFeature`) and re-auth
+/// (`ReauthFeature`): browser leg → seed the store → validate with one authenticated call →
+/// persist. Three orderings are load-bearing, so they live in ONE place:
+///
+/// 1. The pair is seeded BEFORE the validating call — a `.bearer` request resolves its
+///    `Authorization` header through `BearerTokenStore`, so an unseeded (or, at re-auth, a
+///    still-dead) store would send exactly the wrong credentials.
+/// 2. A failed validation DRAINS the store rather than leaving credentials the server just
+///    rejected wired up for the next request.
+/// 3. What gets persisted is what the STORE holds afterwards, never the pre-seed local: the
+///    validating call can rotate the pair, and saving the local copy would put the retired
+///    refresh token back in the Keychain — which the portal's reuse detection answers by
+///    revoking the whole session on the next launch.
+///
+/// Each caller adds only its own tail (the server-URL save / the identity compare).
+func performNativeOAuthLogin(
+  baseURL: URL,
+  provider: String?,
+  rest: HermesRESTClient,
+  keychain: KeychainClient,
+  oauthLogin: OAuthLoginClient,
+  bearerTokens: BearerTokenStore
+) async -> Result<NativeOAuthLoginSuccess, OAuthFlowError> {
+  let minted: BearerSession
+  do {
+    minted = try await oauthLogin.signIn(baseURL, provider)
+  } catch {
+    // Nothing was seeded yet — no store to clean up.
+    return .failure(.login(asOAuthLoginError(error)))
+  }
+  await bearerTokens.seed(minted, baseURL: baseURL) { session in
+    try keychain.saveSession(.bearer(session))
+  }
+  do {
+    let probe = ServerConnection(baseURL: baseURL, auth: .bearer(minted))
+    _ = try await rest.sessions(probe, 1, 0, .recent)
+  } catch {
+    await bearerTokens.clear()
+    return .failure(.validation(asRESTError(error)))
+  }
+  let bearer = await bearerTokens.current ?? minted
+  try? keychain.saveSession(.bearer(bearer))
+  return .success(NativeOAuthLoginSuccess(
+    connection: ServerConnection(baseURL: baseURL, auth: .bearer(bearer)),
+    bearer: bearer
+  ))
+}
+
 @Reducer
 public struct ConnectionFeature {
   @ObservableState
@@ -135,7 +190,30 @@ public struct ConnectionFeature {
     public var activeOAuthProvider: AuthProvider? {
       let providers = oauthProviders
       guard let name = selectedOAuthProviderName else { return providers.first }
-      return providers.first { $0.name == name } ?? providers.first
+      return providers.first { $0.name == name }
+    }
+
+    /// The OAuth segment's label: the provider's own display name when the server advertises
+    /// exactly one (the common case — "Nous Research"), a neutral "OAuth" when several would
+    /// not fit a segment. Server-supplied text only, never a brand asset (App Store 5.2.1).
+    public var oauthSegmentLabel: String {
+      let providers = oauthProviders
+      return providers.count == 1 ? providers[0].displayName : "OAuth"
+    }
+
+    /// The server advertises OAuth providers but this gateway doesn't serve the native
+    /// sign-in endpoints (`native_pkce` missing from `auth_flows`), so `isOAuthEnabled` hides
+    /// the segment. The footer has to say why — otherwise the token-only hint would claim the
+    /// server "only supports token sign-in", which isn't true of the server, only of what
+    /// this app can drive.
+    public var hasUnsupportedOAuthProviders: Bool {
+      guard let capability else { return false }
+      return !capability.oauthProviders.isEmpty && !capability.supportsNativeFlow
+    }
+
+    /// Display names of the providers this app can't drive, for the too-old-gateway hint.
+    public var unsupportedOAuthProviderNames: String {
+      (capability?.oauthProviders ?? []).map(\.displayName).joined(separator: " or ")
     }
 
     /// True on a gated server where the token path is a poor fit (UI may de-emphasize it).
@@ -282,6 +360,11 @@ public struct ConnectionFeature {
       case let .serverStatusResponse(.failure(error), _):
         state.capability = nil
         state.serverVersion = nil
+        // A cleared capability hides the OAuth segment, so a selection left on `.oauth`
+        // would render a picker with no matching tag, no provider buttons and no Connect
+        // button — unrecoverable except by tapping another segment. Fall back to the
+        // default, mirroring the success branch's preselect.
+        if state.method == .oauth { state.method = .token }
         switch error {
         case .decoding: state.status = .notHermes
         // `.offline` is a transport failure like `.unreachable` — same footer (its
@@ -349,37 +432,25 @@ public struct ConnectionFeature {
           }
 
         case .oauth:
-          // Native PKCE path (#19): the browser leg returns a bearer pair, which is seeded
-          // into the token store, validated with the same authenticated call the other two
-          // regimes use, then persisted.
+          // Native PKCE path (#19) — the shared login leg, plus this screen's own tail: the
+          // server URL is saved only once a sign-in actually succeeded.
           let provider = state.activeOAuthProvider?.name
           return .run { [rest, keychain, preferences, oauthLogin, bearerTokens] send in
-            let bearer: BearerSession
-            do {
-              bearer = try await oauthLogin.signIn(url, provider)
-            } catch {
-              // Nothing was seeded yet — no store to clean up.
-              await send(.oauthLoginResponse(.failure(.login(asOAuthLoginError(error)))))
-              return
+            let outcome = await performNativeOAuthLogin(
+              baseURL: url,
+              provider: provider,
+              rest: rest,
+              keychain: keychain,
+              oauthLogin: oauthLogin,
+              bearerTokens: bearerTokens
+            )
+            switch outcome {
+            case let .success(success):
+              preferences.saveServerURL(success.connection.baseURL.absoluteString)
+              await send(.oauthLoginResponse(.success(success.connection)))
+            case let .failure(error):
+              await send(.oauthLoginResponse(.failure(error)))
             }
-            // Seed BEFORE the validating call: a `.bearer` connection resolves its
-            // `Authorization` header through the store, so an unseeded store would 401.
-            await bearerTokens.seed(bearer, baseURL: url) { session in
-              try keychain.saveSession(.bearer(session))
-            }
-            let connection = ServerConnection(baseURL: url, auth: .bearer(bearer))
-            do {
-              _ = try await rest.sessions(connection, 1, 0, .recent)
-            } catch {
-              // Drain the half-built session: leaving it seeded would authenticate a later
-              // request with credentials this screen never accepted.
-              await bearerTokens.clear()
-              await send(.oauthLoginResponse(.failure(.validation(asRESTError(error)))))
-              return
-            }
-            try? keychain.saveSession(.bearer(bearer))
-            preferences.saveServerURL(connection.baseURL.absoluteString)
-            await send(.oauthLoginResponse(.success(connection)))
           }
         }
 

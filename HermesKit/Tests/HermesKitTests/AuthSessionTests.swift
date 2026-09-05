@@ -120,12 +120,30 @@ struct AuthSessionTests {
     let json = """
     { "access_token": "AT" }
     """
-    let session = try BearerSession(tokenResponse: Data(json.utf8))
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let session = try BearerSession(tokenResponse: Data(json.utf8), now: now)
     #expect(session.accessToken == "AT")
     #expect(session.refreshToken.isEmpty)
-    #expect(session.expiresAt == 0)
+    #expect(session.expiresAt == 1_000_000 + BearerSession.fallbackAccessTokenTTL)
     #expect(session.provider.isEmpty)
     #expect(session.userID.isEmpty)
+  }
+
+  /// A missing or non-positive `expires_at` gets a bounded TTL rather than unix epoch 0.
+  /// Zero reads as "already stale" to `BearerTokenStore`, so every single request — REST call
+  /// and WS ticket mint alike — would rotate the pair, and the rotation would inherit the
+  /// same zero: an unbounded treadmill against the portal's refresh-token reuse detection,
+  /// triggered by exactly the lenient decode this initializer is meant to tolerate.
+  @Test(arguments: ["", "\"expires_at\": 0,", "\"expires_at\": -5,"])
+  func tokenResponseWithoutAUsableExpiryIsNotImmediatelyStale(expiry: String) throws {
+    let json = """
+    { \(expiry) "access_token": "AT", "refresh_token": "RT" }
+    """
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let session = try BearerSession(tokenResponse: Data(json.utf8), now: now)
+
+    #expect(session.expiresAt == 1_000_000 + BearerSession.fallbackAccessTokenTTL)
+    #expect(!bearerNeedsRefresh(session, now: now, leeway: 120))
   }
 
   @Test func tokenResponseWithoutAccessTokenThrows() {

@@ -220,6 +220,10 @@ struct BearerTokenStoreTests {
       try await store.validAccessToken { _, _ in
         await started.open()
         await release.wait()
+        // The real transport is `URLSession.data(for:)`, which HONOURS cancellation — and
+        // `seed` cancels the in-flight refresh task. Without this the fake would paper over
+        // the very error path the supersede rule has to answer.
+        try Task.checkCancellation()
         return Self.rotated
       }
     }
@@ -235,11 +239,56 @@ struct BearerTokenStoreTests {
     )
     await release.open()
 
-    // The waiting caller gets the LIVE credentials, not the superseded rotation.
+    // The waiting caller gets the LIVE credentials, not the superseded rotation — and not
+    // the cancellation the supersede itself caused.
     #expect(try await caller.value == "access-B")
     #expect(await store.current == reseeded)
     #expect(firstPersist.sessions.isEmpty)
     #expect(secondPersist.sessions.isEmpty)
+  }
+
+  /// The other half of the supersede rule: a logout while a rotation is in flight is an
+  /// EXPIRY verdict, not a transport blip. Rethrowing the cancellation would surface as
+  /// `RESTError.unreachable` and put the caller into retry/backoff against a store that can
+  /// never serve another token.
+  @Test func aClearDuringARefreshReportsExpiryNotTheCancellation() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    await store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, persist: { _ in })
+
+    let started = Gate()
+    let release = Gate()
+    let caller = Task {
+      try await store.validAccessToken { _, _ in
+        await started.open()
+        await release.wait()
+        try Task.checkCancellation()
+        return Self.rotated
+      }
+    }
+    await started.wait()
+    await store.clear()
+    await release.open()
+
+    await #expect(throws: GatewayError.authExpired) { try await caller.value }
+  }
+
+  /// Logout detaches the persist hook before its own REST hops run: those hops authenticate
+  /// through this store, so a rotation they trigger would otherwise write the Keychain entry
+  /// the reducer just deleted and resurrect a dead pair on the next launch.
+  @Test func detachingPersistenceKeepsServingTokensWithoutWritingThem() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    await store.seed(
+      Self.session(expiresIn: 10),
+      baseURL: Self.baseURL,
+      persist: { try persisted.hook($0) }
+    )
+
+    await store.detachPersistence()
+    let token = try await store.validAccessToken { _, _ in Self.rotated }
+
+    #expect(token == "access-2") // the logout hops still authenticate
+    #expect(persisted.sessions.isEmpty) // …but nothing reaches the Keychain
   }
 
   /// A Keychain write failure is reported, but the rotated pair stays in memory — dropping

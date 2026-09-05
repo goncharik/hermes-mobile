@@ -815,4 +815,111 @@ struct ConnectionFeatureTests {
     let seeded = await tokenStore.current
     #expect(seeded == nil)
   }
+
+  /// The validating call can rotate the pair inside the store (any gateway whose access-token
+  /// lifetime is under the 120 s refresh leeway). What lands in the Keychain must be what the
+  /// STORE holds, never the pre-seed local: saving the local copy would put the RETIRED
+  /// refresh token back on disk, and the next launch would replay it straight into the
+  /// portal's reuse detection, which revokes the whole session.
+  @Test func aRotationDuringTheValidatingCallIsWhatGetsPersisted() async {
+    let keychain = KeychainClient.inMemory()
+    let minted = BearerSession(
+      accessToken: "access-1", refreshToken: "refresh-1",
+      // Already inside the store's 120 s leeway, so the validating call rotates it.
+      expiresAt: Date().timeIntervalSince1970 + 10, provider: "nous", userID: "user-42"
+    )
+    let rotated = BearerSession(
+      accessToken: "access-2", refreshToken: "refresh-2",
+      expiresAt: 4_000_000_000, provider: "nous", userID: "user-42"
+    )
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in minted }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+        // Stands in for the live transport, which resolves `Authorization` through the store.
+        _ = try await tokenStore.validAccessToken { _, _ in rotated }
+        return []
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.success)
+    await store.receive(\.delegate.connected)
+
+    #expect(keychain.loadSession(.shared) == .bearer(rotated))
+    #expect(await tokenStore.current == rotated)
+  }
+
+  /// An unclassified throw from the browser leg still reads like every other transport
+  /// failure — `asOAuthLoginError`'s fallback is the copy a user would actually see.
+  @Test func anUnclassifiedSignInFailureFallsBackToTheRESTCopy() async {
+    struct Unexpected: Error {}
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in throw Unexpected() }
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed(OAuthLoginError.tokenExchange(RESTError(transport: Unexpected())).message)
+    }
+  }
+
+  /// Editing the URL after a successful OAuth probe used to strand onboarding: the failure
+  /// nils `capability`, which hides the OAuth segment AND empties the provider list, while
+  /// the generic Connect button is suppressed for `.oauth` — leaving a picker with no
+  /// selected tag and no way to submit. The selection has to come back off `.oauth`.
+  @Test func aFailedReprobeMovesTheSelectionOffTheHiddenOAuthSegment() async {
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in throw RESTError.unreachable }
+    }
+
+    await store.send(.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = nil
+      $0.serverVersion = nil
+      $0.method = .token
+      $0.status = .unreachable
+    }
+    #expect(store.state.isOAuthEnabled == false)
+  }
+
+  // MARK: - OAuth display predicates
+
+  /// A single advertised provider labels the segment with its own display name; several fall
+  /// back to a neutral "OAuth" that fits a segment.
+  @Test func theOAuthSegmentIsLabelledWithTheProviderNameOnlyWhenThereIsExactlyOne() {
+    let keycloak = AuthProvider(name: "self_hosted", displayName: "Keycloak", supportsPassword: false)
+    #expect(oauthReadyState().oauthSegmentLabel == "Nous Research")
+    #expect(oauthReadyState(providers: [nousProvider, keycloak]).oauthSegmentLabel == "OAuth")
+    // No capability at all → no segment is rendered, but the label must stay well-defined.
+    #expect(ConnectionFeature.State().oauthSegmentLabel == "OAuth")
+  }
+
+  /// The too-old-gateway hint: providers exist but `native_pkce` doesn't, so the segment is
+  /// hidden and the footer has to name the providers it can't drive.
+  @Test func unsupportedOAuthProvidersAreNamedOnlyWhenTheGatewayLacksTheNativeFlow() {
+    let keycloak = AuthProvider(name: "self_hosted", displayName: "Keycloak", supportsPassword: false)
+    var tooOld = ConnectionFeature.State(method: .token)
+    tooOld.capability = oauthCapability(providers: [nousProvider], supportsNativeFlow: false)
+    #expect(tooOld.hasUnsupportedOAuthProviders)
+    #expect(tooOld.unsupportedOAuthProviderNames == "Nous Research")
+
+    tooOld.capability = oauthCapability(providers: [nousProvider, keycloak], supportsNativeFlow: false)
+    #expect(tooOld.unsupportedOAuthProviderNames == "Nous Research or Keycloak")
+
+    // A gateway that DOES serve the native flow shows the segment, not the hint.
+    #expect(oauthReadyState().hasUnsupportedOAuthProviders == false)
+    // An unprobed server knows nothing and claims nothing.
+    #expect(ConnectionFeature.State().hasUnsupportedOAuthProviders == false)
+    #expect(ConnectionFeature.State().unsupportedOAuthProviderNames.isEmpty)
+  }
 }

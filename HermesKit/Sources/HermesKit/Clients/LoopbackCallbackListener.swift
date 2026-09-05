@@ -75,12 +75,6 @@ struct LoopbackCallbackSession: Sendable {
   var targets: AsyncStream<String>
   /// Idempotent teardown.
   var stop: @Sendable () -> Void
-
-  init(redirectURI: String, targets: AsyncStream<String>, stop: @escaping @Sendable () -> Void) {
-    self.redirectURI = redirectURI
-    self.targets = targets
-    self.stop = stop
-  }
 }
 
 // MARK: - Listener
@@ -199,14 +193,33 @@ final class LoopbackCallbackListener: @unchecked Sendable {
       return
     }
     connection.start(queue: queue)
-    connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, _, _ in
+    receiveRequestHead(connection, accumulated: Data())
+  }
+
+  /// Read until the request LINE is complete, then answer and report it.
+  ///
+  /// TCP does not promise the head arrives in one segment: a single `receive` that lands
+  /// mid-request-line parses to `nil`, and the connection would then be answered, closed and
+  /// never reported — the driver would wait out its whole 300 s budget for a callback that
+  /// already arrived. So keep reading until a CR/LF terminates the line (or the 8 KiB cap
+  /// `parseRequestTarget` scans is reached, or the peer closes/errors).
+  private func receiveRequestHead(_ connection: NWConnection, accumulated: Data) {
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) {
+      [weak self] data, _, isComplete, error in
+      var buffer = accumulated
+      if let data { buffer.append(data) }
+      let sawLineEnd = buffer.contains { $0 == 0x0D || $0 == 0x0A }
+      if !sawLineEnd, buffer.count < 8 * 1024, !isComplete, error == nil {
+        self?.receiveRequestHead(connection, accumulated: buffer)
+        return
+      }
       // Answer EVERY connection — callback, favicon probe, or a speculative open that sent
       // nothing at all — then close it. Only a parseable request line is reported onward.
       connection.send(
         content: Self.responseData,
         completion: .contentProcessed { _ in connection.cancel() }
       )
-      guard let self, let data, let target = parseRequestTarget(data) else { return }
+      guard let self, let target = parseRequestTarget(buffer) else { return }
       yield(target)
     }
   }
