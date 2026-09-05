@@ -312,6 +312,120 @@ struct BearerTokenStoreTests {
     #expect(token.value == "access-2")
     #expect(await store.current == Self.rotated)
   }
+
+  // MARK: - Ownership
+
+  /// The store is process-wide, so the LATEST claim is the only one allowed to mutate it. A
+  /// sign-in attempt whose browser leg ran for minutes must not install its pair over the one
+  /// that superseded it — from then on every bearer request would carry the wrong account's
+  /// token, against whichever server that attempt was pointed at.
+  @Test func aSupersededClaimCannotSeedOverTheNewOwner() async {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let abandoned = store.claimOwnership()
+    let current = store.claimOwnership()
+    let winner = Self.session(access: "winner", expiresIn: 600)
+
+    #expect(await store.seed(winner, baseURL: Self.baseURL, claim: current))
+    let reseeded = await store.seed(
+      Self.session(access: "loser", expiresIn: 600),
+      baseURL: Self.baseURL,
+      claim: abandoned
+    )
+
+    #expect(reseeded == false)
+    #expect(await store.current == winner)
+  }
+
+  /// An UNCLAIMED seed — launch restore — is unconditional and takes ownership with it: it is
+  /// the newest truth about which pair the app holds, so an attempt still in flight loses.
+  @Test func anUnclaimedSeedSupersedesAnOutstandingClaim() async {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let attempt = store.claimOwnership()
+    let restored = Self.session(access: "restored", expiresIn: 600)
+
+    await store.seed(restored, baseURL: Self.baseURL, persist: { _ in })
+    let seeded = await store.seed(
+      Self.session(access: "late", expiresIn: 600),
+      baseURL: Self.baseURL,
+      claim: attempt
+    )
+
+    #expect(seeded == false)
+    #expect(await store.current == restored)
+  }
+
+  /// Logout's synchronous half is `detachPersistence()` then `keychain.deleteSession()`. An
+  /// attempt that comes back afterwards must not be able to re-arm the hook: that write lands
+  /// on the entry the reducer just deleted and makes a logged-out session restorable on the
+  /// next launch. Disarming alone never closed this — revoking ownership does.
+  @Test func aClaimCannotReArmPersistenceAfterALogoutDetach() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    let attempt = store.claimOwnership()
+    await store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, claim: attempt)
+
+    store.detachPersistence() // …and the reducer deletes the Keychain entry right here
+    let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: attempt)
+
+    #expect(attached == nil)
+    #expect(persisted.sessions.isEmpty)
+    // The pair stays usable for the logout's own hops, and its rotation still writes nothing.
+    let token = try await store.validAccessToken { _, _ in Self.rotated }
+    #expect(token == "access-2")
+    #expect(persisted.sessions.isEmpty)
+  }
+
+  /// Cancellation is checked INSIDE the store, atomically with the mutation — a check made at
+  /// the call site before the hop is a window the cancellation can land in. A cancelled
+  /// attempt therefore neither seeds nor persists, however late it resumes.
+  @Test func aCancelledAttemptNeitherSeedsNorAttaches() async {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    let claim = store.claimOwnership()
+    let arrived = Gate()
+    let release = Gate()
+
+    let attempt = Task { () -> (Bool, BearerSession?) in
+      await arrived.open()
+      await release.wait() // cancelled while parked here, exactly like a slow browser leg
+      let seeded = await store.seed(
+        Self.session(expiresIn: 600),
+        baseURL: Self.baseURL,
+        claim: claim
+      )
+      let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: claim)
+      return (seeded, attached)
+    }
+    await arrived.wait()
+    attempt.cancel()
+    await release.open()
+
+    let (seeded, attached) = await attempt.value
+    #expect(seeded == false)
+    #expect(attached == nil)
+    #expect(await store.current == nil)
+    #expect(persisted.sessions.isEmpty)
+  }
+
+  /// The other side of the rule: the CURRENT owner keeps every privilege. Its seed lands, its
+  /// attach writes the live pair, and rotations after that still reach the Keychain — an
+  /// ownership check that dropped a legitimate rotation would strand the app on a refresh
+  /// token the server has retired.
+  @Test func theCurrentOwnerSeedsAttachesAndKeepsPersistingRotations() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    let claim = store.claimOwnership()
+    let minted = Self.session(expiresIn: 10)
+
+    #expect(await store.seed(minted, baseURL: Self.baseURL, claim: claim))
+    let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: claim)
+    #expect(attached == minted)
+    #expect(persisted.sessions == [minted])
+
+    let token = try await store.validAccessToken { _, _ in Self.rotated }
+    #expect(token == "access-2")
+    #expect(persisted.sessions == [minted, Self.rotated])
+  }
 }
 
 // MARK: - Test doubles

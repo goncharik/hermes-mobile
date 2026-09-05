@@ -246,17 +246,26 @@ struct ReauthFeatureTests {
 
   /// The identity compare is per-regime and the two must NOT be merged: a cookie session's
   /// username is typed by a human (case-insensitive is right there), while a bearer `user_id`
-  /// is Hermes' OIDC `sub` claim — case-SENSITIVE per OpenID Connect Core, and possibly
-  /// absent. `alice` and `ALICE` are two accounts: folding case would resume one's chat, pins
-  /// and selected profile under the other's credentials.
-  @Test func theBearerIdentityCompareIsCaseSensitiveAndTreatsAnEmptyIDAsUnknown() {
-    #expect(isSameBearerUser(previous: "user-42", fresh: "user-42 ")) // trimmed, not folded
+  /// is Hermes' OIDC `sub` claim — an OPAQUE, case-sensitive identifier only its issuer gives
+  /// meaning to, and possibly absent. Any normalization of it can merge two accounts and
+  /// resume one's chat, pins and selected profile under the other's credentials, so equality
+  /// is exact and the only permitted normalization is the blank check for "unknown identity".
+  @Test func theBearerIdentityCompareIsExactAndTreatsABlankIDAsUnknown() {
+    #expect(isSameBearerUser(previous: "user-42", fresh: "user-42"))
+    // Whitespace is part of the identifier, not noise to be stripped.
+    #expect(isSameBearerUser(previous: "user-42", fresh: "user-42 ") == false)
+    #expect(isSameBearerUser(previous: " user-42", fresh: "user-42") == false)
+    #expect(isSameBearerUser(previous: "user-42", fresh: "\nuser-42") == false)
+    #expect(isSameBearerUser(previous: "al ice", fresh: "alice") == false)
+    // Case is part of it too.
     #expect(isSameBearerUser(previous: "alice", fresh: "ALICE") == false)
     #expect(isSameBearerUser(previous: "user-42", fresh: "USER-42") == false)
     #expect(isSameBearerUser(previous: "user-42", fresh: "user-99") == false)
+    // Blank on either side is an unknown identity: a switch, never a match.
     #expect(isSameBearerUser(previous: "", fresh: "") == false)
     #expect(isSameBearerUser(previous: "user-42", fresh: "") == false)
     #expect(isSameBearerUser(previous: "  ", fresh: "user-42") == false)
+    #expect(isSameBearerUser(previous: "  ", fresh: "  ") == false)
     // Unchanged for the cookie regime: usernames still compare case-insensitively.
     #expect(isSameUser("Ada", "ada "))
   }

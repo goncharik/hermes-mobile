@@ -274,20 +274,25 @@ public func isSameUser(_ lhs: String, _ rhs: String) -> Bool {
 
 /// Same-user test for the BEARER regime, where identity is the token payload's `user_id`.
 ///
-/// Compared EXACTLY, only trimmed — never lowercased, unlike the username compare above.
-/// Hermes derives `user_id` from the OIDC `sub` claim, which OpenID Connect Core defines as
-/// case-sensitive, so `alice` and `ALICE` are two different people; folding case would resume
-/// one account's chat (pins, seen counts, selected profile) under the other's credentials.
-/// Keep the two functions separate — a DRY pass that merges them re-introduces exactly that.
+/// **A bearer `user_id` is an OPAQUE identifier.** Hermes derives it from the OIDC `sub`
+/// claim, which OpenID Connect Core defines as a case-sensitive string the issuer alone gives
+/// meaning to: `alice`, `ALICE`, ` alice ` and `al ice` are four different subjects, and any
+/// normalization that collapses them would resume one account's chat (pins, seen counts,
+/// selected profile) under another's credentials. So equality here is EXACT comparison of the
+/// values as received — no case folding, no trimming, no Unicode normalization, ever.
 ///
-/// An empty id on EITHER side is an unknown identity, never a match: `user_id` is one of the
-/// fields the lenient token decode allows a gateway to omit, and treating unknown-vs-unknown
-/// as "same user" would resume the previous account's chat after someone signed in as a
-/// different account. Unknown routes as a switch, which is the recoverable direction.
+/// The one normalization permitted is the blank check below, and only because it decides
+/// "unknown identity", not equality: `user_id` is one of the fields the lenient token decode
+/// allows a gateway to omit, and treating unknown-vs-unknown as "same user" would resume the
+/// previous account's chat after someone signed in as a different one. An id that is empty or
+/// all whitespace on EITHER side is unknown and routes as a switch, the recoverable direction.
+///
+/// Keep this separate from ``isSameUser(_:_:)`` — that one compares a human-typed username,
+/// where folding case is right; a DRY pass that merges them re-introduces exactly the above.
 public func isSameBearerUser(previous: String, fresh: String) -> Bool {
-  let blanks = CharacterSet.whitespacesAndNewlines
-  let previous = previous.trimmingCharacters(in: blanks)
-  let fresh = fresh.trimmingCharacters(in: blanks)
-  guard !previous.isEmpty, !fresh.isEmpty else { return false }
+  func isUnknown(_ id: String) -> Bool {
+    id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+  guard !isUnknown(previous), !isUnknown(fresh) else { return false }
   return previous == fresh
 }

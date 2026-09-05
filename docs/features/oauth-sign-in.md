@@ -254,7 +254,9 @@ before its `keychain.deleteSession()`** (`AppFeature` for `logoutConfirmed`/`rea
 `SettingsFeature` for `.disconnect`). Both logout hops authenticate through the store, so a
 pair inside its refresh leeway rotates mid-logout; with the hook still armed that rotation
 rewrites the entry the reducer just deleted and the dead pair is restored on the next launch.
-The detach is `nonisolated` for exactly this reason — an `await`ed one runs after the delete.
+The detach is `nonisolated` for exactly this reason — an `await`ed one runs after the delete —
+and it also revokes store ownership, so an in-flight sign-in cannot re-arm the hook afterwards
+(`BearerStoreClaim`).
 
 **`AppFeature` does NOT reseed the store on `.reauthenticated`.** The sign-in leg already put
 the fresh pair there (it is what the sheet's validating call authenticated with) and may have
@@ -286,17 +288,19 @@ indistinguishable from a token-exchange 401.
 | Refresh 503 / transport | rethrown, tokens kept, reconnect backoff retries |
 
 Every failure path clears the seeded store, so a half-finished sign-in never leaves credentials
-behind — with ONE deliberate exception: a **cancelled** attempt (superseded by a second
-provider tap, abandoned by an edited server URL, or torn down by a logout) touches neither the
-store nor the Keychain. Cancellation is not a verdict on the credentials, and both are
-process-wide: cleaning up there would clean up after whatever superseded it, or drain the store
-the logout's own hops still need. The OAuth attempt is `.cancellable(cancelInFlight:)` so only
-the current one can ever land.
+behind — with ONE deliberate exception: an **abandoned** attempt (superseded by a second
+provider tap, dropped by an edited server URL, or torn down by a logout) touches neither the
+store nor the Keychain — it does not seed, drain or persist. Cancellation is not a verdict on
+the credentials, and both are process-wide: writing there would write over whatever superseded
+it, or drain the store the logout's own hops still need. That is enforced by ownership, not by
+cancellation checks at the call site — each attempt claims the store up front and the store
+itself drops every late arrival; `BearerStoreClaim` is the normative statement of the rule.
 
 **Re-auth identity routing is `user_id`**, not a username: same user → resume in place;
 different user → pop to the session list and clear identity-scoped prefs. That compare is
-`isSameBearerUser`, which trims but **never lowercases** — `user_id` is the OIDC `sub` claim
-and case-sensitive, so `alice` and `ALICE` are different accounts. The cookie regime's
+`isSameBearerUser`, which compares the two ids **exactly** — `user_id` is the OIDC `sub` claim,
+an opaque case-sensitive identifier, so `alice`, `ALICE` and ` alice ` are different accounts;
+the only normalization is the blank check that routes an unknown id as a switch. The cookie regime's
 `isSameUser` compares a typed username and does fold case; the two are deliberately separate. The display
 name on the reauth button comes from `State.providerLabel`, which falls back to the wire
 provider name — after a launch auto-restore nothing was probed, so the display name is

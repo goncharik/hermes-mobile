@@ -1062,6 +1062,101 @@ struct ConnectionFeatureTests {
     )
   }
 
+  /// Supersede is decided by OWNERSHIP, not by cancellation: a browser leg that returns after
+  /// a newer attempt has already landed must not seed its pair, and this test never cancels it
+  /// to prove the point (in the app `cancelInFlight` does cancel, but a task that is already
+  /// past a `Task.isCancelled` check is not stopped by it). A seed here would leave every
+  /// later bearer request carrying the abandoned account's token.
+  @Test func aSupersededBrowserLegNeverSeedsOverTheWinner() async {
+    let baseURL = URL(string: "http://mac:9119")!
+    let tokenStore = BearerTokenStore()
+    let keychain = KeychainClient.inMemory()
+    let abandoned = bearerFixture(accessToken: "abandoned")
+    let winner = bearerFixture(accessToken: "winner")
+    let (browserOpen, signalBrowserOpen) = AsyncStream<Void>.makeStream()
+    let release = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    var rest = HermesRESTClient.testValue
+    rest.sessions = { @Sendable _, _, _, _ in [] }
+    var slowLogin = OAuthLoginClient.testValue
+    slowLogin.signIn = { @Sendable _, _ in
+      await withCheckedContinuation { continuation in
+        release.setValue(continuation)
+        signalBrowserOpen.yield()
+      }
+      return abandoned // the sheet finally answers, long after it was superseded
+    }
+    var fastLogin = OAuthLoginClient.testValue
+    fastLogin.signIn = { @Sendable _, _ in winner }
+
+    let first = Task {
+      await performNativeOAuthLogin(
+        baseURL: baseURL, provider: "nous", rest: rest,
+        keychain: keychain, oauthLogin: slowLogin, bearerTokens: tokenStore
+      )
+    }
+    var opened = browserOpen.makeAsyncIterator()
+    await opened.next()
+
+    // A second provider tap runs start to finish and takes the store with it.
+    let second = await performNativeOAuthLogin(
+      baseURL: baseURL, provider: "nous", rest: rest,
+      keychain: keychain, oauthLogin: fastLogin, bearerTokens: tokenStore
+    )
+    #expect(second.map(\.bearer) == .success(winner))
+
+    release.value?.resume()
+
+    #expect(await first.value == .failure(.login(.cancelled)))
+    #expect(
+      await tokenStore.current == winner,
+      "a superseded attempt installed its pair over the winner's"
+    )
+    #expect(keychain.loadSession(.shared) == .bearer(winner))
+  }
+
+  /// A logout that lands mid-sign-in must stay logged out. `detachPersistence()` +
+  /// `deleteSession()` is the reducer's synchronous half; the attempt then comes back from a
+  /// validating call the server did answer, and must not be able to re-arm the hook and write
+  /// the entry back. Again no cancellation is involved — the rule is ownership.
+  @Test func aLogoutMidSignInIsNotUndoneByALateAttach() async {
+    let baseURL = URL(string: "http://mac:9119")!
+    let tokenStore = BearerTokenStore()
+    let keychain = KeychainClient.inMemory()
+    let minted = bearerFixture()
+    try? keychain.saveSession(.bearer(bearerFixture(accessToken: "restored")))
+    let (validating, signalValidating) = AsyncStream<Void>.makeStream()
+    let release = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    var rest = HermesRESTClient.testValue
+    rest.sessions = { @Sendable _, _, _, _ in
+      await withCheckedContinuation { continuation in
+        release.setValue(continuation)
+        signalValidating.yield()
+      }
+      return [] // the server answers, just after the user quit to start
+    }
+    var oauthLogin = OAuthLoginClient.testValue
+    oauthLogin.signIn = { @Sendable _, _ in minted }
+
+    let attempt = Task {
+      await performNativeOAuthLogin(
+        baseURL: baseURL, provider: "nous", rest: rest,
+        keychain: keychain, oauthLogin: oauthLogin, bearerTokens: tokenStore
+      )
+    }
+    var started = validating.makeAsyncIterator()
+    await started.next()
+
+    tokenStore.detachPersistence() // BEFORE the delete, as every logout path does
+    try? keychain.deleteSession()
+    release.value?.resume()
+
+    #expect(await attempt.value == .failure(.login(.cancelled)))
+    #expect(
+      keychain.loadSession(.shared) == nil,
+      "a late attach rewrote the Keychain entry the logout deleted"
+    )
+  }
+
   /// An unclassified throw from the browser leg still reads like every other transport
   /// failure — `asOAuthLoginError`'s fallback is the copy a user would actually see.
   @Test func anUnclassifiedSignInFailureFallsBackToTheRESTCopy() async {

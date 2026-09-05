@@ -20,6 +20,25 @@ func bearerNeedsRefresh(
   session.expiresAt - now.timeIntervalSince1970 < leeway
 }
 
+/// An exclusive claim on ``BearerTokenStore``, held by ONE sign-in attempt.
+///
+/// The store is process-wide, so which caller is entitled to mutate it cannot be read off the
+/// call site: a browser leg runs for minutes, and by the time it returns the attempt that
+/// started it may have been superseded (a second provider tap, an edited server URL) or torn
+/// down (a logout that already deleted the Keychain entry). Every "am I still cancelled?"
+/// check made *before* the hop into the store is a time-of-check/time-of-use window, and each
+/// one closed so far simply moved the window somewhere else.
+///
+/// The rule instead: an attempt claims the store up front (``BearerTokenStore/claimOwnership()``)
+/// and passes that claim to every mutation it makes. The store applies one only while the
+/// claim is still the current owner and the calling task is alive, decided INSIDE the store
+/// atomically with the mutation. Anything else — a superseded attempt, a cancelled one, one
+/// that a logout has already revoked — is a late arrival and is dropped, whatever shape it
+/// arrives in.
+public struct BearerStoreClaim: Hashable, Sendable {
+  fileprivate let id: Int
+}
+
 /// The single owner of the OAuth (bearer) token pair at runtime.
 ///
 /// Every REST call and every WS ticket mint in the `.bearer` regime asks this actor for a
@@ -31,7 +50,7 @@ func bearerNeedsRefresh(
 ///    user out. Concurrent callers at expiry therefore join ONE in-flight `Task` instead of
 ///    each starting their own.
 /// 2. **Persist before publish.** The rotated pair is written through the persist hook
-///    (Keychain — whenever one is armed, see ``seed(_:baseURL:persist:)``) from inside the
+///    (Keychain — whenever one is armed, see ``seed(_:baseURL:persist:claim:)``) from inside the
 ///    actor BEFORE any caller observes the new token, so a crash between "server rotated" and
 ///    "app saved" can't strand the app holding a refresh token the server has already retired.
 /// 3. **One expiry verdict.** A refresh 401 clears the store and throws
@@ -39,6 +58,9 @@ func bearerNeedsRefresh(
 ///    Anything else (503, transport) rethrows with the tokens INTACT so backoff can retry.
 ///
 /// Lifecycle: launch restore and a successful (re)login `seed` it, logout `clear`s it.
+///
+/// Because it is process-wide, "may this caller mutate it?" cannot be inferred from the call
+/// site — see ``BearerStoreClaim``.
 public actor BearerTokenStore {
   /// The Keychain write-through hook (`AuthSession.bearer` → `KeychainClient.saveSession`).
   public typealias PersistHook = @Sendable (BearerSession) throws -> Void
@@ -53,11 +75,14 @@ public actor BearerTokenStore {
 
   private var session: BearerSession?
   private var baseURL: URL?
-  /// The Keychain write-through hook, held in a lock instead of actor state so
-  /// ``detachPersistence()`` can be called SYNCHRONOUSLY from a reducer body — see its doc.
-  /// The lock is also held for the duration of the call, so a detach that arrives while a
-  /// rotation is being written waits for that write instead of racing it.
-  private nonisolated let persistHook = LockIsolated<PersistHook?>(nil)
+  /// The Keychain write-through hook plus the ownership bookkeeping, in ONE lock: they are
+  /// always decided together (arming is an owner's privilege; ``detachPersistence()`` disarms
+  /// AND revokes) and two boxes could disagree. Lock-isolated rather than actor state so
+  /// ``detachPersistence()`` can be called SYNCHRONOUSLY from a reducer body — see its doc —
+  /// and so the ownership verdict is available to `nonisolated` code. The lock is held for the
+  /// duration of a write-through, so a detach that arrives while a rotation is being written
+  /// waits for that write instead of racing it.
+  private nonisolated let persistence = LockIsolated(Persistence())
   private var refreshTask: Task<BearerSession, any Error>?
   /// Bumped by every `seed`/`clear`. A refresh that started under an older generation was
   /// superseded, so it must never publish or persist its (now stale) result.
@@ -75,34 +100,59 @@ public actor BearerTokenStore {
   /// decide whether a token is usable; that is ``validAccessToken(refresh:)``'s job.
   public var current: BearerSession? { session }
 
+  /// Claim the store for ONE sign-in attempt, revoking every claim issued before it: the
+  /// newest attempt is the owner. Synchronous and `nonisolated` so an attempt can claim
+  /// before its first `await` — the claim must exist before the browser leg starts, not after
+  /// it returns, or the window this whole mechanism closes is simply moved.
+  public nonisolated func claimOwnership() -> BearerStoreClaim {
+    persistence.withValue { state in
+      state.issued &+= 1
+      state.owner = state.issued
+      return BearerStoreClaim(id: state.owner)
+    }
+  }
+
   /// Install a token set and the server it belongs to, discarding any in-flight refresh (it
-  /// belongs to the credentials being replaced).
+  /// belongs to the credentials being replaced). Returns whether it was applied — see
+  /// ``BearerStoreClaim`` for when it is not.
   ///
   /// `persist` is the Keychain write-through hook, and it is OPTIONAL because a pair is not
   /// always allowed to reach the Keychain yet: a freshly minted one has not been validated,
   /// so a rotation performed by the validating call must stay in memory until that call
-  /// succeeds (`performNativeOAuthLogin` seeds hookless, then ``attachPersistence(_:)``).
-  /// A pair restored FROM the Keychain seeds with its hook straight away.
+  /// succeeds (`performNativeOAuthLogin` seeds hookless, then
+  /// ``attachPersistence(_:claim:)``). A pair restored FROM the Keychain seeds with its hook
+  /// straight away.
+  @discardableResult
   public func seed(
     _ session: BearerSession,
     baseURL: URL,
-    persist: PersistHook? = nil
-  ) {
+    persist: PersistHook? = nil,
+    claim: BearerStoreClaim? = nil
+  ) -> Bool {
+    guard adoptOwnership(claim) else { return false }
     invalidateInFlightRefresh()
     self.session = session
     self.baseURL = baseURL
-    persistHook.setValue(persist)
+    persistence.withValue { $0.hook = persist }
+    return true
   }
 
   /// Arm the Keychain hook and write the live pair through it, atomically: whatever the store
   /// holds RIGHT NOW is what lands on disk (a rotation performed while the pair was still
   /// unproven included), and any rotation after this point is written by the hook. Returns
-  /// the pair that was written, or `nil` when the store has since been drained — which is a
-  /// logout or an expiry, and nothing should be persisted for it.
+  /// the pair that was written, or `nil` when this attempt no longer owns the store (see
+  /// ``BearerStoreClaim``) or the store has since been drained — a logout or an expiry, and
+  /// nothing may be persisted for either.
+  ///
+  /// The claim is REQUIRED, not defaulted: arming the hook is what can resurrect a deleted
+  /// Keychain entry, so there is no such thing as an anonymous attach.
   @discardableResult
-  public func attachPersistence(_ persist: @escaping PersistHook) -> BearerSession? {
-    persistHook.setValue(persist)
-    guard let session else { return nil }
+  public func attachPersistence(
+    _ persist: @escaping PersistHook,
+    claim: BearerStoreClaim
+  ) -> BearerSession? {
+    guard adoptOwnership(claim), let session else { return nil }
+    persistence.withValue { $0.hook = persist }
     writeThrough(session)
     return session
   }
@@ -116,16 +166,26 @@ public actor BearerTokenStore {
   /// leeway rotates), and an armed hook writes the entry straight back — resurrecting a dead
   /// pair for the next launch. An `await`ed detach could not close that window; this one
   /// happens before the delete and blocks on a write already in progress.
+  ///
+  /// It also REVOKES ownership: disarming alone would leave an outstanding sign-in attempt
+  /// free to re-arm the hook (and rewrite the just-deleted entry) the moment it came back.
   public nonisolated func detachPersistence() {
-    persistHook.setValue(nil)
+    persistence.withValue { state in
+      state.hook = nil
+      state.issued &+= 1
+      state.owner = state.issued
+    }
   }
 
   /// Drop everything (logout / session expiry). Subsequent reads throw `.authExpired`.
-  public func clear() {
+  /// Unclaimed callers drain unconditionally; a claim-bearing one drains only while it still
+  /// owns the store.
+  public func clear(claim: BearerStoreClaim? = nil) {
+    guard adoptOwnership(claim) else { return }
     invalidateInFlightRefresh()
     session = nil
     baseURL = nil
-    persistHook.setValue(nil)
+    detachPersistence()
   }
 
   /// A usable access token: the current one when it still has more than `refreshLeeway`
@@ -162,6 +222,36 @@ public actor BearerTokenStore {
   }
 
   // MARK: - Internals
+
+  /// The lock-isolated half of the store: the write-through hook and who is allowed to touch
+  /// it. `owner` is the only claim id that may mutate; `issued` mints the next one, so bumping
+  /// both revokes everything outstanding.
+  private struct Persistence {
+    var hook: PersistHook?
+    var owner = 0
+    var issued = 0
+  }
+
+  /// May a mutation carrying `claim` be applied?
+  ///
+  /// `nil` is an UNCLAIMED caller — launch restore, logout, a test seeding a fixture — which
+  /// is unconditional and takes ownership itself, superseding any attempt in flight. A claim
+  /// wins only while it is still the current owner AND its task has not been cancelled:
+  /// `Task.isCancelled` here reads the CALLING task (an actor method runs on the caller's
+  /// task, it does not start a new one), which is the whole point of checking inside the store
+  /// rather than at the call site — there is no suspension between this verdict and the
+  /// mutation it guards, so no logout, supersede or cancellation can slip in between.
+  private nonisolated func adoptOwnership(_ claim: BearerStoreClaim?) -> Bool {
+    guard let claim else {
+      persistence.withValue { state in
+        state.issued &+= 1
+        state.owner = state.issued
+      }
+      return true
+    }
+    guard !Task.isCancelled else { return false }
+    return persistence.withValue { $0.owner == claim.id }
+  }
 
   private func performRefresh(
     generation startGeneration: Int,
@@ -206,7 +296,7 @@ public actor BearerTokenStore {
   /// reuse detection on relaunch.
   private nonisolated func writeThrough(_ session: BearerSession) {
     do {
-      try persistHook.withValue { try $0?(session) }
+      try persistence.withValue { try $0.hook?(session) }
     } catch {
       reportIssue("BearerTokenStore: persisting the rotated bearer pair failed: \(error)")
     }
