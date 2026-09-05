@@ -168,7 +168,7 @@ struct ReauthFeatureTests {
     let fresh = bearer(userID: "user-42")
     let serverURL = url
     // The dead pair the expired session left behind.
-    await tokenStore.seed(
+    tokenStore.seed(
       bearer(userID: "user-42", accessToken: "expired"), baseURL: url, persist: { _ in }
     )
     let store = TestStore(initialState: oauthState()) {
@@ -180,7 +180,7 @@ struct ReauthFeatureTests {
         return fresh
       }
       $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
-        let seeded = await tokenStore.current
+        let seeded = tokenStore.current
         #expect(seeded == fresh, "the fresh pair must replace the dead one before validating")
         #expect(connection.auth == .bearer(fresh))
         #expect(connection.token == nil) // never the legacy session-token path
@@ -197,7 +197,7 @@ struct ReauthFeatureTests {
     await store.receive(\.delegate, .reauthenticated(connection: expected, sameUser: true))
 
     #expect(keychain.loadSession(.shared) == .bearer(fresh))
-    let retained = await tokenStore.current
+    let retained = tokenStore.current
     #expect(retained == fresh)
   }
 
@@ -287,7 +287,7 @@ struct ReauthFeatureTests {
     await store.receive(\.oauthResponse.failure) { $0.status = .idle }
 
     #expect(keychain.loadSession(.shared) == nil)
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil)
     #expect(store.state.canSubmit) // immediately retryable
   }
@@ -325,7 +325,7 @@ struct ReauthFeatureTests {
     await store.send(.signInTapped) { $0.status = .validating }
     await store.receive(\.oauthResponse.failure) { $0.status = .invalidCredentials }
 
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil, "a rejected bearer pair must not stay seeded")
     #expect(keychain.loadSession(.shared) == nil)
   }
@@ -347,7 +347,7 @@ struct ReauthFeatureTests {
       $0.status = .failed(RESTError.serviceUnavailable.message)
     }
 
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil)
   }
 

@@ -530,7 +530,7 @@ struct GatewayTicketMintTests {
 
   private func freshStore(expiresAt: Double) async -> BearerTokenStore {
     let store = BearerTokenStore(now: { Date(timeIntervalSince1970: 1_000_000) }, refreshLeeway: 120)
-    await store.seed(stored(expiresAt: expiresAt), baseURL: baseURL, persist: { _ in })
+    store.seed(stored(expiresAt: expiresAt), baseURL: baseURL, persist: { _ in })
     return store
   }
 
@@ -567,7 +567,7 @@ struct GatewayTicketMintTests {
     let mint = try #require(MockURLProtocol.requests.last)
     #expect(mint.url?.path == "/api/auth/ws-ticket")
     #expect(mint.value(forHTTPHeaderField: "Authorization") == "Bearer AT2") // the ROTATED token
-    #expect(await store.current?.refreshToken == "RT2")
+    #expect(store.current?.refreshToken == "RT2")
   }
 
   @Test func aDeadRefreshTokenIsAuthExpiredAndNeverMints() async throws {
@@ -578,7 +578,7 @@ struct GatewayTicketMintTests {
       _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
     }
     #expect(MockURLProtocol.requests.count == 1) // the mint never went out
-    #expect(await store.current == nil)          // store drained by the expiry verdict
+    #expect(store.current == nil)          // store drained by the expiry verdict
   }
 
   @Test func aRefreshOutageIsTransientAndKeepsTheTokens() async throws {
@@ -590,7 +590,7 @@ struct GatewayTicketMintTests {
     await #expect(throws: GatewayError.ticketUnavailable) {
       _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
     }
-    #expect(await store.current?.accessToken == "AT1")
+    #expect(store.current?.accessToken == "AT1")
   }
 
   @Test func aDrainedStoreIsAuthExpired() async throws {

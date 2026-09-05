@@ -179,9 +179,9 @@ races three legs: the callback, the browser outcome, and the timeout.
 
 ## The `BearerTokenStore` invariant
 
-**The actor is the single owner of the token pair and the only refresh path.** Every REST call
+**The store is the single owner of the token pair and the only refresh path.** Every REST call
 and every WS ticket mint asks it for a token via `validAccessToken(refresh:)`; nothing else
-reads the Keychain or inspects `expiresAt`. Three reasons it is an actor and not a lock:
+reads the Keychain or inspects `expiresAt`. Three reasons it is a dedicated type:
 
 1. **Single-flight refresh.** The portal runs refresh-token **reuse detection**: two concurrent
    refreshes with the same refresh token revoke the whole session and sign the user out.
@@ -189,7 +189,7 @@ reads the Keychain or inspects `expiresAt`. Three reasons it is an actor and not
    `concurrentCallersAtExpiryShareExactlyOneRefresh`, whose assertion is taken *while* the fake
    refresh is still parked, so a broken join cannot hide behind timing.
 2. **Persist before publish.** The rotated pair is written through the `persist` hook from
-   inside the actor BEFORE any caller sees the new token, so a crash between "server rotated"
+   inside the store BEFORE any caller sees the new token, so a crash between "server rotated"
    and "app saved" can't strand the app holding a retired refresh token. A persist failure is
    `reportIssue`d but never drops the in-memory pair — losing it would trip reuse detection on
    relaunch.
@@ -207,6 +207,16 @@ publishes its pair — doing so would resurrect credentials the app deliberately
 different account, or a logout). Callers parked on it get whatever is live: the freshly seeded
 token after a `seed`, `authExpired` after a `clear`. Throwing `CancellationError` at them would
 have manufactured a failure at the moment the app holds a perfectly good token.
+
+**One synchronization domain.** Every mutable field the store owns — pair, server, persist
+hook, ownership, in-flight refresh handle, generation — lives behind ONE lock, and every entry
+point takes its verdict, its mutations and its write-through in a SINGLE critical section, so a
+concurrent `detachPersistence()`/`clear()`/newer claim cannot land between a check and the
+mutation it approved. That is why the type is a `Sendable` class rather than an actor: with no
+isolation domain of its own it cannot hold mutable state outside the lock, which is the thing
+that kept regressing while ownership sat in a lock and the pair sat in actor storage. The
+normative statement, and the two disciplines it needs (never `await` under the lock; never run
+re-entrant caller code — including `Task.cancel()` — under it), live on the type.
 
 `BearerTokenStore.shared` is the process-wide instance the live REST and gateway clients share
 — the "single owner" invariant is only true if there is one store. It is exposed as

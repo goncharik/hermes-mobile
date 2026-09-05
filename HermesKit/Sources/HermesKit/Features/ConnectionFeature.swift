@@ -70,7 +70,7 @@ struct NativeOAuthLoginSuccess: Equatable, Sendable {
 ///    validating call can rotate the pair, and saving the local copy would put the retired
 ///    refresh token back in the Keychain — which the portal's reuse detection answers by
 ///    revoking the whole session on the next launch. `attachPersistence` arms the hook and
-///    writes that pair in one actor-isolated step, so a rotation cannot slip between them.
+///    writes that pair in ONE critical section, so a rotation cannot slip between them.
 /// 4. A SUPERSEDED OR CANCELLED attempt touches NOTHING — it neither seeds, drains nor
 ///    persists. The store and the Keychain entry are process-wide, so an abandoned attempt (a
 ///    second provider tap, an edited server URL, a logout tearing the screen down) that wrote
@@ -101,7 +101,7 @@ func performNativeOAuthLogin(
   // Refused → this attempt lost the store while the browser was up. Bail BEFORE validating:
   // a `.bearer` request resolves its header through the store, so validating now would send
   // the winner's credentials (possibly to a different server) and report the verdict as ours.
-  guard await bearerTokens.seed(minted, baseURL: baseURL, claim: claim) else {
+  guard bearerTokens.seed(minted, baseURL: baseURL, claim: claim) else {
     return .failure(.login(.cancelled))
   }
   do {
@@ -114,7 +114,7 @@ func performNativeOAuthLogin(
     // would take out a newer attempt's pair, or silently turn `unregisterPush`/`logout` into
     // no-ops. Leave the store as it is and report the silent-cancel verdict.
     guard !isCancellation(error) else { return .failure(.login(.cancelled)) }
-    await bearerTokens.clear(claim: claim)
+    bearerTokens.clear(claim: claim)
     return .failure(.validation(asRESTError(error)))
   }
   // Validated — so arm the hook and persist whatever the store holds. `nil` means this attempt
@@ -122,7 +122,7 @@ func performNativeOAuthLogin(
   // and revoked the store mid-flight. Writing then would overwrite the winner's credentials or
   // resurrect an entry the logout just deleted, and reporting success would land a connection
   // whose pair the store does not have. Same silent verdict as any other abandoned attempt.
-  guard let bearer = await bearerTokens.attachPersistence(
+  guard let bearer = bearerTokens.attachPersistence(
     { session in try keychain.saveSession(.bearer(session)) },
     claim: claim
   ) else {

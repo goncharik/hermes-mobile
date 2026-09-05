@@ -5562,7 +5562,7 @@ struct AppFeatureTests {
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
       $0.bearerTokens = tokenStore
       $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
-        #expect(await tokenStore.current == session, "the probe must run against a seeded store")
+        #expect(tokenStore.current == session, "the probe must run against a seeded store")
         #expect(connection.token == nil) // never the legacy session-token path
         return []
       }
@@ -5612,7 +5612,7 @@ struct AppFeatureTests {
     }
     #expect(store.state.connectionFailed == nil) // #62: an auth verdict never raises Retry
     await store.finish()
-    #expect(await tokenStore.current == nil)
+    #expect(tokenStore.current == nil)
   }
 
   /// The other half of the #62 rule, which the bearer regime must not weaken: a TRANSPORT
@@ -5641,7 +5641,7 @@ struct AppFeatureTests {
       )
     }
     await store.finish()
-    #expect(await tokenStore.current == session, "an offline probe must not drop the pair")
+    #expect(tokenStore.current == session, "an offline probe must not drop the pair")
   }
 
   /// A bearer session dying mid-use raises the OAuth variant of the re-auth sheet: no
@@ -5716,7 +5716,7 @@ struct AppFeatureTests {
     // What the store holds after the sign-in rotated once — strictly newer than `fresh`.
     let rotated = bearerSession(accessToken: "rotated")
     let tokenStore = BearerTokenStore()
-    await tokenStore.seed(
+    tokenStore.seed(
       rotated, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
     )
     let store = TestStore(
@@ -5752,7 +5752,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.liveChat.resumeAfterReauth)
     #expect(
-      await tokenStore.current == rotated,
+      tokenStore.current == rotated,
       "the reauth hand-off overwrote the store's own (newer) pair with a retired one"
     )
 
@@ -5768,7 +5768,7 @@ struct AppFeatureTests {
     let rotated = bearerSession(userID: "user-99", accessToken: "rotated")
     let tokenStore = BearerTokenStore()
     let profileCleared = LockIsolated(false)
-    await tokenStore.seed(
+    tokenStore.seed(
       rotated, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
     )
     let store = TestStore(
@@ -5802,7 +5802,7 @@ struct AppFeatureTests {
     #expect(profileCleared.value)
     await store.finish()
     #expect(
-      await tokenStore.current == rotated,
+      tokenStore.current == rotated,
       "the reauth hand-off overwrote the store's own (newer) pair with a retired one"
     )
   }
@@ -5838,7 +5838,7 @@ struct AppFeatureTests {
       try? keychain.saveSession(.bearer(session))
       // The persist hook the live seed installs — a rotation during either logout hop must
       // not be able to write the Keychain entry the reducer has already deleted.
-      await tokenStore.seed(session, baseURL: connection.baseURL, persist: {
+      tokenStore.seed(session, baseURL: connection.baseURL, persist: {
         try keychain.saveSession(.bearer($0))
       })
       let preferences = PreferencesClient.inMemory()
@@ -5865,7 +5865,7 @@ struct AppFeatureTests {
         $0.hermesREST.unregisterPush = { @Sendable _, deviceToken in
           #expect(deviceToken == "device-token-1")
           #expect(
-            await tokenStore.current == session,
+            tokenStore.current == session,
             "\(action): the store was drained before the push unregister could authenticate"
           )
           #expect(
@@ -5877,7 +5877,7 @@ struct AppFeatureTests {
         $0.hermesREST.logout = { @Sendable posted in
           #expect(posted == connection)
           #expect(
-            await tokenStore.current == session,
+            tokenStore.current == session,
             "\(action): the store was drained before the logout could authenticate"
           )
           #expect(unregisters.value == 1, "\(action): the unregister must have already run")
@@ -5899,7 +5899,7 @@ struct AppFeatureTests {
       await store.finish()
       #expect(logouts.value == 1, "\(action) posted \(logouts.value) logouts")
       #expect(unregisters.value == 1, "\(action) sent \(unregisters.value) push unregisters")
-      #expect(await tokenStore.current == nil, "\(action) left the token store seeded")
+      #expect(tokenStore.current == nil, "\(action) left the token store seeded")
       if deletesKeychainSession {
         #expect(
           keychain.loadSession(.shared) == nil,
@@ -5949,7 +5949,7 @@ struct AppFeatureTests {
       return recording
     }()
     try? inMemory.saveSession(.bearer(session))
-    await tokenStore.seed(session, baseURL: connection.baseURL) {
+    tokenStore.seed(session, baseURL: connection.baseURL) {
       try keychain.saveSession(.bearer($0))
     }
 

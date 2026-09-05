@@ -50,7 +50,7 @@ struct NativeOAuthClientTests {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
     // Comfortably fresh — no refresh should happen.
-    await store.seed(stored(expiresAt: 1_000_600), baseURL: baseURL, persist: { _ in })
+    store.seed(stored(expiresAt: 1_000_600), baseURL: baseURL, persist: { _ in })
 
     MockURLProtocol.set(json: #"{"sessions":[],"total":0}"#)
     _ = try await makeClient(tokenStore: store).sessions(bearerConnection(), 20, 0, .recent)
@@ -69,7 +69,7 @@ struct NativeOAuthClientTests {
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
     let persisted = LockIsolated<[BearerSession]>([])
     // 10 s left, inside the 120 s leeway → one rotation, then the real call.
-    await store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL) { rotated in
+    store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL) { rotated in
       persisted.withValue { $0.append(rotated) }
     }
 
@@ -94,13 +94,13 @@ struct NativeOAuthClientTests {
     #expect(api.value(forHTTPHeaderField: "Authorization") == "Bearer AT2")
 
     #expect(persisted.value.map(\.accessToken) == ["AT2"]) // persisted exactly once
-    #expect(await store.current?.refreshToken == "RT2")
+    #expect(store.current?.refreshToken == "RT2")
   }
 
   @Test func refreshUnauthorizedClearsTheStoreAndSurfacesAsA401() async throws {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
-    await store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL, persist: { _ in })
+    store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL, persist: { _ in })
 
     // `{"error":"session_expired"}` — every provider rejected the refresh token.
     MockURLProtocol.set(status: 401, json: #"{"error":"session_expired"}"#)
@@ -109,21 +109,21 @@ struct NativeOAuthClientTests {
     await #expect(throws: RESTError.unauthorized) {
       _ = try await makeClient(tokenStore: store).sessions(bearerConnection(), 20, 0, .recent)
     }
-    #expect(await store.current == nil)
+    #expect(store.current == nil)
     #expect(MockURLProtocol.requests.count == 1) // the API call never went out
   }
 
   @Test func refreshServiceUnavailableKeepsTheTokens() async throws {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
-    await store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL, persist: { _ in })
+    store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL, persist: { _ in })
 
     // 503 = a provider is momentarily unreachable. Retryable, so the pair must survive.
     MockURLProtocol.set(status: 503)
     await #expect(throws: RESTError.serviceUnavailable) {
       _ = try await makeClient(tokenStore: store).sessions(bearerConnection(), 20, 0, .recent)
     }
-    #expect(await store.current?.accessToken == "AT1")
+    #expect(store.current?.accessToken == "AT1")
   }
 
   // MARK: - Token endpoints
@@ -208,7 +208,7 @@ struct NativeOAuthClientTests {
   @Test func logoutAuthenticatesWithTheConnectionsRegime() async throws {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
-    await store.seed(stored(expiresAt: 1_000_600), baseURL: baseURL, persist: { _ in })
+    store.seed(stored(expiresAt: 1_000_600), baseURL: baseURL, persist: { _ in })
 
     MockURLProtocol.set(status: 200, json: "{}")
     await makeClient(tokenStore: store).logout(bearerConnection())

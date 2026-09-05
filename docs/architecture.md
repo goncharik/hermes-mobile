@@ -96,10 +96,10 @@ a `testValue`/`.inMemory()` variant):
   injected `NativeLoginDriver` so it is testable on macOS without a browser; only
   `ASWebAuthenticationSession` sits behind `#if canImport(UIKit)` (the listener builds and is
   socket-tested on macOS). Details: `docs/features/oauth-sign-in.md`.
-- **`BearerTokenStore`** — not a `@DependencyClient` but an **actor** exposed as
-  `\.bearerTokens`: the single owner of the `.bearer` token pair and the only refresh path
-  (single-flight, persist-before-publish, generation-superseded rotations). `liveValue` is the
-  process-wide `.shared`; `testValue` is a fresh empty store.
+- **`BearerTokenStore`** — not a `@DependencyClient` but a lock-isolated `Sendable` **class**
+  exposed as `\.bearerTokens`: the single owner of the `.bearer` token pair and the only
+  refresh path (single-flight, persist-before-publish, generation-superseded rotations).
+  `liveValue` is the process-wide `.shared`; `testValue` is a fresh empty store.
 - **`KeychainClient`** — the persisted `AuthSession` (the only secret): a static `.token`, a
   `.cookie(CookieSession)` carrying the rotating session cookies + username + provider, or a
   `.bearer(BearerSession)` carrying the access/refresh pair + expiry + provider + `user_id`.
@@ -179,10 +179,11 @@ resolved per request by `resolveAuth(for:session:tokenStore:)`: `.token` →
 .unauthorized` so the existing 401 routing holds. `HermesProfileClient` shares the same
 resolver.
 
-**`BearerTokenStore` (actor) is the single owner of the bearer pair** and the only refresh
-path: single-flight (the portal's refresh-token reuse detection revokes the session on a
-concurrent double-refresh), persists the rotated pair inside the actor *before* publishing it,
-and supersedes in-flight rotations via a generation counter on `seed`/`clear`. A refresh 401
+**`BearerTokenStore` is the single owner of the bearer pair** and the only refresh path:
+single-flight (the portal's refresh-token reuse detection revokes the session on a concurrent
+double-refresh), persists the rotated pair *before* publishing it, and supersedes in-flight
+rotations via a generation counter on `seed`/`clear`. It has exactly one synchronization
+domain — see the rule stated on the type itself. A refresh 401
 clears the store and throws `GatewayError.authExpired`; anything else (503, transport) rethrows
 with the tokens intact so backoff can retry. **Ordering contract:** `rest.logout` and
 `rest.unregisterPush` both authenticate through the store, so both must fire BEFORE

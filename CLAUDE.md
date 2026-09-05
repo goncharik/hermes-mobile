@@ -99,10 +99,14 @@ bullets below are the compressed rules.
   protocol: `docs/architecture.md`.
 - **`RequestAuth` is the ONE place either auth header is written** (`.none | .sessionToken |
   .bearer`, resolved by `resolveAuth`; `HermesProfileClient` shares it), and **every bearer
-  read goes through `BearerTokenStore.validAccessToken()`** — the actor is the single owner of
+  read goes through `BearerTokenStore.validAccessToken()`** — the store is the single owner of
   the token pair and the only refresh path (single-flight against the portal's reuse detection,
   persist-before-publish, generation-superseded rotations; refresh 401 → clear + `authExpired`,
   anything else rethrown with tokens intact). Never read the Keychain or `expiresAt` directly.
+  **It has exactly ONE synchronization domain** — every mutable field behind one lock, every
+  entry point a single critical section — so no approved check can be invalidated by a
+  concurrent detach/clear/claim before its mutation; never add state outside that lock, and
+  never `await` (or cancel the refresh task) while holding it.
   **Ordering: `rest.logout` and `rest.unregisterPush` resolve auth through the store, so both
   MUST fire BEFORE `bearerTokens.clear()`** (and `rest.logout` is THE deliberate exception to
   the never-swallow rule), while `detachPersistence()` runs synchronously BEFORE every

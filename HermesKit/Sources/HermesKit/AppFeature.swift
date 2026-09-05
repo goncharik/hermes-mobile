@@ -329,7 +329,7 @@ public struct AppFeature {
             // unseeded store sends the request with no credentials at all and 401s a
             // perfectly good session into prefilled onboarding. Seeding also re-arms the
             // Keychain persist hook, so a rotation during the probe is saved.
-            await Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
+            Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
             do {
               _ = try await rest.sessions(connection, 1, 0, .recent)
               await send(.autoConnectSucceeded(connection))
@@ -1177,7 +1177,7 @@ public struct AppFeature {
       token: connection.auth.token ?? ""
     )
     guard case .bearer = connection.auth else { return .none }
-    return .run { [bearerTokens] _ in await bearerTokens.clear() }
+    return .run { [bearerTokens] _ in bearerTokens.clear() }
   }
 
   /// Release the slot's microphone when an identity teardown (Settings "disconnect", either
@@ -1252,7 +1252,7 @@ public struct AppFeature {
   }
 
   /// Install a restored/refreshed bearer pair in the token store, with the Keychain save as
-  /// the persist hook so a rotation performed inside the actor is written back. A no-op for
+  /// the persist hook so a rotation performed inside the store is written back. A no-op for
   /// the other two regimes. Static (and dependency-taking) because it runs inside `@Sendable`
   /// effect closures, where the reducer `self` is not `Sendable`.
   private static func seedBearerStore(
@@ -1260,9 +1260,9 @@ public struct AppFeature {
     baseURL: URL,
     keychain: KeychainClient,
     store: BearerTokenStore
-  ) async {
+  ) {
     guard case let .bearer(bearer) = auth else { return }
-    await store.seed(bearer, baseURL: baseURL) { rotated in
+    store.seed(bearer, baseURL: baseURL) { rotated in
       try keychain.saveSession(.bearer(rotated))
     }
   }
@@ -1289,7 +1289,7 @@ public struct AppFeature {
       unregister,
       .run { [rest, bearerTokens] _ in
         await rest.logout(connection)
-        await bearerTokens.clear()
+        bearerTokens.clear()
       }
     )
   }

@@ -590,7 +590,7 @@ struct ConnectionFeatureTests {
       $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
         // The pair must be in the store BEFORE the validating call — a `.bearer` request
         // resolves its `Authorization` header through it, so an unseeded store 401s.
-        let seeded = await tokenStore.current
+        let seeded = tokenStore.current
         #expect(seeded == bearer, "the bearer pair must be seeded before the validating call")
         #expect(connection.auth == .bearer(bearer))
         #expect(connection.token == nil) // never the legacy session-token path
@@ -607,7 +607,7 @@ struct ConnectionFeatureTests {
 
     #expect(keychain.loadSession(.shared) == .bearer(bearer))
     #expect(preferences.loadServerURL() == "http://mac:9119")
-    let retained = await tokenStore.current
+    let retained = tokenStore.current
     #expect(retained == bearer)
   }
 
@@ -659,7 +659,7 @@ struct ConnectionFeatureTests {
 
     #expect(keychain.loadSession(.shared) == nil)
     #expect(preferences.loadServerURL() == nil)
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil)
     #expect(store.state.canConnect) // the segment is immediately retryable
   }
@@ -719,7 +719,7 @@ struct ConnectionFeatureTests {
       $0.status = .failed("invalid or expired authorization code")
     }
 
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil)
     #expect(keychain.loadSession(.shared) == nil)
     #expect(preferences.loadServerURL() == nil)
@@ -788,7 +788,7 @@ struct ConnectionFeatureTests {
     await store.send(.connectTapped) { $0.status = .validating }
     await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
 
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil, "a rejected bearer pair must not stay seeded")
     #expect(keychain.loadSession(.shared) == nil)
     #expect(preferences.loadServerURL() == nil)
@@ -812,7 +812,7 @@ struct ConnectionFeatureTests {
       $0.status = .failed(RESTError.serviceUnavailable.message)
     }
 
-    let seeded = await tokenStore.current
+    let seeded = tokenStore.current
     #expect(seeded == nil)
   }
 
@@ -852,7 +852,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.delegate.connected)
 
     #expect(keychain.loadSession(.shared) == .bearer(rotated))
-    #expect(await tokenStore.current == rotated)
+    #expect(tokenStore.current == rotated)
   }
 
   /// A rotation during the validating call is only allowed to reach the Keychain once that
@@ -893,7 +893,7 @@ struct ConnectionFeatureTests {
       keychain.loadSession(.shared) == nil,
       "a rejected sign-in left a restorable bearer session in the Keychain"
     )
-    #expect(await tokenStore.current == nil)
+    #expect(tokenStore.current == nil)
   }
 
   /// Tapping a second time supersedes the first attempt (the browser leg can run for minutes
@@ -933,7 +933,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.oauthLoginResponse.success)
     await store.receive(\.delegate.connected)
 
-    #expect(await tokenStore.current == winner, "the cancelled attempt drained the live pair")
+    #expect(tokenStore.current == winner, "the cancelled attempt drained the live pair")
     #expect(keychain.loadSession(.shared) == .bearer(winner))
   }
 
@@ -1013,7 +1013,7 @@ struct ConnectionFeatureTests {
 
     #expect(await attempt.value == .failure(.login(.cancelled)))
     #expect(
-      await tokenStore.current == minted,
+      tokenStore.current == minted,
       "a cancelled attempt drained the shared token store"
     )
     #expect(keychain.loadSession(.shared) == nil)
@@ -1108,7 +1108,7 @@ struct ConnectionFeatureTests {
 
     #expect(await first.value == .failure(.login(.cancelled)))
     #expect(
-      await tokenStore.current == winner,
+      tokenStore.current == winner,
       "a superseded attempt installed its pair over the winner's"
     )
     #expect(keychain.loadSession(.shared) == .bearer(winner))

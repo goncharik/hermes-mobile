@@ -68,20 +68,20 @@ struct BearerTokenStoreTests {
 
   @Test func aFreshTokenIsReturnedWithoutRefreshing() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
-    await store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
+    store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
 
     let token = try await store.validAccessToken { _, _ in
       Issue.record("a fresh token must not be refreshed")
       return Self.rotated
     }
     #expect(token == "access-1")
-    #expect(await store.current?.accessToken == "access-1")
+    #expect(store.current?.accessToken == "access-1")
   }
 
   @Test func aRotatedPairIsPersistedBeforeAnyCallerSeesIt() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder()
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 30),
       baseURL: Self.baseURL,
       persist: { try persisted.hook($0) }
@@ -90,10 +90,10 @@ struct BearerTokenStoreTests {
     let token = try await store.validAccessToken { _, _ in Self.rotated }
 
     // No suspension point between the return above and this read: the persist hook having
-    // already run proves it ran inside the actor, before the token was published.
+    // already run proves it ran inside the store, before the token was published.
     #expect(token == "access-2")
     #expect(persisted.sessions == [Self.rotated])
-    #expect(await store.current == Self.rotated)
+    #expect(store.current == Self.rotated)
   }
 
   // MARK: - Single flight
@@ -104,7 +104,7 @@ struct BearerTokenStoreTests {
   @Test func concurrentCallersAtExpiryShareExactlyOneRefresh() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder()
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 30),
       baseURL: Self.baseURL,
       persist: { try persisted.hook($0) }
@@ -149,7 +149,7 @@ struct BearerTokenStoreTests {
     // portal's reuse detection.
     #expect(await refreshes.sessions.map(\.refreshToken) == ["refresh-1"])
     #expect(persisted.sessions == [Self.rotated])
-    #expect(await store.current == Self.rotated)
+    #expect(store.current == Self.rotated)
   }
 
   // MARK: - Failure semantics
@@ -157,7 +157,7 @@ struct BearerTokenStoreTests {
   @Test func aRejectedRefreshClearsTheStoreAndReportsExpiry() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder()
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 10),
       baseURL: Self.baseURL,
       persist: { try persisted.hook($0) }
@@ -166,7 +166,7 @@ struct BearerTokenStoreTests {
     await #expect(throws: GatewayError.authExpired) {
       try await store.validAccessToken { _, _ in throw RESTError.unauthorized }
     }
-    #expect(await store.current == nil)
+    #expect(store.current == nil)
     #expect(persisted.sessions.isEmpty)
 
     // Cleared for good: the next read is an expiry verdict with no network attempt.
@@ -181,12 +181,12 @@ struct BearerTokenStoreTests {
   @Test func aTransientRefreshFailureKeepsTheTokensAndAllowsARetry() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let expiring = Self.session(expiresIn: 10)
-    await store.seed(expiring, baseURL: Self.baseURL, persist: { _ in })
+    store.seed(expiring, baseURL: Self.baseURL, persist: { _ in })
 
     await #expect(throws: RESTError.serviceUnavailable) {
       try await store.validAccessToken { _, _ in throw RESTError.serviceUnavailable }
     }
-    #expect(await store.current == expiring) // tokens intact — backoff will retry
+    #expect(store.current == expiring) // tokens intact — backoff will retry
 
     let token = try await store.validAccessToken { _, _ in Self.rotated }
     #expect(token == "access-2")
@@ -194,10 +194,10 @@ struct BearerTokenStoreTests {
 
   @Test func clearingTheStoreExpiresSubsequentReads() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
-    await store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
-    await store.clear()
+    store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
+    store.clear()
 
-    #expect(await store.current == nil)
+    #expect(store.current == nil)
     await #expect(throws: GatewayError.authExpired) {
       try await store.validAccessToken { _, _ in Self.rotated }
     }
@@ -209,7 +209,7 @@ struct BearerTokenStoreTests {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let firstPersist = PersistRecorder()
     let secondPersist = PersistRecorder()
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 10),
       baseURL: Self.baseURL,
       persist: { try firstPersist.hook($0) }
@@ -233,7 +233,7 @@ struct BearerTokenStoreTests {
     let reseeded = Self.session(
       access: "access-B", refresh: "refresh-B", userID: "user-2", expiresIn: 3600
     )
-    await store.seed(
+    store.seed(
       reseeded,
       baseURL: Self.baseURL,
       persist: { try secondPersist.hook($0) }
@@ -243,7 +243,7 @@ struct BearerTokenStoreTests {
     // The waiting caller gets the LIVE credentials, not the superseded rotation — and not
     // the cancellation the supersede itself caused.
     #expect(try await caller.value == "access-B")
-    #expect(await store.current == reseeded)
+    #expect(store.current == reseeded)
     #expect(firstPersist.sessions.isEmpty)
     #expect(secondPersist.sessions.isEmpty)
   }
@@ -254,7 +254,7 @@ struct BearerTokenStoreTests {
   /// never serve another token.
   @Test func aClearDuringARefreshReportsExpiryNotTheCancellation() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
-    await store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, persist: { _ in })
+    store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, persist: { _ in })
 
     let started = Gate()
     let release = Gate()
@@ -267,7 +267,7 @@ struct BearerTokenStoreTests {
       }
     }
     await started.wait()
-    await store.clear()
+    store.clear()
     await release.open()
 
     await #expect(throws: GatewayError.authExpired) { try await caller.value }
@@ -279,13 +279,13 @@ struct BearerTokenStoreTests {
   @Test func detachingPersistenceKeepsServingTokensWithoutWritingThem() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder()
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 10),
       baseURL: Self.baseURL,
       persist: { try persisted.hook($0) }
     )
 
-    await store.detachPersistence()
+    store.detachPersistence()
     let token = try await store.validAccessToken { _, _ in Self.rotated }
 
     #expect(token == "access-2") // the logout hops still authenticate
@@ -297,7 +297,7 @@ struct BearerTokenStoreTests {
   @Test func aPersistFailureStillPublishesTheRotatedPair() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder(failure: PersistFailure())
-    await store.seed(
+    store.seed(
       Self.session(expiresIn: 10),
       baseURL: Self.baseURL,
       persist: { try persisted.hook($0) }
@@ -310,7 +310,7 @@ struct BearerTokenStoreTests {
     }
 
     #expect(token.value == "access-2")
-    #expect(await store.current == Self.rotated)
+    #expect(store.current == Self.rotated)
   }
 
   // MARK: - Ownership
@@ -325,15 +325,15 @@ struct BearerTokenStoreTests {
     let current = store.claimOwnership()
     let winner = Self.session(access: "winner", expiresIn: 600)
 
-    #expect(await store.seed(winner, baseURL: Self.baseURL, claim: current))
-    let reseeded = await store.seed(
+    #expect(store.seed(winner, baseURL: Self.baseURL, claim: current))
+    let reseeded = store.seed(
       Self.session(access: "loser", expiresIn: 600),
       baseURL: Self.baseURL,
       claim: abandoned
     )
 
     #expect(reseeded == false)
-    #expect(await store.current == winner)
+    #expect(store.current == winner)
   }
 
   /// An UNCLAIMED seed — launch restore — is unconditional and takes ownership with it: it is
@@ -343,15 +343,15 @@ struct BearerTokenStoreTests {
     let attempt = store.claimOwnership()
     let restored = Self.session(access: "restored", expiresIn: 600)
 
-    await store.seed(restored, baseURL: Self.baseURL, persist: { _ in })
-    let seeded = await store.seed(
+    store.seed(restored, baseURL: Self.baseURL, persist: { _ in })
+    let seeded = store.seed(
       Self.session(access: "late", expiresIn: 600),
       baseURL: Self.baseURL,
       claim: attempt
     )
 
     #expect(seeded == false)
-    #expect(await store.current == restored)
+    #expect(store.current == restored)
   }
 
   /// Logout's synchronous half is `detachPersistence()` then `keychain.deleteSession()`. An
@@ -362,10 +362,10 @@ struct BearerTokenStoreTests {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     let persisted = PersistRecorder()
     let attempt = store.claimOwnership()
-    await store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, claim: attempt)
+    store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, claim: attempt)
 
     store.detachPersistence() // …and the reducer deletes the Keychain entry right here
-    let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: attempt)
+    let attached = store.attachPersistence({ try persisted.hook($0) }, claim: attempt)
 
     #expect(attached == nil)
     #expect(persisted.sessions.isEmpty)
@@ -373,6 +373,60 @@ struct BearerTokenStoreTests {
     let token = try await store.validAccessToken { _, _ in Self.rotated }
     #expect(token == "access-2")
     #expect(persisted.sessions.isEmpty)
+  }
+
+  /// The interleaving every variant of this defect has been: a logout lands in the MIDDLE of a
+  /// mutation whose ownership check has already passed, so the mutation re-arms the hook (and
+  /// resurrects the Keychain entry the logout just deleted) on its way out.
+  ///
+  /// Driven deterministically rather than by timing: `Task.cancel()` runs a cancellation
+  /// handler SYNCHRONOUSLY on the cancelling thread, and a `seed` discards the in-flight
+  /// refresh — so a handler that detaches is a logout landing at exactly that instant, every
+  /// run. It only stays out of the middle because the seed's verdict, its writes and the hook
+  /// arming are ONE critical section and the discard happens after it; split them again (or
+  /// cancel from inside the section, where `LockIsolated`'s copy-back silently drops the
+  /// detach) and this fails.
+  @Test func aDetachLandingInsideASeedStillDisarmsTheHook() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    let attempt = store.claimOwnership()
+    store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, claim: attempt)
+
+    let parked = Gate()
+    let release = Gate()
+    let caller = Task {
+      try await store.validAccessToken { _, _ in
+        await withTaskCancellationHandler {
+          await parked.open()
+          await release.wait()
+          return Self.rotated
+        } onCancel: {
+          // The logout, on the very thread that is running the seed below.
+          store.detachPersistence()
+        }
+      }
+    }
+    await parked.wait() // the rotation is in flight, so the seed has something to discard
+
+    // Ownership still checks out here; the detach lands between that verdict and the arming.
+    store.seed(
+      Self.session(access: "late", expiresIn: 10),
+      baseURL: Self.baseURL,
+      persist: { try persisted.hook($0) },
+      claim: attempt
+    )
+    await release.open()
+    _ = try? await caller.value
+
+    // The detach was ordered after the check, so the detach is what stands: no claim survives…
+    #expect(store.attachPersistence({ try persisted.hook($0) }, claim: attempt) == nil)
+    // …and no rotation may reach the entry the logout deleted.
+    let token = try await store.validAccessToken { _, _ in Self.rotated }
+    #expect(token == "access-2") // the logout's own hops still authenticate
+    #expect(
+      persisted.sessions.isEmpty,
+      "the seed re-armed the hook over a detach that landed inside it"
+    )
   }
 
   /// Cancellation is checked INSIDE the store, atomically with the mutation — a check made at
@@ -388,12 +442,12 @@ struct BearerTokenStoreTests {
     let attempt = Task { () -> (Bool, BearerSession?) in
       await arrived.open()
       await release.wait() // cancelled while parked here, exactly like a slow browser leg
-      let seeded = await store.seed(
+      let seeded = store.seed(
         Self.session(expiresIn: 600),
         baseURL: Self.baseURL,
         claim: claim
       )
-      let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: claim)
+      let attached = store.attachPersistence({ try persisted.hook($0) }, claim: claim)
       return (seeded, attached)
     }
     await arrived.wait()
@@ -403,7 +457,7 @@ struct BearerTokenStoreTests {
     let (seeded, attached) = await attempt.value
     #expect(seeded == false)
     #expect(attached == nil)
-    #expect(await store.current == nil)
+    #expect(store.current == nil)
     #expect(persisted.sessions.isEmpty)
   }
 
@@ -417,8 +471,8 @@ struct BearerTokenStoreTests {
     let claim = store.claimOwnership()
     let minted = Self.session(expiresIn: 10)
 
-    #expect(await store.seed(minted, baseURL: Self.baseURL, claim: claim))
-    let attached = await store.attachPersistence({ try persisted.hook($0) }, claim: claim)
+    #expect(store.seed(minted, baseURL: Self.baseURL, claim: claim))
+    let attached = store.attachPersistence({ try persisted.hook($0) }, claim: claim)
     #expect(attached == minted)
     #expect(persisted.sessions == [minted])
 
@@ -433,7 +487,7 @@ struct BearerTokenStoreTests {
 private struct PersistFailure: Error {}
 
 /// Records every persisted pair; optionally fails the write. Lock-guarded because the hook
-/// is a synchronous `@Sendable` closure called from the actor.
+/// is a synchronous `@Sendable` closure called from inside the store's critical section.
 private final class PersistRecorder: Sendable {
   private let saved = LockIsolated<[BearerSession]>([])
   private let failure: (any Error & Sendable)?
