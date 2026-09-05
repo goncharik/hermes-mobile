@@ -19,7 +19,7 @@ struct ModelPickerSheet: View {
   /// `ChatFeature.State.extendedReasoningSupported`: false hides `max`/`ultra` after this
   /// slot's agent rejected one. Defaulted so the snapshot call sites stay unchanged.
   var extendedReasoningSupported: Bool = true
-  let onSelectModel: (String) -> Void
+  let onSelectModel: (String, String?) -> Void
   let onSelectEffort: (String) -> Void
   let onDone: () -> Void
 
@@ -90,7 +90,9 @@ struct ModelPickerSheet: View {
   @ViewBuilder
   private func configuredModels(_ provider: ModelOptions.Provider) -> some View {
     ForEach(provider.models, id: \.self) { model in
-      selectableRow(model, selected: model == currentModel) { onSelectModel(model) }
+      selectableRow(model, selected: model == currentModel) {
+        onSelectModel(model, provider.selectionSlug)
+      }
       // Reasoning effort drops down under the selected, reasoning-capable model.
       if model == currentModel, picker.options?.supportsReasoning(model) ?? true {
         ForEach(ModelOptions.offeredEfforts(extendedSupported: extendedReasoningSupported),

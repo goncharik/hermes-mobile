@@ -164,7 +164,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       currentModel: "gpt-5", // reasoning-capable → effort options drop down under it, "high" selected
       currentEffort: "high",
       isBusy: false,
-      onSelectModel: { _ in }, onSelectEffort: { _ in }, onDone: {}
+      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
     )
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -192,7 +192,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       currentEffort: "high",
       isBusy: false,
       extendedReasoningSupported: false,
-      onSelectModel: { _ in }, onSelectEffort: { _ in }, onDone: {}
+      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
     )
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -220,7 +220,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       currentModel: "gpt-5",
       currentEffort: "high",
       isBusy: false,
-      onSelectModel: { _ in }, onSelectEffort: { _ in }, onDone: {}
+      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
     )
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -245,7 +245,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       currentModel: "claude-haiku-4-5", // no reasoning → effort section hidden
       currentEffort: nil,
       isBusy: false,
-      onSelectModel: { _ in }, onSelectEffort: { _ in }, onDone: {}
+      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
     )
     assertSnapshot(of: view, as: deviceImage())
   }

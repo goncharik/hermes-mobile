@@ -36,6 +36,18 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
 
     public var id: String { slug ?? name }
 
+    /// The identifier to send as `--provider` on a model switch. The SLUG only — desktop
+    /// parity (`use-model-controls.ts` sends `provider.slug`, no fallback). The gateway's
+    /// `parse_model_flags_detailed` splits the value on whitespace and
+    /// `resolve_provider_full` never matches display names, so a name fallback (e.g.
+    /// "Ollama Cloud") would parse as provider `Ollama`, model `… Cloud` — worse than a
+    /// bare id. Nil (no slug) sends the model out bare and the gateway's own detection
+    /// ladder routes it; today every gateway row builder passes a slug, so nil is rare.
+    public var selectionSlug: String? {
+      let slugValue = (slug ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      return slugValue.isEmpty ? nil : slugValue
+    }
+
     /// Configured + usable: authenticated with at least one model. Unconfigured providers
     /// come back authenticated=false with an empty model list and a `warning`.
     public var isConfigured: Bool { (authenticated ?? false) && !models.isEmpty }
