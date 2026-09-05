@@ -416,6 +416,15 @@ Probe/LoopbackSpike/run.sh <simulator-udid>             # build + install + laun
 - **The gateway must advertise `native_pkce`.** No `auth_flows` entry, no OAuth segment — the
   app cannot probe for the endpoints and will not guess. Such a server is signed into with a
   token, and if it advertises OAuth providers the footer says so (see the capability gate).
+- **Refresh is PROACTIVE ONLY** — driven by `expiresAt` minus the 120 s leeway, never by a
+  rejection. A 401 from an authenticated call does not force-expire the store's copy and retry
+  through `validAccessToken`; it surfaces as `RESTError.unauthorized` / `GatewayError.authExpired`
+  and raises the re-auth sheet. So an access token the server invalidates BEFORE its stated
+  expiry (an admin revoking the dashboard, a server-side rotation), or a device clock running
+  fast, sends the user to re-auth even though the refresh token was still good. Reactive retry
+  would have to be threaded through every authenticated REST helper AND the WS ticket mint,
+  neither of which sees the connection at the point of the 401; the desktop's
+  `ensureNativeAccessToken` behaves the same way.
 - **A refresh that succeeds server-side but fails in transit orphans the pair.** The server has
   rotated and retired the old refresh token; the app never saw the response, so it keeps the
   retired one and replays it on the next call, which the portal's reuse detection answers by

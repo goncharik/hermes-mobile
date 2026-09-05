@@ -118,7 +118,7 @@ Verified against upstream Hermes `main` on 2026-09-05 (sibling clone
 ## Testing Strategy
 
 - **unit tests (`swift test`, macOS)**: required for every task — pure PKCE/URL/parse
-  helpers, capability mapper, `BearerSession` codable round-trip, `BearerTokenStore` actor
+  helpers, capability mapper, `BearerSession` codable round-trip, `BearerTokenStore`
   (concurrency + failure semantics), REST/gateway clients over `MockURLProtocol`, TCA
   reducers via `TestStore` + dependency overrides + `TestClock`.
 - **snapshot tests (`make snapshot`, simulator)**: the login screen's OAuth segment and the
@@ -156,13 +156,15 @@ Key decisions and rationale:
    device and simulator before any other code is written.** Fallback if it fails: a
    `WKWebView` for the browser leg only, keeping the bearer token model (documented in the
    spike outcome; no other task changes).
-3. **`BearerTokenStore` actor is the single owner of the token set.** Every REST call and
+3. **`BearerTokenStore` is the single owner of the token set.** Every REST call and
    every WS ticket mint go through `validAccessToken()`, which returns a fresh token, joins an
    in-flight refresh, or starts one. The rotated pair is persisted (Keychain) from inside the
-   actor before any caller sees it, so concurrent requests at expiry produce exactly one
-   refresh and no RT replay. Launch restore seeds the actor; reauth success reseeds it before
-   reconnect; logout drains it. Nothing reads the Keychain or the expiry directly after
-   seeding.
+   store's one critical section before any caller sees it, so concurrent requests at expiry
+   produce exactly one refresh and no RT replay. Launch restore seeds the store; reauth
+   success reseeds it before reconnect; logout drains it. Nothing reads the Keychain or the
+   expiry directly after seeding. (It shipped as a lock-isolated `Sendable` final class rather
+   than the actor this plan assumed, and mutations carry an ownership claim — see
+   "Implementation notes".)
 4. **Capability model becomes a struct.** Password provider (optional), OAuth providers
    (session providers with `supports_password == false`), `supportsNativeFlow`. A gated
    server with `basic` + `nous` now shows all three segments, password preselected.
@@ -260,31 +262,45 @@ Live implementation (iOS only):
    timeout, dedicated request — no auth), decode → `BearerSession`.
 5. Whole-flow timeout 300 s (`OAuthLoginError.timedOut`). Listener/session always torn down.
 
-### `BearerTokenStore` actor
+### `BearerTokenStore`
+
+Shipped surface (the plan originally specified an `actor` with claim-less `seed`/`clear` —
+see "Implementation notes" for why it is a lock-isolated class with per-attempt claims):
 
 ```swift
 // Clients/BearerTokenStore.swift
-public actor BearerTokenStore {
-  public init(now: @Sendable () -> Date = { Date() }, refreshLeeway: TimeInterval = 120)
-  /// Replace the current token set + the persistence hook (Keychain save). Cancels any in-flight refresh.
-  public func seed(_ session: BearerSession, baseURL: URL, persist: @Sendable (BearerSession) throws -> Void)
-  public func clear()
+public struct BearerStoreClaim: Hashable, Sendable {}          // opaque ownership token
+public final class BearerTokenStore: Sendable {
+  public typealias PersistHook = @Sendable (BearerSession) throws -> Void
+  public init(now: @escaping @Sendable () -> Date = { Date() }, refreshLeeway: TimeInterval = 120)
+  /// Claim the store for ONE sign-in attempt, revoking every older claim.
+  public func claimOwnership() -> BearerStoreClaim
+  /// Replace the current token set (+ optional Keychain hook). Cancels any in-flight refresh.
+  /// Returns false when this claim no longer owns the store.
+  @discardableResult public func seed(_ session: BearerSession, baseURL: URL, persist: PersistHook? = nil, claim: BearerStoreClaim? = nil) -> Bool
+  /// Arm the Keychain hook and write the live pair through it, atomically. `nil` = not applied.
+  @discardableResult public func attachPersistence(_ persist: @escaping PersistHook, claim: BearerStoreClaim) -> BearerSession?
+  /// Disarm the hook and revoke outstanding claims, keeping the pair usable (logout ordering).
+  public func detachPersistence()
+  public func clear(claim: BearerStoreClaim)
   public var current: BearerSession? { get }
   /// Fresh access token; joins/starts ONE refresh when `expiresAt - now < leeway`.
-  /// Throws `GatewayError.authExpired` on a refresh 401 (store cleared), rethrows anything else (tokens kept).
-  public func validAccessToken(refresh: @Sendable (URL, BearerSession) async throws -> BearerSession) async throws -> String
+  /// Throws `GatewayError.authExpired` on a refresh 401 (pair discarded), rethrows anything else (tokens kept).
+  public func validAccessToken(refresh: @escaping @Sendable (URL, BearerSession) async throws -> BearerSession) async throws -> String
 }
 /// Pure: does this token set need a refresh at `now`? (unit-tested with fixed dates)
-public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterval) -> Bool
+func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterval) -> Bool
 ```
 
 - One process-level instance (`BearerTokenStore.shared`) referenced by the live REST and
   gateway clients, exactly like the shared cookie jar today; exposed as a dependency
   (`\.bearerTokens`) so reducers and tests inject their own.
 - In-flight refresh = a stored `Task<BearerSession, Error>`; concurrent callers `await` the
-  same task; on success `persist` runs inside the actor before the task value is published.
+  same task; on success `persist` runs inside the store's critical section before the task
+  value is published.
 - Refresh transport: `POST /auth/native/refresh {refresh_token, provider}`; 401 →
-  `GatewayError.authExpired` + `clear()`; 503/transport/other → rethrow, tokens intact.
+  `GatewayError.authExpired` + discard the pair (ownership untouched, see "Implementation
+  notes"); 503/transport/other → rethrow, tokens intact.
 
 ### REST / gateway wiring
 
@@ -318,7 +334,7 @@ public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterv
   `.oauth`.
 - `AppFeature`: launch restore seeds the token store when the loaded session is `.bearer`
   (BEFORE the probe); `makeReauthState` gains the `.bearer` case; all three logout paths call
-  `tokenStore.clear()` + best-effort `rest.logout` alongside `keychain.deleteSession()`;
+  `tokenStore.clear(claim:)` + best-effort `rest.logout` alongside `keychain.deleteSession()`;
   reauth success with a `.bearer` connection reseeds before `.resumeAfterReauth` / home
   rebuild.
 
@@ -506,17 +522,19 @@ a bare `generateState` in HermesKit's namespace reads like TCA state constructio
 `E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM`. The test pins the appendix's raw digest octets
 alongside it and asserts the encoding, so the vector is self-checking rather than transcribed.
 
-### Task 5: `BearerTokenStore` actor and refresh semantics
+### Task 5: `BearerTokenStore` and refresh semantics
 
 **Files:**
 - Create: `HermesKit/Sources/HermesKit/Clients/BearerTokenStore.swift`
 - Create: `HermesKit/Tests/HermesKitTests/BearerTokenStoreTests.swift`
 
-- [x] implement `bearerNeedsRefresh(_:now:leeway:)` (pure) and the `BearerTokenStore` actor
+- [x] implement `bearerNeedsRefresh(_:now:leeway:)` (pure) and `BearerTokenStore`
       per Technical Details: `seed`, `clear`, `current`, `validAccessToken(refresh:)` with a
-      single shared in-flight `Task`, persistence hook invoked inside the actor before the
-      new token is published
-- [x] map failures: refresh throws `RESTError.unauthorized` → `clear()` + throw
+      single shared in-flight `Task`, persistence hook invoked inside the store's critical
+      section before the new token is published — shipped as a lock-isolated `Sendable` class
+      rather than an actor, with `claimOwnership`/`attachPersistence`/`detachPersistence`
+      added by review (see "Implementation notes")
+- [x] map failures: refresh throws `RESTError.unauthorized` → discard the pair + throw
       `GatewayError.authExpired`; any other error → rethrow, tokens intact; a persist failure
       is reported (`reportIssue`) but does not lose the rotated pair in memory
 - [x] add the `\.bearerTokens` dependency key (`liveValue = BearerTokenStore.shared`,
@@ -608,7 +626,7 @@ Guarded by `refreshOmitsAnEmptyProvider`.
 
 ➕ **`logout` resolves auth like any other request, which fixes its ordering.** Because a
 `.bearer` logout goes through `resolveAuth`, a drained store makes it a silent no-op — so
-Task 13 must fire `rest.logout` BEFORE `bearerTokens.clear()`. Recorded on the client
+Task 13 must fire `rest.logout` BEFORE `bearerTokens.clear(claim:)`. Recorded on the client
 property's doc comment and guarded by `logoutAfterTheStoreIsDrainedSendsNothing`.
 
 ➕ `MockURLProtocol` gained `setSequence` (one stub per request) and a `requests` log; the
@@ -939,7 +957,7 @@ rule is the thing that must not drift between them.
 - [x] reauth success with a `.bearer` connection reseeds the store before
       `.resumeAfterReauth` / `makeHomeState`
 - [x] every logout path (`connectionFailed.logoutConfirmed`, `reauth.quit`, `.disconnect`)
-      calls `bearerTokens.clear()` and fires best-effort `rest.logout(connection)` alongside
+      calls `bearerTokens.clear(claim:)` and fires best-effort `rest.logout(connection)` alongside
       `keychain.deleteSession()`; token-mode and cookie-mode logout requests remain unchanged
       (logout only fires for `.bearer`)
 - [x] write `TestStore` tests: launch with a stored `.bearer` seeds the store and probes with
@@ -959,7 +977,7 @@ helper is what keeps the two entry points from drifting. The KEYCHAIN entry is d
 left alone: #62's "stored credentials stay untouched" rule still holds, and a re-login
 through onboarding overwrites it. Byte-identical for token/cookie (`.none`).
 
-➕ **The push unregister is CONCATENATED ahead of `rest.logout` + `clear()`.** Task 6's
+➕ **The push unregister is CONCATENATED ahead of `rest.logout` + `clear(claim:)`.** Task 6's
 ordering contract was stated for `rest.logout`, but `rest.unregisterPush` authenticates
 through `resolveAuth` too — merged with a drain it could lose the race and unregister
 nothing, silently leaving this device receiving pushes for an account it just left. All
@@ -1069,7 +1087,7 @@ no-loop proof (a store that answers `authExpired` forever cannot be redialled be
 ### Task 15: [Final] Update documentation
 
 - [x] complete `docs/features/oauth-sign-in.md`: protocol summary, the three regimes, the
-      actor invariant, capability gate, spike outcome, known limitations (no WKWebView
+      `BearerTokenStore` invariant, capability gate, spike outcome, known limitations (no WKWebView
       fallback; gateway must advertise `native_pkce`; loopback-only redirect)
 - [x] update `docs/architecture.md` → "Auth regimes" (third regime, `RequestAuth`,
       `BearerTokenStore`, refresh semantics) and the component list (`OAuthLoginClient`)
@@ -1093,6 +1111,39 @@ no-loop proof (a store that answers `authExpired` forever cannot be redialled be
       the capability gate, the spike findings and the known limitations; left OPEN for the
       PR to close
 - [ ] move this plan to `docs/plans/completed/`
+
+## Implementation notes
+
+The material design changes review forced on the plan as written. Everything else shipped as
+specified; the normative descriptions live in `docs/features/oauth-sign-in.md` and
+`docs/architecture.md`.
+
+- **`BearerTokenStore` is a lock-isolated `Sendable` final class, not an actor.** All mutable
+  state (pair, base URL, persist hook, ownership, in-flight refresh, supersede generation)
+  lives in one `LockIsolated<State>`, and every entry point decides and mutates inside a single
+  critical section. The actor shape had a `nonisolated` synchronous `detachPersistence()`
+  alongside actor-isolated storage, i.e. two synchronization domains — and the seam between
+  them was itself the bug: a logout could revoke ownership and delete the Keychain entry
+  between an approved check and the hook being armed. A `Sendable` class cannot hold a mutable
+  stored property, so the compiler now forbids re-creating that seam.
+- **`BearerStoreClaim` per-attempt ownership was added.** `seed`, `attachPersistence` and
+  `clear` all take a claim, and the verdict is taken inside the lock atomically with the
+  mutation, so a superseded or cancelled attempt cannot land. `clear(claim:)` requiring a claim
+  is what makes "no unclaimed drain" a type error rather than a convention.
+- **The drain is split in two.** `discardPair` forgets the credentials and leaves ownership
+  alone (used for an expiry — the user is signing in to fix exactly that, so an attempt already
+  in flight must still land); `revoke` disarms the persist hook and takes ownership (used for
+  deliberate abandonment — logout, or a newer attempt superseding an older one).
+- **One shared `performNativeOAuthLogin` helper**, in `ConnectionFeature.swift` and called from
+  `ReauthFeature.swift`. The plan specified the browser → seed → validate → persist pipeline
+  separately in each reducer; its ordering rules are too load-bearing to exist in two copies.
+- **The Password segment is OMITTED, not disabled, once OAuth is on screen**
+  (`State.showsPasswordSegment`). SwiftUI cannot disable a single segment, and the
+  whole-control disable this plan inherited becomes a trap with a third segment — see the ➕
+  note on Task 9.
+- **`isGated` is deliberately not `authRequired == true`** but "gated AND advertising
+  providers", so a gated server whose providers endpoint 404s stays token-only and
+  un-de-emphasized — see the ➕ note on Task 3.
 
 ## Post-Completion
 
