@@ -283,9 +283,9 @@ private func requestID(_ frame: String) -> Int? {
     let stream = client.connect(url, .token("sekret"))
     defer { withExtendedLifetime(stream) {} }
 
-    // The transport is built asynchronously inside `connect`'s setup Task; spin until set.
-    for _ in 0..<50 where captured.value == nil { await Task.yield() }
-
+    // SYNCHRONOUS by contract: no `await`/yield between `connect` and the open, so an
+    // immediate `send` finds the connection. The gated regimes' async mint must never
+    // leak into this branch — asserted before any suspension point.
     #expect(captured.value?.absoluteString == "ws://test.local:9119/api/ws?token=sekret")
     #expect(minted.value == false) // token mode never mints a ticket
   }
@@ -293,7 +293,7 @@ private func requestID(_ frame: String) -> Int? {
   /// A `.cookie` session mints a fresh ws-ticket then connects with `…/api/ws?ticket=<t>`.
   @Test func cookieModeMintsTicketThenConnectsWithTicket() async throws {
     let captured = LockIsolated<URL?>(nil)
-    let mintArgs = LockIsolated<(URL, CookieSession)?>(nil)
+    let mintArgs = LockIsolated<(URL, AuthSession)?>(nil)
     let cookieSession = CookieSession(
       cookies: [SerializedCookie(name: "hermes_session_at", value: "abc", domain: "test.local", path: "/")],
       username: "alice", provider: "basic"
@@ -308,8 +308,8 @@ private func requestID(_ frame: String) -> Int? {
     for _ in 0..<50 where captured.value == nil { await Task.yield() }
 
     #expect(captured.value?.absoluteString == "ws://test.local:9119/api/ws?ticket=T1CKET")
-    #expect(mintArgs.value?.0 == url)            // minted against the base URL
-    #expect(mintArgs.value?.1 == cookieSession)  // with the persisted cookie session
+    #expect(mintArgs.value?.0 == url)                     // minted against the base URL
+    #expect(mintArgs.value?.1 == .cookie(cookieSession))  // with the persisted cookie session
   }
 
   /// A `401` from the ticket mint (`authExpired`) yields `.authExpired` on the stream and
@@ -390,4 +390,261 @@ private func requestID(_ frame: String) -> Int? {
     for _ in 0..<200 { await Task.yield() }
     #expect(built.value == false) // no orphan connection was opened
   }
+
+  // MARK: - Bearer (native OAuth) regime
+  //
+  // `.bearer` rides the same gated branch as `.cookie` — the regimes differ only in how the
+  // minter authenticates — so these mirror the cookie cases one for one. They are the guard
+  // that the shared branch keeps behaving identically for BOTH payloads.
+
+  private var bearerSession: BearerSession {
+    BearerSession(
+      accessToken: "AT1", refreshToken: "RT1", expiresAt: 4_000_000_000,
+      provider: "nous", userID: "u-1"
+    )
+  }
+
+  /// A `.bearer` session mints a fresh ws-ticket then connects with `…/api/ws?ticket=<t>` —
+  /// the same WS URL shape as the cookie regime (the gateway doesn't care how it was minted).
+  @Test func bearerModeMintsTicketThenConnectsWithTicket() async throws {
+    let captured = LockIsolated<URL?>(nil)
+    let mintArgs = LockIsolated<(URL, AuthSession)?>(nil)
+    let client = HermesGatewayClient.make(
+      mintTicket: { base, auth in mintArgs.setValue((base, auth)); return "B34RER" },
+      makeTransport: { wsURL in captured.setValue(wsURL); return FakeTransport() }
+    )
+    let stream = client.connect(url, .bearer(bearerSession))
+    defer { withExtendedLifetime(stream) {} }
+
+    for _ in 0..<50 where captured.value == nil { await Task.yield() }
+
+    #expect(captured.value?.absoluteString == "ws://test.local:9119/api/ws?ticket=B34RER")
+    #expect(mintArgs.value?.0 == url)
+    // The whole `AuthSession` reaches the minter, which is what lets ONE minter resolve
+    // the regime (cookie jar vs `Authorization: Bearer`).
+    #expect(mintArgs.value?.1 == .bearer(bearerSession))
+  }
+
+  /// A dead refresh token (`authExpired` out of `BearerTokenStore`) yields `.authExpired` and
+  /// finishes without opening a socket — non-retryable, routed to re-auth, never backoff.
+  @Test func bearerModeMintAuthExpiredYieldsAuthExpiredAndFinishes() async throws {
+    let built = LockIsolated(false)
+    let client = HermesGatewayClient.make(
+      mintTicket: { _, _ in throw GatewayError.authExpired },
+      makeTransport: { _ in built.setValue(true); return FakeTransport() }
+    )
+    let stream = client.connect(url, .bearer(bearerSession))
+
+    var iterator = stream.makeAsyncIterator()
+    #expect(await iterator.next() == .authExpired)
+    #expect(await iterator.next() == nil) // then finished
+    #expect(built.value == false)         // no socket was opened
+  }
+
+  /// A transient bearer mint failure (503 / transport) finishes the stream like a dropped
+  /// socket so the reducer's backoff re-dials — never `.authExpired`, which would sign the
+  /// user out over a momentarily unreachable provider.
+  @Test func bearerModeTransientMintFinishesStreamWithoutAuthExpired() async throws {
+    let client = HermesGatewayClient.make(
+      mintTicket: { _, _ in throw GatewayError.ticketUnavailable },
+      makeTransport: { _ in FakeTransport() }
+    )
+    let stream = client.connect(url, .bearer(bearerSession))
+
+    var iterator = stream.makeAsyncIterator()
+    #expect(await iterator.next() == nil) // finished, no .authExpired emitted
+  }
+
+  /// Terminating a successful bearer connect shuts the opened transport down (the composed
+  /// `onTermination` reaches the connection, not just the setup task).
+  @Test func bearerModeStreamTerminationShutsDownOpenedConnection() async throws {
+    let captured = LockIsolated<URL?>(nil)
+    let transport = FakeTransport()
+    let client = HermesGatewayClient.make(
+      mintTicket: { _, _ in "B34RER" },
+      makeTransport: { wsURL in captured.setValue(wsURL); return transport }
+    )
+    do {
+      let stream = client.connect(url, .bearer(bearerSession))
+      for _ in 0..<100 where captured.value == nil { await Task.yield() }
+      #expect(captured.value != nil) // connection opened
+      _ = stream
+    }
+    for _ in 0..<100 where !transport.cancelled { await Task.yield() }
+    #expect(transport.cancelled) // socket was torn down, not leaked
+  }
+
+  /// Consumer cancel *during* the bearer mint must not open an orphan connection — the
+  /// `Task.checkCancellation()` between mint and `open()` is what makes that true.
+  @Test func bearerModeCancelDuringMintDoesNotOpenOrphanConnection() async throws {
+    let built = LockIsolated(false)
+    let mintEntered = LockIsolated(false)
+    let (gate, release) = AsyncStream<Void>.makeStream()
+    let client = HermesGatewayClient.make(
+      mintTicket: { _, _ in
+        mintEntered.setValue(true)
+        var it = gate.makeAsyncIterator()
+        _ = await it.next() // block until the test releases the gate
+        return "B34RER"
+      },
+      makeTransport: { _ in built.setValue(true); return FakeTransport() }
+    )
+    do {
+      let stream = client.connect(url, .bearer(bearerSession))
+      for _ in 0..<200 where !mintEntered.value { await Task.yield() }
+      #expect(mintEntered.value)
+      _ = stream // drop the stream → onTermination cancels the setup task mid-mint
+    }
+    release.yield(())
+    for _ in 0..<200 { await Task.yield() }
+    #expect(built.value == false) // no orphan connection was opened
+  }
+}
+
+/// Wire-level coverage of `POST /api/auth/ws-ticket` for both gated regimes: the header the
+/// bearer mint sends, the refresh hop that must precede it, and the status→verdict mapping.
+///
+/// Nested in `RESTTransportSuite` so it serializes against the other suites driving the
+/// process-global `MockURLProtocol` stub.
+extension RESTTransportSuite {
+struct GatewayTicketMintTests {
+  private let baseURL = URL(string: "http://test.local:9119")!
+
+  private var mockSession: URLSession {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [MockURLProtocol.self]
+    return URLSession(configuration: config)
+  }
+
+  private func stored(expiresAt: Double) -> BearerSession {
+    BearerSession(
+      accessToken: "AT1", refreshToken: "RT1", expiresAt: expiresAt,
+      provider: "nous", userID: "u-1"
+    )
+  }
+
+  /// A rotated pair as the gateway returns it from `/auth/native/refresh`.
+  private let rotatedJSON = #"""
+  {"access_token":"AT2","refresh_token":"RT2","token_type":"Bearer","expires_at":4000000000,"provider":"nous","user_id":"u-1"}
+  """#
+
+  private func freshStore(expiresAt: Double) async -> BearerTokenStore {
+    let store = BearerTokenStore(now: { Date(timeIntervalSince1970: 1_000_000) }, refreshLeeway: 120)
+    await store.seed(stored(expiresAt: expiresAt), baseURL: baseURL, persist: { _ in })
+    return store
+  }
+
+  @Test func bearerMintSendsTheAuthorizationHeaderAndReturnsTheTicket() async throws {
+    let store = await freshStore(expiresAt: 1_000_600) // comfortably fresh → no refresh
+    MockURLProtocol.set(json: #"{"ticket":"T1CKET"}"#)
+
+    let ticket = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    #expect(ticket == "T1CKET")
+
+    #expect(MockURLProtocol.requests.count == 1) // no refresh hop
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "POST")
+    #expect(req.url?.path == "/api/auth/ws-ticket")
+    #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer AT1")
+    // The bearer regime must never touch the legacy token header.
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+  }
+
+  @Test func bearerMintRefreshesBeforeMintingWhenNearExpiry() async throws {
+    // 10 s left, inside the 120 s leeway: the rotation MUST land before the mint, or the
+    // ticket would be minted with a token the gateway is about to reject.
+    let store = await freshStore(expiresAt: 1_000_010)
+    MockURLProtocol.setSequence([
+      .init(statusCode: 200, body: Data(rotatedJSON.utf8)),
+      .init(statusCode: 200, body: Data(#"{"ticket":"T1CKET"}"#.utf8)),
+    ])
+
+    let ticket = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    #expect(ticket == "T1CKET")
+
+    #expect(MockURLProtocol.requests.count == 2)
+    #expect(MockURLProtocol.requests.first?.url?.path == "/auth/native/refresh")
+    let mint = try #require(MockURLProtocol.requests.last)
+    #expect(mint.url?.path == "/api/auth/ws-ticket")
+    #expect(mint.value(forHTTPHeaderField: "Authorization") == "Bearer AT2") // the ROTATED token
+    #expect(await store.current?.refreshToken == "RT2")
+  }
+
+  @Test func aDeadRefreshTokenIsAuthExpiredAndNeverMints() async throws {
+    let store = await freshStore(expiresAt: 1_000_010)
+    MockURLProtocol.set(status: 401, json: #"{"error":"session_expired"}"#)
+
+    await #expect(throws: GatewayError.authExpired) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    }
+    #expect(MockURLProtocol.requests.count == 1) // the mint never went out
+    #expect(await store.current == nil)          // store drained by the expiry verdict
+  }
+
+  @Test func aRefreshOutageIsTransientAndKeepsTheTokens() async throws {
+    // 503 = a provider is momentarily unreachable. `.ticketUnavailable` sends the reducer to
+    // backoff instead of signing the user out, and the pair must survive for the retry.
+    let store = await freshStore(expiresAt: 1_000_010)
+    MockURLProtocol.set(status: 503)
+
+    await #expect(throws: GatewayError.ticketUnavailable) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    }
+    #expect(await store.current?.accessToken == "AT1")
+  }
+
+  @Test func aDrainedStoreIsAuthExpired() async throws {
+    // Post-logout / pre-seed: nothing to authenticate with is the same verdict as a dead
+    // refresh token, and no request is attempted.
+    MockURLProtocol.set(json: #"{"ticket":"T1CKET"}"#)
+    await #expect(throws: GatewayError.authExpired) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: BearerTokenStore(), session: mockSession)
+    }
+    #expect(MockURLProtocol.requests.isEmpty)
+  }
+
+  @Test func bearerMintMapsTheTicketEndpointsVerdicts() async throws {
+    let store = await freshStore(expiresAt: 1_000_600)
+
+    // A 401 on the mint itself (the gateway rejected a token we believed fresh) is the
+    // non-retryable verdict, same as the cookie regime's dead-session 401.
+    MockURLProtocol.set(status: 401)
+    await #expect(throws: GatewayError.authExpired) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    }
+
+    // Anything else is transient → backoff re-dials and re-mints.
+    MockURLProtocol.set(status: 500)
+    await #expect(throws: GatewayError.ticketUnavailable) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    }
+
+    // A 2xx whose body isn't a ticket is transient too, never a silent empty ticket.
+    MockURLProtocol.set(json: #"{"nope":1}"#)
+    await #expect(throws: GatewayError.ticketUnavailable) {
+      _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
+    }
+  }
+
+  /// Regression guard: the cookie mint is unchanged by the bearer split — same POST, and
+  /// still NO auth header (the jar carries it).
+  @Test func theCookieMintStillSendsNoAuthHeader() async throws {
+    MockURLProtocol.set(json: #"{"ticket":"C00KIE"}"#)
+    let cookieSession = CookieSession(
+      cookies: [SerializedCookie(name: "hermes_session_at", value: "abc", domain: "test.local", path: "/")],
+      username: "alice", provider: "basic"
+    )
+
+    let ticket = try await wsTicket(
+      baseURL: baseURL, cookieSession: cookieSession, session: mockSession
+    )
+    #expect(ticket == "C00KIE")
+
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "POST")
+    #expect(req.url?.path == "/api/auth/ws-ticket")
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+  }
+}
 }

@@ -807,22 +807,50 @@ replaces it with the real single-button variant.
 - Modify: `HermesKit/Sources/HermesKit/Clients/HermesGatewayClient.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/HermesGatewayClientTests.swift`
 
-- [ ] widen `mintTicket` to `(URL, AuthSession) async throws -> String`; cookie branch calls
+- [x] widen `mintTicket` to `(URL, AuthSession) async throws -> String`; cookie branch calls
       the existing `wsTicket(baseURL:cookieSession:session:)` unchanged; bearer branch awaits
       `BearerTokenStore.shared.validAccessToken(refresh:)` then POSTs `/api/auth/ws-ticket`
       with `Authorization: Bearer`; 401 → `authExpired`, other → `ticketUnavailable`
-- [ ] add the `.bearer` case to `connect` mirroring the `.cookie` setup task
+- [x] add the `.bearer` case to `connect` mirroring the `.cookie` setup task
       (cancellation check before `open`, `authExpired` → yield `.authExpired` + finish,
-      transient → finish, composed `onTermination`)
-- [ ] `.token` branch untouched — add an inline comment that the bearer path must never
+      transient → finish, composed `onTermination`) — shipped as a SHARED `case .cookie,
+      .bearer:` rather than a copy (see ➕ below)
+- [x] `.token` branch untouched — add an inline comment that the bearer path must never
       touch it
-- [ ] write tests with the fake transport + injected `mintTicket`: `.bearer` connect mints
+- [x] write tests with the fake transport + injected `mintTicket`: `.bearer` connect mints
       then opens `?ticket=`; mint `authExpired` yields `.authExpired` and finishes; mint
       transient finishes without events; consumer cancel during mint opens nothing; `.token`
       connect still opens `?token=` synchronously with no mint call
-- [ ] write a `MockURLProtocol` test for the bearer `wsTicket` request headers and the
+- [x] write a `MockURLProtocol` test for the bearer `wsTicket` request headers and the
       refresh-before-mint ordering
-- [ ] run tests — must pass before Task 11
+- [x] run tests — must pass before Task 11 (1410 tests, 67 suites, all green; +12 over
+      Task 9; `xcodebuild` app build succeeds)
+
+➕ **`.bearer` SHARES the cookie branch instead of duplicating it.** Once `mintTicket` takes
+the whole `AuthSession`, the two gated regimes differ ONLY inside the minter (cookie jar vs
+`Authorization: Bearer`) — the setup task, the `Task.checkCancellation()` between mint and
+`open()`, the `authExpired`/transient split, and the single composed `onTermination` are
+byte-for-byte the same code. A copied branch would be a copy of the app's subtlest
+cancellation choreography, i.e. a copy that can drift; `case .cookie, .bearer:` makes drift
+impossible. Every cookie case in `HermesGatewayClientTests` now has a `bearerMode…` twin so
+the shared branch is proven for BOTH payloads.
+
+➕ **The live minter needs a `.token` case, which is unreachable.** `connect` never routes
+`.token` through `mintTicket` (it opens `?token=` synchronously), but the closure now switches
+on the whole `AuthSession`, so the compiler demands the case. It throws `.ticketUnavailable`
+— the transient verdict — rather than inventing a ticket or trapping.
+`tokenModeBuildsByteIdenticalWSURL` asserts the URL WITHOUT any `Task.yield()`, which is the
+regression guard that the branch is still synchronous and mint-free.
+
+➕ **`HermesGatewayClient.live` gained `tokenStore: BearerTokenStore = .shared`**, mirroring
+`HermesRESTClient.live`, so the ticket-mint tests drive their own store instead of the
+process-wide one.
+
+➕ **The `POST /api/auth/ws-ticket` round trip moved into one private `wsTicketRequest(baseURL:
+auth:session:)`.** Both regimes use identical method/path/empty-body and identical status
+mapping (401 → `authExpired`, everything else incl. an unparseable 2xx → `ticketUnavailable`);
+only the header differs. `wsTicket(baseURL:cookieSession:session:)` keeps its signature and
+behaviour (rehydrate the jar, then `auth: .none`), guarded by `theCookieMintStillSendsNoAuthHeader`.
 
 ### Task 11: `ReauthFeature` OAuth method
 
