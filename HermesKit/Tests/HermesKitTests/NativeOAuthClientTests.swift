@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import Testing
 
@@ -66,10 +67,10 @@ struct NativeOAuthClientTests {
   @Test func nearExpiryRefreshesOnceBeforeTheAPICall() async throws {
     let now = Date(timeIntervalSince1970: 1_000_000)
     let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
-    let persisted = LockedBox<[BearerSession]>([])
+    let persisted = LockIsolated<[BearerSession]>([])
     // 10 s left, inside the 120 s leeway → one rotation, then the real call.
     await store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL) { rotated in
-      persisted.mutate { $0.append(rotated) }
+      persisted.withValue { $0.append(rotated) }
     }
 
     MockURLProtocol.setSequence([
@@ -230,15 +231,4 @@ struct NativeOAuthClientTests {
     #expect(MockURLProtocol.requests.isEmpty)
   }
 }
-}
-
-/// Minimal lock-guarded box so a `@Sendable` persist hook can record what it saw.
-private final class LockedBox<Value>: @unchecked Sendable {
-  private let lock = NSLock()
-  private var storage: Value
-
-  init(_ value: Value) { storage = value }
-
-  var value: Value { lock.withLock { storage } }
-  func mutate(_ body: (inout Value) -> Void) { lock.withLock { body(&storage) } }
-}
+} // extension RESTTransportSuite

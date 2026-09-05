@@ -647,4 +647,4 @@ struct GatewayTicketMintTests {
     #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
   }
 }
-}
+} // extension RESTTransportSuite

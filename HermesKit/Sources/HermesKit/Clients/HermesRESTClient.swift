@@ -349,7 +349,7 @@ public extension HermesRESTClient {
           .init(name: "offset", value: String(offset)),
           .init(name: "order", value: order.rawValue),
         ])
-        let response: SessionsResponse = try await get(url, auth: try await authFor(conn), session: session)
+        let response: SessionsResponse = try await get(url, auth: authFor(conn), session: session)
         return response.sessions.map(\.asSession)
       },
       archivedSessions: { conn, limit, offset in
@@ -359,12 +359,12 @@ public extension HermesRESTClient {
           .init(name: "order", value: SessionOrder.recent.rawValue),
           .init(name: "archived", value: "only"),
         ])
-        let response: SessionsResponse = try await get(url, auth: try await authFor(conn), session: session)
+        let response: SessionsResponse = try await get(url, auth: authFor(conn), session: session)
         return response.sessions.map(\.asSession)
       },
       search: { conn, query in
         let url = try makeURL(conn.baseURL, "/api/sessions/search", query: [.init(name: "q", value: query)])
-        let response: SearchResponse = try await get(url, auth: try await authFor(conn), session: session)
+        let response: SearchResponse = try await get(url, auth: authFor(conn), session: session)
         return response.results.map(\.asSession)
       },
       archive: { conn, id, archived, profile in
@@ -377,7 +377,7 @@ public extension HermesRESTClient {
         var payload: [String: Any] = ["archived": archived]
         if let profile { payload["profile"] = profile }
         let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: try await authFor(conn), session: session)
+        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
       },
       rename: { conn, id, title, profile in
         // Same endpoint/shape as `archive`: interpolate the RAW id (`makeURL` percent-encodes
@@ -389,7 +389,7 @@ public extension HermesRESTClient {
         var payload: [String: Any] = ["title": title]
         if let profile { payload["profile"] = profile }
         let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: try await authFor(conn), session: session)
+        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
       },
       deleteSession: { conn, id, profile in
         // Same URL shape as `archive`/`rename`: interpolate the RAW id (`makeURL`
@@ -400,7 +400,7 @@ public extension HermesRESTClient {
         // `.server(status: 405, …)` via the shared `validate` mapping.
         let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
         let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        try await send(url, method: "DELETE", body: nil, auth: try await authFor(conn), session: session)
+        try await send(url, method: "DELETE", body: nil, auth: authFor(conn), session: session)
       },
       transcribe: { conn, dataURL, mimeType in
         let url = try makeURL(conn.baseURL, "/api/audio/transcribe")
@@ -408,7 +408,7 @@ public extension HermesRESTClient {
         if let mimeType { payload["mime_type"] = mimeType }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let response: TranscriptionResponse = try await postJSON(
-          url, body: body, auth: try await authFor(conn), session: session
+          url, body: body, auth: authFor(conn), session: session
         )
         guard response.ok, let transcript = response.transcript else {
           throw RESTError.transcriptionFailed(response.error ?? "")
@@ -424,26 +424,26 @@ public extension HermesRESTClient {
         ] as [String: Any])
         // 404 → `RESTError.notFound` (plugin not installed); the caller capability-gates.
         // The response body carries nothing the app needs (no secret), so we discard it.
-        try await send(url, method: "POST", body: body, auth: try await authFor(conn), session: session)
+        try await send(url, method: "POST", body: body, auth: authFor(conn), session: session)
       },
       unregisterPush: { conn, deviceToken in
         let url = try makeURL(conn.baseURL, "/api/plugins/hermes-push/unregister")
         let body = try JSONSerialization.data(withJSONObject: ["device_token": deviceToken])
         // 404 → `RESTError.notFound` (plugin not installed); the caller capability-gates.
-        try await send(url, method: "POST", body: body, auth: try await authFor(conn), session: session)
+        try await send(url, method: "POST", body: body, auth: authFor(conn), session: session)
       },
       sendTestPush: { conn in
         let url = try makeURL(conn.baseURL, "/api/plugins/hermes-push/test")
         // No body needed — the plugin looks up the caller's registered device(s).
         // 404 → `RESTError.notFound` (plugin not installed); the caller capability-gates.
-        try await send(url, method: "POST", body: Data("{}".utf8), auth: try await authFor(conn), session: session)
+        try await send(url, method: "POST", body: Data("{}".utf8), auth: authFor(conn), session: session)
       },
       cronJobs: { conn, profile in
         // `nil` profile omits the param entirely — the server then aggregates all profiles
         // (its default `all`), matching how the unscoped session list behaves.
         let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
         let url = try makeURL(conn.baseURL, "/api/cron/jobs", query: query)
-        return try await get(url, auth: try await authFor(conn), session: session)
+        return try await get(url, auth: authFor(conn), session: session)
       },
       triggerCronJob: { conn, id, profile in
         try await cronJobAction(
@@ -476,7 +476,7 @@ public extension HermesRESTClient {
           .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? PushSetup.pluginName
         let url = try makeURL(conn.baseURL, "/api/dashboard/agent-plugins/\(encoded)/update")
         let response: PluginUpdateResponse = try await postJSON(
-          url, body: Data("{}".utf8), auth: try await authFor(conn), session: session
+          url, body: Data("{}".utf8), auth: authFor(conn), session: session
         )
         // The agent answers 400 (→ `RESTError.server` with `detail`) for a real failure, so a
         // 2xx `{"ok": false}` shouldn't happen. Treat it as a failure anyway rather than
@@ -517,7 +517,7 @@ private func cronJobAction(
 }
 
 /// Where the best-effort logout failure goes instead of a banner (see `logout` above).
-let authLog = Logger(subsystem: "me.honcharenko.HermesKit", category: "auth")
+private let authLog = Logger(subsystem: "me.honcharenko.HermesKit", category: "auth")
 
 // MARK: - Transport helpers
 //

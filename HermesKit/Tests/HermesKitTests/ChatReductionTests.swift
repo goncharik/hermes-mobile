@@ -7,6 +7,15 @@ import Testing
 @MainActor
 struct ChatReductionTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
+  /// The `.bearer` twin of `conn`, for the #19 gated-regime reconnect tests.
+  private let bearerConn = ServerConnection(
+    baseURL: URL(string: "http://mac.tailnet:9119")!,
+    auth: .bearer(
+      BearerSession(
+        accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
+      )
+    )
+  )
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
@@ -1321,14 +1330,6 @@ struct ChatReductionTests {
   /// cannot spin a redial/expire loop.
   @Test func bearerAuthExpiredRaisesReauthOnceAndNeverRedials() async {
     let clock = TestClock()
-    let bearerConn = ServerConnection(
-      baseURL: URL(string: "http://mac.tailnet:9119")!,
-      auth: .bearer(
-        BearerSession(
-          accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
-        )
-      )
-    )
     let dials = LockIsolated(0)
     let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
       ChatFeature()
@@ -1360,14 +1361,6 @@ struct ChatReductionTests {
   /// gateway client and is not exercised here — only the reducer's verdict on its silence.
   @Test func bearerCloseWithoutAnExpiryVerdictKeepsBackingOff() async {
     let clock = TestClock()
-    let bearerConn = ServerConnection(
-      baseURL: URL(string: "http://mac.tailnet:9119")!,
-      auth: .bearer(
-        BearerSession(
-          accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
-        )
-      )
-    )
     let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
       ChatFeature()
     } withDependencies: {

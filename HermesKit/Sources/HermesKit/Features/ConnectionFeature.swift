@@ -219,6 +219,46 @@ public struct ConnectionFeature {
     /// True on a gated server where the token path is a poor fit (UI may de-emphasize it).
     public var isTokenDeemphasized: Bool { capability?.isGated ?? false }
 
+    /// Whether the auth picker renders a Password segment at all.
+    ///
+    /// On a token-only server WITHOUT OAuth the segment stays visible-but-inert and
+    /// `locksMethodPicker` disables the whole control — the long-standing way to express
+    /// "you may not pick this" in a segmented picker. That trick can't be used once OAuth is
+    /// on screen (the control has to stay live so Token ↔ provider switching works), so
+    /// there the unavailable Password segment is omitted instead: a visible segment that
+    /// silently does nothing would be worse than an absent one.
+    public var showsPasswordSegment: Bool { isPasswordEnabled || !isOAuthEnabled }
+
+    /// Whether the auth picker is disabled outright — see `showsPasswordSegment`. With OAuth
+    /// available the same lock would trap the user in whichever segment they landed on.
+    public var locksMethodPicker: Bool {
+      !isPasswordEnabled && method == .token && !isOAuthEnabled
+    }
+
+    /// Which capability hint belongs under the sign-in section. The copy lives in the view;
+    /// only the choice between them is policy.
+    public enum MethodHint: Equatable, Sendable {
+      case none
+      /// Reassurance that the browser leg uses the dashboard account.
+      case oauth
+      /// Providers exist, but the gateway is too old for the native flow — so token really
+      /// is the only way in here, and the reason is actionable (update the agent).
+      case oauthNeedsNewerAgent
+      /// Token-only server: Password is disabled — explain why.
+      case tokenOnly
+      /// Gated server: token is a poor fit — nudge toward password.
+      case tokenDeemphasized
+    }
+
+    public var methodHint: MethodHint {
+      if method == .oauth { return .oauth }
+      guard method == .token else { return .none }
+      if !isPasswordEnabled, hasUnsupportedOAuthProviders { return .oauthNeedsNewerAgent }
+      if !isPasswordEnabled, capability != nil { return .tokenOnly }
+      if isTokenDeemphasized { return .tokenDeemphasized }
+      return .none
+    }
+
     public var canConnect: Bool {
       guard status != .validating else { return false }
       switch status {

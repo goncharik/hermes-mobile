@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import Testing
 
@@ -302,12 +303,13 @@ struct BearerTokenStoreTests {
       persist: { try persisted.hook($0) }
     )
 
-    let token = Box<String?>(nil)
+    let token = LockIsolated<String?>(nil)
     await withKnownIssue("the persist hook fails; the store reports and carries on") {
-      token.set(try await store.validAccessToken { _, _ in Self.rotated })
+      let fresh = try await store.validAccessToken { _, _ in Self.rotated }
+      token.setValue(fresh)
     }
 
-    #expect(token.wrapped == "access-2")
+    #expect(token.value == "access-2")
     #expect(await store.current == Self.rotated)
   }
 }
@@ -318,17 +320,16 @@ private struct PersistFailure: Error {}
 
 /// Records every persisted pair; optionally fails the write. Lock-guarded because the hook
 /// is a synchronous `@Sendable` closure called from the actor.
-private final class PersistRecorder: @unchecked Sendable {
-  private let lock = NSLock()
-  private var saved: [BearerSession] = []
-  private let failure: (any Error)?
+private final class PersistRecorder: Sendable {
+  private let saved = LockIsolated<[BearerSession]>([])
+  private let failure: (any Error & Sendable)?
 
-  init(failure: (any Error)? = nil) { self.failure = failure }
+  init(failure: (any Error & Sendable)? = nil) { self.failure = failure }
 
-  var sessions: [BearerSession] { lock.withLock { saved } }
+  var sessions: [BearerSession] { saved.value }
 
   func hook(_ session: BearerSession) throws {
-    lock.withLock { saved.append(session) }
+    saved.withValue { $0.append(session) }
     if let failure { throw failure }
   }
 }
@@ -365,12 +366,4 @@ private actor Gate {
     guard !isOpen else { return }
     await withCheckedContinuation { waiters.append($0) }
   }
-}
-
-private final class Box<Value: Sendable>: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value: Value
-  init(_ value: Value) { self.value = value }
-  var wrapped: Value { lock.withLock { value } }
-  func set(_ newValue: Value) { lock.withLock { value = newValue } }
 }

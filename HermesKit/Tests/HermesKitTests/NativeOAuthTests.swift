@@ -36,7 +36,7 @@ struct NativeOAuthTests {
     })
     #expect(pair.verifier == Self.rfc7636Verifier)
     #expect(pair.challenge == Self.rfc7636Challenge)
-    #expect(pair.method == "S256")
+    #expect(PKCEPair.challengeMethod == "S256")
   }
 
   @Test func pkceVerifierIsBase64URLAndInRFCLengthRange() {

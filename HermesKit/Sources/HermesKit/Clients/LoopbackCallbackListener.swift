@@ -14,6 +14,14 @@ import Network
 
 // MARK: - Pure request parsing
 
+/// How far into a connection's bytes the request line is looked for. `parseRequestTarget`
+/// scans no further, so the accumulate loop in `receiveRequestHead` must stop here too:
+/// reading past it would only buffer bytes the parser will never see.
+private let maxRequestLineBytes = 8 * 1024
+
+/// How much one `NWConnection.receive` may take at a time.
+private let receiveChunkBytes = 16 * 1024
+
 /// The request target of an HTTP/1.1 request head — `/callback?code=…&state=…` — or `nil`
 /// when these bytes aren't a request line at all.
 ///
@@ -27,7 +35,7 @@ func parseRequestTarget(_ bytes: Data) -> String? {
   // grapheme cluster that equals neither "\r" nor "\n", so a character-based split would
   // never find the end of a CRLF request line. Capped so a hostile client can't hand us a
   // multi-megabyte "line" to scan.
-  let lineBytes = bytes.prefix(8 * 1024).prefix { $0 != 0x0D && $0 != 0x0A }
+  let lineBytes = bytes.prefix(maxRequestLineBytes).prefix { $0 != 0x0D && $0 != 0x0A }
   guard !lineBytes.isEmpty else { return nil }
   let line = String(decoding: lineBytes, as: UTF8.self)
   let parts = line.split(separator: " ", omittingEmptySubsequences: true)
@@ -201,15 +209,15 @@ final class LoopbackCallbackListener: @unchecked Sendable {
   /// TCP does not promise the head arrives in one segment: a single `receive` that lands
   /// mid-request-line parses to `nil`, and the connection would then be answered, closed and
   /// never reported — the driver would wait out its whole 300 s budget for a callback that
-  /// already arrived. So keep reading until a CR/LF terminates the line (or the 8 KiB cap
-  /// `parseRequestTarget` scans is reached, or the peer closes/errors).
+  /// already arrived. So keep reading until a CR/LF terminates the line (or
+  /// `maxRequestLineBytes` is reached, or the peer closes/errors).
   private func receiveRequestHead(_ connection: NWConnection, accumulated: Data) {
-    connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) {
+    connection.receive(minimumIncompleteLength: 1, maximumLength: receiveChunkBytes) {
       [weak self] data, _, isComplete, error in
       var buffer = accumulated
       if let data { buffer.append(data) }
       let sawLineEnd = buffer.contains { $0 == 0x0D || $0 == 0x0A }
-      if !sawLineEnd, buffer.count < 8 * 1024, !isComplete, error == nil {
+      if !sawLineEnd, buffer.count < maxRequestLineBytes, !isComplete, error == nil {
         self?.receiveRequestHead(connection, accumulated: buffer)
         return
       }

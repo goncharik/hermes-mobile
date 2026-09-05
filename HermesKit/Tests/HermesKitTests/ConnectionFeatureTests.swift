@@ -922,4 +922,72 @@ struct ConnectionFeatureTests {
     #expect(ConnectionFeature.State().hasUnsupportedOAuthProviders == false)
     #expect(ConnectionFeature.State().unsupportedOAuthProviderNames.isEmpty)
   }
+
+  // MARK: - Auth picker policy
+
+  /// The two ways "Password is unavailable" is expressed: visible-but-inert (with the whole
+  /// picker disabled) when there is no OAuth segment, omitted once there is one.
+  @Test func passwordIsInertWithoutOAuthAndOmittedWithIt() {
+    // Unprobed: password is optimistically allowed (`?? true`), nothing is locked.
+    let unprobed = ConnectionFeature.State(method: .token)
+    #expect(unprobed.showsPasswordSegment)
+    #expect(unprobed.locksMethodPicker == false)
+
+    // Token-only server, no OAuth: the segment stays, the control is locked on `.token`.
+    var tokenOnly = ConnectionFeature.State(method: .token)
+    tokenOnly.capability = .tokenOnly
+    #expect(tokenOnly.showsPasswordSegment)
+    #expect(tokenOnly.locksMethodPicker)
+    // …but only while `.token` is the selection — the lock exists to pin it there.
+    tokenOnly.method = .password
+    #expect(tokenOnly.locksMethodPicker == false)
+
+    // OAuth available without password: the segment is omitted and the picker stays live so
+    // Token ↔ provider switching works.
+    let oauthOnly = ConnectionFeature.State(method: .token, capability: oauthCapability())
+    #expect(oauthOnly.showsPasswordSegment == false)
+    #expect(oauthOnly.locksMethodPicker == false)
+
+    // Mixed server: every segment is offered, nothing is locked.
+    var mixed = ConnectionFeature.State(method: .token)
+    mixed.capability = ServerAuthCapability(
+      passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
+      oauthProviders: [nousProvider],
+      supportsNativeFlow: true,
+      isGated: true
+    )
+    #expect(mixed.showsPasswordSegment)
+    #expect(mixed.locksMethodPicker == false)
+  }
+
+  /// The footer hint is a single capability verdict, not four overlapping view conditions.
+  @Test func theMethodHintPicksOneVerdictPerCapabilityShape() {
+    // The OAuth segment always reassures, whatever the capability says.
+    #expect(oauthReadyState().methodHint == .oauth)
+    // Password has its own fields; nothing to explain.
+    var password = ConnectionFeature.State(method: .password)
+    password.capability = .tokenOnly
+    #expect(password.methodHint == .none)
+
+    // Providers exist but the gateway can't drive the native flow — name them.
+    var tooOld = ConnectionFeature.State(method: .token)
+    tooOld.capability = oauthCapability(providers: [nousProvider], supportsNativeFlow: false)
+    #expect(tooOld.methodHint == .oauthNeedsNewerAgent)
+
+    // Token-only server: say so.
+    var tokenOnly = ConnectionFeature.State(method: .token)
+    tokenOnly.capability = .tokenOnly
+    #expect(tokenOnly.methodHint == .tokenOnly)
+
+    // Gated server that DOES offer password: nudge toward it.
+    var gated = ConnectionFeature.State(method: .token)
+    gated.capability = ServerAuthCapability(
+      passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
+      isGated: true
+    )
+    #expect(gated.methodHint == .tokenDeemphasized)
+
+    // Unprobed server: claim nothing.
+    #expect(ConnectionFeature.State(method: .token).methodHint == .none)
+  }
 }

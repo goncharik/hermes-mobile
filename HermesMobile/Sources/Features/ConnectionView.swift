@@ -42,13 +42,7 @@ struct ConnectionView: View {
 
       Section {
         Picker("Auth method", selection: $store.method) {
-          // Password stays VISIBLE-but-inert on a token-only server — the whole control is
-          // disabled below, which is the long-standing way to express "you may not pick
-          // this" in a segmented picker. That trick can't be used once OAuth is on screen
-          // (the control has to stay live so Token ↔ provider switching works), so there
-          // the unavailable Password segment is omitted instead: a visible segment that
-          // silently does nothing would be worse than an absent one.
-          if store.isPasswordEnabled || !store.isOAuthEnabled {
+          if store.showsPasswordSegment {
             Text("Password")
               .tag(AuthMethod.password)
           }
@@ -60,11 +54,7 @@ struct ConnectionView: View {
           }
         }
         .pickerStyle(.segmented)
-        // Unchanged for every server WITHOUT OAuth (i.e. all of today's): a token-only
-        // server locks the control so Password can't be selected. With OAuth available the
-        // same lock would trap the user in whichever segment they landed on, so the
-        // omitted-segment rule above covers Password there instead.
-        .disabled(!store.isPasswordEnabled && store.method == .token && !store.isOAuthEnabled)
+        .disabled(store.locksMethodPicker)
 
         switch store.method {
         case .password:
@@ -153,28 +143,25 @@ struct ConnectionView: View {
       .padding(.vertical, 2)
   }
 
-  /// Capability-driven hint under the auth section.
+  /// Copy for the capability hint `ConnectionFeature.State.methodHint` selected.
   @ViewBuilder
   private var methodHint: some View {
-    if store.method == .oauth {
+    switch store.methodHint {
+    case .none:
+      EmptyView()
+    case .oauth:
       Text("Sign in with the same account you use on the Hermes dashboard.")
         .foregroundStyle(.secondary)
-    } else if !store.isPasswordEnabled, store.hasUnsupportedOAuthProviders, store.method == .token {
-      // Providers exist, but the gateway is too old for the native flow — so token really
-      // is the only way in here, and the reason is actionable (update the agent).
+    case .oauthNeedsNewerAgent:
       Text("\(store.unsupportedOAuthProviderNames) sign-in needs a newer Hermes agent. "
         + "Update it, or sign in with a session token.")
         .foregroundStyle(.secondary)
-    } else if !store.isPasswordEnabled, store.method == .token, store.capability != nil {
-      // Token-only server: Password is disabled — explain why.
+    case .tokenOnly:
       Text("This server only supports token sign-in.")
         .foregroundStyle(.secondary)
-    } else if store.isTokenDeemphasized, store.method == .token {
-      // Gated server: token is a poor fit — nudge toward password.
+    case .tokenDeemphasized:
       Text("This server uses password login. Token sign-in is for private-network setups only.")
         .foregroundStyle(.secondary)
-    } else {
-      EmptyView()
     }
   }
 

@@ -13,6 +13,9 @@ import XCTest
 /// `deviceImage()` whole-screen render. Views wrap in a `NavigationStack` (the re-auth
 /// sheet and the guide bring their own).
 final class AuthSnapshotTests: SnapshotTestCase {
+  /// The OAuth provider every gated fixture below advertises.
+  private let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
+
   /// A tall fixed-size whole-screen render (device width, extra-tall height) so a long
   /// scrolling `Form` is captured in full rather than clipped at the device fold. Same dark
   /// traits + key-window compositing as `deviceImage()`.
@@ -187,7 +190,7 @@ final class AuthSnapshotTests: SnapshotTestCase {
           method: .oauth,
           capability: ServerAuthCapability(
             oauthProviders: [
-              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+              nous,
               AuthProvider(name: "self_hosted", displayName: "Keycloak", supportsPassword: false),
             ],
             supportsNativeFlow: true,
@@ -212,9 +215,7 @@ final class AuthSnapshotTests: SnapshotTestCase {
           method: .password,
           capability: ServerAuthCapability(
             passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
-            oauthProviders: [
-              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
-            ],
+            oauthProviders: [nous],
             supportsNativeFlow: true,
             isGated: true
           ),
@@ -236,9 +237,7 @@ final class AuthSnapshotTests: SnapshotTestCase {
           token: "••••••••",
           method: .token,
           capability: ServerAuthCapability(
-            oauthProviders: [
-              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
-            ],
+            oauthProviders: [nous],
             supportsNativeFlow: false,
             isGated: true
           ),
@@ -255,9 +254,7 @@ final class AuthSnapshotTests: SnapshotTestCase {
       serverURL: "http://mac.tailnet:9119",
       method: .oauth,
       capability: ServerAuthCapability(
-        oauthProviders: [
-          AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
-        ],
+        oauthProviders: [nous],
         supportsNativeFlow: true,
         isGated: true
       ),

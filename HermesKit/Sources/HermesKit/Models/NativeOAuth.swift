@@ -31,16 +31,9 @@ struct PKCEPair: Equatable, Sendable {
   var verifier: String
   /// `base64url(SHA256(ascii(verifier)))` — the only half that reaches the browser.
   var challenge: String
-  /// Always `S256`; the gateway rejects `plain`.
-  var method: String
 
-  init(verifier: String, challenge: String, method: String = PKCEPair.challengeMethod) {
-    self.verifier = verifier
-    self.challenge = challenge
-    self.method = method
-  }
-
-  /// The `code_challenge_method` value sent to `/auth/native/authorize`.
+  /// The `code_challenge_method` value sent to `/auth/native/authorize`. Always `S256`;
+  /// the gateway rejects `plain`, so there is nothing per-pair to vary.
   static let challengeMethod = "S256"
 
   /// Generate a pair: 32 random bytes → a 43-character base64url verifier (inside RFC

@@ -277,10 +277,9 @@ public func isSameUser(_ lhs: String, _ rhs: String) -> Bool {
 /// selected profile intact — after someone signed in as a different account. Unknown routes
 /// as a switch, which is the recoverable direction.
 public func isSameBearerUser(previous: String, fresh: String) -> Bool {
-  func normalize(_ value: String) -> String {
-    value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  }
-  let previous = normalize(previous), fresh = normalize(fresh)
-  guard !previous.isEmpty, !fresh.isEmpty else { return false }
-  return previous == fresh
+  let blanks = CharacterSet.whitespacesAndNewlines
+  guard !previous.trimmingCharacters(in: blanks).isEmpty,
+        !fresh.trimmingCharacters(in: blanks).isEmpty
+  else { return false }
+  return isSameUser(previous, fresh)
 }
