@@ -858,17 +858,38 @@ behaviour (rehydrate the jar, then `auth: .none`), guarded by `theCookieMintStil
 - Modify: `HermesKit/Sources/HermesKit/Features/ReauthFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ReauthFeatureTests.swift`
 
-- [ ] add `previousUserID` and `providerDisplayName` to `State`; `canSubmit` for `.oauth`
-      is `status != .validating`
-- [ ] add the `.oauth` `signInTapped` branch: `oauthLogin.signIn(url, provider)` → seed store
+- [x] add `previousUserID` and `providerDisplayName` to `State`; `canSubmit` for `.oauth`
+      is `status != .validating` (the existing top-level guard already expresses exactly
+      that, so the `.oauth` arm stays `true`)
+- [x] add the `.oauth` `signInTapped` branch: `oauthLogin.signIn(url, provider)` → seed store
       → validate with `rest.sessions` → `keychain.saveSession(.bearer)` → `sameUser =
       isSameUser(previousUserID, fresh.userID)` → `reauthResponse(.success)`
-- [ ] map `.cancelled` to `.idle` silently; validating 401 → `.invalidCredentials` (copy:
-      "Sign-in was rejected by the server."); else `.failed(message)`
-- [ ] write `TestStore` tests: same user → `reauthenticated(sameUser: true)`; different
+- [x] map `.cancelled` to `.idle` silently; validating 401 → `.invalidCredentials` (copy:
+      "Sign-in was rejected by the server." — `Status.invalidCredentials` carries no text, so
+      the copy itself lands in `ReauthView` in Task 12); else `.failed(message)`
+- [x] write `TestStore` tests: same user → `reauthenticated(sameUser: true)`; different
       `user_id` → `sameUser: false`; cancel → `.idle`, no delegate; gateway rejection →
       `.failed`; validating 401 → `.invalidCredentials`
-- [ ] run tests — must pass before Task 12
+- [x] run tests — must pass before Task 12 (1417 tests, 67 suites, all green; +7 over
+      Task 10; `xcodebuild` app build succeeds)
+
+➕ **`oauthResponse(Result<Outcome, OAuthFlowError>)` is a separate action from
+`reauthResponse`.** Its failure needs the two-leg split Task 8 introduced: a dismissed browser
+sheet must be SILENT (`.idle`, no status copy, no delegate), and no `RESTError` — the error type
+`reauthResponse` carries — can express that without inventing a fake case. Success forwards
+straight into `.reauthResponse(.success(outcome))`, so the delegate hand-off stays a single path
+for all three regimes.
+
+➕ **`providerLabel` (computed) is what the button reads**, not the stored
+`providerDisplayName`: Task 13 looks the display name up from the last probed providers and can
+come back empty, and a "Continue with " button is worse than "Continue with nous". The fallback
+lives in `State` rather than the view so Task 12 stays declarative.
+
+➕ **The seed-before-validate ordering has a sharper reason here than in `ConnectionFeature`**:
+the store still holds the DEAD pair, so validating without the swap would re-send the exact
+credentials that expired — the same rule the cookie path expresses via `activateCookieSession`.
+Guarded by `oauthReauthSeedsValidatesAndReportsSameUser`, which seeds an expired pair first and
+asserts the store already holds the fresh one from inside `rest.sessions`.
 
 ### Task 12: `ReauthView` OAuth variant
 
