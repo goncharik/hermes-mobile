@@ -342,30 +342,43 @@ public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterv
 ### Task 1: Spike — loopback callback from `ASWebAuthenticationSession`
 
 **Files:**
-- Create: `Probe/LoopbackSpike/` (throwaway; `Probe/` is gitignored fixtures — keep the
-  spike out of the shipped targets)
+- Create: `Probe/LoopbackSpike/` (throwaway; kept out of every shipped target — `swiftc` +
+  a hand-assembled `.app`, never referenced by `Project.swift`. Note: only `Probe/fixtures/`
+  is gitignored, not `Probe/`, so the harness IS committed for reproducibility; its `build/`
+  output is gitignored)
 - Create: `docs/features/oauth-sign-in.md` (spike outcome section only, filled further in
   Task 15)
 
-- [ ] build a minimal iOS harness (SwiftUI button) that binds an `NWListener` on 127.0.0.1
+- [x] build a minimal iOS harness (SwiftUI button) that binds an `NWListener` on 127.0.0.1
       ephemeral port, responds to any HTTP request with a tiny HTML page, and opens
       `ASWebAuthenticationSession` (`prefersEphemeralWebBrowserSession = false`,
       `callbackURLScheme: nil`) on a public URL that redirects to
       `http://127.0.0.1:<port>/callback?code=x&state=y` (e.g. a local Python
       `http.server` handler or the real gateway's `/auth/native/authorize`)
-- [ ] verify on the iOS 18 simulator AND a physical device that the listener receives the
+- [x] verify on the iOS 18 simulator AND a physical device that the listener receives the
       request, the page renders, and `session.cancel()` dismisses the sheet with
       `ASWebAuthenticationSessionError.canceledLogin` delivered to the completion handler
-- [ ] verify no Local Network permission prompt appears and ATS does not block the
-      `http://127.0.0.1` navigation inside the Safari view
-- [ ] verify against the REAL gateway (Tailscale-bound, `nous` provider configured) that
+      — simulator legs done on iOS 18.4 + 26.5 (IPv4 and IPv6, page renders); ⚠️ finding:
+      `cancel()` dismisses but delivers NO completion callback, while a USER dismissal does
+      deliver `canceledLogin` (code 1). Physical device **[x] (deferred to manual
+      verification — see Post-Completion)**: no device available in this environment
+- [x] verify no Local Network permission prompt appears and ATS does not block the
+      `http://127.0.0.1` navigation inside the Safari view — ATS verified (page loads in the
+      sheet); no prompt on either simulator, but the simulator does not enforce
+      local-network privacy, so the device check is **(deferred to manual verification —
+      see Post-Completion)**
+- [x] verify against the REAL gateway (Tailscale-bound, `nous` provider configured) that
       `/auth/native/authorize` accepts the `127.0.0.1:<port>` redirect and the token exchange
-      returns the payload shape documented above
-- [ ] record the outcome (works / needs the `WKWebView` browser-leg fallback), iOS versions
+      returns the payload shape documented above — **(deferred to manual verification — see
+      Post-Completion)**: no Nous-configured gateway reachable from this environment; a
+      throwaway `redirect_server.py` reproduced the gateway's 302 contract instead
+- [x] record the outcome (works / needs the `WKWebView` browser-leg fallback), iOS versions
       tested, and any quirks (e.g. IPv4 vs IPv6 literal, favicon probes) in
       `docs/features/oauth-sign-in.md` → "Spike outcome"
-- [ ] ⚠️ if the loopback leg FAILS: amend Tasks 6 and 7 in this plan to use a `WKWebView`
-      sheet for the browser leg (same PKCE/token model) before continuing
+- [x] ⚠️ if the loopback leg FAILS: amend Tasks 6 and 7 in this plan to use a `WKWebView`
+      sheet for the browser leg (same PKCE/token model) before continuing — **not needed**,
+      the loopback leg works; Tasks 6 and 7 stand as written (see the ➕ spike notes on
+      Task 7)
 
 ### Task 2: `BearerSession` model and `AuthSession.bearer`
 
@@ -518,6 +531,20 @@ public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterv
       injected `openBrowser`/`listenerFactory`/`exchange`/`clock` (mirrors the desktop's
       injected driver): success, gateway `error` param, state mismatch, timeout, cancel
 - [ ] run tests — must pass before Task 8
+
+➕ **Spike notes (Task 1 findings that constrain this task)** — full detail in
+`docs/features/oauth-sign-in.md` → "Spike outcome":
+- `session.cancel()` dismisses the sheet WITHOUT invoking the completion handler (iOS 18.4
+  and 26.5). Never await the completion handler to confirm teardown — the listener settles
+  the flow; the completion handler only ever reports a USER dismissal (`canceledLogin`,
+  code 1), which is `.cancelled` when it arrives before the listener settled and ignored
+  after.
+- The listener must tolerate zero-byte connections: the IPv6 leg produced four speculative
+  TCP connections with no request line before the real `GET /callback`. Answer and close
+  them, treat an empty/unparseable target as "not a callback" — never an error, never a
+  settle. (No `/favicon.ico` probe was observed, but the same rule covers it.)
+- Bind IPv4 (`.ipv4(.loopback)`) and advertise `http://127.0.0.1:<port>/callback`; a
+  listener bound to one family does not serve the other.
 
 ### Task 8: `ConnectionFeature` OAuth segment and connect path
 
