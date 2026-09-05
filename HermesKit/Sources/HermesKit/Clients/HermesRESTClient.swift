@@ -49,6 +49,10 @@ public struct ServerStatus: Equatable, Sendable, Decodable {
   public var authRequired: Bool?
   /// Provider names advertised by the server (e.g. `["basic"]`); absent on older servers.
   public var authProviders: [String]?
+  /// Interactive login flows the gate supports — gated servers report `["cookie"]`, plus
+  /// `"native_pkce"` once any interactive session provider is registered. Absent on older
+  /// gateways (treat absent as "no native flow": the OAuth segment needs positive evidence).
+  public var authFlows: [String]?
 
   enum CodingKeys: String, CodingKey {
     case version
@@ -57,6 +61,7 @@ public struct ServerStatus: Equatable, Sendable, Decodable {
     case activeSessions = "active_sessions"
     case authRequired = "auth_required"
     case authProviders = "auth_providers"
+    case authFlows = "auth_flows"
   }
 }
 

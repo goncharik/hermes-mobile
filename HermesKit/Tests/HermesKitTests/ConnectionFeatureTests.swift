@@ -8,6 +8,22 @@ private func okStatus() -> ServerStatus {
   ServerStatus(version: "0.16.0", gatewayRunning: true, gatewayState: "running", activeSessions: 0)
 }
 
+/// A gated server offering a password provider — the `ServerAuthCapability` the probe builds
+/// for `auth_required: true` + `[{basic, supports_password: true}]`.
+private func passwordCapability(
+  provider: String = "basic",
+  displayName: String = "Password",
+  oauthProviders: [AuthProvider] = [],
+  supportsNativeFlow: Bool = false
+) -> ServerAuthCapability {
+  ServerAuthCapability(
+    passwordProvider: AuthProvider(name: provider, displayName: displayName, supportsPassword: true),
+    oauthProviders: oauthProviders,
+    supportsNativeFlow: supportsNativeFlow,
+    isGated: true
+  )
+}
+
 @MainActor
 struct ConnectionFeatureTests {
   @Test func reachableThenValidTokenConnectsAndStoresToken() async {
@@ -232,13 +248,69 @@ struct ConnectionFeatureTests {
     await store.send(.serverFieldCommitted)
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
-      $0.capability = .passwordAvailable(provider: "basic", displayName: "Username & Password")
+      $0.capability = passwordCapability(displayName: "Username & Password")
       $0.method = .password
       $0.status = .reachable(version: "0.16.0")
     }
 
     #expect(store.state.isPasswordEnabled == true)
     #expect(store.state.isTokenDeemphasized == true)
+  }
+
+  /// A gated server whose only providers are OAuth still renders exactly today's UI:
+  /// Password disabled, Token preselected and de-emphasized. (The OAuth segment itself
+  /// arrives with the connect path — #19; this guards the refactor against a behaviour drift.)
+  @Test func gatedOAuthOnlyServerStillDisablesPasswordAndPreselectsToken() async {
+    let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
+    let store = TestStore(initialState: ConnectionFeature.State(serverURL: "mac:9119")) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in
+        var status = ServerStatus(version: "0.17.0", authRequired: true, authProviders: ["nous"])
+        status.authFlows = ["cookie", "native_pkce"]
+        return status
+      }
+      $0.hermesREST.authProviders = { @Sendable _ in [nous] }
+    }
+
+    await store.send(.serverFieldCommitted)
+    await store.receive(\.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = ServerAuthCapability(
+        oauthProviders: [nous],
+        supportsNativeFlow: true,
+        isGated: true
+      )
+      $0.status = .reachable(version: "0.17.0")
+    }
+
+    #expect(store.state.method == .token)
+    #expect(store.state.isPasswordEnabled == false)
+    #expect(store.state.isTokenDeemphasized == true)
+  }
+
+  /// Gated but the providers endpoint 404s: token stays the only way in, so it must NOT be
+  /// de-emphasized (the `.tokenOnly` fallback, unchanged by the struct refactor).
+  @Test func gatedServerWithNoProvidersKeepsTokenUndeemphasized() async {
+    let store = TestStore(initialState: ConnectionFeature.State(serverURL: "mac:9119")) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in
+        ServerStatus(version: "0.16.0", authRequired: true)
+      }
+      $0.hermesREST.authProviders = { @Sendable _ in nil }
+    }
+
+    await store.send(.serverFieldCommitted)
+    await store.receive(\.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = .tokenOnly
+      $0.status = .reachable(version: "0.16.0")
+    }
+
+    #expect(store.state.method == .token)
+    #expect(store.state.isPasswordEnabled == false)
+    #expect(store.state.isTokenDeemphasized == false)
   }
 
   @Test func passwordLoginSuccessConnectsWithCookieSession() async {
@@ -256,7 +328,7 @@ struct ConnectionFeatureTests {
         username: "alice",
         password: "pw",
         method: .password,
-        capability: .passwordAvailable(provider: "basic", displayName: "Password"),
+        capability: passwordCapability(),
         status: .reachable(version: "0.16.0")
       )
     ) {
@@ -300,7 +372,7 @@ struct ConnectionFeatureTests {
         username: "alice",
         password: "wrong",
         method: .password,
-        capability: .passwordAvailable(provider: "basic", displayName: "Password"),
+        capability: passwordCapability(),
         status: .reachable(version: "0.16.0")
       )
     ) {
@@ -349,7 +421,7 @@ struct ConnectionFeatureTests {
         username: "alice",
         password: "pw",
         method: .password,
-        capability: .passwordAvailable(provider: "basic", displayName: "Password"),
+        capability: passwordCapability(),
         status: .reachable(version: "0.16.0")
       )
     ) {
@@ -371,7 +443,7 @@ struct ConnectionFeatureTests {
         username: "alice",
         password: "pw",
         method: .password,
-        capability: .passwordAvailable(provider: "basic", displayName: "Password"),
+        capability: passwordCapability(),
         status: .reachable(version: "0.16.0")
       )
     ) {

@@ -45,7 +45,10 @@ final class AuthSnapshotTests: SnapshotTestCase {
           username: "alice",
           password: "••••••••",
           method: .password,
-          capability: .passwordAvailable(provider: "basic", displayName: "Basic"),
+          capability: ServerAuthCapability(
+            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
+            isGated: true
+          ),
           status: .reachable(version: "0.16.0")
         )
       ),
@@ -124,7 +127,10 @@ final class AuthSnapshotTests: SnapshotTestCase {
           serverURL: "http://mac.tailnet:9119",
           token: "••••••••",
           method: .token,
-          capability: .passwordAvailable(provider: "basic", displayName: "Basic"),
+          capability: ServerAuthCapability(
+            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
+            isGated: true
+          ),
           status: .reachable(version: "0.16.0")
         )
       ),

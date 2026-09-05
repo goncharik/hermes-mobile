@@ -70,25 +70,14 @@ public struct ConnectionFeature {
     /// Whether the Password segment may be selected. The probe says password is available;
     /// before the probe completes we optimistically allow it (`?? true` — capability gating
     /// must not be stricter than reality on unknowns).
-    public var isPasswordEnabled: Bool {
-      switch capability {
-      case .passwordAvailable: return true
-      case .tokenOnly, .oauthOnly: return false
-      case nil: return true
-      }
-    }
+    public var isPasswordEnabled: Bool { capability?.isPasswordAvailable ?? true }
 
     /// Whether the Token segment may be selected. Always available — token mode is the
     /// universal fallback — but de-emphasized when the server is gated (password preferred).
     public var isTokenEnabled: Bool { true }
 
     /// True on a gated server where the token path is a poor fit (UI may de-emphasize it).
-    public var isTokenDeemphasized: Bool {
-      switch capability {
-      case .passwordAvailable, .oauthOnly: return true
-      case .tokenOnly, nil: return false
-      }
-    }
+    public var isTokenDeemphasized: Bool { capability?.isGated ?? false }
 
     public var canConnect: Bool {
       guard status != .validating else { return false }
@@ -198,10 +187,8 @@ public struct ConnectionFeature {
         state.status = .reachable(version: status.version)
         // Preselect the segment the server actually supports: password when available,
         // token otherwise. Don't override a token-only server's disabled Password.
-        switch capability {
-        case .passwordAvailable: state.method = .password
-        case .tokenOnly, .oauthOnly: state.method = .token
-        }
+        // (The OAuth segment joins this order in a later step — #19.)
+        state.method = capability.isPasswordAvailable ? .password : .token
         return .none
 
       case let .serverStatusResponse(.failure(error), _):
@@ -241,7 +228,7 @@ public struct ConnectionFeature {
         case .password:
           // Password path: log in for cookies, validate them with one authenticated call,
           // then persist the cookie session + server URL and signal the parent.
-          let provider = state.capability?.passwordProvider ?? "basic"
+          let provider = state.capability?.passwordProviderName ?? "basic"
           let username = state.username
           let password = state.password
           return .run { [rest, keychain, preferences] send in

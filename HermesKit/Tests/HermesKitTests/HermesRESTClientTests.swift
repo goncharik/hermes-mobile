@@ -74,6 +74,26 @@ struct HermesRESTClientTests {
     #expect(status.version == "0.16.0")
     #expect(status.gatewayRunning == true)
     #expect(status.activeSessions == 2)
+    // Older gateways omit `auth_flows` entirely — lenient optional, no throw.
+    #expect(status.authFlows == nil)
+  }
+
+  @Test func statusDecodesAuthFlows() async throws {
+    // Gated gateway with an interactive session provider registered.
+    MockURLProtocol.set(json: #"""
+    {"version":"0.17.0","auth_required":true,"auth_providers":["basic","nous"],"auth_flows":["cookie","native_pkce"]}
+    """#)
+    let status = try await makeClient().status(baseURL)
+    #expect(status.authRequired == true)
+    #expect(status.authFlows == ["cookie", "native_pkce"])
+  }
+
+  @Test func statusToleratesAuthFlowsAbsentOnGatedServer() async throws {
+    // Gated but pre-native-flow gateway: `auth_flows` missing → nil, never a decode failure.
+    MockURLProtocol.set(json: #"{"version":"0.16.0","auth_required":true,"auth_providers":["basic"]}"#)
+    let status = try await makeClient().status(baseURL)
+    #expect(status.authRequired == true)
+    #expect(status.authFlows == nil)
   }
 
   @Test func authProvidersDecodesList() async throws {

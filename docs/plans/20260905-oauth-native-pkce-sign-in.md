@@ -423,21 +423,38 @@ public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterv
 - Modify: `HermesKit/Tests/HermesKitTests/ConnectionFeatureTests.swift` (capability literals)
 - Modify: `HermesKit/Tests/HermesKitTests/HermesRESTClientTests.swift`
 
-- [ ] add lenient `authFlows: [String]?` (`auth_flows`) to `ServerStatus`
-- [ ] replace the `ServerAuthCapability` enum with the struct (`passwordProvider`,
+- [x] add lenient `authFlows: [String]?` (`auth_flows`) to `ServerStatus`
+- [x] replace the `ServerAuthCapability` enum with the struct (`passwordProvider`,
       `oauthProviders`, `supportsNativeFlow`, `isGated`, `isPasswordAvailable`,
       `isOAuthAvailable`, `passwordProviderName`, `static tokenOnly`); keep the
       `init(from:providers:)` signature and every older-server fallback
-- [ ] adapt `ConnectionFeature.State` computed properties (`isPasswordEnabled`,
+- [x] adapt `ConnectionFeature.State` computed properties (`isPasswordEnabled`,
       `isTokenDeemphasized`, preselect switch) to the struct WITHOUT adding OAuth behaviour
       yet (that is Task 8), so this task is a pure refactor with identical UI
-- [ ] write tests (table-driven): auth not required → token only; gated + basic → password;
+- [x] write tests (table-driven): auth not required → token only; gated + basic → password;
       gated + nous only → OAuth list populated, password nil; gated + basic + nous → both;
       `native_pkce` present/absent/`auth_flows` missing → `supportsNativeFlow`; providers
       nil/empty → token only; `isOAuthAvailable` false when providers exist but no native flow
-- [ ] write tests: `ServerStatus` decodes `auth_flows` and tolerates its absence
-- [ ] update existing `ConnectionFeatureTests` literals (`.tokenOnly`, `.passwordAvailable`)
-      to the struct equivalents; run tests — must pass before Task 4
+- [x] write tests: `ServerStatus` decodes `auth_flows` and tolerates its absence
+- [x] update existing `ConnectionFeatureTests` literals (`.tokenOnly`, `.passwordAvailable`)
+      to the struct equivalents; run tests — must pass before Task 4 (1324 tests, 60 suites,
+      all green; +9 over Task 2)
+
+➕ **`isGated` means "gated AND advertising providers", not a bare `authRequired == true`.**
+The old enum mapped a gated server whose `/api/auth/providers` 404'd (or answered `[]`) to
+`.tokenOnly`, which made `isTokenDeemphasized` **false** — correct, because token is then the
+user's only way in and must not be nudged away from. Defining `isGated` as the raw
+`authRequired` flag would have flipped that de-emphasis on and changed the footer copy, so the
+mapper keeps both early returns to `.tokenOnly` and only sets `isGated` in the populated
+branch. `ConnectionFeature.isTokenDeemphasized` is then a plain `capability?.isGated ?? false`,
+byte-identical to the old two-case switch. Guarded by
+`gatedServerWithNoProvidersKeepsTokenUndeemphasized`.
+
+➕ Capability literals in tests moved to a `passwordCapability(...)` file-private helper
+(`ConnectionFeatureTests`) rather than repeating the four-field struct init at five call sites;
+`HermesMobileTests/AuthSnapshotTests.swift` builds the struct inline (it has no `@testable`
+access to HermesKit internals, so the public memberwise init is what it uses). No snapshot was
+re-recorded — this task renders identical UI.
 
 ### Task 4: Pure native-OAuth helpers (PKCE, URLs, callback parsing)
 
