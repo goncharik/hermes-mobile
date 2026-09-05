@@ -623,27 +623,66 @@ suites moved to a shared `mockRequestBody`.
 - Create: `HermesKit/Sources/HermesKit/Clients/LoopbackCallbackListener.swift`
 - Create: `HermesKit/Tests/HermesKitTests/OAuthLoginClientTests.swift`
 
-- [ ] define the `@DependencyClient` (`signIn(baseURL, provider) -> BearerSession`),
+- [x] define the `@DependencyClient` (`signIn(baseURL, provider) -> BearerSession`),
       `testValue` (unimplemented default), `previewValue` returning a fixture, and the
       `\.oauthLogin` key
-- [ ] implement `LoopbackCallbackListener` with Network.framework: bind 127.0.0.1 ephemeral
+- [x] implement `LoopbackCallbackListener` with Network.framework: bind 127.0.0.1 ephemeral
       port, expose `redirectURI`, answer every request with the minimal HTML page, deliver the
       first callback target via an `AsyncThrowingStream`/continuation, `stop()` idempotent.
       Keep the HTTP request-line parsing pure (`parseRequestTarget(_ bytes:)`) OUTSIDE the
-      UIKit guard
-- [ ] implement the live `signIn` under `#if canImport(UIKit)`: PKCE + state → listener →
+      UIKit guard — shipped as a non-throwing `AsyncStream<String>` of EVERY target (see ➕)
+- [x] implement the live `signIn` under `#if canImport(UIKit)`: PKCE + state → listener →
       `ASWebAuthenticationSession` (shared browser session, key-window presentation context
       provider) → race {callback, session cancel, 300 s timeout} → cancel session + stop
       listener → `rest.nativeTokenExchange`; map cancel-before-callback to
       `OAuthLoginError.cancelled`; non-iOS `liveValue = testValue`
-- [ ] write tests (macOS-runnable): request-target parsing (GET line, query, favicon,
+- [x] write tests (macOS-runnable): request-target parsing (GET line, query, favicon,
       malformed); the listener binds on 127.0.0.1 and serves the HTML to a raw `URLSession`
       request while delivering the target once; second request after settle is answered but
       ignored; `stop()` twice is safe
-- [ ] write a test for the orchestration seam by extracting `runNativeLogin(deps:)` with
+- [x] write a test for the orchestration seam by extracting `runNativeLogin(deps:)` with
       injected `openBrowser`/`listenerFactory`/`exchange`/`clock` (mirrors the desktop's
       injected driver): success, gateway `error` param, state mismatch, timeout, cancel
-- [ ] run tests — must pass before Task 8
+- [x] run tests — must pass before Task 8 (1388 tests, 66 suites, all green; +16 over Task 6)
+
+➕ **The listener is NOT behind the UIKit guard.** `Network` builds on macOS, so
+`LoopbackCallbackListener` compiles and is exercised for real by `swift test`: the socket
+tests bind an ephemeral 127.0.0.1 port and drive it with `URLSession` (no firewall prompt, 9 ms).
+Only `ASWebAuthenticationSession` is iOS-only. The iOS branch was verified to compile under
+Swift 6 mode with `xcodebuild -scheme HermesKit -destination 'generic/platform=iOS Simulator'`
+(the `swift build -Xswiftc -sdk` route can't work — it cross-compiles the macro plugins too).
+
+➕ ⚠️ **`"\r\n"` is a SINGLE `Character` in Swift**, equal to neither `"\r"` nor `"\n"`, so a
+grapheme-based line split silently never finds the end of a CRLF request line —
+`parseRequestTarget` returned `nil` for every real browser request and the socket test hung
+waiting for a target that never arrived. It now splits on the raw CR/LF OCTETS. Guarded by
+`parsesTheTargetOfAWellFormedRequestLine` (CRLF and bare-LF cases).
+
+➕ **The listener publishes EVERY request target, not just the first callback.** The "which
+request settles the flow" verdict belongs to the driver (`isLoopbackCallback`), not to the
+socket, so the listener stays a dumb HTTP responder and the probe/zero-byte rule is tested at
+the level that owns it. The stream is non-throwing: a listener that dies mid-flow FINISHES it,
+which the driver reads as `.listenerFailed` instead of sitting out the 300 s budget
+(`aListenerThatDiesBeforeTheCallbackFails`).
+
+➕ **The browser leg has no success case.** With `callbackURLScheme: nil` the session can never
+match a callback, so `OAuthBrowserOutcome` is `.cancelledByUser | .dismissed | .failed(reason)`
+— it only ever reports how the sheet went away, which is the Task 1 spike's finding turned into
+a type. `.failed(reason)` maps to `.gatewayRejected(reason)` (the case whose `message` is the
+carried reason verbatim); an unbuildable authorize URL uses the same case rather than adding a
+seventh error.
+
+➕ **`openBrowser` MUST be cancellation-safe** — a task group awaits its children at scope exit,
+so a browser leg parked on a continuation that (per the spike) never fires would hang the whole
+flow after the callback won. The live implementation wraps presentation in
+`withTaskCancellationHandler` and dismisses + resumes on cancel; the test fakes park on a
+cancellable `Task.sleep`.
+
+➕ **The timeout test uses an `ImmediateClock`, not an advanced `TestClock`.** Advancing a
+`TestClock` requires the sleep to be registered first, and nothing in a three-child race
+guarantees that ordering; an immediate clock makes the budget elapse the moment it is awaited,
+so the timeout leg wins deterministically against a parked browser and a silent listener. Every
+other driver test injects a `TestClock` that is never advanced, i.e. a timeout that can't fire.
 
 ➕ **Spike notes (Task 1 findings that constrain this task)** — full detail in
 `docs/features/oauth-sign-in.md` → "Spike outcome":
