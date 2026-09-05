@@ -57,17 +57,24 @@ struct NativeOAuthLoginSuccess: Equatable, Sendable {
 
 /// The native PKCE login leg (#19), shared by onboarding (`ConnectionFeature`) and re-auth
 /// (`ReauthFeature`): browser leg → seed the store → validate with one authenticated call →
-/// persist. Three orderings are load-bearing, so they live in ONE place:
+/// persist. Four rules are load-bearing, so they live in ONE place:
 ///
 /// 1. The pair is seeded BEFORE the validating call — a `.bearer` request resolves its
 ///    `Authorization` header through `BearerTokenStore`, so an unseeded (or, at re-auth, a
-///    still-dead) store would send exactly the wrong credentials.
+///    still-dead) store would send exactly the wrong credentials — but WITHOUT a Keychain
+///    hook: an unproven pair may not reach disk, and the validating call can rotate it, so an
+///    armed hook would leave a restorable session behind after a sign-in that then failed.
 /// 2. A failed validation DRAINS the store rather than leaving credentials the server just
 ///    rejected wired up for the next request.
 /// 3. What gets persisted is what the STORE holds afterwards, never the pre-seed local: the
 ///    validating call can rotate the pair, and saving the local copy would put the retired
 ///    refresh token back in the Keychain — which the portal's reuse detection answers by
-///    revoking the whole session on the next launch.
+///    revoking the whole session on the next launch. `attachPersistence` arms the hook and
+///    writes that pair in one actor-isolated step, so a rotation cannot slip between them.
+/// 4. A CANCELLED attempt touches NOTHING — it neither drains nor persists. The store and the
+///    Keychain entry are process-wide, so an abandoned attempt (a second provider tap, an
+///    edited server URL, a logout tearing the screen down) that cleaned up after itself would
+///    be cleaning up after whatever superseded it.
 ///
 /// Each caller adds only its own tail (the server-URL save / the identity compare).
 func performNativeOAuthLogin(
@@ -85,22 +92,43 @@ func performNativeOAuthLogin(
     // Nothing was seeded yet — no store to clean up.
     return .failure(.login(asOAuthLoginError(error)))
   }
-  await bearerTokens.seed(minted, baseURL: baseURL) { session in
-    try keychain.saveSession(.bearer(session))
-  }
+  await bearerTokens.seed(minted, baseURL: baseURL)
   do {
     let probe = ServerConnection(baseURL: baseURL, auth: .bearer(minted))
     _ = try await rest.sessions(probe, 1, 0, .recent)
   } catch {
+    // Cancellation is not a verdict on these credentials, and the store is SHARED: this
+    // attempt was superseded (a second provider tap) or the whole screen is going away (a
+    // logout, which needs the store seeded for its own authenticated hops). Draining here
+    // would take out a newer attempt's pair, or silently turn `unregisterPush`/`logout` into
+    // no-ops. Leave the store as it is and report the silent-cancel verdict.
+    guard !isCancellation(error) else { return .failure(.login(.cancelled)) }
     await bearerTokens.clear()
     return .failure(.validation(asRESTError(error)))
   }
-  let bearer = await bearerTokens.current ?? minted
-  try? keychain.saveSession(.bearer(bearer))
+  // Validated — but for an attempt nobody is waiting on any more (the effect was cancelled
+  // between the response and here), arming the hook and writing the Keychain would overwrite
+  // whatever superseded it, up to and including an entry a logout has just deleted.
+  guard !Task.isCancelled else { return .failure(.login(.cancelled)) }
+  let persisted = await bearerTokens.attachPersistence { session in
+    try keychain.saveSession(.bearer(session))
+  }
+  // `nil` means the store was drained mid-flight (a concurrent logout) — nothing to persist.
+  let bearer = persisted ?? minted
   return .success(NativeOAuthLoginSuccess(
     connection: ServerConnection(baseURL: baseURL, auth: .bearer(bearer)),
     bearer: bearer
   ))
+}
+
+/// Was this error the task being cancelled rather than a real verdict? Cooperative
+/// cancellation surfaces as `CancellationError` from Swift concurrency and as
+/// `URLError.cancelled` from `URLSession`; a cancelled task can also fail some other way on
+/// its way out, which `Task.isCancelled` catches.
+func isCancellation(_ error: any Error) -> Bool {
+  if error is CancellationError { return true }
+  if let url = error as? URLError, url.code == .cancelled { return true }
+  return Task.isCancelled
 }
 
 @Reducer
@@ -311,7 +339,7 @@ public struct ConnectionFeature {
     }
   }
 
-  private enum CancelID { case urlDebounce, statusCheck }
+  private enum CancelID { case urlDebounce, statusCheck, oauthLogin }
 
   @Dependency(\.hermesREST) var rest
   @Dependency(\.keychain) var keychain
@@ -328,15 +356,24 @@ public struct ConnectionFeature {
       switch action {
       case .binding(\.serverURL):
         state.status = .idle // a new URL invalidates any prior reachability result
+        // …and so does it invalidate an OAuth attempt still running against the OLD URL: the
+        // browser leg can take minutes while this field stays editable, and its tail persists
+        // credentials, saves the server URL and connects. Retype the URL and that attempt
+        // must not be able to land. (Cancelling never drains the store — see
+        // `performNativeOAuthLogin`.)
+        let dropStaleSignIn: Effect<Action> = .cancel(id: CancelID.oauthLogin)
         guard !state.serverURL.trimmingCharacters(in: .whitespaces).isEmpty else {
-          return .cancel(id: CancelID.urlDebounce)
+          return .merge(dropStaleSignIn, .cancel(id: CancelID.urlDebounce))
         }
         // Auto-check after the user stops typing (covers paste too).
-        return .run { [clock] send in
-          try await clock.sleep(for: .milliseconds(600))
-          await send(.checkServer)
-        }
-        .cancellable(id: CancelID.urlDebounce, cancelInFlight: true)
+        return .merge(
+          dropStaleSignIn,
+          .run { [clock] send in
+            try await clock.sleep(for: .milliseconds(600))
+            await send(.checkServer)
+          }
+          .cancellable(id: CancelID.urlDebounce, cancelInFlight: true)
+        )
 
       case .binding:
         return .none
@@ -492,6 +529,11 @@ public struct ConnectionFeature {
               await send(.oauthLoginResponse(.failure(error)))
             }
           }
+          // ONE attempt at a time, and only ever the current one: this effect outlives the
+          // browser sheet by minutes, and its tail persists credentials and connects. A
+          // second provider tap supersedes the first (`cancelInFlight`), and editing the
+          // server URL cancels it outright.
+          .cancellable(id: CancelID.oauthLogin, cancelInFlight: true)
         }
 
       case let .tokenValidationResponse(.success(connection)):

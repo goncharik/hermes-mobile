@@ -105,7 +105,8 @@ bullets below are the compressed rules.
   anything else rethrown with tokens intact). Never read the Keychain or `expiresAt` directly.
   **Ordering: `rest.logout` and `rest.unregisterPush` resolve auth through the store, so both
   MUST fire BEFORE `bearerTokens.clear()`** (and `rest.logout` is THE deliberate exception to
-  the never-swallow rule).
+  the never-swallow rule), while `detachPersistence()` runs synchronously BEFORE every
+  `keychain.deleteSession()` or a mid-logout rotation rewrites the deleted entry.
 - **The OAuth segment needs positive evidence, not `?? true`**: an OAuth provider AND
   `native_pkce` in `/api/status`'s `auth_flows`. No flag → gateway too old for the RFC 8252
   native flow → segment hidden and the pre-#19 UI renders unchanged. `isGated` is deliberately

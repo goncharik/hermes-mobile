@@ -106,6 +106,10 @@ final class LoopbackCallbackListener: @unchecked Sendable {
 
   deinit { stop() }
 
+  /// How many accepted connections are still held — everything `stop()` would have to cancel.
+  /// Bounded by what is genuinely open, never by how many requests the port has served.
+  var retainedConnectionCount: Int { state.withValue { $0.connections.count } }
+
   /// Bind an ephemeral port on `127.0.0.1` and start serving.
   ///
   /// Throws `OAuthLoginError.listenerFailed` when the socket can't be bound — the login
@@ -222,14 +226,26 @@ final class LoopbackCallbackListener: @unchecked Sendable {
         return
       }
       // Answer EVERY connection — callback, favicon probe, or a speculative open that sent
-      // nothing at all — then close it. Only a parseable request line is reported onward.
+      // nothing at all — then close it and drop it. Only a parseable request line is reported
+      // onward. The port is advertised to the whole loopback interface for up to 300 s, so a
+      // connection that has been answered must not stay retained: anything that can reach the
+      // port could otherwise grow `connections` without bound.
       connection.send(
         content: Self.responseData,
-        completion: .contentProcessed { _ in connection.cancel() }
+        completion: .contentProcessed { _ in
+          connection.cancel()
+          self?.forget(connection)
+        }
       )
       guard let self, let target = parseRequestTarget(buffer) else { return }
       yield(target)
     }
+  }
+
+  /// Drop a connection that has been answered and cancelled — `stop()` only needs the ones
+  /// still open.
+  private func forget(_ connection: NWConnection) {
+    state.withValue { $0.connections.removeAll { $0 === connection } }
   }
 
   private func yield(_ target: String) {

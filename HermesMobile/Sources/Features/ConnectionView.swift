@@ -196,12 +196,22 @@ struct ConnectionView: View {
       Label("Invalid token.", systemImage: "xmark.octagon")
         .foregroundStyle(.red)
     case .invalidCredentials:
-      Label("Invalid username or password.", systemImage: "xmark.octagon")
+      Label(invalidCredentialsMessage, systemImage: "xmark.octagon")
         .foregroundStyle(.red)
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
         .foregroundStyle(.red)
     }
+  }
+
+  /// What a 401 means per regime — mirrors `ReauthView`. The OAuth wording blames neither a
+  /// username nor a password: the identity was collected in the browser and the server
+  /// refused the resulting token pair, so there is nothing to retype here (#19). Token mode
+  /// reaches `.invalidToken`, never this status, so it keeps the password copy.
+  private var invalidCredentialsMessage: String {
+    store.method == .oauth
+      ? "Sign-in was rejected by the server."
+      : "Invalid username or password."
   }
 
   /// Entry point (b): contextual help for the stuck moment — only shown when the server

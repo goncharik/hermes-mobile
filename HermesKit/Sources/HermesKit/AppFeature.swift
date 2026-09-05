@@ -387,6 +387,7 @@ public struct AppFeature {
         // repair. The tap stash and the approval badge set die with the identity too.
         let connection = state.connectionFailed?.connection
         let releaseMic = releaseSlotMic(state)
+        bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
         try? keychain.deleteSession()
         preferences.clearServerURL()
         preferences.clearIdentityScopedPrefs()
@@ -695,11 +696,12 @@ public struct AppFeature {
 
       case let .reauth(.presented(.delegate(.reauthenticated(connection, sameUser)))):
         state.reauth = nil
-        // Adopt the fresh bearer pair in the token store BEFORE anything reconnects. The
-        // store still holds the DEAD pair the sheet was raised for, so a resume or a fresh
-        // list fetch that overtakes this would re-send exactly the credentials that expired.
-        // `.concatenate` below is what makes "before" true; a `.merge` would race.
-        let reseed = reseedBearerStore(for: connection)
+        // NO bearer reseed here. `performNativeOAuthLogin` already put the fresh pair in the
+        // store (that is what the sheet's validating call authenticated with), and by now the
+        // store may hold a ROTATION of it that `connection` — captured when the sheet
+        // finished — does not. Re-seeding the captured pair would put a retired refresh token
+        // back in play, and the portal answers a replayed refresh token by revoking the
+        // session. The store owns the pair; this reduction only routes the connection.
         if sameUser {
           // Same user → adopt the fresh auth regime EVERYWHERE the app still holds the dead
           // one. The list's connection is the snapshot every later chat is built from (a row
@@ -709,8 +711,8 @@ public struct AppFeature {
           // storage (`wsTicket` rehydrates it), undoing the login that just succeeded.
           state.home?.connection = connection
           // Then resume the dead slot chat in place.
-          guard state.liveChat != nil else { return reseed }
-          return .concatenate(reseed, .send(.liveChat(.resumeAfterReauth(connection))))
+          guard state.liveChat != nil else { return .none }
+          return .send(.liveChat(.resumeAfterReauth(connection)))
         }
         // Different user signed in → drop everything identity-scoped and force a fresh list.
         // (`makeHomeState` reads the profile pref AFTER the clear, so it seeds defaults.)
@@ -730,8 +732,8 @@ public struct AppFeature {
         // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
         // cancels the expired chat's remaining effects (a non-nil→non-nil swap compares equal
         // and cancels nothing), and the action is what starts the replacement's socket.
-        guard let seat = detailRefill(state) else { return .merge(identityCleanup, reseed) }
-        return .merge(identityCleanup, .concatenate(reseed, .send(.fillLiveChat(seat))))
+        guard let seat = detailRefill(state) else { return identityCleanup }
+        return .merge(identityCleanup, .send(.fillLiveChat(seat)))
 
       case .reauth(.presented(.delegate(.quit))):
         // "Quit to start" → full logout (Keychain session + every pref) → onboarding.
@@ -739,6 +741,7 @@ public struct AppFeature {
         // as `.disconnect`, through the other logout path); badge reset to zero.
         let connection = state.home?.connection ?? state.liveChat?.connection
         let releaseMic = releaseSlotMic(state)
+        bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
         try? keychain.deleteSession()
         preferences.clearServerURL()
         preferences.clearIdentityScopedPrefs()
@@ -1264,38 +1267,25 @@ public struct AppFeature {
     }
   }
 
-  /// The effect form of `seedBearerStore` for a freshly re-authenticated connection — `.none`
-  /// for token/cookie, so the two older regimes' routing is byte-identical.
-  private func reseedBearerStore(for connection: ServerConnection) -> Effect<Action> {
-    guard case .bearer = connection.auth else { return .none }
-    return .run { [keychain, bearerTokens] _ in
-      await Self.seedBearerStore(
-        connection.auth, baseURL: connection.baseURL, keychain: keychain, store: bearerTokens
-      )
-    }
-  }
-
   /// The server-side half of a logout, in the ONE order that works — shared by all three
   /// logout paths (`connectionFailed.logoutConfirmed`, `reauth.quit`, `.disconnect`) so they
   /// cannot drift apart.
   ///
   /// Both hops are best-effort and both need the credentials that are about to die, hence
-  /// `.concatenate` rather than `.merge`: persistence is detached, the push unregister
-  /// authenticates like any other REST call (through the token store in bearer mode), then
-  /// `rest.logout` runs, and only then is the store drained. Draining first would make BOTH
-  /// requests silent no-ops — `resolveAuth` has nothing to resolve — which is exactly the
-  /// trap Task 6 documented on `HermesRESTClient.logout`.
+  /// `.concatenate` rather than `.merge`: the push unregister authenticates like any other
+  /// REST call (through the token store in bearer mode), then `rest.logout` runs, and only
+  /// then is the store drained. Draining first would make BOTH requests silent no-ops —
+  /// `resolveAuth` has nothing to resolve — which is exactly the trap Task 6 documented on
+  /// `HermesRESTClient.logout`.
   ///
-  /// The leading `detachPersistence` is what keeps that ordering safe: every caller has
-  /// already deleted the Keychain session synchronously, and either hop can rotate a pair
-  /// that is inside its refresh leeway — whose persist hook would write the entry straight
-  /// back, leaving a dead pair to be restored on the next launch.
+  /// Either hop can rotate a pair that is inside its refresh leeway; what stops that rotation
+  /// from rewriting the deleted Keychain entry is `BearerTokenStore.detachPersistence()`,
+  /// which every path calls synchronously before its `keychain.deleteSession()`.
   private func serverSideLogout(connection: ServerConnection?) -> Effect<Action> {
     // Called for its synchronous prefs clearing too, so it must run unconditionally.
     let unregister = unregisterPushOnLogout(connection: connection)
     guard let connection, case .bearer = connection.auth else { return unregister }
     return .concatenate(
-      .run { [bearerTokens] _ in await bearerTokens.detachPersistence() },
       unregister,
       .run { [rest, bearerTokens] _ in
         await rest.logout(connection)

@@ -259,9 +259,12 @@ public struct ReauthFeature {
 }
 
 /// Pure same-user test for re-auth routing in the COOKIE regime: case-/whitespace-insensitive
-/// equality of the typed username, which is never empty on that path. Used to decide whether
+/// equality of the typed USERNAME, which is never empty on that path. Used to decide whether
 /// a successful re-auth resumes the current chat (same user) or switches accounts (different
 /// user → pop + reload + clear identity-scoped prefs).
+///
+/// Deliberately NOT shared with ``isSameBearerUser(previous:fresh:)`` — that one compares an
+/// opaque identifier, not a username, and folding case there is wrong (see its doc).
 public func isSameUser(_ lhs: String, _ rhs: String) -> Bool {
   func normalize(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -271,15 +274,20 @@ public func isSameUser(_ lhs: String, _ rhs: String) -> Bool {
 
 /// Same-user test for the BEARER regime, where identity is the token payload's `user_id`.
 ///
+/// Compared EXACTLY, only trimmed — never lowercased, unlike the username compare above.
+/// Hermes derives `user_id` from the OIDC `sub` claim, which OpenID Connect Core defines as
+/// case-sensitive, so `alice` and `ALICE` are two different people; folding case would resume
+/// one account's chat (pins, seen counts, selected profile) under the other's credentials.
+/// Keep the two functions separate — a DRY pass that merges them re-introduces exactly that.
+///
 /// An empty id on EITHER side is an unknown identity, never a match: `user_id` is one of the
 /// fields the lenient token decode allows a gateway to omit, and treating unknown-vs-unknown
-/// as "same user" would resume the previous account's chat — with its pins, seen counts and
-/// selected profile intact — after someone signed in as a different account. Unknown routes
-/// as a switch, which is the recoverable direction.
+/// as "same user" would resume the previous account's chat after someone signed in as a
+/// different account. Unknown routes as a switch, which is the recoverable direction.
 public func isSameBearerUser(previous: String, fresh: String) -> Bool {
   let blanks = CharacterSet.whitespacesAndNewlines
-  guard !previous.trimmingCharacters(in: blanks).isEmpty,
-        !fresh.trimmingCharacters(in: blanks).isEmpty
-  else { return false }
-  return isSameUser(previous, fresh)
+  let previous = previous.trimmingCharacters(in: blanks)
+  let fresh = fresh.trimmingCharacters(in: blanks)
+  guard !previous.isEmpty, !fresh.isEmpty else { return false }
+  return previous == fresh
 }

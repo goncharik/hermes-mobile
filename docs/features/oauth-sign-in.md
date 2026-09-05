@@ -141,8 +141,11 @@ UI-shaped step lives behind it so `ConnectionFeature`/`ReauthFeature` stay pure 
    request target.
 5. The driver settles on the first target `isLoopbackCallback` accepts, verifies `state`,
    cancels the sheet, stops the listener, and calls `rest.nativeTokenExchange` (15 s).
-6. The caller seeds `BearerTokenStore`, validates with `GET /api/sessions?limit=1`, then
-   persists `.bearer` in the Keychain and the server URL in prefs.
+6. The caller seeds `BearerTokenStore` **without a Keychain hook**, validates with
+   `GET /api/sessions?limit=1`, and only then arms persistence (`attachPersistence`, which
+   writes the pair the store holds — a rotation during the validating call included) and saves
+   the server URL in prefs. An unproven pair never reaches disk, so a sign-in that fails at
+   validation leaves nothing restorable behind.
 
 Budgets: **300 s** for the whole browser leg (the gateway's pending authorization expires at
 600 s, so ours always fires first) and **15 s** for the token exchange.
@@ -246,10 +249,17 @@ just left. All three logout paths (`connectionFailed.logoutConfirmed`, `reauth.q
 cookie logout requests stay byte-identical (`tokenAndCookieLogoutSendNoLogoutRequest` asserts
 `/auth/logout` fires zero times for both).
 
-The same rule applies to the two reauth reseed hand-offs in `AppFeature`: both use
-`.concatenate`, never `.merge`. The store still holds the DEAD pair when `.reauthenticated`
-arrives, so a merged reseed could lose the race against `.resumeAfterReauth` or the new user's
-detail-column dial and re-send the expired credentials.
+**Every logout path calls `BearerTokenStore.detachPersistence()` synchronously, immediately
+before its `keychain.deleteSession()`** (`AppFeature` for `logoutConfirmed`/`reauth.quit`,
+`SettingsFeature` for `.disconnect`). Both logout hops authenticate through the store, so a
+pair inside its refresh leeway rotates mid-logout; with the hook still armed that rotation
+rewrites the entry the reducer just deleted and the dead pair is restored on the next launch.
+The detach is `nonisolated` for exactly this reason — an `await`ed one runs after the delete.
+
+**`AppFeature` does NOT reseed the store on `.reauthenticated`.** The sign-in leg already put
+the fresh pair there (it is what the sheet's validating call authenticated with) and may have
+rotated it since; re-seeding the connection's captured pair would put a retired refresh token
+back in play, which is what the portal's reuse detection revokes sessions for.
 
 `fallBackToOnboarding` also drains the store — it is the shared "the stored credentials are
 dead" verdict for both the launch auth failure and the retry screen's `.credentialsRejected`.
@@ -276,10 +286,18 @@ indistinguishable from a token-exchange 401.
 | Refresh 503 / transport | rethrown, tokens kept, reconnect backoff retries |
 
 Every failure path clears the seeded store, so a half-finished sign-in never leaves credentials
-behind.
+behind — with ONE deliberate exception: a **cancelled** attempt (superseded by a second
+provider tap, abandoned by an edited server URL, or torn down by a logout) touches neither the
+store nor the Keychain. Cancellation is not a verdict on the credentials, and both are
+process-wide: cleaning up there would clean up after whatever superseded it, or drain the store
+the logout's own hops still need. The OAuth attempt is `.cancellable(cancelInFlight:)` so only
+the current one can ever land.
 
-**Re-auth identity routing is `user_id`**, not a username: same user → reseed and resume in
-place; different user → pop to the session list and clear identity-scoped prefs. The display
+**Re-auth identity routing is `user_id`**, not a username: same user → resume in place;
+different user → pop to the session list and clear identity-scoped prefs. That compare is
+`isSameBearerUser`, which trims but **never lowercases** — `user_id` is the OIDC `sub` claim
+and case-sensitive, so `alice` and `ALICE` are different accounts. The cookie regime's
+`isSameUser` compares a typed username and does fold case; the two are deliberately separate. The display
 name on the reauth button comes from `State.providerLabel`, which falls back to the wire
 provider name — after a launch auto-restore nothing was probed, so the display name is
 genuinely unavailable and "Continue with " would be worse than "Continue with nous".

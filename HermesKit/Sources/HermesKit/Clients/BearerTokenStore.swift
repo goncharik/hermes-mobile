@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Dependencies
 import Foundation
 import IssueReporting
@@ -29,16 +30,19 @@ func bearerNeedsRefresh(
 ///    concurrent refreshes with the same refresh token revoke the whole session and log the
 ///    user out. Concurrent callers at expiry therefore join ONE in-flight `Task` instead of
 ///    each starting their own.
-/// 2. **Persist before publish.** The rotated pair is written through the `persist` hook
-///    (Keychain) from inside the actor BEFORE any caller observes the new token, so a crash
-///    between "server rotated" and "app saved" can't strand the app holding a refresh token
-///    the server has already retired.
+/// 2. **Persist before publish.** The rotated pair is written through the persist hook
+///    (Keychain — whenever one is armed, see ``seed(_:baseURL:persist:)``) from inside the
+///    actor BEFORE any caller observes the new token, so a crash between "server rotated" and
+///    "app saved" can't strand the app holding a refresh token the server has already retired.
 /// 3. **One expiry verdict.** A refresh 401 clears the store and throws
 ///    `GatewayError.authExpired` — the existing `.sessionExpired` → `ReauthFeature` route.
 ///    Anything else (503, transport) rethrows with the tokens INTACT so backoff can retry.
 ///
 /// Lifecycle: launch restore and a successful (re)login `seed` it, logout `clear`s it.
 public actor BearerTokenStore {
+  /// The Keychain write-through hook (`AuthSession.bearer` → `KeychainClient.saveSession`).
+  public typealias PersistHook = @Sendable (BearerSession) throws -> Void
+
   /// Process-wide instance the live REST and gateway clients share, mirroring the single
   /// cookie jar of the `.cookie` regime — the "single owner" invariant is only true if
   /// there is one store.
@@ -49,7 +53,11 @@ public actor BearerTokenStore {
 
   private var session: BearerSession?
   private var baseURL: URL?
-  private var persist: (@Sendable (BearerSession) throws -> Void)?
+  /// The Keychain write-through hook, held in a lock instead of actor state so
+  /// ``detachPersistence()`` can be called SYNCHRONOUSLY from a reducer body — see its doc.
+  /// The lock is also held for the duration of the call, so a detach that arrives while a
+  /// rotation is being written waits for that write instead of racing it.
+  private nonisolated let persistHook = LockIsolated<PersistHook?>(nil)
   private var refreshTask: Task<BearerSession, any Error>?
   /// Bumped by every `seed`/`clear`. A refresh that started under an older generation was
   /// superseded, so it must never publish or persist its (now stale) result.
@@ -67,27 +75,49 @@ public actor BearerTokenStore {
   /// decide whether a token is usable; that is ``validAccessToken(refresh:)``'s job.
   public var current: BearerSession? { session }
 
-  /// Install a token set, the server it belongs to, and the persistence hook, discarding
-  /// any in-flight refresh (it belongs to the credentials being replaced).
+  /// Install a token set and the server it belongs to, discarding any in-flight refresh (it
+  /// belongs to the credentials being replaced).
+  ///
+  /// `persist` is the Keychain write-through hook, and it is OPTIONAL because a pair is not
+  /// always allowed to reach the Keychain yet: a freshly minted one has not been validated,
+  /// so a rotation performed by the validating call must stay in memory until that call
+  /// succeeds (`performNativeOAuthLogin` seeds hookless, then ``attachPersistence(_:)``).
+  /// A pair restored FROM the Keychain seeds with its hook straight away.
   public func seed(
     _ session: BearerSession,
     baseURL: URL,
-    persist: @escaping @Sendable (BearerSession) throws -> Void
+    persist: PersistHook? = nil
   ) {
     invalidateInFlightRefresh()
     self.session = session
     self.baseURL = baseURL
-    self.persist = persist
+    persistHook.setValue(persist)
   }
 
-  /// Stop writing rotations to the Keychain while keeping the pair usable.
+  /// Arm the Keychain hook and write the live pair through it, atomically: whatever the store
+  /// holds RIGHT NOW is what lands on disk (a rotation performed while the pair was still
+  /// unproven included), and any rotation after this point is written by the hook. Returns
+  /// the pair that was written, or `nil` when the store has since been drained — which is a
+  /// logout or an expiry, and nothing should be persisted for it.
+  @discardableResult
+  public func attachPersistence(_ persist: @escaping PersistHook) -> BearerSession? {
+    persistHook.setValue(persist)
+    guard let session else { return nil }
+    writeThrough(session)
+    return session
+  }
+
+  /// Stop writing rotations to the Keychain while keeping the pair usable — synchronous and
+  /// callable from a reducer body BY DESIGN.
   ///
-  /// The logout effect's own hops (`unregisterPush`, `logout`) authenticate through this
-  /// store, so a pair inside its leeway rotates mid-logout and the persist hook writes the
-  /// Keychain entry the reducer already deleted — resurrecting a dead pair for the next
-  /// launch. Detaching first keeps the hops authenticated and leaves the Keychain alone.
-  public func detachPersistence() {
-    persist = nil
+  /// The rule it exists for: **detach before deleting the Keychain session.** Logout deletes
+  /// that entry synchronously while a refresh may already be in flight (the logout's own
+  /// `unregisterPush`/`logout` hops authenticate through this store, and any pair inside its
+  /// leeway rotates), and an armed hook writes the entry straight back — resurrecting a dead
+  /// pair for the next launch. An `await`ed detach could not close that window; this one
+  /// happens before the delete and blocks on a write already in progress.
+  public nonisolated func detachPersistence() {
+    persistHook.setValue(nil)
   }
 
   /// Drop everything (logout / session expiry). Subsequent reads throw `.authExpired`.
@@ -95,7 +125,7 @@ public actor BearerTokenStore {
     invalidateInFlightRefresh()
     session = nil
     baseURL = nil
-    persist = nil
+    persistHook.setValue(nil)
   }
 
   /// A usable access token: the current one when it still has more than `refreshLeeway`
@@ -167,14 +197,19 @@ public actor BearerTokenStore {
     }
     refreshTask = nil
     session = rotated
+    writeThrough(rotated)
+    return rotated
+  }
+
+  /// Hand a pair to the persist hook, if one is armed. Failures are reported, never thrown:
+  /// the in-memory copy is the one the server now expects, and dropping it would trigger
+  /// reuse detection on relaunch.
+  private nonisolated func writeThrough(_ session: BearerSession) {
     do {
-      try persist?(rotated)
+      try persistHook.withValue { try $0?(session) }
     } catch {
-      // Keychain failures must not lose the rotated pair: the in-memory copy is the one
-      // the server now expects, and dropping it would trigger reuse detection on relaunch.
       reportIssue("BearerTokenStore: persisting the rotated bearer pair failed: \(error)")
     }
-    return rotated
   }
 
   private func invalidateInFlightRefresh() {

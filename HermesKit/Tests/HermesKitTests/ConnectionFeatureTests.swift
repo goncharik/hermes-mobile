@@ -855,6 +855,213 @@ struct ConnectionFeatureTests {
     #expect(await tokenStore.current == rotated)
   }
 
+  /// A rotation during the validating call is only allowed to reach the Keychain once that
+  /// call has SUCCEEDED. The pair is unproven until then, and arming the persist hook at seed
+  /// time meant a rotation wrote it to disk while the failure path drained memory only —
+  /// leaving a rejected sign-in restorable on the next launch.
+  @Test func aRotationBeforeARejectedValidationIsNeverPersisted() async {
+    let keychain = KeychainClient.inMemory()
+    let minted = BearerSession(
+      accessToken: "access-1", refreshToken: "refresh-1",
+      // Inside the store's 120 s leeway, so the validating call rotates it first.
+      expiresAt: Date().timeIntervalSince1970 + 10, provider: "nous", userID: "user-42"
+    )
+    let rotated = BearerSession(
+      accessToken: "access-2", refreshToken: "refresh-2",
+      expiresAt: 4_000_000_000, provider: "nous", userID: "user-42"
+    )
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in minted }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+        // The live transport resolves `Authorization` through the store — which rotates —
+        // and only then does the server reject the identity.
+        _ = try await tokenStore.validAccessToken { _, _ in rotated }
+        throw RESTError.unauthorized
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
+
+    #expect(
+      keychain.loadSession(.shared) == nil,
+      "a rejected sign-in left a restorable bearer session in the Keychain"
+    )
+    #expect(await tokenStore.current == nil)
+  }
+
+  /// Tapping a second time supersedes the first attempt (the browser leg can run for minutes
+  /// while this screen stays live). The abandoned attempt must neither land — persisting or
+  /// connecting against credentials the user moved off — nor drain the store on its way out:
+  /// cancellation is not a rejection, and the pair it would take down belongs to the NEW
+  /// attempt (the store is process-wide).
+  @Test func aSupersededSignInNeitherLandsNorDrainsTheNewAttemptsPair() async {
+    let keychain = KeychainClient.inMemory()
+    let abandoned = bearerFixture(accessToken: "abandoned")
+    let winner = bearerFixture(accessToken: "winner")
+    let attempts = LockIsolated(0)
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in
+        let attempt = attempts.withValue { count -> Int in
+          defer { count += 1 }
+          return count
+        }
+        return attempt == 0 ? abandoned : winner
+      }
+      $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
+        guard connection.auth == .bearer(abandoned) else { return [] }
+        // The first attempt is still validating when the second tap arrives.
+        try await Task.sleep(for: .seconds(60))
+        return []
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.send(.connectTapped) // supersedes the first, cancelling it
+    await store.receive(\.oauthLoginResponse.success)
+    await store.receive(\.delegate.connected)
+
+    #expect(await tokenStore.current == winner, "the cancelled attempt drained the live pair")
+    #expect(keychain.loadSession(.shared) == .bearer(winner))
+  }
+
+  /// The server field stays editable while the browser sheet is up, and the sign-in tail
+  /// persists credentials, saves the URL and connects. Retyping the URL must abandon that
+  /// attempt outright — it belongs to a server the user has moved off.
+  @Test func editingTheServerURLAbandonsAnInFlightSignIn() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let clock = TestClock()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in
+        try await Task.sleep(for: .seconds(60)) // the user is still in the browser
+        return bearerFixture()
+      }
+      $0.bearerTokens = BearerTokenStore()
+      $0.keychain = keychain
+      $0.preferences = preferences
+      $0.continuousClock = clock
+      $0.hermesREST.status = { @Sendable _ in okStatus() }
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.send(\.binding.serverURL, "http://other:9119") {
+      $0.serverURL = "http://other:9119"
+      $0.status = .idle
+    }
+    // The abandoned attempt sends NOTHING (no `oauthLoginResponse`, no `delegate`); only the
+    // debounced re-check of the new URL follows.
+    await clock.advance(by: .milliseconds(600))
+    await store.receive(\.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
+      $0.method = .token
+      $0.status = .reachable(version: "0.16.0")
+    }
+
+    #expect(keychain.loadSession(.shared) == nil)
+    #expect(preferences.loadServerURL() == nil)
+  }
+
+  /// Cancelling the shared login leg must touch NOTHING. The store and the Keychain entry are
+  /// process-wide, so an abandoned attempt that drained them on its way out would take down
+  /// whatever superseded it — and a logout that cancels this effect while its own hops still
+  /// need the store would silently skip `unregisterPush` and `logout` (both resolve their auth
+  /// through it). Parking the validating call makes the cancellation land exactly there.
+  @Test func aCancelledValidatingCallLeavesTheSharedStoreAlone() async {
+    let tokenStore = BearerTokenStore()
+    let keychain = KeychainClient.inMemory()
+    let minted = bearerFixture()
+    let (validating, signalValidating) = AsyncStream<Void>.makeStream()
+    var rest = HermesRESTClient.testValue
+    rest.sessions = { @Sendable _, _, _, _ in
+      signalValidating.yield() // the pair is seeded by now
+      try await Task.sleep(for: .seconds(60))
+      return []
+    }
+    var oauthLogin = OAuthLoginClient.testValue
+    oauthLogin.signIn = { @Sendable _, _ in minted }
+
+    let attempt = Task {
+      await performNativeOAuthLogin(
+        baseURL: URL(string: "http://mac:9119")!,
+        provider: "nous",
+        rest: rest,
+        keychain: keychain,
+        oauthLogin: oauthLogin,
+        bearerTokens: tokenStore
+      )
+    }
+    var started = validating.makeAsyncIterator()
+    await started.next()
+    attempt.cancel()
+
+    #expect(await attempt.value == .failure(.login(.cancelled)))
+    #expect(
+      await tokenStore.current == minted,
+      "a cancelled attempt drained the shared token store"
+    )
+    #expect(keychain.loadSession(.shared) == nil)
+  }
+
+  /// The same rule on the other side of the response: an attempt cancelled after its
+  /// validating call succeeded must not persist either. That write would land on an entry a
+  /// logout has just deleted (resurrecting it) or on a newer attempt's credentials.
+  @Test func aCancelledAttemptWhoseValidationSucceededPersistsNothing() async {
+    let tokenStore = BearerTokenStore()
+    let keychain = KeychainClient.inMemory()
+    let minted = bearerFixture()
+    let (validating, signalValidating) = AsyncStream<Void>.makeStream()
+    let release = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    var rest = HermesRESTClient.testValue
+    rest.sessions = { @Sendable _, _, _, _ in
+      // Not cancellation-aware: the call SUCCEEDS, just after the task was cancelled.
+      await withCheckedContinuation { continuation in
+        release.setValue(continuation)
+        signalValidating.yield()
+      }
+      return []
+    }
+    var oauthLogin = OAuthLoginClient.testValue
+    oauthLogin.signIn = { @Sendable _, _ in minted }
+
+    let attempt = Task {
+      await performNativeOAuthLogin(
+        baseURL: URL(string: "http://mac:9119")!,
+        provider: "nous",
+        rest: rest,
+        keychain: keychain,
+        oauthLogin: oauthLogin,
+        bearerTokens: tokenStore
+      )
+    }
+    var started = validating.makeAsyncIterator()
+    await started.next()
+    attempt.cancel()
+    release.value?.resume()
+
+    #expect(await attempt.value == .failure(.login(.cancelled)))
+    #expect(
+      keychain.loadSession(.shared) == nil,
+      "an abandoned attempt wrote its pair to the Keychain"
+    )
+  }
+
   /// An unclassified throw from the browser leg still reads like every other transport
   /// failure — `asOAuthLoginError`'s fallback is the copy a user would actually see.
   @Test func anUnclassifiedSignInFailureFallsBackToTheRESTCopy() async {

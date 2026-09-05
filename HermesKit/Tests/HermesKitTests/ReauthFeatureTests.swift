@@ -244,15 +244,20 @@ struct ReauthFeatureTests {
     await store.receive(\.delegate, .reauthenticated(connection: expected, sameUser: false))
   }
 
-  /// The identity compare is per-regime: a cookie session's username is typed and never
-  /// empty, so it keeps the plain equality; the bearer `user_id` may be absent.
-  @Test func theBearerIdentityCompareTreatsAnEmptyIDAsUnknown() {
-    #expect(isSameBearerUser(previous: "user-42", fresh: "USER-42 "))
+  /// The identity compare is per-regime and the two must NOT be merged: a cookie session's
+  /// username is typed by a human (case-insensitive is right there), while a bearer `user_id`
+  /// is Hermes' OIDC `sub` claim — case-SENSITIVE per OpenID Connect Core, and possibly
+  /// absent. `alice` and `ALICE` are two accounts: folding case would resume one's chat, pins
+  /// and selected profile under the other's credentials.
+  @Test func theBearerIdentityCompareIsCaseSensitiveAndTreatsAnEmptyIDAsUnknown() {
+    #expect(isSameBearerUser(previous: "user-42", fresh: "user-42 ")) // trimmed, not folded
+    #expect(isSameBearerUser(previous: "alice", fresh: "ALICE") == false)
+    #expect(isSameBearerUser(previous: "user-42", fresh: "USER-42") == false)
     #expect(isSameBearerUser(previous: "user-42", fresh: "user-99") == false)
     #expect(isSameBearerUser(previous: "", fresh: "") == false)
     #expect(isSameBearerUser(previous: "user-42", fresh: "") == false)
     #expect(isSameBearerUser(previous: "  ", fresh: "user-42") == false)
-    // Unchanged for the cookie regime.
+    // Unchanged for the cookie regime: usernames still compare case-insensitively.
     #expect(isSameUser("Ada", "ada "))
   }
 

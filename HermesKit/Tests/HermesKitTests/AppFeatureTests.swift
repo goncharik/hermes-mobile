@@ -5705,21 +5705,25 @@ struct AppFeatureTests {
     #expect(store.state.reauth?.previousUserID == "user-7")
   }
 
-  /// Same-user re-auth must swap the fresh pair into the store BEFORE the slot resumes —
-  /// the store still holds the DEAD pair the sheet was raised for, and a resume that
-  /// overtook the reseed would re-send exactly the credentials that just expired.
-  @Test func sameUserBearerReauthReseedsTheStoreBeforeResuming() async {
-    let dead = bearerSession(accessToken: "dead")
+  /// The token store owns the freshly re-authenticated pair — `performNativeOAuthLogin`
+  /// seeded it inside the sheet, and by the time this delegate is handled the store may hold
+  /// a ROTATION of it (any hop between the two action hops can rotate a pair inside its
+  /// leeway). Re-seeding the connection's captured pair here would put the RETIRED refresh
+  /// token back in play, and the portal answers a replayed refresh token by revoking the
+  /// whole session. The resume still dials with the connection it was handed.
+  @Test func sameUserBearerReauthLeavesTheStoresOwnPairInPlace() async {
     let fresh = bearerSession(accessToken: "fresh")
+    // What the store holds after the sign-in rotated once — strictly newer than `fresh`.
+    let rotated = bearerSession(accessToken: "rotated")
     let tokenStore = BearerTokenStore()
     await tokenStore.seed(
-      dead, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
+      rotated, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
     )
     let store = TestStore(
       initialState: AppFeature.State(
-        home: SessionListFeature.State(connection: bearerConnection(dead)),
+        home: SessionListFeature.State(connection: bearerConnection(fresh)),
         path: StackState([ChatScreen.State()]),
-        liveChat: ChatFeature.State(connection: bearerConnection(dead)),
+        liveChat: ChatFeature.State(connection: bearerConnection(fresh)),
         reauth: ReauthFeature.State(
           serverURL: URL(string: "http://mac.tailnet:9119")!, method: .oauth,
           provider: "nous", previousUserID: "user-42"
@@ -5730,9 +5734,8 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.bearerTokens = tokenStore
       $0.keychain = KeychainClient.inMemory()
-      // The resume dials the socket, carrying the fresh regime. `connect` is synchronous, so
-      // the store read that would pin the reseed-before-dial ordering has to happen after
-      // the receive below; the ordering itself is enforced by the reducer's `.concatenate`.
+      // The resume dials the socket carrying the connection it was handed; the ACCESS TOKEN
+      // that request actually leaves with is resolved through the store, not from here.
       $0.hermesGateway.connect = { @Sendable _, auth in
         #expect(auth == .bearer(fresh))
         return AsyncStream { _ in }
@@ -5747,24 +5750,26 @@ struct AppFeatureTests {
       $0.reauth = nil
       $0.home?.connection = freshConnection
     }
-    // The reseed is CONCATENATED ahead of the resume, so by the time the resume is delivered
-    // the store already holds the fresh pair.
     await store.receive(\.liveChat.resumeAfterReauth)
-    #expect(await tokenStore.current == fresh)
+    #expect(
+      await tokenStore.current == rotated,
+      "the reauth hand-off overwrote the store's own (newer) pair with a retired one"
+    )
 
     await store.send(.liveChat(.teardown))
   }
 
-  /// A different `user_id` is an account switch: everything identity-scoped is dropped AND
-  /// the store adopts the new account's pair — a stale one would authenticate the new user's
-  /// list fetch as the old user.
-  @Test func differentUserBearerReauthReseedsAndClearsIdentityPrefs() async {
+  /// A different `user_id` is an account switch: everything identity-scoped is dropped, while
+  /// the new account's pair — which the sign-in leg put in the store, and may already have
+  /// rotated — is left exactly as the store has it (see the same-user case above).
+  @Test func differentUserBearerReauthClearsIdentityPrefsAndKeepsTheStoresPair() async {
     let dead = bearerSession(userID: "user-42", accessToken: "dead")
     let fresh = bearerSession(userID: "user-99", accessToken: "fresh")
+    let rotated = bearerSession(userID: "user-99", accessToken: "rotated")
     let tokenStore = BearerTokenStore()
     let profileCleared = LockIsolated(false)
     await tokenStore.seed(
-      dead, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
+      rotated, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
     )
     let store = TestStore(
       initialState: AppFeature.State(
@@ -5796,7 +5801,10 @@ struct AppFeatureTests {
     }
     #expect(profileCleared.value)
     await store.finish()
-    #expect(await tokenStore.current == fresh)
+    #expect(
+      await tokenStore.current == rotated,
+      "the reauth hand-off overwrote the store's own (newer) pair with a retired one"
+    )
   }
 
   /// All THREE logout paths must behave identically for the bearer regime, and in the one
@@ -5899,6 +5907,94 @@ struct AppFeatureTests {
         )
       }
     }
+  }
+
+  /// Logout has to make the token store's persistence inert BEFORE it deletes the Keychain
+  /// session, synchronously in the same reducer body — an `await`ed detach inside the returned
+  /// effect leaves the window open, just narrower. A refresh that was already in flight when
+  /// the user logged out resolves at a moment nothing controls, and an armed hook writes the
+  /// entry the reducer just deleted, so the dead pair is restored on the next launch.
+  ///
+  /// The `deleteSession` stub parks that rotation and resumes it from inside the delete —
+  /// the narrowest window there is, and the one an effect-side detach cannot cover.
+  @Test func logoutDetachesPersistenceBeforeDeletingTheKeychainSession() async {
+    let session = BearerSession(
+      accessToken: "access-1", refreshToken: "refresh-1",
+      // Inside the store's 120 s refresh leeway — this is the pair that rotates.
+      expiresAt: Date().timeIntervalSince1970 + 10, provider: "nous", userID: "user-42"
+    )
+    let rotated = BearerSession(
+      accessToken: "access-2", refreshToken: "refresh-2",
+      expiresAt: 4_000_000_000, provider: "nous", userID: "user-42"
+    )
+    let connection = bearerConnection(session)
+    let tokenStore = BearerTokenStore()
+    let inMemory = KeychainClient.inMemory()
+    let writes = LockIsolated<[String]>([])
+    let parked = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    let (refreshParked, signalParked) = AsyncStream<Void>.makeStream()
+
+    let keychain: KeychainClient = {
+      var recording = inMemory
+      recording.saveSession = { @Sendable saved in
+        writes.withValue { $0.append("save") }
+        try inMemory.saveSession(saved)
+      }
+      recording.deleteSession = { @Sendable in
+        writes.withValue { $0.append("delete") }
+        // Let the in-flight rotation land RIGHT HERE, immediately after the delete.
+        parked.value?.resume()
+        try inMemory.deleteSession()
+      }
+      return recording
+    }()
+    try? inMemory.saveSession(.bearer(session))
+    await tokenStore.seed(session, baseURL: connection.baseURL) {
+      try keychain.saveSession(.bearer($0))
+    }
+
+    let refreshing = Task {
+      _ = try? await tokenStore.validAccessToken { _, _ in
+        await withCheckedContinuation { continuation in
+          parked.setValue(continuation)
+          signalParked.yield()
+        }
+        return rotated
+      }
+    }
+    var parkedSignal = refreshParked.makeAsyncIterator()
+    await parkedSignal.next() // the refresh is now suspended mid-rotation
+
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        reauth: ReauthFeature.State(
+          serverURL: connection.baseURL, method: .oauth, provider: "nous"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesREST.logout = { @Sendable _ in }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.reauth(.presented(.delegate(.quit))))
+    await refreshing.value
+    await store.finish()
+
+    #expect(
+      writes.value == ["delete"],
+      "a rotation wrote the Keychain after logout deleted it: \(writes.value)"
+    )
+    #expect(
+      inMemory.loadSession(.shared) == nil,
+      "logout left a restorable bearer session behind"
+    )
   }
 
   /// Backward-compat guard: the token and cookie regimes' logout requests are unchanged —

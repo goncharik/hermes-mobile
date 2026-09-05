@@ -133,6 +133,32 @@ struct LoopbackCallbackListenerTests {
     }
   }
 
+  /// The port is advertised on the loopback interface for as long as the sign-in runs (up to
+  /// 300 s), and ANY local process or page can hit it. An answered connection that stayed
+  /// retained until `stop()` therefore turned that window into unbounded memory growth.
+  @Test(.timeLimit(.minutes(1)))
+  func answeredConnectionsAreNotRetained() async throws {
+    let listener = LoopbackCallbackListener()
+    let session = try await listener.start()
+    defer { session.stop() }
+    let port = try #require(URL(string: session.redirectURI)?.port)
+
+    var targets = session.targets.makeAsyncIterator()
+    for index in 0..<5 {
+      let probe = try #require(URL(string: "http://127.0.0.1:\(port)/probe-\(index)"))
+      _ = try await get(probe)
+      #expect(await targets.next() == "/probe-\(index)")
+    }
+
+    // The drop happens in the send-completion callback, so it can trail the response body.
+    var retained = listener.retainedConnectionCount
+    for _ in 0..<50 where retained > 0 {
+      try await Task.sleep(for: .milliseconds(20))
+      retained = listener.retainedConnectionCount
+    }
+    #expect(retained == 0, "answered connections are still held (\(retained) of 5)")
+  }
+
   @Test func stoppingIsIdempotentAndFinishesTheTargetStream() async throws {
     let listener = LoopbackCallbackListener()
     let session = try await listener.start()
