@@ -116,8 +116,10 @@ public final class BearerTokenStore: Sendable {
     self.refreshLeeway = refreshLeeway
   }
 
-  /// The token set as last stored. Read for identity (`userID`) and persistence — never to
-  /// decide whether a token is usable; that is ``validAccessToken(refresh:)``'s job.
+  /// The pair as last stored, for tests to observe. No production code reads it: a token's
+  /// usability is ``validAccessToken(refresh:)``'s verdict, and the pair a sign-in attempt
+  /// should act on is the one ``attachPersistence(_:claim:)`` hands back — reading it here
+  /// instead would race whatever else holds the store.
   public var current: BearerSession? { state.session }
 
   /// Claim the store for ONE sign-in attempt, revoking every claim issued before it: the
@@ -415,7 +417,9 @@ public final class BearerTokenStore: Sendable {
 
   /// Hand a pair to the persist hook, if one is armed, and return the message to report when
   /// the write fails. Failures are reported, never thrown: the in-memory copy is the one the
-  /// server now expects, and dropping it would trigger reuse detection on relaunch.
+  /// server now expects, so keeping it lets THIS process carry on. It does not rescue the next
+  /// launch — the Keychain still holds the retired pair, and seeding that trips reuse detection
+  /// whatever we do here.
   private static func writeThrough(_ session: BearerSession, using state: inout State) -> String? {
     guard let hook = state.hook else { return nil }
     do {

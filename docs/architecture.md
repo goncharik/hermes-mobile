@@ -18,8 +18,10 @@ approval/clarify requests).
   reducer/event-reduction test loop fast.
 - **`HermesMobileTests/`** — an iOS XCTest target for SwiftUI snapshot tests
   (separate from the SPM suite).
-- **`Probe/`** — a throwaway Swift script that verifies the Hermes wire protocol
-  against a real server. See [`../Probe/README.md`](../Probe/README.md).
+- **`Probe/`** — non-shipping harnesses, never referenced by `Project.swift`: a Swift script
+  that verifies the Hermes wire protocol against a real server (its `Probe/fixtures/` output is
+  gitignored), and the committed `Probe/LoopbackSpike/` OAuth loopback spike. See
+  [`../Probe/README.md`](../Probe/README.md).
 
 ## Feature tree (TCA reducers, in `HermesKit`)
 
@@ -33,7 +35,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │                          //   AppFeature policy, never a view event; owns the layout regime
 │                          //   (.compact stack | .regular split view, reported by the shell)
 │                          //   and isChatDetached = compact && empty path (#80)
-├─ ConnectionFeature       // auto-validating URL + capability-aware auth toggle (Password | Token)
+├─ ConnectionFeature       // auto-validating URL + capability-aware auth toggle
+│                          //   (Password | Token | <OAuth provider>)
 ├─ ConnectionFailedFeature // launch-only "can't reach the server" retry screen (ifLet slot):
 │                          //   raised when the launch probe fails for a reason that isn't a
 │                          //   verdict on the credentials — i.e. EVERYTHING except 401/403
@@ -42,7 +45,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │                          //   foreground supersedes an in-flight probe rather than being
 │                          //   swallowed); delegates connected / credentialsRejected /
 │                          //   logoutConfirmed (the logout clearing lives in AppFeature)
-├─ ReauthFeature           // re-auth modal: fixed URL, prefilled identity, password/token field;
+├─ ReauthFeature           // re-auth modal: fixed URL, prefilled identity, password/token field
+│                          //   or (.oauth) a single "Continue with …" button;
 │                          //   same-user resume vs different-user switch vs Quit→onboarding
 ├─ SessionListFeature      // flat list, grouped by workspace OR chronological (persisted) /
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
@@ -73,8 +77,9 @@ a `testValue`/`.inMemory()` variant):
 - **`HermesRESTClient`** — status, sessions, archived sessions (`?archived=only`), search,
   archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), plus the
   auth endpoints: `passwordLogin`, `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`),
-  and a best-effort `logout` — the ONE deliberate exception to "surface RPC failures", since
-  it fires after the app has already discarded its credentials. Session-scoped
+  and a best-effort `logout` — this client's one deliberate exception to "surface RPC failures",
+  since it fires after the app has already discarded its credentials (the logout's push
+  unregister swallows on the same reasoning). Session-scoped
   reads/mutations take an optional `profile` (omitted for default).
 - **`HermesProfileClient`** — profile CRUD + SOUL.md (`PUT /api/profiles/{name}/soul`) +
   profile-scoped session lists (`GET /api/profiles/sessions?profile=`). Capability-gated: a
@@ -192,11 +197,11 @@ with the tokens intact so backoff can retry. **Ordering contract:** `rest.logout
 **Capability probe.** `ServerAuthCapability(from: status, providers:)` is a pure mapper over
 `/api/status` (`auth_required` / `auth_flows`) + `GET /api/auth/providers` into a struct:
 `passwordProvider`, `oauthProviders`, `supportsNativeFlow`, `isGated`. It drives the onboarding
-screen's capability-aware **Password | OAuth | Token** segmented toggle. A providers 404 /
+screen's capability-aware **Password | Token | \<provider\>** segmented toggle. A providers 404 /
 unreachable endpoint (older servers) falls back to `.tokenOnly`. The OAuth segment needs
-positive evidence on BOTH halves — an OAuth provider *and* `native_pkce` in `auth_flows` — so
-gateways too old for the native flow render exactly the pre-#19 UI. Full contract:
-`docs/features/oauth-sign-in.md`.
+positive evidence on BOTH halves — an OAuth provider *and* `native_pkce` in `auth_flows`. Full
+contract, including the footer hint a provider-advertising gateway without `native_pkce` now
+gets: `docs/features/oauth-sign-in.md`.
 
 **Persistence + re-auth.** The `AuthSession` (cookies + username + provider, the bearer pair, or
 the bare token) is stored in `KeychainClient` and rehydrated on launch — a `.bearer` restore

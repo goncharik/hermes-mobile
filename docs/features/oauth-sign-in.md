@@ -98,7 +98,12 @@ Two rules carry the weight:
   `isTokenDeemphasized` on and changed the footer copy for those servers. Guarded by
   `gatedServerWithNoProvidersKeepsTokenUndeemphasized`.
 
-Older gateways (no `auth_flows`, providers 404) therefore render **exactly** today's UI.
+A gateway with no `auth_flows` and no OAuth providers therefore renders **exactly** the pre-#19
+UI. One case does change: a gated server that advertises OAuth providers *without* `native_pkce`
+gets a new footer hint (`MethodHint.oauthNeedsNewerAgent`, "… sign-in needs a newer Hermes agent")
+in place of the old "This server only supports token sign-in" — which was never true of the
+server, only of what this app can drive. Baseline
+`testAuthScreen_oauthProviderWithoutNativeFlow.1.png`.
 
 ### The Password segment is omitted, not disabled
 
@@ -109,7 +114,10 @@ way back to the provider. So the `.disabled` condition gained `&& !isOAuthEnable
 (byte-identical for every server without OAuth) and the Password segment is dropped from the
 picker in exactly the case the lock no longer covers.
 
-Segment order and preselection: **password → oauth → token**. The OAuth segment renders one
+Segments render **Password | Token | \<provider\>**; the OAuth segment is labelled with the
+server's display name when exactly one provider is advertised ("Nous Research") and the neutral
+literal "OAuth" only when several would not fit. PRESELECTION is a different order —
+**password → oauth → token**. The OAuth segment renders one
 `Button("Continue with <displayName>")` per provider — plain text, default tint, **no logos and
 no brand colours** (App Store guideline 5.2.1: shipping a provider's mark is a trademark claim
 we have no licence for). The provider button IS the connect action, so the primary Connect
@@ -139,8 +147,10 @@ UI-shaped step lives behind it so `ConnectionFeature`/`ReauthFeature` stay pure 
 4. The gateway redirects the sheet to the loopback URL. The listener answers *every* request
    with a small "Signed in to Hermes — you can close this window" page and publishes the
    request target.
-5. The driver settles on the first target `isLoopbackCallback` accepts, verifies `state`,
-   cancels the sheet, stops the listener, and calls `rest.nativeTokenExchange` (15 s).
+5. The driver settles on the first target `isLoopbackCallback` accepts, which cancels the sheet
+   (the race's other legs) and stops the listener; only then does `parseLoopbackCallback` verify
+   `state` and `rest.nativeTokenExchange` (15 s) redeem the code. `state` is therefore always
+   verified before the code is redeemed, but the teardown happens first.
 6. The caller seeds `BearerTokenStore` **without a Keychain hook**, validates with
    `GET /api/sessions?limit=1`, and only then arms persistence (`attachPersistence`, which
    writes the pair the store holds — a rotation during the validating call included) and saves
@@ -191,15 +201,21 @@ reads the Keychain or inspects `expiresAt`. Three reasons it is a dedicated type
 2. **Persist before publish.** The rotated pair is written through the `persist` hook from
    inside the store BEFORE any caller sees the new token, so a crash between "server rotated"
    and "app saved" can't strand the app holding a retired refresh token. A persist failure is
-   `reportIssue`d but never drops the in-memory pair — losing it would trip reuse detection on
-   relaunch.
+   `reportIssue`d but never drops the in-memory pair.
 3. **One expiry verdict.** A refresh 401 clears the store and throws `GatewayError.authExpired`
    → the existing `.sessionExpired` → `ReauthFeature` route. **Anything else (503, transport)
    rethrows with the tokens intact** so ordinary reconnect backoff can retry.
 
 `refreshLeeway` is 120 s and the boundary is strict: exactly `leeway` seconds left is still
-fresh. A missing or zero `expires_at` counts as needing a refresh — one wasted round trip
-beats a 401 storm.
+fresh. A missing or non-positive `expires_at` on the wire decodes to `now +
+BearerSession.fallbackAccessTokenTTL` (300 s) rather than 0 — an absolute 0 is permanently
+inside the leeway, so every call would refresh and every refresh would rotate, which the
+portal's reuse detection eventually reads as replay.
+
+**Ownership revocation means deliberate abandonment.** A logout or a newer sign-in revokes; a
+refresh 401 discards the pair but leaves ownership alone, so a sign-in already in flight — the
+very thing that expiry needs — still lands. The rule and both temptations it rules out are
+stated on `BearerTokenStore.revoke`.
 
 **A superseded rotation returns the CURRENT session rather than throwing.** `seed`/`clear` bump
 a generation counter; a refresh completing under an older generation never persists or
@@ -236,10 +252,12 @@ store, never the shared one.
 - **The refresh 503 is mapped explicitly, not through `validate`'s `loginSpecific` flag.** That
   flag also remaps 429 to "Too many login attempts", which is password-login copy and wrong
   mid-session.
-- **`rest.logout` is THE deliberate exception to "never swallow RPC failures."** By the time it
-  fires the app has discarded its own credentials and is on its way to the login screen, so a
-  failure changes nothing the user could see or act on. It is logged, never surfaced, and the
-  closure is non-throwing so no call site can depend on the result.
+- **`rest.logout` is the deliberate exception to "never swallow RPC failures" in
+  `HermesRESTClient`.** By the time it fires the app has discarded its own credentials and is on
+  its way to the login screen, so a failure changes nothing the user could see or act on. It is
+  logged, never surfaced, and the closure is non-throwing so no call site can depend on the
+  result. (`AppFeature.unregisterPushOnLogout` swallows too, for the same reason and on the same
+  path — the server prunes dead tokens on a 410.)
 - **Gateway: `.cookie` and `.bearer` SHARE the connect branch** (`case .cookie, .bearer:`).
   Once `mintTicket` takes the whole `AuthSession`, the two gated regimes differ ONLY inside the
   minter (cookie jar vs `Authorization: Bearer`); the setup task, the `Task.checkCancellation()`
@@ -264,9 +282,15 @@ before its `keychain.deleteSession()`** (`AppFeature` for `logoutConfirmed`/`rea
 `SettingsFeature` for `.disconnect`). Both logout hops authenticate through the store, so a
 pair inside its refresh leeway rotates mid-logout; with the hook still armed that rotation
 rewrites the entry the reducer just deleted and the dead pair is restored on the next launch.
-The detach is `nonisolated` for exactly this reason — an `await`ed one runs after the delete —
-and it also revokes store ownership, so an in-flight sign-in cannot re-arm the hook afterwards
+The detach is synchronous for exactly this reason — an `await`ed one runs after the delete — and
+it also revokes store ownership, so an in-flight sign-in cannot re-arm the hook afterwards
 (`BearerStoreClaim`).
+
+**The logout's trailing drain carries a claim**, minted in the reducer body alongside the
+detach. Both of its hops are best-effort against a server that is often *why* the user is
+logging out, so each can stall for `URLSession`'s 60 s default while the user completes a fresh
+sign-in on the onboarding screen the same reduction landed them on; an unclaimed
+`bearerTokens.clear()` would then erase credentials that just succeeded.
 
 **`AppFeature` does NOT reseed the store on `.reauthenticated`.** The sign-in leg already put
 the fresh pair there (it is what the sheet's validating call authenticated with) and may have
@@ -390,8 +414,13 @@ Probe/LoopbackSpike/run.sh <simulator-udid>             # build + install + laun
 ## Known limitations
 
 - **The gateway must advertise `native_pkce`.** No `auth_flows` entry, no OAuth segment — the
-  app cannot probe for the endpoints and will not guess. Users on older gateways see exactly
-  today's Password | Token UI.
+  app cannot probe for the endpoints and will not guess. Such a server is signed into with a
+  token, and if it advertises OAuth providers the footer says so (see the capability gate).
+- **A refresh that succeeds server-side but fails in transit orphans the pair.** The server has
+  rotated and retired the old refresh token; the app never saw the response, so it keeps the
+  retired one and replays it on the next call, which the portal's reuse detection answers by
+  revoking the session. Inherent to rotation without an IdP-side grace window; the desktop
+  behaves the same.
 - **Loopback-only redirect.** The gateway rejects custom URL schemes, so the app must bind its
   own `NWListener` for every sign-in. If upstream later accepts a private-use URI scheme
   (RFC 8252 §7.1), the listener can be deleted and

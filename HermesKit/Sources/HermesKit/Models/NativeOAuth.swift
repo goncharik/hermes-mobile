@@ -113,9 +113,13 @@ func nativeRefreshURL(base: URL) -> URL? {
   nativeComponents(base: base, suffix: "/auth/native/refresh")?.url
 }
 
-/// Components for a native-flow endpoint, PRESERVING any path prefix on the base URL (a
-/// gateway can be mounted under `https://host/hermes`), and dropping any query/fragment
-/// the stored server URL happens to carry.
+/// Components for a native-flow endpoint, appending to whatever path the base URL carries and
+/// dropping any query/fragment the stored server URL happens to carry.
+///
+/// That is NOT a claim that mounting the gateway under a path prefix works: every other
+/// endpoint is built by `makeURL` (and the WS ticket mint by `wsTicketRequest`), both of which
+/// ASSIGN `comps.path` and drop the prefix. A prefixed deployment would authorize here and fail
+/// on everything after it. Fixing that is a change to `makeURL`, not to this function.
 private func nativeComponents(base: URL, suffix: String) -> URLComponents? {
   guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
   var prefix = comps.path

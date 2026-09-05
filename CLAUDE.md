@@ -17,7 +17,8 @@ bullets below are the compressed rules.
   generated and gitignored.
 - **`HermesMobileTests/`** — iOS XCTest target for SwiftUI snapshot tests and view logic
   that needs a real UIKit host (separate from the SPM suite).
-- **`Probe/`** — throwaway protocol probe (gitignored fixtures).
+- **`Probe/`** — non-shipping harnesses, unreferenced by `Project.swift`: the protocol probe
+  (gitignored `Probe/fixtures/`) and the committed `LoopbackSpike/`.
 
 ## Core rules (every change)
 
@@ -30,9 +31,10 @@ bullets below are the compressed rules.
 - **Gate UI by server capability, not assumptions** — the shared pattern: a JSON-RPC
   `-32601` (`GatewayError.isUnknownMethod`) or REST 404 flips a `*Supported` flag off
   (attach, profiles, cron jobs, push, slash commands); `?? true` on unknown capability
-  fields. Mirror the desktop's behaviour where one exists; check the Hermes source.
+  fields. Mirror the desktop's behaviour where one exists; check the Hermes source. (#19's
+  OAuth segment deliberately inverts `?? true` — see the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
-  swallow them with `try?`.
+  swallow them with `try?` (the logout hops are the carved-out exception, below).
 - **Commit messages**: capitalized verb, no conventional-commit prefixes, concise.
 
 ## Gateway & session lifecycle
@@ -95,8 +97,8 @@ bullets below are the compressed rules.
   `?ticket=` minted per connect — never cached, and `.cookie`/`.bearer` SHARE the `connect`
   branch so the cancellation choreography can't drift; a 401 mint → `.sessionExpired` →
   `ReauthFeature` with identity-aware routing (same user reconnects; different user pops +
-  clears identity-scoped prefs). The Password|OAuth|Token toggle is capability-gated. Full
-  protocol: `docs/architecture.md`.
+  clears identity-scoped prefs). The Password | Token | \<provider\> toggle is capability-gated.
+  Full protocol: `docs/architecture.md`.
 - **`RequestAuth` is the ONE place either auth header is written** (`.none | .sessionToken |
   .bearer`, resolved by `resolveAuth`; `HermesProfileClient` shares it), and **every bearer
   read goes through `BearerTokenStore.validAccessToken()`** — the store is the single owner of
@@ -107,13 +109,20 @@ bullets below are the compressed rules.
   entry point a single critical section — so no approved check can be invalidated by a
   concurrent detach/clear/claim before its mutation; never add state outside that lock, and
   never `await` (or cancel the refresh task) while holding it.
+  **Revoking ownership means the app DELIBERATELY abandoned the credentials** (logout, or a
+  newer attempt superseding an older one) — never that something incidental happened to them
+  (a refresh 401 discards the pair but leaves ownership) and never an unclaimed caller's say-so
+  (`clear` requires a `BearerStoreClaim`).
   **Ordering: `rest.logout` and `rest.unregisterPush` resolve auth through the store, so both
-  MUST fire BEFORE `bearerTokens.clear()`** (and `rest.logout` is THE deliberate exception to
-  the never-swallow rule), while `detachPersistence()` runs synchronously BEFORE every
-  `keychain.deleteSession()` or a mid-logout rotation rewrites the deleted entry.
+  MUST fire BEFORE `bearerTokens.clear(claim:)`** (`rest.logout` is `HermesRESTClient`'s one
+  deliberate exception to the never-swallow rule; the push unregister swallows too), while
+  `detachPersistence()` runs synchronously BEFORE every `keychain.deleteSession()` or a
+  mid-logout rotation rewrites the deleted entry.
 - **The OAuth segment needs positive evidence, not `?? true`**: an OAuth provider AND
   `native_pkce` in `/api/status`'s `auth_flows`. No flag → gateway too old for the RFC 8252
-  native flow → segment hidden and the pre-#19 UI renders unchanged. `isGated` is deliberately
+  native flow → segment hidden; the pre-#19 UI is unchanged EXCEPT that a gateway advertising
+  OAuth providers without the flag gets a new "needs a newer Hermes agent" footer hint.
+  `isGated` is deliberately
   NOT a bare `authRequired == true` — a gated server whose providers endpoint 404s stays
   token-only and un-de-emphasized. Loopback-only redirect (`ASWebAuthenticationSession` +
   in-app `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
@@ -305,7 +314,8 @@ bullets below are the compressed rules.
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
 - **The recorded baselines predate the current simulator runtime** — `make snapshot`
-  fails broadly (41 failures as of #19, ALL at identical render size — zero size mismatches;
+  fails broadly (40 failures as of #19 — Chat 16, Composer 11, ThinkingIndicator 5,
+  ContextUsage 4, AgentSetupGuide 2, Hydration 2 — ALL at identical render size, zero mismatches;
   earlier "36/211" and "~92/161" figures are stale) with no code cause. Judge by size
   mismatch first: differing render size = real regression; equal size with small pixel
   residual = drift. A global re-record is the pending fix and must land as its own commit.
