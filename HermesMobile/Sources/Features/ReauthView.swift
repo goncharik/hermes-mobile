@@ -35,6 +35,12 @@ struct ReauthView: View {
               .autocorrectionDisabled()
               .submitLabel(.go)
               .onSubmit { if store.canSubmit { store.send(.signInTapped) } }
+          case .oauth:
+            // Placeholder so the switch stays exhaustive now that `AuthMethod` has a third
+            // case (#19). UNREACHABLE today: `AppFeature.makeReauthState` never builds an
+            // `.oauth` state, and `ReauthFeature`'s own `.oauth` branches are stubs. The
+            // real single-button variant lands with the reducer work.
+            EmptyView()
           }
 
           Button("Sign in") { store.send(.signInTapped) }

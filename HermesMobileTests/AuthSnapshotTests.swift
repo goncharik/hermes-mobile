@@ -154,6 +154,117 @@ final class AuthSnapshotTests: SnapshotTestCase {
     )
   }
 
+  // MARK: - OAuth segment (#19)
+
+  /// Gated OAuth-only server (one provider, `native_pkce` advertised): the segment is
+  /// labelled with the server's own display name, its content is the single plain-text
+  /// "Continue with …" button (no logo, no brand colour — App Store 5.2.1), the Safari note,
+  /// and no generic Connect button. Password is unavailable so its segment is omitted rather
+  /// than shown inert — the picker has to stay live for Token ↔ provider switching.
+  func testAuthScreen_oauthSegment() {
+    assertSnapshot(
+      of: connectionView(oauthOnlyState()),
+      as: deviceImage()
+    )
+  }
+
+  /// Same screen in light appearance — the provider button must read as an ordinary tinted
+  /// row in both, which is the whole point of the plain-text treatment.
+  func testAuthScreen_oauthSegment_light() {
+    assertSnapshot(
+      of: connectionView(oauthOnlyState()),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
+  /// Two advertised providers: the segment label falls back to the neutral "OAuth" (two
+  /// display names don't fit one segment) and the content lists one button per provider.
+  func testAuthScreen_oauthSegment_twoProviders() {
+    assertSnapshot(
+      of: connectionView(
+        ConnectionFeature.State(
+          serverURL: "http://mac.tailnet:9119",
+          method: .oauth,
+          capability: ServerAuthCapability(
+            oauthProviders: [
+              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+              AuthProvider(name: "self_hosted", displayName: "Keycloak", supportsPassword: false),
+            ],
+            supportsNativeFlow: true,
+            isGated: true
+          ),
+          status: .reachable(version: "0.16.0")
+        )
+      ),
+      as: deviceImage()
+    )
+  }
+
+  /// Mixed gated server (`basic` + `nous`, native flow advertised): all three segments are
+  /// offered and Password stays preselected (the lower-friction path, mirroring the desktop).
+  func testAuthScreen_mixedServer_threeSegments() {
+    assertSnapshot(
+      of: connectionView(
+        ConnectionFeature.State(
+          serverURL: "http://mac.tailnet:9119",
+          username: "alice",
+          password: "••••••••",
+          method: .password,
+          capability: ServerAuthCapability(
+            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
+            oauthProviders: [
+              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+            ],
+            supportsNativeFlow: true,
+            isGated: true
+          ),
+          status: .reachable(version: "0.16.0")
+        )
+      ),
+      as: deviceImage()
+    )
+  }
+
+  /// A gateway that advertises an OAuth provider but NOT `native_pkce`: the segment is
+  /// hidden (this app can't drive the flow) and the footer says why instead of claiming the
+  /// server only supports token sign-in.
+  func testAuthScreen_oauthProviderWithoutNativeFlow() {
+    assertSnapshot(
+      of: connectionView(
+        ConnectionFeature.State(
+          serverURL: "http://mac.tailnet:9119",
+          token: "••••••••",
+          method: .token,
+          capability: ServerAuthCapability(
+            oauthProviders: [
+              AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+            ],
+            supportsNativeFlow: false,
+            isGated: true
+          ),
+          status: .reachable(version: "0.16.0")
+        )
+      ),
+      as: deviceImage()
+    )
+  }
+
+  /// Gated OAuth-only server with the native flow available, sitting on the OAuth segment.
+  private func oauthOnlyState() -> ConnectionFeature.State {
+    ConnectionFeature.State(
+      serverURL: "http://mac.tailnet:9119",
+      method: .oauth,
+      capability: ServerAuthCapability(
+        oauthProviders: [
+          AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+        ],
+        supportsNativeFlow: true,
+        isGated: true
+      ),
+      status: .reachable(version: "0.16.0")
+    )
+  }
+
   // MARK: - Re-auth sheet
 
   /// Re-auth sheet, password variant: fixed server, prefilled username, password field,

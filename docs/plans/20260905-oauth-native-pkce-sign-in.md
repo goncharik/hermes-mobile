@@ -754,22 +754,52 @@ until Task 11 fills them in.
 
 **Files:**
 - Modify: `HermesMobile/Sources/Features/ConnectionView.swift`
+- Modify: `HermesMobile/Sources/Features/ReauthView.swift` (➕ compile fix — see below)
 - Modify: `HermesMobileTests/AuthSnapshotTests.swift`
 
-- [ ] add the third `Picker` segment tagged `.oauth`, labelled with the single provider's
+- [x] add the third `Picker` segment tagged `.oauth`, labelled with the single provider's
       `displayName` (or "OAuth" when several), shown only when `isOAuthEnabled`; keep the
       existing disabled-state rules for Password
-- [ ] render the `.oauth` content: one `Button("Continue with <displayName>")` per provider
+- [x] render the `.oauth` content: one `Button("Continue with <displayName>")` per provider
       (plain text, default tint — no logos/brand colours), a footnote "Opens your identity
       provider in Safari. Nothing is stored until sign-in completes.", and reuse the
       `.validating` spinner state; the primary Connect button is hidden for this segment
       (the provider button IS the connect action)
-- [ ] `methodHint` footer copy for the OAuth segment and for "providers exist but this
+- [x] `methodHint` footer copy for the OAuth segment and for "providers exist but this
       gateway is too old for native sign-in" (OAuth segment hidden, token-only hint amended)
-- [ ] add snapshot tests: OAuth segment idle (light + dark), OAuth segment with two
+- [x] add snapshot tests: OAuth segment idle (light + dark), OAuth segment with two
       providers, mixed server showing three segments; run `make snapshot` twice per the
-      record-then-assert recipe
-- [ ] run `swift test` + the new snapshots — must pass before Task 10
+      record-then-assert recipe — 5 new baselines (the 4 listed + the too-old-gateway hint,
+      which is otherwise unrendered copy), recorded then asserted clean
+- [x] run `swift test` + the new snapshots — must pass before Task 10 (1398 tests, 66 suites,
+      unchanged; `AuthSnapshotTests` 12/14 with only the two pre-existing
+      `AgentSetupGuide` drifts failing at IDENTICAL render size — 1170×6150, a view this task
+      never touched; `ConnectionSnapshotTests` + `ConnectionColumnLayoutTests` 8/8 green,
+      which is the no-regression proof for the existing two-segment rendering)
+
+➕ **An unavailable Password segment is OMITTED, not disabled, once OAuth is on screen.**
+Today's rule expresses "you may not pick Password" by disabling the WHOLE segmented control
+(`!isPasswordEnabled && method == .token`) — SwiftUI can't disable one segment. With a third
+segment that trick becomes a trap: on a gated nous-only server the user lands on `.oauth`,
+taps Token, and the control locks with no way back to the provider. So the `.disabled`
+condition gained `&& !isOAuthEnabled` (byte-identical for every server without OAuth, i.e.
+all of today's, guarded by the untouched `testAuthScreen_tokenOnly_passwordDisabled` and
+`testAuthScreen_gated_tokenDeemphasized` baselines) and the Password segment is dropped from
+the picker in exactly the case the lock no longer covers.
+
+➕ **The too-old-gateway hint only replaces the token-only copy when password is also
+unavailable.** On a gated `basic` + `nous` server without `native_pkce` the existing
+de-emphasis copy ("This server uses password login…") is still the right nudge, so the new
+branch is guarded by `!isPasswordEnabled` and only displaces the "This server only supports
+token sign-in." line — the one that would otherwise be a lie about the server rather than
+about this app.
+
+➕ ⚠️ **`ReauthView` needed a placeholder `.oauth` branch to keep the APP TARGET compiling.**
+Task 8 added `AuthMethod.oauth` in HermesKit and filled in the reducer switches, but
+`swift test` never builds `HermesMobile/`, so the view's non-exhaustive switch stayed hidden
+until this task's first `xcodebuild` ("Switch must be exhaustive"). It is `EmptyView()` and
+unreachable — `AppFeature.makeReauthState` never builds an `.oauth` state — and Task 12
+replaces it with the real single-button variant.
 
 ### Task 10: Gateway client bearer connect and ticket mint
 
