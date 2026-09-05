@@ -5519,4 +5519,346 @@ struct AppFeatureTests {
     #expect(store.state.path.isEmpty)
     await store.send(.liveChat(.teardown))
   }
+
+  // MARK: - Bearer (native OAuth) regime lifecycle (#19, Task 13)
+
+  private func bearerSession(
+    userID: String = "user-42", accessToken: String = "access-1"
+  ) -> BearerSession {
+    BearerSession(
+      accessToken: accessToken,
+      refreshToken: "refresh-1",
+      expiresAt: 4_000_000_000,
+      provider: "nous",
+      userID: userID
+    )
+  }
+
+  private func bearerConnection(_ session: BearerSession) -> ServerConnection {
+    ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, auth: .bearer(session))
+  }
+
+  /// The launch-restore ordering rule: a `.bearer` connection resolves its `Authorization`
+  /// header through `BearerTokenStore`, so the store must be seeded BEFORE the probe fires.
+  /// Probing an unseeded store sends the request with no credentials and 401s a live session
+  /// into onboarding — the assertion that carries the proof is taken from INSIDE the probe.
+  @Test func bearerLaunchRestoreSeedsTheTokenStoreBeforeProbing() async {
+    let session = bearerSession()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.bearerTokens = tokenStore
+      $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
+        #expect(await tokenStore.current == session, "the probe must run against a seeded store")
+        #expect(connection.token == nil) // never the legacy session-token path
+        return []
+      }
+    }
+
+    await store.send(.task) {
+      $0.didRunLaunchProbe = true
+      $0.autoConnecting = true
+    }
+    await store.receive(\.autoConnectSucceeded) {
+      $0.autoConnecting = false
+      $0.home = SessionListFeature.State(connection: self.bearerConnection(session))
+    }
+  }
+
+  /// A dead refresh token surfaces from the store as `RESTError.unauthorized`, so it takes
+  /// the EXISTING credentials-verdict branch of the #62 routing rule — prefilled onboarding,
+  /// no retry screen, no bearer carve-out. The store is drained: the pair is dead, and
+  /// leaving it seeded would authenticate the next request with rejected credentials.
+  @Test func bearerLaunchProbe401FallsBackToOnboardingAndDrainsTheStore() async {
+    let session = bearerSession()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.bearerTokens = tokenStore
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unauthorized }
+    }
+
+    await store.send(.task) {
+      $0.didRunLaunchProbe = true
+      $0.autoConnecting = true
+    }
+    await store.receive(\.autoConnectFailed) {
+      $0.autoConnecting = false
+      // URL only — a browser leg is not prefillable, exactly like the cookie regime.
+      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "")
+    }
+    #expect(store.state.connectionFailed == nil) // #62: an auth verdict never raises Retry
+    await store.finish()
+    #expect(await tokenStore.current == nil)
+  }
+
+  /// The other half of the #62 rule, which the bearer regime must not weaken: a TRANSPORT
+  /// failure raises the retry screen with the stored pair untouched — both in the Keychain
+  /// and in the store, so the retry re-probes with real credentials.
+  @Test func bearerLaunchProbeOfflineKeepsTheStoreAndRaisesRetry() async {
+    let session = bearerSession()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.bearerTokens = tokenStore
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.offline }
+    }
+
+    await store.send(.task) {
+      $0.didRunLaunchProbe = true
+      $0.autoConnecting = true
+    }
+    await store.receive(\.autoConnectFailed) {
+      $0.autoConnecting = false
+      $0.connectionFailed = ConnectionFailedFeature.State(
+        connection: self.bearerConnection(session), reason: .offline
+      )
+    }
+    await store.finish()
+    #expect(await tokenStore.current == session, "an offline probe must not drop the pair")
+  }
+
+  /// A bearer session dying mid-use raises the OAuth variant of the re-auth sheet: no
+  /// username (there is nothing to type), the wire provider carried across, the identity
+  /// baseline taken from the dead pair's `user_id`, and the human display name looked up
+  /// from the last capability probe.
+  @Test func bearerSessionExpiredRaisesTheOAuthReauthSheet() async {
+    let session = bearerSession(userID: "user-42")
+    let connection = bearerConnection(session)
+    var onboarding = ConnectionFeature.State()
+    onboarding.capability = ServerAuthCapability(
+      oauthProviders: [
+        AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+      ],
+      supportsNativeFlow: true,
+      isGated: true
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(
+        onboarding: onboarding,
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State()]),
+        liveChat: ChatFeature.State(connection: connection)
+      )
+    ) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.liveChat(.delegate(.sessionExpired))) {
+      $0.reauth = ReauthFeature.State(
+        serverURL: URL(string: "http://mac.tailnet:9119")!,
+        method: .oauth,
+        provider: "nous",
+        providerDisplayName: "Nous Research",
+        previousUserID: "user-42"
+      )
+    }
+  }
+
+  /// The common case after a launch auto-restore: nothing was ever probed, so there is no
+  /// display name to look up. The sheet must still name the provider — `providerLabel` falls
+  /// back to the wire name rather than rendering "Continue with ".
+  @Test func bearerSessionExpiredWithoutAProbeFallsBackToTheWireProviderName() async {
+    let session = bearerSession(userID: "user-7")
+    let connection = bearerConnection(session)
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        liveChat: ChatFeature.State(connection: connection)
+      )
+    ) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.liveChat(.delegate(.sessionExpired)))
+    #expect(store.state.reauth?.method == .oauth)
+    #expect(store.state.reauth?.providerDisplayName == "")
+    #expect(store.state.reauth?.providerLabel == "nous")
+    #expect(store.state.reauth?.previousUserID == "user-7")
+  }
+
+  /// Same-user re-auth must swap the fresh pair into the store BEFORE the slot resumes —
+  /// the store still holds the DEAD pair the sheet was raised for, and a resume that
+  /// overtook the reseed would re-send exactly the credentials that just expired.
+  @Test func sameUserBearerReauthReseedsTheStoreBeforeResuming() async {
+    let dead = bearerSession(accessToken: "dead")
+    let fresh = bearerSession(accessToken: "fresh")
+    let tokenStore = BearerTokenStore()
+    await tokenStore.seed(
+      dead, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: bearerConnection(dead)),
+        path: StackState([ChatScreen.State()]),
+        liveChat: ChatFeature.State(connection: bearerConnection(dead)),
+        reauth: ReauthFeature.State(
+          serverURL: URL(string: "http://mac.tailnet:9119")!, method: .oauth,
+          provider: "nous", previousUserID: "user-42"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.bearerTokens = tokenStore
+      $0.keychain = KeychainClient.inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+    store.exhaustivity = .off
+
+    let freshConnection = bearerConnection(fresh)
+    await store.send(.reauth(.presented(.delegate(
+      .reauthenticated(connection: freshConnection, sameUser: true)
+    )))) {
+      $0.reauth = nil
+      $0.home?.connection = freshConnection
+    }
+    // The reseed is CONCATENATED ahead of the resume, so by the time the resume is delivered
+    // the store already holds the fresh pair.
+    await store.receive(\.liveChat.resumeAfterReauth)
+    #expect(await tokenStore.current == fresh)
+
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// A different `user_id` is an account switch: everything identity-scoped is dropped AND
+  /// the store adopts the new account's pair — a stale one would authenticate the new user's
+  /// list fetch as the old user.
+  @Test func differentUserBearerReauthReseedsAndClearsIdentityPrefs() async {
+    let dead = bearerSession(userID: "user-42", accessToken: "dead")
+    let fresh = bearerSession(userID: "user-99", accessToken: "fresh")
+    let tokenStore = BearerTokenStore()
+    let profileCleared = LockIsolated(false)
+    await tokenStore.seed(
+      dead, baseURL: URL(string: "http://mac.tailnet:9119")!, persist: { _ in }
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: bearerConnection(dead)),
+        path: StackState([ChatScreen.State()]),
+        liveChat: ChatFeature.State(connection: bearerConnection(dead)),
+        reauth: ReauthFeature.State(
+          serverURL: URL(string: "http://mac.tailnet:9119")!, method: .oauth,
+          provider: "nous", previousUserID: "user-42"
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.bearerTokens = tokenStore
+      $0.preferences.clearSelectedProfileID = { @Sendable in profileCleared.setValue(true) }
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off
+
+    let freshConnection = bearerConnection(fresh)
+    await store.send(.reauth(.presented(.delegate(
+      .reauthenticated(connection: freshConnection, sameUser: false)
+    )))) {
+      $0.reauth = nil
+      $0.path = .init()
+      $0.liveChat = nil
+      $0.home = SessionListFeature.State(connection: freshConnection)
+    }
+    #expect(profileCleared.value)
+    await store.finish()
+    #expect(await tokenStore.current == fresh)
+  }
+
+  /// All THREE logout paths must behave identically for the bearer regime, and in the one
+  /// order that works: `rest.logout` resolves its auth through the store like any other
+  /// request, so it has to fire BEFORE the drain (a drained store makes it a silent no-op —
+  /// see `HermesRESTClient.logout`). The assertion inside the stub is what proves the order.
+  @Test func everyLogoutPathPostsLogoutBeforeDrainingTheStore() async {
+    let session = bearerSession()
+    let connection = bearerConnection(session)
+    // `deletesKeychainSession` is pre-existing behaviour, not part of this change: the two
+    // full logouts own the Keychain delete here, while Settings' "disconnect" performs it in
+    // `SettingsFeature` before delegating. The bearer teardown must be identical across all
+    // three regardless.
+    for (action, deletesKeychainSession) in [
+      (AppFeature.Action.home(.delegate(.disconnect)), false),
+      (.connectionFailed(.delegate(.logoutConfirmed)), true),
+      (.reauth(.presented(.delegate(.quit))), true),
+    ] {
+      let tokenStore = BearerTokenStore()
+      let logouts = LockIsolated(0)
+      let keychain = KeychainClient.inMemory()
+      try? keychain.saveSession(.bearer(session))
+      await tokenStore.seed(session, baseURL: connection.baseURL, persist: { _ in })
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          path: StackState([ChatScreen.State(sessionKey: "s1")]),
+          liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1"),
+          connectionFailed: ConnectionFailedFeature.State(
+            connection: connection, reason: .offline
+          ),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .oauth, provider: "nous"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.bearerTokens = tokenStore
+        $0.keychain = keychain
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.hermesREST.logout = { @Sendable posted in
+          #expect(posted == connection)
+          #expect(
+            await tokenStore.current == session,
+            "\(action): the store was drained before the logout could authenticate"
+          )
+          logouts.withValue { $0 += 1 }
+        }
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(logouts.value == 1, "\(action) posted \(logouts.value) logouts")
+      #expect(await tokenStore.current == nil, "\(action) left the token store seeded")
+      if deletesKeychainSession {
+        #expect(keychain.loadSession(.shared) == nil, "\(action) left the Keychain session")
+      }
+    }
+  }
+
+  /// Backward-compat guard: the token and cookie regimes' logout requests are unchanged —
+  /// `POST /auth/logout` fires only for `.bearer` (the cookie jar is dropped with the app's
+  /// Keychain entry, and a static token has no server-side session to end).
+  @Test func tokenAndCookieLogoutSendNoLogoutRequest() async {
+    for logoutConnection in [connection, cookieConnection] {
+      let logouts = LockIsolated(0)
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: logoutConnection)
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.hermesREST.logout = { @Sendable _ in logouts.withValue { $0 += 1 } }
+      }
+      store.exhaustivity = .off
+
+      await store.send(.home(.delegate(.disconnect))) { $0.home = nil }
+      await store.finish()
+      #expect(logouts.value == 0, "\(logoutConnection.auth) must not post /auth/logout")
+    }
+  }
 }

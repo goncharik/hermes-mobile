@@ -278,6 +278,11 @@ public struct AppFeature {
   /// Only for `releaseSlotMic` — the identity teardowns that drop the slot without a
   /// `ChatFeature.teardown` to release the mic for them.
   @Dependency(\.audioRecorder) var audioRecorder
+  /// The `.bearer` regime's single token owner (#19). `AppFeature` owns its LIFECYCLE — seed
+  /// on launch restore and on a re-auth that hands back a bearer connection, drain on every
+  /// logout — while `ConnectionFeature`/`ReauthFeature` seed it for the login they just ran.
+  /// Nothing here ever reads a token out of it: `HermesRESTClient`/`HermesGatewayClient` do.
+  @Dependency(\.bearerTokens) var bearerTokens
 
   public init() {}
 
@@ -318,11 +323,20 @@ public struct AppFeature {
         let connection = ServerConnection(baseURL: url, auth: session)
         return .merge(
           tapObserver,
-          .run { [rest] send in
+          .run { [rest, keychain, bearerTokens] send in
+            // Bearer restore (#19) must happen BEFORE the probe: a `.bearer` connection
+            // resolves its `Authorization` header through the token store, so probing an
+            // unseeded store sends the request with no credentials at all and 401s a
+            // perfectly good session into prefilled onboarding. Seeding also re-arms the
+            // Keychain persist hook, so a rotation during the probe is saved.
+            await Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
             do {
               _ = try await rest.sessions(connection, 1, 0, .recent)
               await send(.autoConnectSucceeded(connection))
             } catch {
+              // A dead refresh token surfaces here as `RESTError.unauthorized` (the store
+              // maps the 401 verdict), so it takes the existing credentials-verdict branch
+              // in `.autoConnectFailed` — the #62 routing rule needs no bearer carve-out.
               await send(.autoConnectFailed(connection, asRESTError(error)))
             }
           }
@@ -338,10 +352,10 @@ public struct AppFeature {
       case let .autoConnectFailed(connection, error):
         state.autoConnecting = false
         guard ConnectionFailedFeature.isRetryable(error) else {
-          // Stored creds didn't validate (expired token / dead cookies) — fall back to
-          // onboarding for re-entry; retrying can't repair dead credentials.
-          fallBackToOnboarding(&state, connection: connection)
-          return .none
+          // Stored creds didn't validate (expired token / dead cookies / a dead refresh
+          // token) — fall back to onboarding for re-entry; retrying can't repair dead
+          // credentials.
+          return fallBackToOnboarding(&state, connection: connection)
         }
         // Either we never reached the server, or a proxy told us the agent is down — the
         // stored session is presumed fine, so keep it and offer a Retry instead of dropping to
@@ -364,8 +378,7 @@ public struct AppFeature {
         // land exactly where a launch auth failure lands: prefilled onboarding, nothing
         // cleared, which is also where the connection-help sheet's entry points live.
         state.connectionFailed = nil
-        fallBackToOnboarding(&state, connection: connection)
-        return .none
+        return fallBackToOnboarding(&state, connection: connection)
 
       case .connectionFailed(.delegate(.logoutConfirmed)):
         // "Log Out" from the retry screen (confirmed): the user is abandoning the stored
@@ -388,9 +401,7 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(
-          releaseMic, setBadge(state), unregisterPushOnLogout(connection: connection)
-        )
+        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
 
       case let .scenePhaseChanged(phase):
         // Fan lifecycle out to the live chat slot (if any) and the session list — no
@@ -667,20 +678,28 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(
-          releaseMic, setBadge(state), unregisterPushOnLogout(connection: connection)
-        )
+        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
 
       case .liveChat(.delegate(.sessionExpired)):
         // The live (gated) session died — attached or detached, the slot is the one chat.
         // The chat already paused its own reconnect; raise the re-auth modal seeded from its
         // connection (server URL + regime + identity). Ignore if a modal is already up.
         guard state.reauth == nil, let chat = state.liveChat else { return .none }
-        state.reauth = makeReauthState(for: chat.connection)
+        state.reauth = makeReauthState(
+          for: chat.connection,
+          // Whatever the onboarding screen last probed — empty after a launch auto-restore,
+          // which `providerLabel` handles by falling back to the wire provider name.
+          oauthProviders: state.onboarding.capability?.oauthProviders ?? []
+        )
         return .none
 
       case let .reauth(.presented(.delegate(.reauthenticated(connection, sameUser)))):
         state.reauth = nil
+        // Adopt the fresh bearer pair in the token store BEFORE anything reconnects. The
+        // store still holds the DEAD pair the sheet was raised for, so a resume or a fresh
+        // list fetch that overtakes this would re-send exactly the credentials that expired.
+        // `.concatenate` below is what makes "before" true; a `.merge` would race.
+        let reseed = reseedBearerStore(for: connection)
         if sameUser {
           // Same user → adopt the fresh auth regime EVERYWHERE the app still holds the dead
           // one. The list's connection is the snapshot every later chat is built from (a row
@@ -690,8 +709,8 @@ public struct AppFeature {
           // storage (`wsTicket` rehydrates it), undoing the login that just succeeded.
           state.home?.connection = connection
           // Then resume the dead slot chat in place.
-          guard state.liveChat != nil else { return .none }
-          return .send(.liveChat(.resumeAfterReauth(connection)))
+          guard state.liveChat != nil else { return reseed }
+          return .concatenate(reseed, .send(.liveChat(.resumeAfterReauth(connection))))
         }
         // Different user signed in → drop everything identity-scoped and force a fresh list.
         // (`makeHomeState` reads the profile pref AFTER the clear, so it seeds defaults.)
@@ -711,8 +730,8 @@ public struct AppFeature {
         // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
         // cancels the expired chat's remaining effects (a non-nil→non-nil swap compares equal
         // and cancels nothing), and the action is what starts the replacement's socket.
-        guard let seat = detailRefill(state) else { return identityCleanup }
-        return .merge(identityCleanup, .send(.fillLiveChat(seat)))
+        guard let seat = detailRefill(state) else { return .merge(identityCleanup, reseed) }
+        return .merge(identityCleanup, .concatenate(reseed, .send(.fillLiveChat(seat))))
 
       case .reauth(.presented(.delegate(.quit))):
         // "Quit to start" → full logout (Keychain session + every pref) → onboarding.
@@ -734,9 +753,7 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(
-          releaseMic, setBadge(state), unregisterPushOnLogout(connection: connection)
-        )
+        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
 
       case let .liveChat(.delegate(.branchCreated(creation))):
         // A branch `session.create` resolved (#34). The new session lives ONLY in server
@@ -1140,15 +1157,24 @@ public struct AppFeature {
   }
 
   /// The prefilled-onboarding landing for a connection that needs *editing* rather than
-  /// retrying: token mode prefills both fields so the user can fix them; cookie mode prefills
-  /// only the URL (the password is never persisted), so they re-enter it. Shared by the launch
-  /// auth-failure fallback and the retry screen's `.credentialsRejected` delegate, so
-  /// onboarding is constructed in exactly one place.
-  private func fallBackToOnboarding(_ state: inout State, connection: ServerConnection) {
+  /// retrying: token mode prefills both fields so the user can fix them; cookie and bearer
+  /// mode prefill only the URL (neither a password nor a browser leg is persistable), so the
+  /// user re-authenticates. Shared by the launch auth-failure fallback and the retry screen's
+  /// `.credentialsRejected` delegate, so onboarding is constructed in exactly one place.
+  ///
+  /// Only the bearer regime has an effect: this is a verdict that the stored pair is DEAD, so
+  /// the token store is drained — leaving it seeded would authenticate the next request with
+  /// credentials the server just rejected. The Keychain entry is deliberately left alone (the
+  /// "nothing cleared" rule of #62); a re-login through onboarding re-seeds and overwrites it.
+  private func fallBackToOnboarding(
+    _ state: inout State, connection: ServerConnection
+  ) -> Effect<Action> {
     state.onboarding = ConnectionFeature.State(
       serverURL: connection.baseURL.absoluteString,
       token: connection.auth.token ?? ""
     )
+    guard case .bearer = connection.auth else { return .none }
+    return .run { [bearerTokens] _ in await bearerTokens.clear() }
   }
 
   /// Release the slot's microphone when an identity teardown (Settings "disconnect", either
@@ -1188,9 +1214,18 @@ public struct AppFeature {
   }
 
   /// Seed a `ReauthFeature.State` from the connection of the expired chat: a fixed server
-  /// URL, the matching auth regime, and (cookie mode) the prefilled username + provider used
-  /// for the same-user vs user-switch decision.
-  private func makeReauthState(for connection: ServerConnection) -> ReauthFeature.State {
+  /// URL, the matching auth regime, and the identity baseline the same-user vs user-switch
+  /// decision reads — the prefilled username in cookie mode, the dead pair's `user_id` in
+  /// bearer mode (OAuth has no username to prefill; the browser leg reports who signed in).
+  ///
+  /// `oauthProviders` is the last capability probe's list, used only to put the server's
+  /// human display name on the "Continue with …" button; an empty list (the common case
+  /// after a launch auto-restore, which never probes) falls back to the wire provider name
+  /// through `State.providerLabel`.
+  private func makeReauthState(
+    for connection: ServerConnection,
+    oauthProviders: [AuthProvider] = []
+  ) -> ReauthFeature.State {
     switch connection.auth {
     case .token:
       return ReauthFeature.State(serverURL: connection.baseURL, method: .token)
@@ -1202,14 +1237,64 @@ public struct AppFeature {
         previousUsername: session.username
       )
     case let .bearer(session):
-      // Bearer (native OAuth) re-auth gets its own method later; until then mirror the
-      // gated regime so the sheet stays functional. Nothing constructs a `.bearer`
-      // connection yet, so this branch is unreachable today.
       return ReauthFeature.State(
         serverURL: connection.baseURL,
-        method: .password,
-        provider: session.provider
+        method: .oauth,
+        provider: session.provider,
+        providerDisplayName: oauthProviders
+          .first { $0.name == session.provider }?.displayName ?? "",
+        previousUserID: session.userID
       )
     }
+  }
+
+  /// Install a restored/refreshed bearer pair in the token store, with the Keychain save as
+  /// the persist hook so a rotation performed inside the actor is written back. A no-op for
+  /// the other two regimes. Static (and dependency-taking) because it runs inside `@Sendable`
+  /// effect closures, where the reducer `self` is not `Sendable`.
+  private static func seedBearerStore(
+    _ auth: AuthSession,
+    baseURL: URL,
+    keychain: KeychainClient,
+    store: BearerTokenStore
+  ) async {
+    guard case let .bearer(bearer) = auth else { return }
+    await store.seed(bearer, baseURL: baseURL) { rotated in
+      try keychain.saveSession(.bearer(rotated))
+    }
+  }
+
+  /// The effect form of `seedBearerStore` for a freshly re-authenticated connection — `.none`
+  /// for token/cookie, so the two older regimes' routing is byte-identical.
+  private func reseedBearerStore(for connection: ServerConnection) -> Effect<Action> {
+    guard case .bearer = connection.auth else { return .none }
+    return .run { [keychain, bearerTokens] _ in
+      await Self.seedBearerStore(
+        connection.auth, baseURL: connection.baseURL, keychain: keychain, store: bearerTokens
+      )
+    }
+  }
+
+  /// The server-side half of a logout, in the ONE order that works — shared by all three
+  /// logout paths (`connectionFailed.logoutConfirmed`, `reauth.quit`, `.disconnect`) so they
+  /// cannot drift apart.
+  ///
+  /// Both hops are best-effort and both need the credentials that are about to die, hence
+  /// `.concatenate` rather than `.merge`: the push unregister authenticates like any other
+  /// REST call (through the token store in bearer mode), then `rest.logout` runs, and only
+  /// then is the store drained. Draining first would make BOTH requests silent no-ops —
+  /// `resolveAuth` has nothing to resolve — which is exactly the trap Task 6 documented on
+  /// `HermesRESTClient.logout`.
+  private func serverSideLogout(connection: ServerConnection?) -> Effect<Action> {
+    // Called for its synchronous prefs clearing too, so it must run unconditionally.
+    let unregister = unregisterPushOnLogout(connection: connection)
+    guard let connection, case .bearer = connection.auth else { return unregister }
+    return .concatenate(
+      unregister,
+      .run { [rest, bearerTokens] _ in
+        await rest.logout(connection)
+        await bearerTokens.clear()
+      }
+    )
   }
 }

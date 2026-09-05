@@ -929,25 +929,65 @@ rule is the thing that must not drift between them.
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] launch restore: when `keychain.loadSession` yields `.bearer`, seed `bearerTokens`
+- [x] launch restore: when `keychain.loadSession` yields `.bearer`, seed `bearerTokens`
       (persist hook = `keychain.saveSession(.bearer(_:))`) BEFORE the `rest.sessions` probe;
       a refresh 401 during the probe surfaces as `.unauthorized` and follows the existing
-      401/403 → prefilled-onboarding rule (#62) unchanged
-- [ ] `makeReauthState` `.bearer` case → `ReauthFeature.State(method: .oauth, provider:,
+      401/403 → prefilled-onboarding rule (#62) unchanged — verified, no carve-out added
+- [x] `makeReauthState` `.bearer` case → `ReauthFeature.State(method: .oauth, provider:,
       providerDisplayName:, previousUserID:)`; look the display name up from the last probed
-      providers if available, else fall back to the provider name
-- [ ] reauth success with a `.bearer` connection reseeds the store before
+      providers if available, else fall back to the provider name (via `State.providerLabel`)
+- [x] reauth success with a `.bearer` connection reseeds the store before
       `.resumeAfterReauth` / `makeHomeState`
-- [ ] every logout path (`connectionFailed.logoutConfirmed`, `reauth.quit`, `.disconnect`)
+- [x] every logout path (`connectionFailed.logoutConfirmed`, `reauth.quit`, `.disconnect`)
       calls `bearerTokens.clear()` and fires best-effort `rest.logout(connection)` alongside
       `keychain.deleteSession()`; token-mode and cookie-mode logout requests remain unchanged
       (logout only fires for `.bearer`)
-- [ ] write `TestStore` tests: launch with a stored `.bearer` seeds the store and probes with
+- [x] write `TestStore` tests: launch with a stored `.bearer` seeds the store and probes with
       it; probe 401 → onboarding prefilled and store cleared; `.sessionExpired` on a bearer
       chat raises `ReauthFeature(.oauth)` with the previous `user_id`; same-user reauth
       reseeds and resumes; different-user reauth clears identity prefs; logout clears store +
       Keychain and posts `/auth/logout` exactly once
-- [ ] run tests — must pass before Task 14
+- [x] run tests — must pass before Task 14 (1426 tests, 67 suites, all green; +9 over
+      Task 11 — Task 12 was app-target only; `xcodebuild` app build succeeds)
+
+➕ **`fallBackToOnboarding` now RETURNS an effect, and drains the store.** It was a `Void`
+mutation shared by the launch auth-failure branch and the retry screen's
+`.credentialsRejected` delegate. Both are the same verdict — "the stored credentials are
+dead" — so both must drop the bearer pair from memory; leaving it seeded would authenticate
+the next request with credentials the server has just rejected. Doing it inside the shared
+helper is what keeps the two entry points from drifting. The KEYCHAIN entry is deliberately
+left alone: #62's "stored credentials stay untouched" rule still holds, and a re-login
+through onboarding overwrites it. Byte-identical for token/cookie (`.none`).
+
+➕ **The push unregister is CONCATENATED ahead of `rest.logout` + `clear()`.** Task 6's
+ordering contract was stated for `rest.logout`, but `rest.unregisterPush` authenticates
+through `resolveAuth` too — merged with a drain it could lose the race and unregister
+nothing, silently leaving this device receiving pushes for an account it just left. All
+three logout paths now share one `serverSideLogout(connection:)` helper that sequences
+unregister → logout → drain. Non-bearer connections return the unregister effect unchanged,
+so the token/cookie logout requests are byte-identical (guarded by
+`tokenAndCookieLogoutSendNoLogoutRequest`, which asserts `/auth/logout` fires ZERO times for
+both). `unregisterPushOnLogout` is still CALLED unconditionally — its prefs clearing is
+synchronous in the helper body, not in the returned effect.
+
+➕ **`makeReauthState` takes the probed providers rather than reading state.** It is a pure
+`ServerConnection → ReauthFeature.State` mapper, and the display-name lookup is the only
+thing it needs beyond the connection; threading `state.onboarding.capability?.oauthProviders`
+in at the one call site keeps it that way. After a launch auto-restore that list is empty
+(nothing was probed) — the expected case, covered by
+`bearerSessionExpiredWithoutAProbeFallsBackToTheWireProviderName`.
+
+➕ **Both reseed hand-offs use `.concatenate`, never `.merge`.** The store still holds the
+DEAD pair when `.reauthenticated` arrives, so a merged reseed could lose the race against
+`.resumeAfterReauth` (same-user) or the new user's detail-column dial (`.fillLiveChat`) and
+re-send the expired credentials — the precise failure Task 11 fixed inside `ReauthFeature`.
+
+➕ ⚠️ **Settings' "disconnect" does NOT delete the Keychain session in `AppFeature`** —
+`SettingsFeature` does it before delegating up. So `everyLogoutPathPostsLogoutBeforeDraining
+TheStore` asserts the Keychain wipe only for the two paths `AppFeature` owns, while the
+bearer teardown (one `/auth/logout`, then a drained store) is asserted for all three. The
+ordering proof is the `#expect` taken from INSIDE the `rest.logout` stub: a drain that ran
+first would leave the store empty there.
 
 ### Task 14: Verify acceptance criteria
 
