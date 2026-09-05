@@ -512,23 +512,49 @@ alongside it and asserts the encoding, so the vector is self-checking rather tha
 - Create: `HermesKit/Sources/HermesKit/Clients/BearerTokenStore.swift`
 - Create: `HermesKit/Tests/HermesKitTests/BearerTokenStoreTests.swift`
 
-- [ ] implement `bearerNeedsRefresh(_:now:leeway:)` (pure) and the `BearerTokenStore` actor
+- [x] implement `bearerNeedsRefresh(_:now:leeway:)` (pure) and the `BearerTokenStore` actor
       per Technical Details: `seed`, `clear`, `current`, `validAccessToken(refresh:)` with a
       single shared in-flight `Task`, persistence hook invoked inside the actor before the
       new token is published
-- [ ] map failures: refresh throws `RESTError.unauthorized` → `clear()` + throw
+- [x] map failures: refresh throws `RESTError.unauthorized` → `clear()` + throw
       `GatewayError.authExpired`; any other error → rethrow, tokens intact; a persist failure
       is reported (`reportIssue`) but does not lose the rotated pair in memory
-- [ ] add the `\.bearerTokens` dependency key (`liveValue = BearerTokenStore.shared`,
+- [x] add the `\.bearerTokens` dependency key (`liveValue = BearerTokenStore.shared`,
       `testValue` a fresh instance)
-- [ ] write tests: fresh token returned without refresh; near-expiry triggers exactly ONE
+- [x] write tests: fresh token returned without refresh; near-expiry triggers exactly ONE
       refresh with 10 concurrent callers awaiting a slow fake refresh (all receive the same
       new token, persist called once, refresh body carries the OLD refresh token); expired +
       401 → store cleared + `authExpired`; expired + 503 → rethrown, `current` unchanged;
       `seed` during an in-flight refresh cancels/ignores the stale result; `clear` then
       `validAccessToken` throws `authExpired`
-- [ ] write tests: `bearerNeedsRefresh` at fixed dates around the leeway boundary
-- [ ] run tests — must pass before Task 6
+- [x] write tests: `bearerNeedsRefresh` at fixed dates around the leeway boundary
+- [x] run tests — must pass before Task 6 (1357 tests, 62 suites, all green; +10 over Task 4)
+
+➕ **A superseded rotation returns the CURRENT session rather than throwing.** `seed`/`clear`
+bump a `generation` counter; a refresh that completes under an older generation never persists
+or publishes its pair (persisting it would resurrect credentials the app deliberately moved off
+— a different account, or a logout). The callers already parked on that rotation then get
+whatever is live: the freshly seeded token after a `seed`, `GatewayError.authExpired` after a
+`clear`. Throwing `CancellationError` at them instead would have manufactured a failure at the
+exact moment the app holds a perfectly good token. Guarded by
+`aSeedDuringARefreshDiscardsTheStaleRotation`.
+
+➕ **The single-flight test is mutation-verified, not just green.** Deleting the join line
+(`if let refreshTask { … }`) makes `concurrentCallersAtExpiryShareExactlyOneRefresh` fail with
+10 refresh invocations and 10 persists — the assertion that carries the proof is taken WHILE
+the fake refresh is still parked (`refreshes.count == 1` after all ten callers have arrived
+and 500 scheduler yields), so a broken join cannot hide behind timing. The refresh body is also
+asserted to carry the OLD refresh token, which is the exact input to the portal's reuse
+detection.
+
+➕ `reportIssue` comes from `IssueReporting` (transitively available through
+swift-dependencies' xctest-dynamic-overlay — no `Package.swift` change). It fails a test run by
+design, so `aPersistFailureStillPublishesTheRotatedPair` wraps the call in `withKnownIssue`;
+that is the one known issue in the suite total.
+
+➕ The plan's signatures needed `@escaping` on the `persist` and `refresh` closures (both
+outlive the call — `persist` is stored, `refresh` is captured by the in-flight `Task`), and
+`now` on the initializer. No behavioural difference.
 
 ### Task 6: REST client bearer authentication, token exchange, refresh, logout
 
