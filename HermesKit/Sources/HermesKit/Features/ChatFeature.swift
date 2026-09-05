@@ -819,7 +819,12 @@ public struct ChatFeature {
     case toolDetailDismissed
     case modelChipTapped
     case modelOptionsResponse(Result<ModelOptions, GatewayError>)
-    case modelSelected(String)
+    /// The provider SLUG of the section the row was tapped in (nil for a programmatic
+    /// selection with no section context). Appended to the `config.set` value as
+    /// `--provider <slug>` so the gateway routes the model to the provider the picker
+    /// showed it under, instead of guessing from the model id (a `openai/…` OpenRouter
+    /// row would otherwise resolve to the direct OpenAI provider and fail on its key).
+    case modelSelected(model: String, provider: String?)
     case reasoningSelected(String)
     /// A `config.set` that failed for good (the #17 heal has already had its single replay).
     /// Carries the rejected `value` so the latch banner can name it and `previousValue` so the
@@ -2040,7 +2045,7 @@ public struct ChatFeature {
         state.modelPicker?.error = error.message
         return .none
 
-      case let .modelSelected(model):
+      case let .modelSelected(model, providerSlug):
         // Blocked mid-turn (server returns 4009); the picker disables selection too.
         guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
         // Roll back to the last SERVER-confirmed value, not to a still-in-flight pick's.
@@ -2048,8 +2053,13 @@ public struct ChatFeature {
         state.pendingConfigRollback.updateValue(previousModel, forKey: "model")
         state.model = model // optimistic; reconciled by the next session.info
         clearConfigError(&state)
+        // Desktop parity (`use-model-controls.ts`): the value carries the picker
+        // section's provider slug so the gateway's model routing never guesses from
+        // the model id alone. A nil slug (no section context) stays a bare model id —
+        // the gateway's own detection ladder handles it exactly as before.
+        let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
         return configSet(
-          key: "model", value: model, previousValue: previousModel, sessionID: sessionID,
+          key: "model", value: wireValue, previousValue: previousModel, sessionID: sessionID,
           storedSessionID: state.storedSessionID, branchSeed: state.branchSeed,
           profile: state.scopedProfile
         )

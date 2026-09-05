@@ -248,7 +248,7 @@ struct ChatInteractionTests {
       }
     }
 
-    await store.send(.modelSelected("claude-sonnet-4-6")) {
+    await store.send(.modelSelected(model: "claude-sonnet-4-6", provider: "anthropic")) {
       $0.model = "claude-sonnet-4-6" // optimistic
       $0.pendingConfigRollback.updateValue(nil, forKey: "model") // nothing confirmed yet
     }
@@ -256,8 +256,50 @@ struct ChatInteractionTests {
 
     #expect(sent.value?["method"]?.stringValue == "config.set")
     #expect(sent.value?["params"]?["key"]?.stringValue == "model")
-    #expect(sent.value?["params"]?["value"]?.stringValue == "claude-sonnet-4-6")
+    // Desktop parity: the value carries the picker section's provider slug so the
+    // gateway routes the model to the provider the picker showed it under.
+    #expect(sent.value?["params"]?["value"]?.stringValue == "claude-sonnet-4-6 --provider anthropic")
     #expect(sent.value?["params"]?["session_id"]?.stringValue == "live")
+  }
+
+  /// A selection with no section context (nil provider) stays a bare model id on the wire —
+  /// the gateway's own detection ladder routes it exactly as before this change.
+  @Test func selectingModelWithoutProviderSendsBareModel() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    let store = TestStore(initialState: readyState()) { ChatFeature() } withDependencies: {
+      $0.hermesGateway.send = { @Sendable method, params in
+        sent.setValue(.object(["method": .string(method), "params": params]))
+        return .object([:])
+      }
+    }
+
+    await store.send(.modelSelected(model: "claude-sonnet-4-6", provider: nil)) {
+      $0.model = "claude-sonnet-4-6"
+      $0.pendingConfigRollback.updateValue(nil, forKey: "model")
+    }
+    await store.finish()
+
+    #expect(sent.value?["method"]?.stringValue == "config.set")
+    #expect(sent.value?["params"]?["value"]?.stringValue == "claude-sonnet-4-6")
+  }
+
+  /// `selectionSlug` passes the slug only — the gateway's flag parser splits values on
+  /// whitespace and its provider resolver never matches display names, so a name fallback
+  /// ("Ollama Cloud") would misparse. Nil only when there is no slug.
+  @Test func providerSelectionSlugPreference() {
+    let slugful = ModelOptions.Provider(name: "OpenRouter", slug: "openrouter", models: ["openai/gpt-5.6-sol"])
+    #expect(slugful.selectionSlug == "openrouter")
+
+    // No slug: the display name must NOT leak onto the wire ("Ollama Cloud" would parse
+    // as provider `Ollama`, model `… Cloud`); the pick goes out bare instead.
+    let slugless = ModelOptions.Provider(name: "Anthropic", slug: nil, models: ["claude-opus-4-8"])
+    #expect(slugless.selectionSlug == nil)
+
+    let empty = ModelOptions.Provider(name: "", slug: nil, models: [])
+    #expect(empty.selectionSlug == nil)
+
+    let whitespace = ModelOptions.Provider(name: "  ", slug: "  ", models: [])
+    #expect(whitespace.selectionSlug == nil)
   }
 
   @Test func selectingReasoningSendsConfigSet() async {
@@ -328,7 +370,7 @@ struct ChatInteractionTests {
     initial.isSending = true
     let store = TestStore(initialState: initial) { ChatFeature() }
     // Mid-turn switches are rejected by the server (4009) — guarded client-side.
-    await store.send(.modelSelected("claude-sonnet-4-6"))
+    await store.send(.modelSelected(model: "claude-sonnet-4-6", provider: nil))
     await store.send(.reasoningSelected("high"))
   }
 
@@ -415,7 +457,7 @@ struct ChatInteractionTests {
       $0.hermesGateway.send = failingConfigSet(GatewayError.server("cannot switch mid-turn"))
     }
 
-    await store.send(.modelSelected("gpt-5-mini")) {
+    await store.send(.modelSelected(model: "gpt-5-mini", provider: "openai")) {
       $0.model = "gpt-5-mini"
       $0.pendingConfigRollback.updateValue("gpt-5", forKey: "model")
     }

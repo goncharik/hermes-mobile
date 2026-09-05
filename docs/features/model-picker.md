@@ -11,6 +11,25 @@ The composer's `model · effort` chip is the ONE affordance for both settings. T
 `configSet(key:value:previousValue:…)` → `config.set {session_id, key, value}` wrapped in the #17
 session-not-found heal (re-resume + a single replay, `CLAUDE.md` → "Gateway & session lifecycle").
 
+A model selection carries the picker section's provider: the row tap passes
+`ModelOptions.Provider.selectionSlug` — the SLUG only, nil when there is none — and the reducer
+appends it to the wire value as `"<model> --provider <slug>"` — desktop parity
+(`use-model-controls.ts`, which also sends `provider.slug` with no fallback). Without it the
+gateway guesses the provider from the model id alone, so an `openai/…` row listed under
+OpenRouter routes to the direct OpenAI provider and fails on its key ("No usable credentials
+found for provider 'openai-api'"). A nil slug (no section context) stays a bare model id and
+the gateway's own detection ladder routes it, exactly as before. The display name is never
+used: the gateway's flag parser splits the `--provider` value on whitespace and its provider
+resolver doesn't match display names, so a name like "Ollama Cloud" would parse as provider
+`Ollama`, model `… Cloud` — worse than a bare id.
+
+One behavioral note, same as desktop: with `--provider` present, a switch never persists to
+`config.yaml` when a default model is already configured — the gateway's
+`resolve_persist_behavior` treats provider-bound picks as exploratory and skips the
+`model.persist_switch_by_default` check. Bare-id picks honor that config key (a pick without
+`--provider` persists when it is `true`); provider-bound picks are session-only unless the
+desktop sends an explicit `--global`, which no client picker does today.
+
 Selection is **optimistic and server-reconciled**: the reducer writes `state.model` /
 `state.reasoningEffort` before the RPC, and success is deliberately fire-and-forget — the gateway
 emits `session.info` after a successful `config.set` and `.sessionInfo` already reconciles both
