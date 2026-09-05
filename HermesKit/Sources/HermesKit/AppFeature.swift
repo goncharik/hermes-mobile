@@ -1177,7 +1177,8 @@ public struct AppFeature {
       token: connection.auth.token ?? ""
     )
     guard case .bearer = connection.auth else { return .none }
-    return .run { [bearerTokens] _ in bearerTokens.clear() }
+    let claim = bearerTokens.claimOwnership() // minted here, applied on the next tick
+    return .run { [bearerTokens] _ in bearerTokens.clear(claim: claim) }
   }
 
   /// Release the slot's microphone when an identity teardown (Settings "disconnect", either
@@ -1281,15 +1282,22 @@ public struct AppFeature {
   /// Either hop can rotate a pair that is inside its refresh leeway; what stops that rotation
   /// from rewriting the deleted Keychain entry is `BearerTokenStore.detachPersistence()`,
   /// which every path calls synchronously before its `keychain.deleteSession()`.
+  ///
+  /// The trailing drain carries a claim minted HERE, synchronously, and not by the effect: both
+  /// hops are best-effort against a server that is often the reason the user is logging out, so
+  /// each can stall for `URLSession`'s 60 s default while the user completes a fresh sign-in on
+  /// the onboarding screen this reduction just landed them on. The claim makes that sign-in
+  /// supersede the stale drain instead of being erased by it — see `BearerTokenStore.clear`.
   private func serverSideLogout(connection: ServerConnection?) -> Effect<Action> {
     // Called for its synchronous prefs clearing too, so it must run unconditionally.
     let unregister = unregisterPushOnLogout(connection: connection)
     guard let connection, case .bearer = connection.auth else { return unregister }
+    let claim = bearerTokens.claimOwnership()
     return .concatenate(
       unregister,
       .run { [rest, bearerTokens] _ in
         await rest.logout(connection)
-        bearerTokens.clear()
+        bearerTokens.clear(claim: claim)
       }
     )
   }

@@ -195,7 +195,7 @@ struct BearerTokenStoreTests {
   @Test func clearingTheStoreExpiresSubsequentReads() async throws {
     let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
     store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
-    store.clear()
+    store.clear(claim: store.claimOwnership())
 
     #expect(store.current == nil)
     await #expect(throws: GatewayError.authExpired) {
@@ -267,7 +267,7 @@ struct BearerTokenStoreTests {
       }
     }
     await started.wait()
-    store.clear()
+    store.clear(claim: store.claimOwnership())
     await release.open()
 
     await #expect(throws: GatewayError.authExpired) { try await caller.value }
@@ -479,6 +479,56 @@ struct BearerTokenStoreTests {
     let token = try await store.validAccessToken { _, _ in Self.rotated }
     #expect(token == "access-2")
     #expect(persisted.sessions == [minted, Self.rotated])
+  }
+
+  /// Logout's drain sits behind two best-effort network hops (push unregister, `rest.logout`)
+  /// against a server that is often the reason the user is logging out, so it can land a minute
+  /// late — by which time the user may have signed in again on the onboarding screen the logout
+  /// dropped them on. An unclaimed drain would erase those fresh credentials and hand the user
+  /// a re-auth sheet for a sign-in that just succeeded.
+  @Test func aLateLogoutDrainCannotTakeOutANewerSignIn() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    store.seed(Self.session(expiresIn: 600), baseURL: Self.baseURL, persist: { _ in })
+
+    store.detachPersistence() // logout's synchronous half, before `keychain.deleteSession()`
+    let logout = store.claimOwnership() // …and the claim its stalled drain carries
+
+    let signIn = store.claimOwnership()
+    let fresh = Self.session(
+      access: "access-B", refresh: "refresh-B", userID: "user-2", expiresIn: 600
+    )
+    #expect(store.seed(fresh, baseURL: Self.baseURL, claim: signIn))
+    #expect(store.attachPersistence({ try persisted.hook($0) }, claim: signIn) == fresh)
+
+    store.clear(claim: logout) // the stalled hop finally returns
+
+    #expect(store.current == fresh)
+    let token = try await store.validAccessToken { _, _ in Self.rotated }
+    #expect(token == "access-B")
+  }
+
+  /// A refresh 401 is the credentials DYING, not the app abandoning them — and it is raised by
+  /// an unrelated caller (a list poll, a foreground refresh) while the re-auth sheet is up. It
+  /// must therefore discard the pair without revoking, or the sign-in the user is in the middle
+  /// of is dropped on its way back: the browser leg completes, the exchange succeeds, and the
+  /// screen shows neither progress nor an error.
+  @Test func anExpiryDrainLeavesAnInFlightSignInsClaimIntact() async throws {
+    let store = BearerTokenStore(now: Self.fixedNow, refreshLeeway: 120)
+    let persisted = PersistRecorder()
+    store.seed(Self.session(expiresIn: 10), baseURL: Self.baseURL, persist: { _ in })
+
+    let attempt = store.claimOwnership() // claimed before the browser leg starts
+
+    await #expect(throws: GatewayError.authExpired) {
+      try await store.validAccessToken { _, _ in throw RESTError.unauthorized }
+    }
+    #expect(store.current == nil) // the dead pair is gone — nothing left to authenticate with
+
+    let minted = Self.session(access: "access-B", refresh: "refresh-B", expiresIn: 600)
+    #expect(store.seed(minted, baseURL: Self.baseURL, claim: attempt))
+    #expect(store.attachPersistence({ try persisted.hook($0) }, claim: attempt) == minted)
+    #expect(persisted.sessions == [minted])
   }
 }
 

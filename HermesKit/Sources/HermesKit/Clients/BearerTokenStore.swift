@@ -201,14 +201,21 @@ public final class BearerTokenStore: Sendable {
     state.withValue { Self.revoke(&$0) }
   }
 
-  /// Drop everything (logout / session expiry). Subsequent reads throw `.authExpired`.
-  /// Unclaimed callers drain unconditionally; a claim-bearing one drains only while it still
-  /// owns the store.
-  public func clear(claim: BearerStoreClaim? = nil) {
+  /// Abandon the credentials — logout, or a sign-in attempt cleaning up after a rejected
+  /// pair. Subsequent reads throw `.authExpired`, and every outstanding claim is revoked.
+  ///
+  /// The claim is REQUIRED, not defaulted: this is the deliberate-abandonment entry point (see
+  /// ``revoke(_:)``), and a caller with no established entitlement has no business declaring
+  /// it. Logout is not exempt — its own drain sits behind two best-effort network hops that an
+  /// unreachable server can stall for a minute, by which time the user may have completed a
+  /// NEWER sign-in; a claim minted at the logout site lets that sign-in supersede the stale
+  /// drain through the same verdict that already protects `seed`/`attachPersistence`.
+  public func clear(claim: BearerStoreClaim) {
     let discarded = state.withValue { state -> RefreshTask? in
       guard Self.adopt(&state, claim) else { return nil }
       let doomed = Self.supersedeInFlightRefresh(&state)
-      Self.drain(&state)
+      Self.discardPair(&state)
+      Self.revoke(&state)
       return doomed
     }
     discarded?.cancel() // outside the section — see `seed`
@@ -338,7 +345,10 @@ public final class BearerTokenStore: Sendable {
       }
       state.refreshTask = nil
       guard isExpiry else { return .rethrow }
-      Self.drain(&state) // the one expiry verdict, atomic with the check above
+      // The one expiry verdict, atomic with the check above. It discards WITHOUT revoking —
+      // see `revoke`: the pair died, the app did not abandon it, and a sign-in already in
+      // flight is the remedy, not a late arrival.
+      Self.discardPair(&state)
       return .expired
     }
   }
@@ -368,16 +378,30 @@ public final class BearerTokenStore: Sendable {
   }
 
   /// Disarm the persist hook and invalidate every outstanding claim.
+  ///
+  /// **The normative rule this type is built around.** Revoking means "the app has
+  /// DELIBERATELY moved off these credentials" — a logout, or a newer attempt superseding an
+  /// older one. It must never be spelled by anything else, and the two temptations are named
+  /// because both have shipped as bugs:
+  ///
+  /// - *Something incidental happened to the pair* — a refresh 401, i.e. the credentials
+  ///   dying under an unrelated caller (a list poll, a foreground refresh). That is
+  ///   ``discardPair(_:)``, which leaves ownership alone: an expiry is precisely what the
+  ///   user is signing in to fix, so an attempt already in flight is still the attempt they
+  ///   are waiting on and its `seed` must land.
+  /// - *A caller with no established entitlement said so* — hence ``clear(claim:)`` takes a
+  ///   claim rather than defaulting to an unconditional drain.
   private static func revoke(_ state: inout State) {
     state.hook = nil
     takeOwnership(&state)
   }
 
-  /// Forget the pair and its server, and revoke: a drained store authenticates nothing.
-  private static func drain(_ state: inout State) {
+  /// Forget the pair, its server and the persist hook: nothing left to authenticate with and
+  /// nothing left to write. Ownership is deliberately untouched — see ``revoke(_:)``.
+  private static func discardPair(_ state: inout State) {
     state.session = nil
     state.baseURL = nil
-    revoke(&state)
+    state.hook = nil
   }
 
   /// Detach the in-flight refresh and mark everything it might publish as superseded. The
