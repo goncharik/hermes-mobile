@@ -10,14 +10,42 @@ import Foundation
 ///      (`GET /api/sessions?limit=1`).
 ///    - **password** — `POST /auth/password-login` for a cookie session, then validate the
 ///      cookies with the same authenticated call.
-/// 3. Persist the resulting `AuthSession` (token or cookie) in the Keychain and signal
-///    `.delegate(.connected)`.
+///    - **oauth** — the native PKCE browser leg (`OAuthLoginClient`) for a bearer pair,
+///      seeded into `BearerTokenStore` and validated with the same authenticated call (#19).
+/// 3. Persist the resulting `AuthSession` (token, cookie, or bearer) in the Keychain and
+///    signal `.delegate(.connected)`.
 
 /// Which auth regime the user is entering credentials for. Driven by the server's
 /// capability probe (see `ServerAuthCapability`) but ultimately the user's segment choice.
 public enum AuthMethod: String, Equatable, Sendable {
   case password
   case token
+  case oauth
+}
+
+/// How an OAuth sign-in attempt failed. Two distinct legs fail differently and must route
+/// differently, so they stay distinguishable instead of being flattened into `RESTError`:
+/// the browser/PKCE leg (`OAuthLoginError`, whose `.cancelled` is SILENT) and the
+/// authenticated call that validates the fresh bearer pair (a 401 there means the server
+/// rejected the identity, i.e. `.invalidCredentials`).
+public enum OAuthFlowError: Error, Equatable, Sendable {
+  case login(OAuthLoginError)
+  case validation(RESTError)
+
+  /// User-facing copy for the status footer.
+  public var message: String {
+    switch self {
+    case let .login(error): error.message
+    case let .validation(error): error.message
+    }
+  }
+}
+
+/// Normalize a thrown error from `OAuthLoginClient.signIn` to an `OAuthLoginError` — the
+/// client's own error domain passes through verbatim; anything unexpected goes through the
+/// shared REST classifier so its copy still reads like every other transport failure.
+func asOAuthLoginError(_ error: any Error) -> OAuthLoginError {
+  error as? OAuthLoginError ?? .tokenExchange(asRESTError(error))
 }
 
 @Reducer
@@ -34,6 +62,13 @@ public struct ConnectionFeature {
     /// The server's advertised auth capability (probed alongside `/api/status`). `nil` until
     /// the reachability check completes. Drives segment enable/preselect.
     public var capability: ServerAuthCapability?
+    /// Which OAuth provider the user tapped, when the server advertises several. `nil` falls
+    /// back to the first advertised one (the common single-provider case).
+    public var selectedOAuthProviderName: String?
+    /// The version `/api/status` reported on the last successful check. Kept out of `status`
+    /// so a sign-in attempt that returns to `.reachable` (a cancelled OAuth sheet) can
+    /// restore the version it displayed before.
+    public var serverVersion: String?
     public var status: Status
 
     public init(
@@ -43,6 +78,8 @@ public struct ConnectionFeature {
       password: String = "",
       method: AuthMethod = .token,
       capability: ServerAuthCapability? = nil,
+      selectedOAuthProviderName: String? = nil,
+      serverVersion: String? = nil,
       status: Status = .idle
     ) {
       self.serverURL = serverURL
@@ -51,6 +88,8 @@ public struct ConnectionFeature {
       self.password = password
       self.method = method
       self.capability = capability
+      self.selectedOAuthProviderName = selectedOAuthProviderName
+      self.serverVersion = serverVersion
       self.status = status
     }
 
@@ -76,6 +115,29 @@ public struct ConnectionFeature {
     /// universal fallback — but de-emphasized when the server is gated (password preferred).
     public var isTokenEnabled: Bool { true }
 
+    /// Whether the OAuth segment is offered at all.
+    ///
+    /// Deliberately STRICTER than the project's `?? true` unknown-capability idiom: that rule
+    /// exists so an unknown capability never HIDES functionality the server already has,
+    /// which is not this case. OAuth is a NEW affordance that only works when the gateway
+    /// serves `/auth/native/authorize`, so it needs positive evidence (an OAuth provider AND
+    /// `native_pkce` in `auth_flows`) — offering a sign-in the gateway cannot complete is
+    /// worse than not offering it. An unprobed server (`nil`) shows no OAuth segment.
+    public var isOAuthEnabled: Bool { capability?.isOAuthAvailable ?? false }
+
+    /// The OAuth providers to render buttons for (empty unless `isOAuthEnabled`).
+    public var oauthProviders: [AuthProvider] {
+      isOAuthEnabled ? capability?.oauthProviders ?? [] : []
+    }
+
+    /// The provider an OAuth sign-in would run against: the user's pick, else the first
+    /// advertised one (a single-provider server needs no pick).
+    public var activeOAuthProvider: AuthProvider? {
+      let providers = oauthProviders
+      guard let name = selectedOAuthProviderName else { return providers.first }
+      return providers.first { $0.name == name } ?? providers.first
+    }
+
     /// True on a gated server where the token path is a poor fit (UI may de-emphasize it).
     public var isTokenDeemphasized: Bool { capability?.isGated ?? false }
 
@@ -88,6 +150,8 @@ public struct ConnectionFeature {
       switch method {
       case .password: return !username.isEmpty && !password.isEmpty
       case .token: return !token.isEmpty
+      // Nothing to type: the browser leg collects the credentials.
+      case .oauth: return isOAuthEnabled
       }
     }
   }
@@ -101,12 +165,17 @@ public struct ConnectionFeature {
     /// The URL field was submitted or lost focus — check immediately.
     case serverFieldCommitted
     case connectTapped
+    /// "Continue with <provider>" — the provider button IS the connect action, so it records
+    /// the pick (servers may advertise several) and runs the same `connectTapped` path.
+    case oauthProviderTapped(AuthProvider)
     /// `/api/status` result plus the (optional) `/api/auth/providers` probe, folded so the
     /// capability is computed in one place.
     case serverStatusResponse(Result<ServerStatus, RESTError>, providers: [AuthProvider]?)
     case tokenValidationResponse(Result<ServerConnection, RESTError>)
     /// Password login → cookie session validated → ready to persist + connect.
     case passwordLoginResponse(Result<ServerConnection, RESTError>)
+    /// Native OAuth login → bearer pair seeded + validated → ready to connect.
+    case oauthLoginResponse(Result<ServerConnection, OAuthFlowError>)
     case delegate(Delegate)
 
     @CasePathable
@@ -120,6 +189,8 @@ public struct ConnectionFeature {
   @Dependency(\.hermesREST) var rest
   @Dependency(\.keychain) var keychain
   @Dependency(\.preferences) var preferences
+  @Dependency(\.oauthLogin) var oauthLogin
+  @Dependency(\.bearerTokens) var bearerTokens
   @Dependency(\.continuousClock) var clock
 
   public init() {}
@@ -184,15 +255,24 @@ public struct ConnectionFeature {
       case let .serverStatusResponse(.success(status), providers):
         let capability = ServerAuthCapability(from: status, providers: providers)
         state.capability = capability
+        state.serverVersion = status.version
         state.status = .reachable(version: status.version)
-        // Preselect the segment the server actually supports: password when available,
-        // token otherwise. Don't override a token-only server's disabled Password.
-        // (The OAuth segment joins this order in a later step — #19.)
-        state.method = capability.isPasswordAvailable ? .password : .token
+        state.selectedOAuthProviderName = nil // a new server invalidates the old pick
+        // Preselect the segment the server actually supports, password → oauth → token: a
+        // mixed basic+nous server keeps password preselected (it is the lower-friction path
+        // and mirrors the desktop), and token stays the fallback nobody is nudged toward.
+        if capability.isPasswordAvailable {
+          state.method = .password
+        } else if capability.isOAuthAvailable {
+          state.method = .oauth
+        } else {
+          state.method = .token
+        }
         return .none
 
       case let .serverStatusResponse(.failure(error), _):
         state.capability = nil
+        state.serverVersion = nil
         switch error {
         case .decoding: state.status = .notHermes
         // `.offline` is a transport failure like `.unreachable` — same footer (its
@@ -201,6 +281,11 @@ public struct ConnectionFeature {
         default: state.status = .failed(error.message)
         }
         return .none
+
+      case let .oauthProviderTapped(provider):
+        state.selectedOAuthProviderName = provider.name
+        state.method = .oauth
+        return .send(.connectTapped)
 
       case .connectTapped:
         guard let url = parseServerURL(state.serverURL) else {
@@ -253,6 +338,40 @@ public struct ConnectionFeature {
             preferences.saveServerURL(connection.baseURL.absoluteString)
             await send(.passwordLoginResponse(.success(connection)))
           }
+
+        case .oauth:
+          // Native PKCE path (#19): the browser leg returns a bearer pair, which is seeded
+          // into the token store, validated with the same authenticated call the other two
+          // regimes use, then persisted.
+          let provider = state.activeOAuthProvider?.name
+          return .run { [rest, keychain, preferences, oauthLogin, bearerTokens] send in
+            let bearer: BearerSession
+            do {
+              bearer = try await oauthLogin.signIn(url, provider)
+            } catch {
+              // Nothing was seeded yet — no store to clean up.
+              await send(.oauthLoginResponse(.failure(.login(asOAuthLoginError(error)))))
+              return
+            }
+            // Seed BEFORE the validating call: a `.bearer` connection resolves its
+            // `Authorization` header through the store, so an unseeded store would 401.
+            await bearerTokens.seed(bearer, baseURL: url) { session in
+              try keychain.saveSession(.bearer(session))
+            }
+            let connection = ServerConnection(baseURL: url, auth: .bearer(bearer))
+            do {
+              _ = try await rest.sessions(connection, 1, 0, .recent)
+            } catch {
+              // Drain the half-built session: leaving it seeded would authenticate a later
+              // request with credentials this screen never accepted.
+              await bearerTokens.clear()
+              await send(.oauthLoginResponse(.failure(.validation(asRESTError(error)))))
+              return
+            }
+            try? keychain.saveSession(.bearer(bearer))
+            preferences.saveServerURL(connection.baseURL.absoluteString)
+            await send(.oauthLoginResponse(.success(connection)))
+          }
         }
 
       case let .tokenValidationResponse(.success(connection)):
@@ -275,6 +394,25 @@ public struct ConnectionFeature {
         // Surface server copy verbatim for the rest (429 rate-limit, 503 unreachable,
         // 404 unsupported provider, other) via `RESTError.message`.
         default: state.status = .failed(error.message)
+        }
+        return .none
+
+      case let .oauthLoginResponse(.success(connection)):
+        return .send(.delegate(.connected(connection)))
+
+      case let .oauthLoginResponse(.failure(error)):
+        switch error {
+        // Dismissing the browser sheet is a decision, not a failure: back to the reachable
+        // state exactly as it was, with no banner and no status copy.
+        case .login(.cancelled):
+          state.status = .reachable(version: state.serverVersion)
+        // The bearer pair was minted but the server rejected it on the validating call.
+        case .validation(.unauthorized):
+          state.status = .invalidCredentials
+        // Everything else surfaces verbatim — the gateway's reason, the timeout, a state
+        // mismatch, or the REST copy from a failed validating call.
+        default:
+          state.status = .failed(error.message)
         }
         return .none
 

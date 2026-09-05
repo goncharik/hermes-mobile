@@ -24,6 +24,53 @@ private func passwordCapability(
   )
 }
 
+/// The OAuth (session) provider a Nous-configured gateway advertises.
+private let nousProvider = AuthProvider(
+  name: "nous", displayName: "Nous Research", supportsPassword: false
+)
+
+/// A gated server that serves the native PKCE endpoints.
+private func nousStatus(providers: [String] = ["nous"]) -> ServerStatus {
+  var status = ServerStatus(version: "0.17.0", authRequired: true, authProviders: providers)
+  status.authFlows = ["cookie", "native_pkce"]
+  return status
+}
+
+private func oauthCapability(
+  providers: [AuthProvider] = [nousProvider],
+  supportsNativeFlow: Bool = true
+) -> ServerAuthCapability {
+  ServerAuthCapability(
+    oauthProviders: providers,
+    supportsNativeFlow: supportsNativeFlow,
+    isGated: true
+  )
+}
+
+private func bearerFixture(
+  accessToken: String = "access-1",
+  userID: String = "user-42"
+) -> BearerSession {
+  BearerSession(
+    accessToken: accessToken,
+    refreshToken: "refresh-1",
+    expiresAt: 4_000_000_000,
+    provider: "nous",
+    userID: userID
+  )
+}
+
+/// State as it stands right after a successful probe of a Nous-only gateway.
+private func oauthReadyState(providers: [AuthProvider] = [nousProvider]) -> ConnectionFeature.State {
+  ConnectionFeature.State(
+    serverURL: "http://mac:9119",
+    method: .oauth,
+    capability: oauthCapability(providers: providers),
+    serverVersion: "0.17.0",
+    status: .reachable(version: "0.17.0")
+  )
+}
+
 @MainActor
 struct ConnectionFeatureTests {
   @Test func reachableThenValidTokenConnectsAndStoresToken() async {
@@ -43,6 +90,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
       $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
 
@@ -140,6 +188,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
       $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
   }
@@ -190,6 +239,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
       $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
   }
@@ -224,6 +274,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
       $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
 
@@ -250,6 +301,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.serverStatusResponse) {
       $0.capability = passwordCapability(displayName: "Username & Password")
       $0.method = .password
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
 
@@ -257,36 +309,94 @@ struct ConnectionFeatureTests {
     #expect(store.state.isTokenDeemphasized == true)
   }
 
-  /// A gated server whose only providers are OAuth still renders exactly today's UI:
-  /// Password disabled, Token preselected and de-emphasized. (The OAuth segment itself
-  /// arrives with the connect path — #19; this guards the refactor against a behaviour drift.)
-  @Test func gatedOAuthOnlyServerStillDisablesPasswordAndPreselectsToken() async {
-    let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
+  /// A gated server whose only providers are OAuth (and which advertises `native_pkce`)
+  /// preselects the OAuth segment — the whole point of #19: this deployment was previously
+  /// unreachable from mobile.
+  @Test func gatedOAuthOnlyServerPreselectsOAuth() async {
     let store = TestStore(initialState: ConnectionFeature.State(serverURL: "mac:9119")) {
       ConnectionFeature()
     } withDependencies: {
-      $0.hermesREST.status = { @Sendable _ in
-        var status = ServerStatus(version: "0.17.0", authRequired: true, authProviders: ["nous"])
-        status.authFlows = ["cookie", "native_pkce"]
-        return status
-      }
-      $0.hermesREST.authProviders = { @Sendable _ in [nous] }
+      $0.hermesREST.status = { @Sendable _ in nousStatus() }
+      $0.hermesREST.authProviders = { @Sendable _ in [nousProvider] }
     }
 
     await store.send(.serverFieldCommitted)
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
-      $0.capability = ServerAuthCapability(
-        oauthProviders: [nous],
-        supportsNativeFlow: true,
-        isGated: true
-      )
+      $0.capability = oauthCapability()
+      $0.method = .oauth
+      $0.serverVersion = "0.17.0"
       $0.status = .reachable(version: "0.17.0")
     }
 
-    #expect(store.state.method == .token)
+    #expect(store.state.isOAuthEnabled == true)
+    #expect(store.state.oauthProviders == [nousProvider])
+    #expect(store.state.activeOAuthProvider == nousProvider)
     #expect(store.state.isPasswordEnabled == false)
     #expect(store.state.isTokenDeemphasized == true)
+    #expect(store.state.canConnect == true) // nothing to type — the browser leg collects it
+  }
+
+  /// Mixed deployment: both segments are offered, but password stays preselected (lower
+  /// friction, and it mirrors the desktop).
+  @Test func mixedPasswordAndOAuthServerPreselectsPassword() async {
+    let basic = AuthProvider(name: "basic", displayName: "Password", supportsPassword: true)
+    let store = TestStore(initialState: ConnectionFeature.State(serverURL: "mac:9119")) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in nousStatus(providers: ["basic", "nous"]) }
+      $0.hermesREST.authProviders = { @Sendable _ in [basic, nousProvider] }
+    }
+
+    await store.send(.serverFieldCommitted)
+    await store.receive(\.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = passwordCapability(
+        oauthProviders: [nousProvider],
+        supportsNativeFlow: true
+      )
+      $0.method = .password
+      $0.serverVersion = "0.17.0"
+      $0.status = .reachable(version: "0.17.0")
+    }
+
+    #expect(store.state.isPasswordEnabled == true)
+    #expect(store.state.isOAuthEnabled == true)
+  }
+
+  /// OAuth providers but no `native_pkce` in `auth_flows` — the gateway is too old to serve
+  /// `/auth/native/authorize`, so the NEW affordance stays hidden (positive evidence only,
+  /// deliberately stricter than the `?? true` unknown-capability idiom) and the screen falls
+  /// back to exactly today's token-only UI.
+  @Test func oauthProvidersWithoutNativeFlowKeepTheSegmentHidden() async {
+    let store = TestStore(initialState: ConnectionFeature.State(serverURL: "mac:9119")) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in
+        ServerStatus(version: "0.16.0", authRequired: true, authProviders: ["nous"])
+      }
+      $0.hermesREST.authProviders = { @Sendable _ in [nousProvider] }
+    }
+
+    await store.send(.serverFieldCommitted)
+    await store.receive(\.checkServer) { $0.status = .checking }
+    await store.receive(\.serverStatusResponse) {
+      $0.capability = ServerAuthCapability(oauthProviders: [nousProvider], isGated: true)
+      $0.serverVersion = "0.16.0"
+      $0.status = .reachable(version: "0.16.0")
+    }
+
+    #expect(store.state.method == .token)
+    #expect(store.state.isOAuthEnabled == false)
+    #expect(store.state.oauthProviders.isEmpty)
+    #expect(store.state.isPasswordEnabled == false)
+    #expect(store.state.isTokenDeemphasized == true)
+  }
+
+  /// An unprobed server offers no OAuth segment: `nil` capability is not evidence.
+  @Test func unprobedServerOffersNoOAuthSegment() {
+    #expect(ConnectionFeature.State().isOAuthEnabled == false)
+    #expect(ConnectionFeature.State().oauthProviders.isEmpty)
   }
 
   /// Gated but the providers endpoint 404s: token stays the only way in, so it must NOT be
@@ -305,6 +415,7 @@ struct ConnectionFeatureTests {
     await store.receive(\.checkServer) { $0.status = .checking }
     await store.receive(\.serverStatusResponse) {
       $0.capability = .tokenOnly
+      $0.serverVersion = "0.16.0"
       $0.status = .reachable(version: "0.16.0")
     }
 
@@ -456,5 +567,174 @@ struct ConnectionFeatureTests {
     await store.receive(\.passwordLoginResponse.failure) {
       $0.status = .failed(RESTError.serviceUnavailable.message)
     }
+  }
+
+  // MARK: Native OAuth sign-in (#19)
+
+  @Test func oauthSignInSeedsTheStoreValidatesThenPersistsTheBearerSession() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let tokenStore = BearerTokenStore()
+    let bearer = bearerFixture()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable url, provider in
+        #expect(url.absoluteString == "http://mac:9119")
+        #expect(provider == "nous")
+        return bearer
+      }
+      $0.hermesREST.sessions = { @Sendable connection, _, _, _ in
+        // The pair must be in the store BEFORE the validating call — a `.bearer` request
+        // resolves its `Authorization` header through it, so an unseeded store 401s.
+        let seeded = await tokenStore.current
+        #expect(seeded == bearer, "the bearer pair must be seeded before the validating call")
+        #expect(connection.auth == .bearer(bearer))
+        #expect(connection.token == nil) // never the legacy session-token path
+        return []
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = preferences
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.success)
+    await store.receive(\.delegate.connected)
+
+    #expect(keychain.loadSession(.shared) == .bearer(bearer))
+    #expect(preferences.loadServerURL() == "http://mac:9119")
+    let retained = await tokenStore.current
+    #expect(retained == bearer)
+  }
+
+  /// Several providers: the tapped button decides which one the browser leg runs against.
+  @Test func tappingAProviderSignsInWithThatProvider() async {
+    let selfHosted = AuthProvider(
+      name: "self_hosted", displayName: "Keycloak", supportsPassword: false
+    )
+    let bearer = bearerFixture()
+    let store = TestStore(initialState: oauthReadyState(providers: [nousProvider, selfHosted])) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, provider in
+        #expect(provider == "self_hosted")
+        return bearer
+      }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.keychain = KeychainClient.inMemory()
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.oauthProviderTapped(selfHosted)) {
+      $0.selectedOAuthProviderName = "self_hosted"
+    }
+    await store.receive(\.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.success)
+    await store.receive(\.delegate.connected)
+  }
+
+  /// Dismissing the browser sheet is a decision, not a failure: back to the reachable state
+  /// (version intact) with NO status copy, and nothing persisted.
+  @Test func cancellingTheBrowserSheetReturnsToReachableSilently() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in throw OAuthLoginError.cancelled }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = preferences
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .reachable(version: "0.17.0")
+    }
+
+    #expect(keychain.loadSession(.shared) == nil)
+    #expect(preferences.loadServerURL() == nil)
+    let seeded = await tokenStore.current
+    #expect(seeded == nil)
+    #expect(store.state.canConnect) // the segment is immediately retryable
+  }
+
+  /// Every other browser-leg failure surfaces the reason verbatim.
+  @Test func aGatewayRejectionSurfacesItsReason() async {
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in
+        throw OAuthLoginError.gatewayRejected("access_denied (user is not authorized)")
+      }
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed("access_denied (user is not authorized)")
+    }
+  }
+
+  @Test func aTimedOutSignInSurfacesItsCopy() async {
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in throw OAuthLoginError.timedOut }
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed(OAuthLoginError.timedOut.message)
+    }
+  }
+
+  /// The pair was minted but the server rejected it on the validating call: the half-built
+  /// session must be drained from the store, or a later request would authenticate with
+  /// credentials this screen never accepted.
+  @Test func aRejectedBearerPairIsDrainedAndNotPersisted() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in bearerFixture() }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unauthorized }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = preferences
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
+
+    let seeded = await tokenStore.current
+    #expect(seeded == nil, "a rejected bearer pair must not stay seeded")
+    #expect(keychain.loadSession(.shared) == nil)
+    #expect(preferences.loadServerURL() == nil)
+  }
+
+  /// A non-401 failure on the validating call surfaces the REST copy and still drains.
+  @Test func aValidatingCallOutageSurfacesTheServerCopyAndDrains() async {
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in bearerFixture() }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.serviceUnavailable }
+      $0.bearerTokens = tokenStore
+      $0.keychain = KeychainClient.inMemory()
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed(RESTError.serviceUnavailable.message)
+    }
+
+    let seeded = await tokenStore.current
+    #expect(seeded == nil)
   }
 }

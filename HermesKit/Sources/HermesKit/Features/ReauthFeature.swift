@@ -62,6 +62,8 @@ public struct ReauthFeature {
       switch method {
       case .password: return !username.isEmpty && !password.isEmpty
       case .token: return !token.isEmpty
+      // Nothing to type — the browser leg collects the credentials (#19).
+      case .oauth: return true
       }
     }
   }
@@ -154,6 +156,13 @@ public struct ReauthFeature {
             let sameUser = isSameUser(previous, cookieSession.username)
             await send(.reauthResponse(.success(.init(connection: connection, sameUser: sameUser))))
           }
+
+        case .oauth:
+          // Placeholder until the OAuth re-login lands (#19, Task 11). Unreachable today:
+          // `AppFeature.makeReauthState` never builds an `.oauth` state yet, and returning
+          // to `.idle` keeps a stray tap from stranding the sheet on a spinner.
+          state.status = .idle
+          return .none
         }
 
       case let .reauthResponse(.success(outcome)):

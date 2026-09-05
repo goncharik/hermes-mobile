@@ -704,23 +704,51 @@ other driver test injects a `TestClock` that is never advanced, i.e. a timeout t
 - Modify: `HermesKit/Sources/HermesKit/Features/ConnectionFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ConnectionFeatureTests.swift`
 
-- [ ] add `AuthMethod.oauth`; `isOAuthEnabled` (capability `isOAuthAvailable`, `nil` → false
+- [x] add `AuthMethod.oauth`; `isOAuthEnabled` (capability `isOAuthAvailable`, `nil` → false
       — a NEW affordance needs positive evidence), `oauthProviders` passthrough for the view,
       preselect order password → oauth → token, `canConnect` true for `.oauth` whenever
       `.reachable`
-- [ ] add `connectTapped` `.oauth` branch: `oauthLogin.signIn(url, provider.name)` → seed
+- [x] add `connectTapped` `.oauth` branch: `oauthLogin.signIn(url, provider.name)` → seed
       `bearerTokens` with a Keychain persist hook → `rest.sessions(connection, 1, 0, .recent)`
       → `keychain.saveSession(.bearer)` + `preferences.saveServerURL` →
       `oauthLoginResponse(.success)` → `.delegate(.connected)`
-- [ ] add `oauthLoginResponse(.failure)`: `.cancelled` → back to `.reachable(version)`
+- [x] add `oauthLoginResponse(.failure)`: `.cancelled` → back to `.reachable(version)`
       silently; validating-call 401 → `.invalidCredentials`; everything else →
       `.failed(message)`; clear the seeded store on any failure
-- [ ] write `TestStore` tests: gated nous-only server preselects `.oauth` and enables the
+- [x] write `TestStore` tests: gated nous-only server preselects `.oauth` and enables the
       segment; mixed basic+nous preselects `.password` with OAuth enabled; providers present
       but no `native_pkce` → OAuth disabled; OAuth connect success persists `.bearer` +
       URL and emits `.connected`; cancel returns to `.reachable` with no status text; gateway
       rejection → `.failed`; validating 401 → `.invalidCredentials` and store cleared
-- [ ] run tests — must pass before Task 9
+- [x] run tests — must pass before Task 9 (1398 tests, 66 suites, all green; +10 over Task 7)
+
+➕ **`OAuthFlowError` is the failure payload, splitting the two legs.** The plan named the
+type but not its shape; flattening both legs into `RESTError` would have lost the browser
+leg's `.cancelled` (which must be SILENT) and flattening into `OAuthLoginError` would have
+made a 401 from the validating call indistinguishable from a token-exchange 401. So it is
+`.login(OAuthLoginError) | .validation(RESTError)`: `.login(.cancelled)` → `.reachable`,
+`.validation(.unauthorized)` → `.invalidCredentials`, everything else → `.failed(message)`.
+`asOAuthLoginError` normalizes a non-`OAuthLoginError` throw through the shared REST
+classifier (`.tokenExchange`), mirroring `asRESTError`.
+
+➕ **`oauthProviderTapped(AuthProvider)` + `State.selectedOAuthProviderName`.** Task 9 renders
+one button per provider and the button IS the connect action, but a bare `connectTapped`
+carries no provider. The action records the pick and forwards to `connectTapped`, so the
+connect path stays single (`activeOAuthProvider` = the pick, else the first advertised
+provider — a single-provider server needs no pick). The pick is reset by every successful
+probe, since a new server invalidates it.
+
+➕ **`State.serverVersion` exists so the silent cancel can restore what it replaced.** A
+cancelled sheet must return to `.reachable(version:)`, but `.validating` had already
+overwritten the status that carried the version — and leaving it `.validating` strands a
+spinner while `.idle` would disable the whole screen until the user re-checks the URL. The
+version is now kept beside `capability` (set on a successful probe, cleared on a failed one)
+and read back only on that one path.
+
+➕ `ReauthFeature` gained placeholder `.oauth` branches (`canSubmit` → `true`,
+`signInTapped` → `.idle`, no effect) purely to keep the exhaustive switches compiling;
+`AppFeature.makeReauthState` still never builds an `.oauth` state, so they are unreachable
+until Task 11 fills them in.
 
 ### Task 9: `ConnectionView` third segment
 
