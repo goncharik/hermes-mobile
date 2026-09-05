@@ -29,7 +29,7 @@ that Project's identity so the phone can prove that its `session.create` / `sess
   result handlers and gates the existing `canSend` / `canBranch` / queue / card actions.
 
 Split out of #96 with #97 (request-bound approval/clarify cards) and #98 (event replay).
-Lands after #95 and #97. Project CRUD from the phone (create / rename / archive / folders /
+Lands after #97. Project CRUD from the phone (create / rename / archive / folders /
 `set_active`) is out of scope. Multi-slot stays #90.
 
 ## Context (from discovery)
