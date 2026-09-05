@@ -560,28 +560,61 @@ outlive the call — `persist` is stored, `refresh` is captured by the in-flight
 
 **Files:**
 - Modify: `HermesKit/Sources/HermesKit/Clients/HermesRESTClient.swift`
+- Modify: `HermesKit/Sources/HermesKit/Clients/HermesProfileClient.swift` (➕ shares the
+  transport helpers — see the note below)
 - Modify: `HermesKit/Tests/HermesKitTests/HermesRESTClientTests.swift`
 - Create: `HermesKit/Tests/HermesKitTests/NativeOAuthClientTests.swift`
 
-- [ ] introduce `RequestAuth` (`.none | .sessionToken(String) | .bearer(String)`) and thread
+- [x] introduce `RequestAuth` (`.none | .sessionToken(String) | .bearer(String)`) and thread
       it through `get/postJSON/send` and the upload/download helpers; `.token` connections
-      map to `.sessionToken` (header byte-identical), `.cookie` to `.none`
-- [ ] add `resolveAuth(for connection:)` that, for `.bearer`, awaits
+      map to `.sessionToken` (header byte-identical), `.cookie` to `.none` — there are no
+      upload/download helpers in this client (attachments go over the WS frame), so
+      `get`/`postJSON`/`send` are the whole surface
+- [x] add `resolveAuth(for connection:)` that, for `.bearer`, awaits
       `tokenStore.validAccessToken(refresh:)` using the new `nativeRefresh` transport;
       surface `GatewayError.authExpired` as `RESTError.unauthorized` so existing
       `asRESTError` routing (401 → re-auth) holds
-- [ ] add endpoints `nativeTokenExchange(baseURL, code, verifier) -> BearerSession` (15 s
+- [x] add endpoints `nativeTokenExchange(baseURL, code, verifier) -> BearerSession` (15 s
       timeout, 400 → `RESTError.server(400, detail)`), `nativeRefresh(baseURL, session) ->
       BearerSession` (401 → `.unauthorized`, 503 → `.serviceUnavailable`), and
       `logout(connection)` (`POST /auth/logout`, best-effort, errors swallowed AND logged —
       the one deliberate exception to "never swallow", documented inline)
-- [ ] write tests over `MockURLProtocol`: `.token` request header unchanged (regression
+- [x] write tests over `MockURLProtocol`: `.token` request header unchanged (regression
       guard: exact header name/value, no `Authorization`); `.bearer` sends
       `Authorization: Bearer <token>` and no session-token header; a near-expiry bearer
       triggers ONE refresh POST before the API call with body `{refresh_token, provider}`;
       refresh 401 → `.unauthorized` and store cleared; token exchange success decode + 400
       mapping; refresh 503 mapping; logout swallows a 500
-- [ ] run tests — must pass before Task 7
+- [x] run tests — must pass before Task 7 (1372 tests, 63 suites, all green; +15 over Task 5)
+
+➕ **`HermesProfileClient` had to move too.** It reuses `HermesRESTClient`'s transport
+helpers by design (see its own doc comment), so widening `get`/`send` to `RequestAuth` broke
+it at compile time. Leaving it on `token: conn.token` was not an option even mechanically:
+`conn.token` is `nil` for `.bearer`, so every profile call would have gone out
+unauthenticated and 401'd on a gated server. It now builds the same `authFor` closure over
+the same `resolveAuth`, and `live(session:)` gained the matching `tokenStore:` parameter.
+Its existing tests (which assert the `X-Hermes-Session-Token` header) pass unchanged, which
+is the byte-identical guarantee for that client.
+
+➕ **The refresh 503 is mapped explicitly, not via `validate`'s `loginSpecific`.** That flag
+also remaps 429 to "Too many login attempts", which is password-login copy and would be
+wrong mid-session — and `validate`'s doc comment pins it to the `/auth/password-login` path
+only. The shared native-flow POST checks for 503 first and then defers to plain `validate`,
+so 401 stays `.unauthorized` and everything else stays `.server(status:detail:)`.
+
+➕ **`refresh` omits an empty `provider`** rather than sending `provider: ""` — a partial
+stored payload should let the gateway try every provider, not narrow it to a nameless one.
+Guarded by `refreshOmitsAnEmptyProvider`.
+
+➕ **`logout` resolves auth like any other request, which fixes its ordering.** Because a
+`.bearer` logout goes through `resolveAuth`, a drained store makes it a silent no-op — so
+Task 13 must fire `rest.logout` BEFORE `bearerTokens.clear()`. Recorded on the client
+property's doc comment and guarded by `logoutAfterTheStoreIsDrainedSendsNothing`.
+
+➕ `MockURLProtocol` gained `setSequence` (one stub per request) and a `requests` log; the
+refresh-before-use test needs to prove the ORDER of two hops, which the single-stub /
+`lastRequest` shape could not show. The body-reading boilerplate duplicated across three
+suites moved to a shared `mockRequestBody`.
 
 ### Task 7: `OAuthLoginClient` (loopback listener + `ASWebAuthenticationSession`)
 
