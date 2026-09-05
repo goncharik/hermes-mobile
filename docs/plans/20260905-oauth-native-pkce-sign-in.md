@@ -897,13 +897,31 @@ asserts the store already holds the fresh one from inside `rest.sessions`.
 - Modify: `HermesMobile/Sources/Features/ReauthView.swift`
 - Modify: `HermesMobileTests/AuthSnapshotTests.swift`
 
-- [ ] render the `.oauth` case: no fields, one `Button("Continue with <providerDisplayName>")`
+- [x] render the `.oauth` case: no fields, one `Button("Continue with <providerDisplayName>")`
       (the "Sign in" button is replaced, not duplicated), same status footer; keep "Quit to
-      start"
-- [ ] `invalidCredentials` footer copy branches on `.oauth`
-- [ ] add snapshot tests `testReauthSheet_oauth` (light + dark) via the record-then-assert
-      recipe
-- [ ] run snapshots + `swift test` — must pass before Task 13
+      start" — the label reads `State.providerLabel`, so a probe that supplied no display
+      name falls back to the wire provider name instead of "Continue with "
+- [x] `invalidCredentials` footer copy branches on `.oauth` — extracted to an
+      `invalidCredentialsMessage` switch (the old two-way ternary could not carry a third
+      case); `.oauth` reads "Sign-in was rejected by the server.", the copy Task 11 pinned
+- [x] add snapshot tests `testReauthSheet_oauth` (light + dark) via the record-then-assert
+      recipe — 2 new baselines, recorded then asserted clean
+- [x] run snapshots + `swift test` — must pass before Task 13 (1417 tests, 67 suites,
+      unchanged — this task touches the app target only; `AuthSnapshotTests` 12/14 with only
+      the two pre-existing `AgentSetupGuide` drifts failing, a view this task never touched,
+      and NO existing baseline rewritten; `xcodebuild` app build succeeds)
+
+➕ **The reauth sheet omits ConnectionView's Safari footnote.** Task 9 gave the onboarding
+segment an explicit "Opens your identity provider in Safari…" note; this task's checklist
+enumerates the reauth content exactly (button + same status footer + "Quit to start") and does
+not. The sheet already explains itself ("Your session expired. Sign in again to continue."),
+and a user reaching it has completed this exact browser leg at least once — so the note would
+be redundant chrome in a compact modal rather than the first-run teaching it is on onboarding.
+
+➕ **The generic "Sign in" button is skipped with `if store.method != .oauth`**, mirroring
+ConnectionView's Connect button, rather than being moved inside each non-OAuth switch arm.
+Both arms would otherwise carry an identical copy of it, and the shared `canSubmit` disable
+rule is the thing that must not drift between them.
 
 ### Task 13: `AppFeature` restore, reauth routing, and logout for the bearer regime
 

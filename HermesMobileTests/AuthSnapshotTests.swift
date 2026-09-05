@@ -300,4 +300,31 @@ final class AuthSnapshotTests: SnapshotTestCase {
       as: deviceImage()
     )
   }
+
+  /// Re-auth sheet, OAuth variant (#19): no fields at all — the single plain-text "Continue
+  /// with <display name>" button REPLACES the generic "Sign in" button (never both), and
+  /// "Quit to start" is still the escape hatch.
+  func testReauthSheet_oauth() {
+    assertSnapshot(of: ReauthView(store: oauthReauthStore()), as: deviceImage())
+  }
+
+  /// Same sheet in light appearance — the provider button must read as an ordinary tinted
+  /// row in both, which is the whole point of the plain-text treatment (App Store 5.2.1).
+  func testReauthSheet_oauth_light() {
+    assertSnapshot(of: ReauthView(store: oauthReauthStore()), as: deviceImage(appearance: .light))
+  }
+
+  /// Bearer session expired against the `nous` provider, whose display name the last
+  /// capability probe supplied.
+  private func oauthReauthStore() -> StoreOf<ReauthFeature> {
+    Store(
+      initialState: ReauthFeature.State(
+        serverURL: URL(string: "http://mac.tailnet:9119")!,
+        method: .oauth,
+        provider: "nous",
+        providerDisplayName: "Nous Research",
+        previousUserID: "user_42"
+      )
+    ) { ReauthFeature() }
+  }
 }
