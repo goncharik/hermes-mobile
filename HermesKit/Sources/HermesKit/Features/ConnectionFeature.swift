@@ -145,6 +145,15 @@ public struct ConnectionFeature {
       guard status != .validating else { return false }
       switch status {
       case .reachable, .invalidToken, .invalidCredentials: break // allow a retry
+      // `.oauth` ALSO retries from `.failed` (#19). Password and Token reach `.failed`
+      // only for wait-it-out verdicts (rate limit, provider outage) and both have a field
+      // whose edit is the natural next move; the browser leg's failures — a dawdled-past
+      // 120 s code TTL, the 300 s sheet budget, a state mismatch — are one-tap
+      // recoverable, and the copy literally says "Try again." With no field to edit,
+      // omitting this left that button permanently disabled until the URL was retyped.
+      // Safe because a FAILED PROBE clears `capability`, so `isOAuthEnabled` is false and
+      // the switch below still returns false. Password/token gating is unchanged.
+      case .failed where method == .oauth: break
       default: return false
       }
       switch method {

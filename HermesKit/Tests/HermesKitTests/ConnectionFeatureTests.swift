@@ -422,6 +422,9 @@ struct ConnectionFeatureTests {
     #expect(store.state.method == .token)
     #expect(store.state.isPasswordEnabled == false)
     #expect(store.state.isTokenDeemphasized == false)
+    // …and the new affordance stays off: this screen renders exactly today's token-only UI.
+    #expect(store.state.isOAuthEnabled == false)
+    #expect(store.state.oauthProviders.isEmpty)
   }
 
   @Test func passwordLoginSuccessConnectsWithCookieSession() async {
@@ -688,6 +691,81 @@ struct ConnectionFeatureTests {
     await store.receive(\.oauthLoginResponse.failure) {
       $0.status = .failed(OAuthLoginError.timedOut.message)
     }
+  }
+
+  /// The gateway's issued code has a 120 s TTL: a user who leaves the Safari sheet parked on
+  /// the consent screen long enough comes back to a `400` on `/auth/native/token`. The
+  /// server's own detail is what the footer must show — not a generic "sign-in failed" —
+  /// and nothing may be seeded, since the exchange never produced a pair.
+  @Test func anExpiredAuthorizationCodeSurfacesTheServerCopy() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in
+        throw OAuthLoginError.tokenExchange(
+          .server(status: 400, detail: "invalid or expired authorization code")
+        )
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = preferences
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed("invalid or expired authorization code")
+    }
+
+    let seeded = await tokenStore.current
+    #expect(seeded == nil)
+    #expect(keychain.loadSession(.shared) == nil)
+    #expect(preferences.loadServerURL() == nil)
+    #expect(store.state.canConnect) // retryable: a new code is one tap away
+  }
+
+  /// Regression guard for the retry dead-end found verifying Task 14: `.failed` is a
+  /// terminal, button-disabling status for Password and Token — both have a field whose edit
+  /// is the natural next move — but the OAuth segment has NOTHING to type, so a failed
+  /// browser leg used to disable its provider button until the user retyped the server URL,
+  /// while the footer said "Try again." Only `.oauth` may retry from `.failed`; Password and
+  /// Token keep exactly their old gating, and a FAILED PROBE (which clears `capability`)
+  /// still blocks every method.
+  @Test func onlyTheOAuthSegmentRetriesFromAFailedStatus() {
+    var oauth = oauthReadyState()
+    oauth.status = .failed("Sign-in timed out. Try again.")
+    #expect(oauth.canConnect)
+
+    var password = ConnectionFeature.State(
+      serverURL: "http://mac:9119",
+      username: "ada",
+      password: "hunter2",
+      method: .password,
+      capability: passwordCapability(),
+      status: .failed("Too many login attempts. Try again shortly.")
+    )
+    #expect(password.canConnect == false)
+    password.status = .invalidCredentials
+    #expect(password.canConnect) // …the pre-existing retry status is untouched
+
+    var token = ConnectionFeature.State(
+      serverURL: "http://mac:9119",
+      token: "tok",
+      method: .token,
+      capability: .tokenOnly,
+      status: .failed("Server error (500).")
+    )
+    #expect(token.canConnect == false)
+    token.status = .invalidToken
+    #expect(token.canConnect)
+
+    // A probe failure lands on `.failed` too, but it nils out `capability` — so the OAuth
+    // carve-out cannot resurrect a button for a server we no longer know anything about.
+    var unprobed = ConnectionFeature.State(serverURL: "http://mac:9119", method: .oauth)
+    unprobed.status = .failed("Server error (500).")
+    #expect(unprobed.canConnect == false)
   }
 
   /// The pair was minted but the server rejected it on the validating call: the half-built

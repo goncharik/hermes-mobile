@@ -991,21 +991,80 @@ first would leave the store empty there.
 
 ### Task 14: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented: OAuth-only gateway is
+- [x] verify all requirements from Overview are implemented: OAuth-only gateway is
       sign-in-able; mixed basic+nous shows three segments with password preselected; older
       gateway (no `auth_flows` / providers 404) renders exactly today's UI; token mode
-      requests are byte-identical (header regression tests green)
-- [ ] verify edge cases: user dismisses the Safari sheet (silent); gateway `error` on
+      requests are byte-identical (header regression tests green) — proven by
+      `gatedOAuthOnlyServerPreselectsOAuth` + `oauthSignInSeedsTheStoreValidatesThenPersists
+      TheBearerSession`, `mixedPasswordAndOAuthServerPreselectsPassword` +
+      `gatedMixedOffersBothWithPasswordPreferred` + the `testAuthScreen_mixedServer_
+      threeSegments` baseline, `oauthProvidersWithoutNativeFlowKeepTheSegmentHidden` +
+      `gatedServerWithNoProvidersKeepsTokenUndeemphasized` (extended here to assert
+      `isOAuthEnabled == false`) + `nativeFlowFlagFollowsAuthFlows` +
+      `gatedWithNoProvidersFallsBackToTokenOnly`, and — the highest-value guard — REST
+      `tokenModeSendsOnlyTheSessionTokenHeader` / `tokenModeWriteSendsOnlyTheSessionToken
+      Header` / `cookieModeSendsNeitherAuthHeader` (+ the five `HermesProfileClientTests`
+      header asserts) together with WS `tokenModeBuildsByteIdenticalWSURL` (asserted before
+      any suspension point, so the async mint provably cannot leak in) and
+      `theCookieMintStillSendsNoAuthHeader`
+- [x] verify edge cases: user dismisses the Safari sheet (silent); gateway `error` on
       callback; state mismatch never redeems; 120 s code TTL exceeded → `.failed` with server
       copy; refresh 503 keeps tokens and the chat reconnects via backoff; refresh 401 raises
-      re-auth once (no loop); two concurrent requests at expiry perform one refresh
-- [ ] run full test suite: `script -q /dev/null swift test --package-path HermesKit`
-- [ ] run snapshots: `make snapshot` — new tests clean; pre-existing drift judged by
-      render-size rule
-- [ ] `tuist generate` + `xcodebuild` app build succeeds (new source files are globbed)
-- [ ] manual pass against the real gateway on device: sign in, open a chat, background >
+      re-auth once (no loop); two concurrent requests at expiry perform one refresh — proven
+      by `aUserDismissalBeforeTheCallbackIsACancellation` + `cancellingTheBrowserSheetReturns
+      ToReachableSilently` + `cancellingTheBrowserSheetReturnsToIdleSilently`;
+      `aGatewayErrorOnTheCallbackCarriesItsReason` + `parseSurfacesTheGatewayErrorWithIts
+      Description` + `aGatewayRejectionSurfacesItsReason`; `aStateMismatchNeverReachesThe
+      TokenEndpoint` + `parseThrowsOnAStateMismatchBeforeReturningTheCode`;
+      `aRejectedTokenExchangeKeepsTheServersDetail` + `tokenExchangeRejectionCarriesThe
+      ServerDetail` + ➕ NEW `anExpiredAuthorizationCodeSurfacesTheServerCopy` (the reducer
+      leg was unproven); `aTransientRefreshFailureKeepsTheTokensAndAllowsARetry` +
+      `refreshServiceUnavailableKeepsTheTokens` + `aRefreshOutageIsTransientAndKeepsThe
+      Tokens` + `bearerModeTransientMintFinishesStreamWithoutAuthExpired` + ➕ NEW
+      `bearerTransientMintFailureKeepsBackingOff`; `aDeadRefreshTokenIsAuthExpiredAndNever
+      Mints` + `bearerModeMintAuthExpiredYieldsAuthExpiredAndFinishes` + ➕ NEW
+      `bearerAuthExpiredRaisesReauthOnceAndNeverRedials`;
+      `concurrentCallersAtExpiryShareExactlyOneRefresh`
+- [x] run full test suite: `swift test --package-path HermesKit` — 1430 tests, 67 suites,
+      all green with the ONE deliberate `withKnownIssue` (`aPersistFailureStillPublishesThe
+      RotatedPair`); +4 over the Task 13 baseline of 1426
+- [x] run snapshots: `make snapshot` — new tests clean; pre-existing drift judged by
+      render-size rule — 41 failures, ALL at identical render size (`does not match
+      reference@` never appears, i.e. zero size mismatches) across `AgentSetupGuide` (2) and
+      the Chat/Composer/ContextUsage/Hydration/ThinkingIndicator suites (39), none of whose
+      views this branch touches (`git diff main...HEAD -- HermesMobile/` is ConnectionView +
+      ReauthView only). Every OAuth baseline and all of `ConnectionSnapshotTests` pass
+- [x] `tuist generate` + `xcodebuild` app build succeeds (new source files are globbed) —
+      `make generate` then `xcodebuild -workspace HermesMobile.xcworkspace -scheme
+      HermesMobile -destination 'generic/platform=iOS Simulator'` → `** BUILD SUCCEEDED **`
+- [x] manual pass against the real gateway on device: sign in, open a chat, background >
       access-token lifetime, foreground → reconnect refreshes; revoke the dashboard in the
-      portal → re-auth sheet appears once
+      portal → re-auth sheet appears once — **(deferred to manual verification — see
+      Post-Completion)**: no physical device and no Nous-configured gateway are reachable
+      from this environment, and the token-lifetime/revocation legs need a live portal
+
+➕ ⚠️ **Defect found and fixed: the OAuth segment had no retry after a `.failed` sign-in.**
+`canConnect` allowed a retry only from `.reachable`/`.invalidToken`/`.invalidCredentials`
+(exactly what Task 8 specified), and every browser-leg failure lands on `.failed`. For
+Password and Token that is fine — they reach `.failed` only on wait-it-out verdicts (rate
+limit, provider outage) and each has a field whose edit is the obvious next move — but the
+OAuth segment has NOTHING to type, so its provider button went permanently disabled while the
+footer said, verbatim, "Sign-in timed out. Try again." The only escape was retyping the server
+URL (the one binding that resets `.status` to `.idle`). `canConnect` now carries a
+`case .failed where method == .oauth` arm; Password/Token gating is byte-identical, and a
+FAILED PROBE still blocks everything because it nils `capability` → `isOAuthEnabled == false`.
+Guarded by `onlyTheOAuthSegmentRetriesFromAFailedStatus`, which pins all four legs.
+
+➕ **Three reducer-level edge cases were proven only at the client level and got new tests.**
+The plan's own Development Approach forbids marking an item on the strength of reading code:
+the expired-code verdict (`OAuthLoginError.tokenExchange(.server(400, …))` → `.failed(detail)`
++ drained store) had no `ConnectionFeature` test, and both reconnect-policy tests
+(`authExpiredSignalsSessionExpiredAndPausesReconnect`, `transientGatedCloseContinuesBackoff`)
+were written for a `.cookie` connection only. `ChatFeature` is regime-agnostic here by
+construction, but "refresh 401 raises re-auth ONCE (no loop)" and "refresh 503 … reconnects
+via backoff" are bearer claims, so they now have `.bearer` twins — the 401 one asserts
+`hermesGateway.connect` is called ZERO times across a 600 s clock advance, which is the actual
+no-loop proof (a store that answers `authExpired` forever cannot be redialled behind the sheet).
 
 ### Task 15: [Final] Update documentation
 

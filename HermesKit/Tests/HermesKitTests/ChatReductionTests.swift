@@ -1314,6 +1314,77 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
+  /// The `.bearer` twin of `authExpiredSignalsSessionExpiredAndPausesReconnect` (#19): a dead
+  /// refresh token makes `BearerTokenStore.validAccessToken` throw `authExpired`, the ticket
+  /// mint reports it, and the reducer must raise re-auth EXACTLY ONCE — the trailing
+  /// `.gatewayClosed` schedules no backoff, so a store that answers `authExpired` forever
+  /// cannot spin a redial/expire loop.
+  @Test func bearerAuthExpiredRaisesReauthOnceAndNeverRedials() async {
+    let clock = TestClock()
+    let bearerConn = ServerConnection(
+      baseURL: URL(string: "http://mac.tailnet:9119")!,
+      auth: .bearer(
+        BearerSession(
+          accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
+        )
+      )
+    )
+    let dials = LockIsolated(0)
+    let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        dials.withValue { $0 += 1 }
+        return AsyncStream { _ in }
+      }
+    }
+
+    await store.send(.gatewayEvent(.authExpired)) {
+      $0.awaitingReauth = true
+      $0.status = .reconnecting
+    }
+    await store.receive(\.delegate.sessionExpired)
+
+    await store.send(.gatewayClosed)
+    await clock.advance(by: .seconds(600))
+    #expect(dials.value == 0, "a dead bearer pair must not be redialled behind the re-auth sheet")
+    await store.send(.teardown)
+  }
+
+  /// The `.bearer` twin of `transientGatedCloseContinuesBackoff` (#19): a refresh 503 keeps the
+  /// tokens (`BearerTokenStore` rethrows, nothing is cleared) and the mint failure surfaces as
+  /// a plain finished stream — so the chat keeps its normal backoff redial rather than
+  /// treating an unreachable identity provider as an expired session.
+  @Test func bearerTransientMintFailureKeepsBackingOff() async {
+    let clock = TestClock()
+    let bearerConn = ServerConnection(
+      baseURL: URL(string: "http://mac.tailnet:9119")!,
+      auth: .bearer(
+        BearerSession(
+          accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
+        )
+      )
+    )
+    let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.gatewayClosed) {
+      $0.status = .reconnecting
+      $0.reconnectAttempt = 1
+    }
+    #expect(store.state.awaitingReauth == false) // NOT an expiry verdict
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.reconnectTick)
+    await store.send(.teardown)
+  }
+
   // MARK: Reconnect resilience — finalize a row that was mid-stream when the socket dropped
 
   @Test func closeFinalizesInFlightStreamingRow() async {
