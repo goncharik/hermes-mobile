@@ -1201,6 +1201,15 @@ public struct AppFeature {
         provider: session.provider,
         previousUsername: session.username
       )
+    case let .bearer(session):
+      // Bearer (native OAuth) re-auth gets its own method later; until then mirror the
+      // gated regime so the sheet stays functional. Nothing constructs a `.bearer`
+      // connection yet, so this branch is unreachable today.
+      return ReauthFeature.State(
+        serverURL: connection.baseURL,
+        method: .password,
+        provider: session.provider
+      )
     }
   }
 }

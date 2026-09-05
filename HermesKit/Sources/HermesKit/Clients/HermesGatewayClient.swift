@@ -234,6 +234,12 @@ public extension HermesGatewayClient {
             setupTask.cancel()
             if let connection = opened.value { Task { await connection.shutdown() } }
           }
+        case .bearer:
+          // Bearer (native OAuth) mode: the ticket mint for this regime lands with the
+          // rest of the bearer wiring. Nothing constructs a `.bearer` connection yet, so
+          // finish the stream like a transient mint failure rather than opening an
+          // unauthenticated socket.
+          continuation.finish()
         }
         return stream
       },

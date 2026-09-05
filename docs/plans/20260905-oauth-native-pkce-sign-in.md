@@ -389,21 +389,29 @@ public func bearerNeedsRefresh(_ s: BearerSession, now: Date, leeway: TimeInterv
 - Modify: `HermesKit/Tests/HermesKitTests/AuthSessionTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/KeychainClientTests.swift`
 
-- [ ] add `BearerSession` (`accessToken`, `refreshToken`, `expiresAt: Double`, `provider`,
+- [x] add `BearerSession` (`accessToken`, `refreshToken`, `expiresAt: Double`, `provider`,
       `userID`) with a public init, `Codable` keys `access_token`/`refresh_token`/
       `expires_at`/`provider`/`user_id`, and a lenient `init(tokenResponse: Data)` that
       accepts `expires_at` as Int or Double and throws on a missing/empty `access_token`
-- [ ] add `case bearer(BearerSession)` to `AuthSession`; `token` returns `nil` for it; fix
+      (`BearerSessionError.missingAccessToken`; non-critical fields default to empty rather
+      than throwing, per the decode-leniently rule)
+- [x] add `case bearer(BearerSession)` to `AuthSession`; `token` returns `nil` for it; fix
       every exhaustive `switch` the compiler flags (`KeychainClient.rehydrate`,
       `AppFeature.makeReauthState`, gateway `connect`) with a minimal placeholder that keeps
       behaviour identical until later tasks (`.bearer` → treated like `.cookie` where a
       branch is required; note ➕ in this plan if any new site appears)
-- [ ] write tests: `BearerSession` JSON round-trip through `AuthSession` encoding, token
+      — only two exhaustive sites existed: gateway `connect` (`.bearer` → `continuation
+      .finish()`, i.e. a transient-mint-failure shape until Task 10) and
+      `AppFeature.makeReauthState` (`.bearer` → `.password` method + provider until Task 13);
+      `KeychainClient.rehydrate` uses `guard case let .cookie` so it needed no change
+- [x] write tests: `BearerSession` JSON round-trip through `AuthSession` encoding, token
       response decode (Int and Double `expires_at`, missing `access_token` throws,
       unknown extra fields ignored), and `AuthSession.token == nil` for `.bearer`
-- [ ] write tests: `KeychainClient.inMemory()` and `.live` save/load round-trip a `.bearer`
-      session and `deleteSession` removes it
-- [ ] run tests — must pass before Task 3
+- [x] write tests: `KeychainClient.inMemory()` and `.live` save/load round-trip a `.bearer`
+      session and `deleteSession` removes it (the `.live` test uses a UUID-scoped service and
+      no-ops on `errSecMissingEntitlement`; it does exercise the real keychain under macOS
+      `swift test`)
+- [x] run tests — must pass before Task 3 (1315 tests, 60 suites, all green)
 
 ### Task 3: Capability struct with OAuth providers and native-flow flag
 

@@ -4,9 +4,9 @@ import Foundation
 
 // MARK: - Connection & status
 
-/// Where and how to reach a Hermes server. `auth` carries the regime (token vs cookie);
-/// the unauthenticated reachability probe (`/api/status`) goes through `status(baseURL:)`
-/// without a `ServerConnection`.
+/// Where and how to reach a Hermes server. `auth` carries the regime (token, cookie, or
+/// bearer); the unauthenticated reachability probe (`/api/status`) goes through
+/// `status(baseURL:)` without a `ServerConnection`.
 public struct ServerConnection: Equatable, Sendable {
   public var baseURL: URL
   public var auth: AuthSession
@@ -21,10 +21,12 @@ public struct ServerConnection: Equatable, Sendable {
     self.init(baseURL: baseURL, auth: .token(token))
   }
 
-  /// The bearer token when authenticating in `.token` mode; `nil` in `.cookie` mode (which
-  /// uses the cookie jar). Drives the existing `X-Hermes-Session-Token` REST/WS paths.
-  /// Setting a value switches the connection into `.token` mode (token-mode editing in
-  /// Settings); setting `nil` is ignored (the cookie jar is the source of truth then).
+  /// The session token when authenticating in `.token` mode; `nil` in `.cookie` mode (which
+  /// uses the cookie jar) and `.bearer` mode (whose access token is owned and rotated by
+  /// `BearerTokenStore`, never read from here). Drives the existing `X-Hermes-Session-Token`
+  /// REST/WS paths. Setting a value switches the connection into `.token` mode (token-mode
+  /// editing in Settings); setting `nil` is ignored (the other regime is the source of
+  /// truth then).
   public var token: String? {
     get { auth.token }
     set { if let newValue { auth = .token(newValue) } }
