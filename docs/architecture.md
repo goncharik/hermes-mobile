@@ -71,8 +71,11 @@ All side effects go through `@DependencyClient` structs (each with a `liveValue`
 a `testValue`/`.inMemory()` variant):
 
 - **`HermesRESTClient`** — status, sessions, archived sessions (`?archived=only`), search,
-  archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`).
-  Session-scoped reads/mutations take an optional `profile` (omitted for default).
+  archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), plus the
+  auth endpoints: `passwordLogin`, `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`),
+  and a best-effort `logout` — the ONE deliberate exception to "surface RPC failures", since
+  it fires after the app has already discarded its credentials. Session-scoped
+  reads/mutations take an optional `profile` (omitted for default).
 - **`HermesProfileClient`** — profile CRUD + SOUL.md (`PUT /api/profiles/{name}/soul`) +
   profile-scoped session lists (`GET /api/profiles/sessions?profile=`). Capability-gated: a
   404 from `GET /api/profiles` hides the selector.
@@ -81,13 +84,26 @@ a `testValue`/`.inMemory()` variant):
   with `TestClock`). Each `send` enforces a per-request timeout (default 30s) so a
   stuck/never-acking RPC throws `GatewayError.timedOut` instead of hanging forever.
   `connect` branches on the `AuthSession`: `.token` → `?token=` (byte-identical to the
-  legacy path); `.cookie` → mint a fresh single-use `?ticket=` via `POST /api/auth/ws-ticket`
-  per connect (never cached). A `401` from the mint surfaces as `GatewayEvent.authExpired`
-  (non-retryable → `.sessionExpired`); other mint failures are `.ticketUnavailable`
-  (transient → reducer backoff).
-- **`KeychainClient`** — the persisted `AuthSession` (the only secret): either a static
-  `.token`, or a `.cookie(CookieSession)` carrying the rotating session cookies + username +
-  provider. `saveSession`/`loadSession` round-trip the whole session (cookies rehydrate into
+  legacy path); `.cookie` and `.bearer` SHARE one branch → mint a fresh single-use `?ticket=`
+  via `POST /api/auth/ws-ticket` per connect (never cached), the regimes differing only inside
+  `mintTicket` (cookie jar vs `Authorization: Bearer`). A `401` from the mint surfaces as
+  `GatewayEvent.authExpired` (non-retryable → `.sessionExpired`); other mint failures are
+  `.ticketUnavailable` (transient → reducer backoff).
+- **`OAuthLoginClient`** — the whole browser leg of the native PKCE flow behind one
+  `signIn(baseURL, provider)` call: PKCE + state → a `LoopbackCallbackListener` (`NWListener`
+  on IPv4 `127.0.0.1`, ephemeral port) → `ASWebAuthenticationSession` → the loopback callback →
+  `POST /auth/native/token` → a `BearerSession`. The orchestration is extracted behind an
+  injected `NativeLoginDriver` so it is testable on macOS without a browser; only
+  `ASWebAuthenticationSession` sits behind `#if canImport(UIKit)` (the listener builds and is
+  socket-tested on macOS). Details: `docs/features/oauth-sign-in.md`.
+- **`BearerTokenStore`** — not a `@DependencyClient` but an **actor** exposed as
+  `\.bearerTokens`: the single owner of the `.bearer` token pair and the only refresh path
+  (single-flight, persist-before-publish, generation-superseded rotations). `liveValue` is the
+  process-wide `.shared`; `testValue` is a fresh empty store.
+- **`KeychainClient`** — the persisted `AuthSession` (the only secret): a static `.token`, a
+  `.cookie(CookieSession)` carrying the rotating session cookies + username + provider, or a
+  `.bearer(BearerSession)` carrying the access/refresh pair + expiry + provider + `user_id`.
+  `saveSession`/`loadSession` round-trip the whole session (cookies rehydrate into
   `HTTPCookieStorage` on launch); the legacy `…Token` helpers remain for token-mode.
 - **`ChatSnapshotClient`** — a **non-authoritative** instant-paint cache + turn-start anchor,
   backed by GRDB (the store uses a private `DatabaseQueue` directly,
@@ -128,10 +144,10 @@ a `testValue`/`.inMemory()` variant):
 
 ### Auth regimes
 
-The server has **two distinct auth regimes**, modeled by `AuthSession`
-(`.token` | `.cookie(CookieSession)`) so downstream clients adapt transport without
-scattering regime checks. `/api/status` is public (used to validate a server URL and to
-probe capability before login).
+The server has **three distinct auth regimes**, modeled by `AuthSession`
+(`.token` | `.cookie(CookieSession)` | `.bearer(BearerSession)`) so downstream clients adapt
+transport without scattering regime checks. `/api/status` is public (used to validate a server
+URL and to probe capability before login).
 
 - **Token mode** (`.token`) — loopback/`--insecure` servers (`auth_required` absent/false).
   REST authenticates via the `X-Hermes-Session-Token` header; WS via `…/api/ws?token=<token>`.
@@ -147,22 +163,50 @@ probe capability before login).
   **transparent**: the server middleware re-mints the access cookie whenever a valid refresh
   cookie is presented, so there is no client refresh endpoint — we persist + resend the jar and
   capture refreshed `Set-Cookie`.
+- **Gated mode** (`.bearer`, #19) — the same gated servers, signed into with OAuth through the
+  gateway's RFC 8252 native-app flow (`/auth/native/authorize|token|refresh`). The browser leg
+  runs in an `ASWebAuthenticationSession` against a loopback `redirect_uri` the app serves
+  itself; the token exchange yields a `BearerSession` (`accessToken`, `refreshToken`,
+  `expiresAt`, `provider`, `userID`). REST authenticates via `Authorization: Bearer`; the WS
+  uses the same per-connect `?ticket=` mint as the cookie regime (the two SHARE the `connect`
+  branch). Refresh is **explicit and client-side** — there is no server-side re-mint on this
+  path — and is owned entirely by `BearerTokenStore`.
+
+**`RequestAuth` is the one place an auth header is written.** `.none | .sessionToken | .bearer`,
+resolved per request by `resolveAuth(for:session:tokenStore:)`: `.token` →
+`X-Hermes-Session-Token`, `.cookie` → `.none` (the jar carries it), `.bearer` → a token from
+`BearerTokenStore.validAccessToken(refresh:)`, whose `authExpired` becomes `RESTError
+.unauthorized` so the existing 401 routing holds. `HermesProfileClient` shares the same
+resolver.
+
+**`BearerTokenStore` (actor) is the single owner of the bearer pair** and the only refresh
+path: single-flight (the portal's refresh-token reuse detection revokes the session on a
+concurrent double-refresh), persists the rotated pair inside the actor *before* publishing it,
+and supersedes in-flight rotations via a generation counter on `seed`/`clear`. A refresh 401
+clears the store and throws `GatewayError.authExpired`; anything else (503, transport) rethrows
+with the tokens intact so backoff can retry. **Ordering contract:** `rest.logout` and
+`rest.unregisterPush` both authenticate through the store, so both must fire BEFORE
+`bearerTokens.clear()`.
 
 **Capability probe.** `ServerAuthCapability(from: status, providers:)` is a pure mapper over
-`/api/status` (`auth_required`/`auth_providers`) + `GET /api/auth/providers` →
-`.tokenOnly` | `.passwordAvailable(provider, displayName)` | `.oauthOnly(providers:)`. It
-drives the onboarding screen's capability-aware **Password | Token** segmented toggle. A
-providers 404 / unreachable endpoint (older servers) falls back to `.tokenOnly`. **OAuth is
-out of scope** (`.oauthOnly` exists only so the UI can honestly disable Password) — tracked in
-backlog **#19**.
+`/api/status` (`auth_required` / `auth_flows`) + `GET /api/auth/providers` into a struct:
+`passwordProvider`, `oauthProviders`, `supportsNativeFlow`, `isGated`. It drives the onboarding
+screen's capability-aware **Password | OAuth | Token** segmented toggle. A providers 404 /
+unreachable endpoint (older servers) falls back to `.tokenOnly`. The OAuth segment needs
+positive evidence on BOTH halves — an OAuth provider *and* `native_pkce` in `auth_flows` — so
+gateways too old for the native flow render exactly the pre-#19 UI. Full contract:
+`docs/features/oauth-sign-in.md`.
 
-**Persistence + re-auth.** The `AuthSession` (cookies + username + provider, or the bare
-token) is stored in `KeychainClient` and rehydrated on launch. When the gated WS ticket mint
-returns `401` the session is fully dead → `ChatFeature` raises `.sessionExpired`; `AppFeature`
-pauses reconnect and presents `ReauthFeature`. Outcome routing uses a pure normalized-username
-identity compare: **same user** → dismiss + reconnect in place; **different user** → pop to the
-session list, force a reload, and clear identity-scoped prefs; **Quit** → full logout →
-onboarding. Token mode reuses the same modal with a token field (identity compare skipped).
+**Persistence + re-auth.** The `AuthSession` (cookies + username + provider, the bearer pair, or
+the bare token) is stored in `KeychainClient` and rehydrated on launch — a `.bearer` restore
+seeds `BearerTokenStore` BEFORE the probe. When the gated WS ticket mint returns `401`, or a
+bearer refresh does, the session is fully dead → `ChatFeature` raises `.sessionExpired`;
+`AppFeature` pauses reconnect and presents `ReauthFeature`. Outcome routing uses a pure identity
+compare (normalized username for `.cookie`, `user_id` for `.bearer`): **same user** → dismiss +
+reconnect in place; **different user** → pop to the session list, force a reload, and clear
+identity-scoped prefs; **Quit** → full logout → onboarding. Token mode reuses the same modal
+with a token field (identity compare skipped); the OAuth variant is a single
+"Continue with <provider>" button.
 The gated foreground-reconnect flow shares the same `connect` (which re-mints the ticket) — see
 backlog **#18** (session state-sync).
 

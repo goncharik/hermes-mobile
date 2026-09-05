@@ -24,9 +24,11 @@ keeps running on your machine; your iPhone or iPad is a window into it — so yo
 away from your desk and still keep your agent moving.
 
 - **Connect once.** Enter your server URL and sign in the way your agent is configured:
-  a username and password when the server runs gated auth (the recommended setup), or a
-  static token (loopback/`--insecure`). The app detects which methods the server offers
-  and shows the right fields. Credentials live in the iOS Keychain and the app
+  a username and password when the server runs gated auth (the recommended setup), your
+  identity provider via OAuth (Nous Research or your own OIDC server — it opens in Safari,
+  so your existing session and passkeys just work), or a static token
+  (loopback/`--insecure`). The app detects which methods the server offers and shows the
+  right options. Credentials live in the iOS Keychain and the app
   auto-logs-in on launch; if a gated session expires while you're using it, a quick
   re-auth prompt gets you back in without losing your place. And if the agent simply
   isn't reachable at launch — VPN/Tailscale off, no internet, agent down — you get a

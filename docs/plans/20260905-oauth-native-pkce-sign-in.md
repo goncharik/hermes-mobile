@@ -1068,18 +1068,30 @@ no-loop proof (a store that answers `authExpired` forever cannot be redialled be
 
 ### Task 15: [Final] Update documentation
 
-- [ ] complete `docs/features/oauth-sign-in.md`: protocol summary, the three regimes, the
+- [x] complete `docs/features/oauth-sign-in.md`: protocol summary, the three regimes, the
       actor invariant, capability gate, spike outcome, known limitations (no WKWebView
       fallback; gateway must advertise `native_pkce`; loopback-only redirect)
-- [ ] update `docs/architecture.md` → "Auth regimes" (third regime, `RequestAuth`,
+- [x] update `docs/architecture.md` → "Auth regimes" (third regime, `RequestAuth`,
       `BearerTokenStore`, refresh semantics) and the component list (`OAuthLoginClient`)
-- [ ] update `CLAUDE.md`: auth bullet gains the bearer regime + "all bearer reads go through
+      — also `BearerTokenStore`, the widened `HermesRESTClient` auth endpoints, the shared
+      `.cookie`/`.bearer` gateway branch, and the `user_id` identity compare in "Persistence
+      + re-auth"
+- [x] update `CLAUDE.md`: auth bullet gains the bearer regime + "all bearer reads go through
       `BearerTokenStore.validAccessToken()`" rule + `native_pkce` gate; add the feature doc
-      to the "Per-feature invariants" pointer list
-- [ ] update `README.md` feature overview (OAuth sign-in) and the setup guide/README
+      to the "Per-feature invariants" pointer list — shipped as three bullets (regimes,
+      `RequestAuth`/store/ordering contract, capability gate) with the doc pointer on the
+      third, matching how every other feature doc is referenced (inline "Details:" rather
+      than a separate list); the stale `make snapshot` figure was refreshed to 41/identical
+      render size per Task 14's measurement
+- [x] update `README.md` feature overview (OAuth sign-in) and the setup guide/README
       quick-start ONLY if operator commands change (they shouldn't — `hermes dashboard
-      register` is server-side); keep sheet and README verbatim-identical
-- [ ] update GitHub issue #19 with the native-flow findings and close it on merge
+      register` is server-side); keep sheet and README verbatim-identical — confirmed
+      unchanged: the "Connect once" bullet is the only edit, no quick-start command and no
+      `AgentSetupGuideView` string was touched
+- [x] update GitHub issue #19 with the native-flow findings and close it on merge —
+      commented (`#issuecomment-5551081775`) with the superseded-premise note, what shipped,
+      the capability gate, the spike findings and the known limitations; left OPEN for the
+      PR to close
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
