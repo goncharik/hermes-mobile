@@ -361,19 +361,18 @@ struct SessionListFeatureTests {
 
   // MARK: Unread + pagination
 
-  @Test func unreadReflectsMessageCountAboveSeen() {
-    var state = SessionListFeature.State(
+  @Test func serverUnreadOverridesLegacyDeviceWatermark() {
+    let state = SessionListFeature.State(
       connection: connection,
       sessions: [
-        Session(id: "a", messageCount: 5),  // seen 5 → read
-        Session(id: "b", messageCount: 8),  // seen 5 → unread
-        Session(id: "c", messageCount: 2),  // no seen entry → not unread (unseeded)
+        Session(id: "server-unread", messageCount: 5, unread: true),   // equal local count, server wins
+        Session(id: "server-read", messageCount: 8, unread: false),   // local gap, server wins
+        Session(id: "legacy-unread", messageCount: 8),                // old agent fallback
+        Session(id: "legacy-unseeded", messageCount: 2),
       ],
-      seenCounts: ["a": 5, "b": 5]
+      seenCounts: ["server-unread": 5, "server-read": 5, "legacy-unread": 5]
     )
-    #expect(state.unreadSessionIDs == ["b"])
-    state.seenCounts["b"] = 8
-    #expect(state.unreadSessionIDs.isEmpty)
+    #expect(state.unreadSessionIDs == ["server-unread", "legacy-unread"])
   }
 
   // MARK: Pinning

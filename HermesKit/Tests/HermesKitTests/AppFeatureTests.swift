@@ -1630,6 +1630,47 @@ struct AppFeatureTests {
     }
   }
 
+  @Test func visibleTurnCompletionUsesChatsOriginalProfileAfterSidebarSwitch() async {
+    let writes = LockIsolated<[(String, Bool, String?)]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          // This row belongs to the newly-selected profile and must not be mutated by
+          // completion of the still-visible chat from `work`.
+          sessions: [Session(id: "s1", messageCount: 4, unread: true, isActive: true)],
+          selectedProfileName: "personal",
+          profilesSupported: true
+        ),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: ChatFeature.State(
+          connection: connection,
+          resumeStoredID: "s1",
+          profileName: "work",
+          serverUnreadSupported: true
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.setUnread = { _, id, unread, profile in
+        writes.withValue { $0.append((id, unread, profile)) }
+      }
+    }
+
+    await store.send(.liveChat(.delegate(.runningChanged(sessionID: "s1", running: false))))
+    await store.receive(\.home.setSessionRunning) {
+      $0.home?.sessions[id: "s1"]?.isActive = false
+    }
+    await store.finish()
+    #expect(store.state.home?.sessions[id: "s1"]?.unread == true)
+    #expect(writes.value.count == 1)
+    #expect(writes.value.first?.0 == "s1")
+    #expect(writes.value.first?.1 == false)
+    #expect(writes.value.first?.2 == "work")
+  }
+
   // CRITICAL RULE: painting a chat from its cache must NEVER start a list glow on its own. The
   // list only ever lights a glow from a server-confirmed source (the delegate above, or a poll).
   // Painting a chat from its cache (`ChatFeature.State.init` reading the snapshot) does NOT push
@@ -2160,6 +2201,71 @@ struct AppFeatureTests {
   }
 
   // MARK: Push tap deep-link + foreground suppression + badge (C5)
+
+  @Test func archivedOpenAcknowledgesSharedReadStateInArchivedProfile() async {
+    let writes = LockIsolated<[(String, String?)]>([])
+    let archivedSession = Session(id: "archived", unread: false)
+    var home = SessionListFeature.State(
+      connection: connection,
+      selectedProfileName: "work",
+      profilesSupported: true
+    )
+    home.archived = ArchivedSessionsFeature.State(
+      connection: connection,
+      profileName: "work",
+      sessions: [archivedSession]
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(home: home)
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.hermesREST.setUnread = { _, id, _, profile in
+        writes.withValue { $0.append((id, profile)) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.archived(.presented(.delegate(.openSession(archivedSession))))))
+    await store.receive(\.home.delegate.openSession)
+    await store.finish()
+    #expect(store.state.home?.archived == nil)
+    #expect(store.state.liveChat?.storedSessionID == "archived")
+    #expect(store.state.liveChat?.profileName == "work")
+    #expect(writes.value.first?.0 == "archived")
+    #expect(writes.value.first?.1 == "work")
+  }
+
+  @Test func loadedRowPushAcknowledgesSharedReadState() async {
+    let writes = LockIsolated<[(String, String?)]>([])
+    let push = PushClient.inMemory()
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          sessions: [Session(id: "pushed", unread: true)],
+          selectedProfileName: "work",
+          profilesSupported: true
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = push.client
+      $0.hermesREST.setUnread = { _, id, _, profile in
+        writes.withValue { $0.append((id, profile)) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pushTapped(PushTap(sessionID: "pushed")))
+    await store.receive(\.home.delegate.openSession)
+    await store.finish()
+    #expect(store.state.liveChat?.serverUnreadSupported == true)
+    #expect(store.state.home?.sessions[id: "pushed"]?.unread == false)
+    #expect(writes.value.first?.0 == "pushed")
+    #expect(writes.value.first?.1 == "work")
+  }
 
   /// A push tap routes through the SAME `openSession` delegate path a list tap uses, opening
   /// (resuming) the tapped session. A loaded `Session` is reused (so its title carries over);

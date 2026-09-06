@@ -513,6 +513,15 @@ public struct AppFeature {
           if expectsApproval {
             state.liveChat?.expectsPendingApproval = true
           }
+          let supportsSharedUnread = chat.serverUnreadSupported || session.unread != nil
+          state.liveChat?.serverUnreadSupported = supportsSharedUnread
+          let read = acknowledgeRead(
+            &state,
+            sessionID: session.id,
+            connection: chat.connection,
+            profileName: chat.profileName,
+            supported: supportsSharedUnread
+          )
           // Marker only when the chat is actually detached (compact + empty path) — in
           // regular the slot is already the visible detail and the path stays empty.
           // Defensive guard too: the path is normally empty here in compact (re-opens come
@@ -522,26 +531,36 @@ public struct AppFeature {
           if state.isChatDetached {
             state.path.append(ChatScreen.State(sessionKey: session.id))
           }
-          return .merge(badge, .send(.liveChat(.reattached)))
+          return .merge(badge, read, .send(.liveChat(.reattached)))
         }
         // `resolvedTitle` keeps the server's "Untitled" placeholder out of the header
         // (and the rename pre-fill); a real title arrives via `session.info` on resume.
         // Carry the active profile so resume/history scope to the right `state.db`.
+        let profileName = home.scopedProfileName
+        let supportsSharedUnread = session.unread != nil || home.serverUnreadSupported
         var chat = ChatFeature.State(
           connection: home.connection,
           resumeStoredID: session.id,
-          profileName: home.scopedProfileName,
+          profileName: profileName,
+          serverUnreadSupported: supportsSharedUnread,
           title: session.resolvedTitle
+        )
+        let read = acknowledgeRead(
+          &state,
+          sessionID: session.id,
+          connection: home.connection,
+          profileName: profileName,
+          supported: supportsSharedUnread
         )
         chat.expectsPendingApproval = expectsApproval
         guard state.liveChat != nil else {
           seatLiveChat(chat, into: &state)
-          return badge
+          return .merge(badge, read)
         }
         // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
         // must be fully torn down (through the nil-out, so even its un-ID'd one-shot RPC
         // effects are cancelled) before the new chat fills the slot.
-        return .merge(badge, teardownSlot(thenFill: chat))
+        return .merge(badge, read, teardownSlot(thenFill: chat))
 
       case let .home(.delegate(.createSession(initialComposerText))):
         guard let home = state.home else { return .none }
@@ -778,7 +797,8 @@ public struct AppFeature {
         var chat = ChatFeature.State(
           connection: home.connection,
           resumeStoredID: creation.handle.storedSessionID,
-          profileName: home.scopedProfileName
+          profileName: home.scopedProfileName,
+          serverUnreadSupported: home.serverUnreadSupported
         )
         chat.attachLiveSessionID = creation.handle.sessionID
         chat.branchSeed = creation.seed
@@ -796,6 +816,24 @@ public struct AppFeature {
         let glow: Effect<Action> = state.home != nil
           ? .send(.home(.setSessionRunning(id: sessionID, running: running)))
           : .none
+        // A completion that lands while this chat is on screen has already been seen. Advance
+        // the shared backend watermark after the new activity, not just when the row was first
+        // opened before the turn, so Desktop does not rediscover it as unread on its next poll.
+        let read: Effect<Action>
+        if !running,
+          state.currentViewingSessionID == sessionID,
+          let chat = state.liveChat {
+          read = acknowledgeRead(
+            &state,
+            sessionID: sessionID,
+            connection: chat.connection,
+            profileName: chat.profileName,
+            supported: chat.serverUnreadSupported || state.home?.serverUnreadSupported == true
+          )
+        } else {
+          read = .none
+        }
+        let listUpdate: Effect<Action> = .concatenate(glow, read)
         // A DETACHED slot (`isChatDetached`: compact with no marker in the path — the user
         // popped to the list; never the case in regular, where the slot is the visible
         // detail column) only outlives the pop while its turn runs. The turn ending —
@@ -810,8 +848,8 @@ public struct AppFeature {
         // a queue parked by an error while detached deliberately keeps the slot (bounded
         // by the user re-opening or archiving the session).
         guard !running, state.isChatDetached, let chat = state.liveChat, !chat.hasQueuedWork
-        else { return glow }
-        return .concatenate(glow, teardownSlot())
+        else { return listUpdate }
+        return .concatenate(listUpdate, teardownSlot())
 
       case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
         return .none
@@ -890,6 +928,27 @@ public struct AppFeature {
     return .none
   }
 
+  /// Mark a server-tracked session read under the profile that owns the active chat.
+  /// The write is best-effort so older agents remain compatible; their absent `unread`
+  /// field keeps the UI on the local message-count fallback.
+  private func acknowledgeRead(
+    _ state: inout State,
+    sessionID: Session.ID,
+    connection: ServerConnection,
+    profileName: String?,
+    supported: Bool
+  ) -> Effect<Action> {
+    guard supported else { return .none }
+    // Only mutate a visible row when the sidebar is showing the same profile. The active
+    // chat intentionally survives profile switches, so matching by id alone is unsafe.
+    if state.home?.scopedProfileName == profileName {
+      state.home?.sessions[id: sessionID]?.unread = false
+    }
+    return .run { [rest] _ in
+      try? await rest.setUnread(connection, sessionID, false, profileName)
+    }
+  }
+
   /// Deep-link a tapped push to its session — routed by comparing `tap.sessionID` against
   /// the live slot through `isChatDetached` (#32) so a tap for the already-open session
   /// never stacks a duplicate chat screen. Three outcomes, in order below: slot match + not
@@ -924,6 +983,18 @@ public struct AppFeature {
     // the existing `.foreground` re-hydrate.
     if state.currentViewingSessionID == tap.sessionID {
       state.pendingApprovalSessionIDs.remove(tap.sessionID)
+      let read: Effect<Action>
+      if let chat = state.liveChat {
+        read = acknowledgeRead(
+          &state,
+          sessionID: tap.sessionID,
+          connection: chat.connection,
+          profileName: chat.profileName,
+          supported: chat.serverUnreadSupported || state.home?.serverUnreadSupported == true
+        )
+      } else {
+        read = .none
+      }
       // Approval-recovery hint (#30 workaround): the socket may have been down when the
       // `approval.request` fired, so arm the one-shot hint AND drive the consuming
       // hydrate ourselves — the tap's scene activation is delivered independently of
@@ -933,9 +1004,9 @@ public struct AppFeature {
       // just re-hydrates. Nil slot guarded (the hint is meaningless without one).
       if tap.isApproval, state.liveChat != nil {
         state.liveChat?.expectsPendingApproval = true
-        return .merge(setBadge(state), .send(.liveChat(.foreground)))
+        return .merge(setBadge(state), read, .send(.liveChat(.foreground)))
       }
-      return setBadge(state)
+      return .merge(setBadge(state), read)
     }
     // Otherwise share the SAME `openSession` flow a list tap uses: a DETACHED slot match
     // (compact only — the user popped to the list; in regular a slot match always took
@@ -1103,6 +1174,7 @@ public struct AppFeature {
     ChatFeature.State(
       connection: home.connection,
       profileName: home.scopedProfileName,
+      serverUnreadSupported: home.serverUnreadSupported,
       composerText: composerText
     )
   }

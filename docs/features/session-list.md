@@ -38,12 +38,29 @@ Pause / Resume → `cronActionInFlightIDs` double-fire guard; success refetches 
 trigger, jobs-only for pause/resume; **no optimistic job-state mutation**). Tap = single-open
 inline peek (`expandedCronJobID`) of the newest `cronPeekLimit` runs via the standard `row(_:)`;
 runs matching no fetched job render flat below (`unmatchedCronSessions` — never hide output).
-The header carries the aggregate `cronUnreadCount` badge; cron sessions ride the same
-`seenCounts` unread pipeline as interactive rows. **Capability-gated**: a 404 flips
+The header carries the aggregate `cronUnreadCount` badge; cron sessions use the same shared
+server-backed unread state as interactive rows (with the legacy device-local `seenCounts`
+fallback below). **Capability-gated**: a 404 flips
 `cronJobsSupported` off → flat run list, fetch skipped thereafter; transient failures keep the
 previous jobs (no flapping). Jobs are fetched with the LITERAL selected profile name when
 `profilesSupported` (matching the scoped session list, so a job's runs are actually present),
 unscoped otherwise.
+
+## Shared unread state
+
+On agents that return the optional `unread` field, the backend owns read state: its
+`last_read_at` watermark is shared with Desktop, so opening a row on either client clears the
+other client's dot on its next poll, and later server activity raises it everywhere. Mobile
+PATCHes `{"unread": false}` on **every** open—even when the row already says false—because false
+also represents an untracked legacy row (`last_read_at == NULL`); the first acknowledgement is
+what makes later activity observable. A completion received while the chat remains visible
+acknowledges again after the new activity, so the reply being watched is not rediscovered as
+unread on Desktop. The write is optimistic and best-effort: a failed PATCH is reconciled by the
+next authoritative list poll.
+
+Older agents omit `unread`. For those rows only, mobile preserves its existing device-local
+`seenCounts` behavior (`message_count > last seen`), including first-sight seeding. This is a
+per-row fallback—not a server-wide capability latch—so mixed/transitional responses stay safe.
 
 ## Branch nesting is display-only (#34)
 

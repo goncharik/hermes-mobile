@@ -37,6 +37,10 @@ public struct ChatFeature {
     /// param, byte-identical to the single-profile behavior. A custom profile name is
     /// threaded into `session.create`/`session.resume` and the REST `messages` fetch.
     public var profileName: String?
+    /// Whether this stored session came from a server row carrying the shared `unread`
+    /// field. Retained with the chat so read acknowledgements keep their original
+    /// profile scope even if the sidebar switches profiles.
+    public var serverUnreadSupported: Bool
     public var title: String?
     public var transcript: IdentifiedArrayOf<ChatRow>
     /// Index of the oldest currently-rendered row — the top of the client-side rendering
@@ -511,6 +515,7 @@ public struct ChatFeature {
       connection: ServerConnection,
       resumeStoredID: String? = nil,
       profileName: String? = nil,
+      serverUnreadSupported: Bool = false,
       title: String? = nil,
       transcript: IdentifiedArrayOf<ChatRow> = [],
       composerText: String = "",
@@ -518,6 +523,7 @@ public struct ChatFeature {
     ) {
       self.connection = connection
       self.profileName = profileName
+      self.serverUnreadSupported = serverUnreadSupported
       self.storedSessionID = resumeStoredID
       self.resumesStoredSession = resumeStoredID != nil
       self.title = title
