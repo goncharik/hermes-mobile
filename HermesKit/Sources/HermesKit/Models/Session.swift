@@ -15,8 +15,13 @@ public struct Session: Equatable, Sendable, Identifiable {
   public var cwd: String?
   /// Original start time; used to order rows within a workspace group (desktop parity).
   public var startedAt: Date?
-  /// Number of messages — compared against the last-seen count to flag unread activity.
+  /// Number of messages — used only as the unread fallback for older agents that omit
+  /// the server-backed `unread` field.
   public var messageCount: Int?
+  /// Server-backed read state (`last_read_at` vs activity), shared by Desktop and every
+  /// mobile client. Nil means an older agent omitted the field; the list then falls back
+  /// to this device's message-count watermark.
+  public var unread: Bool?
   /// Whether the session is currently active (a turn ran recently).
   public var isActive: Bool?
   /// Where the session originated (`cron`, `cli`, `telegram`, `discord`, `slack`,
@@ -43,6 +48,7 @@ public struct Session: Equatable, Sendable, Identifiable {
     cwd: String? = nil,
     startedAt: Date? = nil,
     messageCount: Int? = nil,
+    unread: Bool? = nil,
     isActive: Bool? = nil,
     source: String? = nil,
     parentSessionID: String? = nil,
@@ -55,6 +61,7 @@ public struct Session: Equatable, Sendable, Identifiable {
     self.cwd = cwd
     self.startedAt = startedAt
     self.messageCount = messageCount
+    self.unread = unread
     self.isActive = isActive
     self.source = source
     self.parentSessionID = parentSessionID

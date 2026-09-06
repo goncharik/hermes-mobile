@@ -207,6 +207,10 @@ public struct HermesRESTClient: Sendable {
   /// Pass `profile` (non-default) to scope to that profile (added to both query and body);
   /// `nil` → today's exact request.
   public var archive: @Sendable (_ connection: ServerConnection, _ id: String, _ archived: Bool, _ profile: String?) async throws -> Void
+  /// Set the shared unread flag — `PATCH /api/sessions/{id}` `{"unread":…}`. Sending
+  /// `false` on every open both acknowledges current activity and starts tracking a legacy
+  /// row whose server watermark is still nil. `profile` follows the archive/rename rule.
+  public var setUnread: @Sendable (_ connection: ServerConnection, _ id: String, _ unread: Bool, _ profile: String?) async throws -> Void
   /// Rename a session — `PATCH /api/sessions/{id}` `{"title":…}`. An empty title clears it.
   /// The server may reject with 400 (too long / invalid chars / duplicate).
   /// Pass `profile` (non-default) to scope to that profile (added to both query and body);
@@ -375,6 +379,14 @@ public extension HermesRESTClient {
         let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
         let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
         var payload: [String: Any] = ["archived": archived]
+        if let profile { payload["profile"] = profile }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+      },
+      setUnread: { conn, id, unread, profile in
+        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
+        var payload: [String: Any] = ["unread": unread]
         if let profile { payload["profile"] = profile }
         let body = try JSONSerialization.data(withJSONObject: payload)
         try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
@@ -824,6 +836,7 @@ struct SessionListDTO: Decodable {
   let lastActive: Double?
   let startedAt: Double?
   let messageCount: Int?
+  let unread: Bool?
   let cwd: String?
   let isActive: Bool?
   let source: String?
@@ -835,6 +848,7 @@ struct SessionListDTO: Decodable {
     case lastActive = "last_active"
     case startedAt = "started_at"
     case messageCount = "message_count"
+    case unread
     case isActive = "is_active"
     case parentSessionID = "parent_session_id"
     // Present only on compression-projected rows: the ORIGINAL id the row had before the
@@ -851,6 +865,7 @@ struct SessionListDTO: Decodable {
       cwd: cwd?.nonEmpty,
       startedAt: startedAt.map { Date(timeIntervalSince1970: $0) },
       messageCount: messageCount,
+      unread: unread,
       isActive: isActive,
       source: source,
       parentSessionID: parentSessionID?.trimmedNonEmpty,

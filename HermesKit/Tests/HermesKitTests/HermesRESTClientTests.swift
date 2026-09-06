@@ -185,7 +185,7 @@ struct HermesRESTClientTests {
 
   @Test func sessionsMapsListToDomain() async throws {
     MockURLProtocol.set(json: #"""
-    {"sessions":[{"id":"20260610_120231_afcca6","title":"My chat","preview":"hello there","last_active":1749556800.0,"started_at":1749550000.0,"message_count":4,"cwd":"/Users/me/dev/hermes-mobile","is_active":true,"archived":false}],"total":1,"limit":20,"offset":0}
+    {"sessions":[{"id":"20260610_120231_afcca6","title":"My chat","preview":"hello there","last_active":1749556800.0,"started_at":1749550000.0,"message_count":4,"unread":true,"cwd":"/Users/me/dev/hermes-mobile","is_active":true,"archived":false}],"total":1,"limit":20,"offset":0}
     """#)
     let sessions = try await makeClient().sessions(connection, 20, 0, .recent)
     #expect(sessions.count == 1)
@@ -196,6 +196,7 @@ struct HermesRESTClientTests {
     #expect(s.updatedAt == Date(timeIntervalSince1970: 1749556800.0))
     #expect(s.cwd == "/Users/me/dev/hermes-mobile")
     #expect(s.startedAt == Date(timeIntervalSince1970: 1749550000.0))
+    #expect(s.unread == true)
   }
 
   @Test func sessionsDecodesCronSource() async throws {
@@ -398,6 +399,31 @@ struct HermesRESTClientTests {
     } ?? Data()
     let json = try JSONSerialization.jsonObject(with: body) as? [String: Bool]
     #expect(json == ["archived": true])
+  }
+
+  @Test func setUnreadSendsSharedReadStatePatchWithProfileScope() async throws {
+    MockURLProtocol.set(status: 200)
+    try await makeClient().setUnread(connection, "sid", false, "work")
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "PATCH")
+    #expect(req.url?.path == "/api/sessions/sid")
+    #expect(req.url?.query == "profile=work")
+    let body = req.httpBody ?? req.httpBodyStream.map { stream -> Data in
+      stream.open()
+      defer { stream.close() }
+      var data = Data()
+      let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024)
+      defer { buffer.deallocate() }
+      while stream.hasBytesAvailable {
+        let read = stream.read(buffer, maxLength: 1024)
+        if read <= 0 { break }
+        data.append(buffer, count: read)
+      }
+      return data
+    } ?? Data()
+    let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    #expect(json["unread"] as? Bool == false)
+    #expect(json["profile"] as? String == "work")
   }
 
   @Test func renameSendsPatchWithTitleBodyAndAuthHeader() async throws {
