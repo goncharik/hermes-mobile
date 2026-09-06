@@ -35,10 +35,21 @@ struct ReauthView: View {
               .autocorrectionDisabled()
               .submitLabel(.go)
               .onSubmit { if store.canSubmit { store.send(.signInTapped) } }
+          case .oauth:
+            // Nothing to type — the browser leg collects the credentials (#19). PLAIN TEXT
+            // with the default tint, deliberately no logo, no brand colour and no imitation
+            // of a vendor's own sign-in button (App Store guideline 5.2.1); the label is the
+            // server-supplied display name, falling back to the wire provider name.
+            Button("Continue with \(store.providerLabel)") { store.send(.signInTapped) }
+              .disabled(!store.canSubmit)
           }
 
-          Button("Sign in") { store.send(.signInTapped) }
-            .disabled(!store.canSubmit)
+          // The provider button IS the submit action for the OAuth regime (there is nothing
+          // to type first), so the generic "Sign in" button would be a second submit path.
+          if store.method != .oauth {
+            Button("Sign in") { store.send(.signInTapped) }
+              .disabled(!store.canSubmit)
+          }
         } header: {
           Text("Sign in")
         } footer: {
@@ -65,14 +76,22 @@ struct ReauthView: View {
     case .validating:
       Label("Signing in…", systemImage: "ellipsis.circle")
     case .invalidCredentials:
-      Label(
-        store.method == .token ? "Invalid token." : "Invalid username or password.",
-        systemImage: "xmark.octagon"
-      )
-      .foregroundStyle(.red)
+      Label(invalidCredentialsMessage, systemImage: "xmark.octagon")
+        .foregroundStyle(.red)
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
         .foregroundStyle(.red)
+    }
+  }
+
+  /// What a 401 means per regime. The OAuth wording deliberately blames neither a username
+  /// nor a password: the identity was collected in the browser and the server refused the
+  /// resulting token pair, so there is nothing for the user to retype here (#19).
+  private var invalidCredentialsMessage: String {
+    switch store.method {
+    case .password: "Invalid username or password."
+    case .token: "Invalid token."
+    case .oauth: "Sign-in was rejected by the server."
     }
   }
 }

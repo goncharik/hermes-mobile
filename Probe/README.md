@@ -4,6 +4,9 @@ A throwaway Swift script that confirms the Hermes wire protocol ("Model A") agai
 a **real running server** before we build the app. See
 `docs/plans/2026-06-09-hermes-ios-mvp.md` → Milestone M0.
 
+`Probe/LoopbackSpike/` is the other harness under this directory — the #19 OAuth loopback spike,
+committed rather than throwaway. Its own README covers running it.
+
 ## What it does
 
 1. Opens a WebSocket to `<SERVER_URL>/api/ws?token=<HERMES_TOKEN>`.

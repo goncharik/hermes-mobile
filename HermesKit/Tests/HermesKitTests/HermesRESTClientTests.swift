@@ -19,6 +19,12 @@ final class MockURLProtocol: URLProtocol {
 
   nonisolated(unsafe) static var stub = Stub()
   nonisolated(unsafe) static var lastRequest: URLRequest?
+  /// Every request the stub served, in order — the bearer tests assert that a refresh POST
+  /// precedes the API call it unblocked, which `lastRequest` alone can't show.
+  nonisolated(unsafe) static var requests: [URLRequest] = []
+  /// Stubs consumed one per request (first-in-first-out) before falling back to `stub`.
+  /// Set via `setSequence` for the multi-hop bearer flows.
+  nonisolated(unsafe) static var queue: [Stub] = []
 
   static func set(
     status: Int = 200, json: String = "", fail: Bool = false,
@@ -29,6 +35,17 @@ final class MockURLProtocol: URLProtocol {
       headers: headers
     )
     lastRequest = nil
+    requests = []
+    queue = []
+  }
+
+  /// Serve `stubs` in order, one per request. A request past the end falls back to a plain
+  /// 200 with an empty body, which surfaces as a decoding failure rather than a hang.
+  static func setSequence(_ stubs: [Stub]) {
+    stub = Stub()
+    queue = stubs
+    lastRequest = nil
+    requests = []
   }
 
   override class func canInit(with request: URLRequest) -> Bool { true }
@@ -37,18 +54,41 @@ final class MockURLProtocol: URLProtocol {
 
   override func startLoading() {
     MockURLProtocol.lastRequest = request
-    if MockURLProtocol.stub.failWithError {
-      client?.urlProtocol(self, didFailWithError: URLError(MockURLProtocol.stub.failCode))
+    MockURLProtocol.requests.append(request)
+    let stub = MockURLProtocol.queue.isEmpty
+      ? MockURLProtocol.stub
+      : MockURLProtocol.queue.removeFirst()
+    if stub.failWithError {
+      client?.urlProtocol(self, didFailWithError: URLError(stub.failCode))
       return
     }
     let http = HTTPURLResponse(
-      url: request.url!, statusCode: MockURLProtocol.stub.statusCode,
-      httpVersion: nil, headerFields: MockURLProtocol.stub.headers
+      url: request.url!, statusCode: stub.statusCode,
+      httpVersion: nil, headerFields: stub.headers
     )!
     client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
-    client?.urlProtocol(self, didLoad: MockURLProtocol.stub.body)
+    client?.urlProtocol(self, didLoad: stub.body)
     client?.urlProtocolDidFinishLoading(self)
   }
+}
+
+/// Read a (possibly streamed) request body back as `Data` — `URLProtocol` turns `httpBody`
+/// into a stream. Shared by the REST/profile/native-flow suites.
+func mockRequestBody(_ req: URLRequest) -> Data {
+  req.httpBody ?? req.httpBodyStream.map { stream -> Data in
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    let bufSize = 1024
+    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufSize)
+    defer { buffer.deallocate() }
+    while stream.hasBytesAvailable {
+      let read = stream.read(buffer, maxLength: bufSize)
+      if read <= 0 { break }
+      data.append(buffer, count: read)
+    }
+    return data
+  } ?? Data()
 }
 
 /// Parent suite for everything that drives the process-global `MockURLProtocol` stub.
@@ -74,6 +114,26 @@ struct HermesRESTClientTests {
     #expect(status.version == "0.16.0")
     #expect(status.gatewayRunning == true)
     #expect(status.activeSessions == 2)
+    // Older gateways omit `auth_flows` entirely — lenient optional, no throw.
+    #expect(status.authFlows == nil)
+  }
+
+  @Test func statusDecodesAuthFlows() async throws {
+    // Gated gateway with an interactive session provider registered.
+    MockURLProtocol.set(json: #"""
+    {"version":"0.17.0","auth_required":true,"auth_providers":["basic","nous"],"auth_flows":["cookie","native_pkce"]}
+    """#)
+    let status = try await makeClient().status(baseURL)
+    #expect(status.authRequired == true)
+    #expect(status.authFlows == ["cookie", "native_pkce"])
+  }
+
+  @Test func statusToleratesAuthFlowsAbsentOnGatedServer() async throws {
+    // Gated but pre-native-flow gateway: `auth_flows` missing → nil, never a decode failure.
+    MockURLProtocol.set(json: #"{"version":"0.16.0","auth_required":true,"auth_providers":["basic"]}"#)
+    let status = try await makeClient().status(baseURL)
+    #expect(status.authRequired == true)
+    #expect(status.authFlows == nil)
   }
 
   @Test func authProvidersDecodesList() async throws {
@@ -240,6 +300,42 @@ struct HermesRESTClientTests {
     let query = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
     #expect(query.contains(URLQueryItem(name: "order", value: "recent")))
     #expect(query.contains(URLQueryItem(name: "limit", value: "20")))
+  }
+
+  // MARK: Auth-regime header guards (`RequestAuth`)
+
+  /// THE backward-compatibility guard for the bearer work: threading `RequestAuth` through
+  /// the transport helpers touched every existing call site, so token mode is pinned here
+  /// down to the exact header name, its verbatim value, and the ABSENCE of `Authorization`.
+  @Test func tokenModeSendsOnlyTheSessionTokenHeader() async throws {
+    MockURLProtocol.set(json: #"{"sessions":[],"total":0}"#)
+    _ = try await makeClient().sessions(connection, 20, 0, .recent)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+  }
+
+  /// Same guard for a write: PATCH keeps the legacy header and grows no `Authorization`.
+  @Test func tokenModeWriteSendsOnlyTheSessionTokenHeader() async throws {
+    MockURLProtocol.set(status: 200)
+    try await makeClient().archive(connection, "sid", true, nil)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+  }
+
+  /// A `.cookie` connection is authenticated by the URLSession cookie jar, so the request
+  /// itself carries NEITHER auth header — unchanged by the `RequestAuth` refactor.
+  @Test func cookieModeSendsNeitherAuthHeader() async throws {
+    let cookieConnection = ServerConnection(
+      baseURL: baseURL,
+      auth: .cookie(CookieSession(cookies: [], username: "ada", provider: "basic"))
+    )
+    MockURLProtocol.set(json: #"{"sessions":[],"total":0}"#)
+    _ = try await makeClient().sessions(cookieConnection, 20, 0, .recent)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
   }
 
   @Test func archivedSessionsSendsArchivedOnlyQueryAndMaps() async throws {

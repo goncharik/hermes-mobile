@@ -126,6 +126,71 @@ import Testing
     #expect(!names.contains(staleName))     // prior cookies flushed
   }
 
+  // MARK: Bearer-mode (native OAuth)
+
+  @Test func bearerSessionRoundTripsAndDeletes() throws {
+    let kc = KeychainClient.inMemory()
+    let bearer = BearerSession(
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 1_800_000_000,
+      provider: "nous",
+      userID: "user-42"
+    )
+    try kc.saveSession(.bearer(bearer))
+
+    let loaded = kc.loadSession(HTTPCookieStorage())
+    #expect(loaded == .bearer(bearer))
+    // The token shim is nil for a bearer session (no `X-Hermes-Session-Token` path).
+    #expect(loaded?.token == nil)
+
+    try kc.deleteSession()
+    #expect(kc.loadSession(HTTPCookieStorage()) == nil)
+  }
+
+  @Test func bearerSessionLoadDoesNotTouchTheCookieJar() throws {
+    // A `.bearer` session carries no cookies; loading it must not add any to the jar.
+    let kc = KeychainClient.inMemory()
+    let storage = HTTPCookieStorage.shared
+    let before = Set((storage.cookies ?? []).map(\.name))
+    try kc.saveSession(
+      .bearer(
+        BearerSession(
+          accessToken: "AT", refreshToken: "RT", expiresAt: 0, provider: "nous", userID: "u"
+        )
+      )
+    )
+    _ = kc.loadSession(storage)
+    #expect(Set((storage.cookies ?? []).map(\.name)) == before)
+  }
+
+  @Test func liveKeychainRoundTripsBearerSession() throws {
+    // Isolated service/account so this never collides with a real install or another test.
+    let kc = KeychainClient.live(
+      service: "dev.honcharenko.HermesMobile.tests.\(UUID().uuidString)",
+      account: "session-token"
+    )
+    let bearer = BearerSession(
+      accessToken: "AT",
+      refreshToken: "RT",
+      expiresAt: 1_800_000_000,
+      provider: "nous",
+      userID: "user-42"
+    )
+    do {
+      try kc.saveSession(.bearer(bearer))
+    } catch KeychainError.unhandled(errSecMissingEntitlement) {
+      // The macOS `swift test` host runs unsigned, so the data-protection keychain refuses
+      // writes. The encoding path is covered by the in-memory + Codable tests above.
+      return
+    }
+    defer { try? kc.deleteSession() }
+
+    #expect(kc.loadSession(HTTPCookieStorage()) == .bearer(bearer))
+    try kc.deleteSession()
+    #expect(kc.loadSession(HTTPCookieStorage()) == nil)
+  }
+
   @Test func savingTokenThenCookieReplacesSession() throws {
     let kc = KeychainClient.inMemory()
     try kc.saveToken("tok")

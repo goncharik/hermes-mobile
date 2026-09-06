@@ -17,7 +17,8 @@ bullets below are the compressed rules.
   generated and gitignored.
 - **`HermesMobileTests/`** — iOS XCTest target for SwiftUI snapshot tests and view logic
   that needs a real UIKit host (separate from the SPM suite).
-- **`Probe/`** — throwaway protocol probe (gitignored fixtures).
+- **`Probe/`** — non-shipping harnesses, unreferenced by `Project.swift`: the protocol probe
+  (gitignored `Probe/fixtures/`) and the committed `LoopbackSpike/`.
 
 ## Core rules (every change)
 
@@ -30,9 +31,10 @@ bullets below are the compressed rules.
 - **Gate UI by server capability, not assumptions** — the shared pattern: a JSON-RPC
   `-32601` (`GatewayError.isUnknownMethod`) or REST 404 flips a `*Supported` flag off
   (attach, profiles, cron jobs, push, slash commands); `?? true` on unknown capability
-  fields. Mirror the desktop's behaviour where one exists; check the Hermes source.
+  fields. Mirror the desktop's behaviour where one exists; check the Hermes source. (#19's
+  OAuth segment deliberately inverts `?? true` — see the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
-  swallow them with `try?`.
+  swallow them with `try?` (the logout hops are the carved-out exception, below).
 - **Commit messages**: capitalized verb, no conventional-commit prefixes, concise.
 
 ## Gateway & session lifecycle
@@ -88,13 +90,28 @@ bullets below are the compressed rules.
   `.teardownSocketOnly` (state stays in memory for the #26 catch-up); a stale expiry
   racing `.active` is a guarded no-op. Idle slot persists only, no slot is a no-op —
   either way no task, no battery burn.
-- **Auth has two regimes** (`AuthSession`: `.token` | `.cookie`). Token mode must stay
-  byte-identical to the legacy single-token path (backward-compat guard). Gated mode:
+- **Auth has three regimes** (`AuthSession`: `.token` | `.cookie` | `.bearer`). Token mode must
+  stay byte-identical to the legacy single-token path (backward-compat guard). Gated modes:
   password-login cookies (refresh is transparent server-side — persist + resend the jar,
-  stored in `KeychainClient`) and a fresh single-use WS `?ticket=` minted per connect —
-  never cached; a 401 mint → `.sessionExpired` → `ReauthFeature` with identity-aware
-  routing (same user reconnects; different user pops + clears identity-scoped prefs).
-  The Password|Token toggle is capability-gated. Full protocol: `docs/architecture.md`.
+  stored in `KeychainClient`) or OAuth bearer tokens (#19), both with a fresh single-use WS
+  `?ticket=` minted per connect — never cached, and `.cookie`/`.bearer` SHARE the `connect`
+  branch so the cancellation choreography can't drift; a 401 mint → `.sessionExpired` →
+  `ReauthFeature` with identity-aware routing (same user reconnects; different user pops +
+  clears identity-scoped prefs). The Password | Token | \<provider\> toggle is capability-gated.
+  Full protocol: `docs/architecture.md`.
+- **`RequestAuth` is the ONE place either auth header is written**, and **every bearer read
+  goes through `BearerTokenStore.validAccessToken()`** — the store owns the token pair and is
+  the only refresh path; never read the Keychain or `expiresAt` directly. One synchronization
+  domain (no state outside its lock, no `await` under it); revocation = DELIBERATE abandonment
+  (`clear` requires a `BearerStoreClaim`). Ordering: `rest.logout`/`rest.unregisterPush` BEFORE
+  `bearerTokens.clear(claim:)`; `detachPersistence()` BEFORE every `keychain.deleteSession()`.
+  `rest.logout` is the one deliberate never-swallow exception. Details:
+  `docs/features/oauth-sign-in.md`.
+- **The OAuth segment needs positive evidence, not `?? true`**: an OAuth provider AND
+  `native_pkce` in `auth_flows`, else hidden. `isGated` is deliberately NOT a bare
+  `authRequired == true`. Loopback-only redirect (`ASWebAuthenticationSession` + in-app
+  `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
+  Details: `docs/features/oauth-sign-in.md`.
 - **Login help**: the `AgentSetupGuideView` sheet is the single connection-help surface
   (four entry points toggle one local `@State`; presentation stays out of the reducer).
   Keep the README quick-start and the sheet's commands verbatim-identical.
@@ -282,10 +299,10 @@ bullets below are the compressed rules.
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
 - **The recorded baselines predate the current simulator runtime** — `make snapshot`
-  fails broadly (36/211 as of #80, all equal render size; the older "~92/161" figure is
-  stale) with no code cause. Judge by size mismatch first: differing render size = real
-  regression; equal size with small pixel residual = drift. A global re-record is the
-  pending fix and must land as its own commit.
+  fails broadly (40 as of #19, ALL at identical render size; older figures are stale) with
+  no code cause. Judge by size mismatch first: differing render size = real regression;
+  equal size with small pixel residual = drift. A global re-record is the pending fix and
+  must land as its own commit. Per-suite breakdown: `docs/development.md`.
 
 ## Gotchas
 

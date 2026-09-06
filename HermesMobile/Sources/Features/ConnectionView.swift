@@ -3,7 +3,7 @@ import HermesKit
 import SwiftUI
 
 /// Onboarding screen: type a server URL (validated automatically), pick an auth method
-/// (Password / Token, gated by the server's advertised capability), then connect.
+/// (Password / Token / OAuth, gated by the server's advertised capability), then connect.
 struct ConnectionView: View {
   @Bindable var store: StoreOf<ConnectionFeature>
   @FocusState private var urlFocused: Bool
@@ -42,13 +42,19 @@ struct ConnectionView: View {
 
       Section {
         Picker("Auth method", selection: $store.method) {
-          Text("Password")
-            .tag(AuthMethod.password)
+          if store.showsPasswordSegment {
+            Text("Password")
+              .tag(AuthMethod.password)
+          }
           Text("Token")
             .tag(AuthMethod.token)
+          if store.isOAuthEnabled {
+            Text(store.oauthSegmentLabel)
+              .tag(AuthMethod.oauth)
+          }
         }
         .pickerStyle(.segmented)
-        .disabled(!store.isPasswordEnabled && store.method == .token)
+        .disabled(store.locksMethodPicker)
 
         switch store.method {
         case .password:
@@ -63,10 +69,16 @@ struct ConnectionView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
           tokenDisclaimer
+        case .oauth:
+          oauthProviderButtons
         }
 
-        Button("Connect") { store.send(.connectTapped) }
-          .disabled(!store.canConnect)
+        // The provider button IS the connect action for the OAuth segment (there is nothing
+        // to type first), so the generic Connect button would be a second submit path.
+        if store.method != .oauth {
+          Button("Connect") { store.send(.connectTapped) }
+            .disabled(!store.canConnect)
+        }
       } header: {
         Text("Sign in")
       } footer: {
@@ -111,19 +123,45 @@ struct ConnectionView: View {
     .padding(.vertical, 2)
   }
 
-  /// Capability-driven hint under the auth section.
+  /// The OAuth segment's content: one plain-text button per advertised provider — PLAIN
+  /// TEXT with the default tint, deliberately no logo, no brand colour and no imitation of
+  /// a vendor's own sign-in button (App Store guideline 5.2.1) — plus a note about where
+  /// the sign-in happens. Each button is the connect action for its provider; they disable
+  /// together while `.validating` (the "Signing in…" status footer is the progress cue).
+  @ViewBuilder
+  private var oauthProviderButtons: some View {
+    ForEach(store.oauthProviders, id: \.name) { provider in
+      Button("Continue with \(provider.displayName)") {
+        store.send(.oauthProviderTapped(provider))
+      }
+      .disabled(!store.canConnect)
+    }
+
+    Text("Opens your identity provider in Safari. Nothing is stored until sign-in completes.")
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      .padding(.vertical, 2)
+  }
+
+  /// Copy for the capability hint `ConnectionFeature.State.methodHint` selected.
   @ViewBuilder
   private var methodHint: some View {
-    if !store.isPasswordEnabled, store.method == .token, store.capability != nil {
-      // Token-only server: Password is disabled — explain why.
+    switch store.methodHint {
+    case .none:
+      EmptyView()
+    case .oauth:
+      Text("Sign in with the same account you use on the Hermes dashboard.")
+        .foregroundStyle(.secondary)
+    case .oauthNeedsNewerAgent:
+      Text("\(store.unsupportedOAuthProviderNames) sign-in needs a newer Hermes agent. "
+        + "Update it, or sign in with a session token.")
+        .foregroundStyle(.secondary)
+    case .tokenOnly:
       Text("This server only supports token sign-in.")
         .foregroundStyle(.secondary)
-    } else if store.isTokenDeemphasized, store.method == .token {
-      // Gated server: token is a poor fit — nudge toward password.
+    case .tokenDeemphasized:
       Text("This server uses password login. Token sign-in is for private-network setups only.")
         .foregroundStyle(.secondary)
-    } else {
-      EmptyView()
     }
   }
 
@@ -158,12 +196,22 @@ struct ConnectionView: View {
       Label("Invalid token.", systemImage: "xmark.octagon")
         .foregroundStyle(.red)
     case .invalidCredentials:
-      Label("Invalid username or password.", systemImage: "xmark.octagon")
+      Label(invalidCredentialsMessage, systemImage: "xmark.octagon")
         .foregroundStyle(.red)
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
         .foregroundStyle(.red)
     }
+  }
+
+  /// What a 401 means per regime — mirrors `ReauthView`. The OAuth wording blames neither a
+  /// username nor a password: the identity was collected in the browser and the server
+  /// refused the resulting token pair, so there is nothing to retype here (#19). Token mode
+  /// reaches `.invalidToken`, never this status, so it keeps the password copy.
+  private var invalidCredentialsMessage: String {
+    store.method == .oauth
+      ? "Sign-in was rejected by the server."
+      : "Invalid username or password."
   }
 
   /// Entry point (b): contextual help for the stuck moment — only shown when the server

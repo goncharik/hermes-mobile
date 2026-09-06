@@ -4,18 +4,30 @@ import Testing
 @testable import HermesKit
 
 struct ServerAuthCapabilityTests {
-  private func status(authRequired: Bool?) -> ServerStatus {
+  private func status(authRequired: Bool?, authFlows: [String]? = nil) -> ServerStatus {
     var s = ServerStatus()
     s.authRequired = authRequired
+    s.authFlows = authFlows
     return s
   }
+
+  private static let basic = AuthProvider(name: "basic", displayName: "Username & password", supportsPassword: true)
+  private static let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
+  private static let selfHosted = AuthProvider(name: "self_hosted", displayName: "SSO", supportsPassword: false)
 
   // MARK: Table-driven mapper cases
 
   @Test func authNotRequiredIsTokenOnly() {
-    // Loopback/--insecure: auth_required false → token-only, even if providers are present.
-    let providers = [AuthProvider(name: "basic", displayName: "Username & password", supportsPassword: true)]
-    #expect(ServerAuthCapability(from: status(authRequired: false), providers: providers) == .tokenOnly)
+    // Loopback/--insecure: auth_required false → token-only, even if providers are present
+    // and even when the gateway advertises the native flow.
+    let capability = ServerAuthCapability(
+      from: status(authRequired: false, authFlows: ["cookie", "native_pkce"]),
+      providers: [Self.basic, Self.nous]
+    )
+    #expect(capability == .tokenOnly)
+    #expect(!capability.isGated)
+    #expect(!capability.isPasswordAvailable)
+    #expect(!capability.isOAuthAvailable)
   }
 
   @Test func authRequiredAbsentIsTokenOnly() {
@@ -24,37 +36,109 @@ struct ServerAuthCapabilityTests {
   }
 
   @Test func gatedWithBasicIsPasswordAvailable() {
-    let providers = [AuthProvider(name: "basic", displayName: "Username & password", supportsPassword: true)]
-    #expect(
-      ServerAuthCapability(from: status(authRequired: true), providers: providers)
-        == .passwordAvailable(provider: "basic", displayName: "Username & password")
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true, authFlows: ["cookie"]),
+      providers: [Self.basic]
     )
+    #expect(capability.passwordProvider == Self.basic)
+    #expect(capability.passwordProviderName == "basic")
+    #expect(capability.oauthProviders.isEmpty)
+    #expect(capability.isPasswordAvailable)
+    #expect(!capability.isOAuthAvailable)
+    #expect(capability.isGated)
   }
 
-  @Test func gatedWithOAuthOnlyIsOAuthOnly() {
-    let providers = [AuthProvider(name: "google", displayName: "Google", supportsPassword: false)]
-    #expect(
-      ServerAuthCapability(from: status(authRequired: true), providers: providers)
-        == .oauthOnly(providers: providers)
+  @Test func gatedWithOAuthOnlyPopulatesOAuthProviders() {
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true, authFlows: ["cookie", "native_pkce"]),
+      providers: [Self.nous, Self.selfHosted]
     )
+    #expect(capability.passwordProvider == nil)
+    #expect(capability.passwordProviderName == nil)
+    #expect(capability.oauthProviders == [Self.nous, Self.selfHosted]) // server order preserved
+    #expect(!capability.isPasswordAvailable)
+    #expect(capability.isOAuthAvailable)
+    #expect(capability.isGated)
   }
 
-  @Test func gatedMixedPrefersPassword() {
-    // OAuth listed first, but a password-capable provider exists → password preferred.
-    let providers = [
-      AuthProvider(name: "google", displayName: "Google", supportsPassword: false),
-      AuthProvider(name: "basic", displayName: "Password", supportsPassword: true),
-    ]
-    #expect(
-      ServerAuthCapability(from: status(authRequired: true), providers: providers)
-        == .passwordAvailable(provider: "basic", displayName: "Password")
+  @Test func gatedMixedOffersBothWithPasswordPreferred() {
+    // OAuth listed first, but a password-capable provider exists → password still preferred
+    // for preselection, and the OAuth providers stay available for their own segment.
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true, authFlows: ["cookie", "native_pkce"]),
+      providers: [Self.nous, Self.basic]
     )
+    #expect(capability.passwordProvider == Self.basic)
+    #expect(capability.oauthProviders == [Self.nous])
+    #expect(capability.isPasswordAvailable)
+    #expect(capability.isOAuthAvailable)
+  }
+
+  @Test func gatedMixedPicksFirstPasswordCapableProvider() {
+    let other = AuthProvider(name: "ldap", displayName: "LDAP", supportsPassword: true)
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true),
+      providers: [Self.basic, other]
+    )
+    #expect(capability.passwordProviderName == "basic")
   }
 
   @Test func gatedWithNoProvidersFallsBackToTokenOnly() {
-    // Gated but providers endpoint 404'd (nil) — give the user a way in via token.
-    #expect(ServerAuthCapability(from: status(authRequired: true), providers: nil) == .tokenOnly)
-    #expect(ServerAuthCapability(from: status(authRequired: true), providers: []) == .tokenOnly)
+    // Gated but providers endpoint 404'd (nil) — give the user a way in via token, and
+    // don't de-emphasize it (`isGated` stays false): it's the only path there is.
+    let missing = ServerAuthCapability(from: status(authRequired: true), providers: nil)
+    let empty = ServerAuthCapability(from: status(authRequired: true, authFlows: ["native_pkce"]), providers: [])
+    #expect(missing == .tokenOnly)
+    #expect(empty == .tokenOnly)
+    #expect(!missing.isGated)
+    #expect(!empty.isGated)
+  }
+
+  // MARK: Native-flow gate
+
+  @Test func nativeFlowFlagFollowsAuthFlows() {
+    #expect(
+      ServerAuthCapability(from: status(authRequired: true, authFlows: ["cookie", "native_pkce"]),
+                           providers: [Self.nous]).supportsNativeFlow
+    )
+    #expect(
+      !ServerAuthCapability(from: status(authRequired: true, authFlows: ["cookie"]),
+                            providers: [Self.nous]).supportsNativeFlow
+    )
+    // Absent `auth_flows` (older gateway) → no native flow. A NEW affordance needs
+    // positive evidence, so this is the one place we do NOT apply the `?? true` rule.
+    #expect(
+      !ServerAuthCapability(from: status(authRequired: true, authFlows: nil),
+                            providers: [Self.nous]).supportsNativeFlow
+    )
+  }
+
+  @Test func oauthUnavailableWithoutNativeFlow() {
+    // Providers exist but the gateway is too old to serve /auth/native/authorize.
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true, authFlows: ["cookie"]),
+      providers: [Self.nous]
+    )
+    #expect(!capability.oauthProviders.isEmpty)
+    #expect(!capability.isOAuthAvailable)
+  }
+
+  @Test func oauthUnavailableWithNativeFlowButNoOAuthProviders() {
+    // Password-only gated server that still advertises the flow → nothing to offer.
+    let capability = ServerAuthCapability(
+      from: status(authRequired: true, authFlows: ["cookie", "native_pkce"]),
+      providers: [Self.basic]
+    )
+    #expect(capability.supportsNativeFlow)
+    #expect(!capability.isOAuthAvailable)
+  }
+
+  @Test func tokenOnlyIsTheEmptyCapability() {
+    let tokenOnly = ServerAuthCapability.tokenOnly
+    #expect(tokenOnly.passwordProvider == nil)
+    #expect(tokenOnly.oauthProviders.isEmpty)
+    #expect(!tokenOnly.supportsNativeFlow)
+    #expect(!tokenOnly.isGated)
   }
 
   // MARK: AuthProvider decoding leniency

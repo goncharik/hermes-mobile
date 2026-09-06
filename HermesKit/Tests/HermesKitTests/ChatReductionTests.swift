@@ -7,6 +7,15 @@ import Testing
 @MainActor
 struct ChatReductionTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
+  /// The `.bearer` twin of `conn`, for the #19 gated-regime reconnect tests.
+  private let bearerConn = ServerConnection(
+    baseURL: URL(string: "http://mac.tailnet:9119")!,
+    auth: .bearer(
+      BearerSession(
+        accessToken: "at", refreshToken: "rt", expiresAt: 0, provider: "nous", userID: "u-1"
+      )
+    )
+  )
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
@@ -1310,6 +1319,62 @@ struct ChatReductionTests {
       $0.reconnectAttempt = 1
     }
     await clock.advance(by: .seconds(1)) // first backoff = 2^0 = 1s
+    await store.receive(\.reconnectTick)
+    await store.send(.teardown)
+  }
+
+  /// The `.bearer` twin of `authExpiredSignalsSessionExpiredAndPausesReconnect` (#19): a dead
+  /// refresh token makes `BearerTokenStore.validAccessToken` throw `authExpired`, the ticket
+  /// mint reports it, and the reducer must raise re-auth EXACTLY ONCE — the trailing
+  /// `.gatewayClosed` schedules no backoff, so a store that answers `authExpired` forever
+  /// cannot spin a redial/expire loop.
+  @Test func bearerAuthExpiredRaisesReauthOnceAndNeverRedials() async {
+    let clock = TestClock()
+    let dials = LockIsolated(0)
+    let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        dials.withValue { $0 += 1 }
+        return AsyncStream { _ in }
+      }
+    }
+
+    await store.send(.gatewayEvent(.authExpired)) {
+      $0.awaitingReauth = true
+      $0.status = .reconnecting
+    }
+    await store.receive(\.delegate.sessionExpired)
+
+    await store.send(.gatewayClosed)
+    await clock.advance(by: .seconds(600))
+    #expect(dials.value == 0, "a dead bearer pair must not be redialled behind the re-auth sheet")
+    await store.send(.teardown)
+  }
+
+  /// The `.bearer` twin of `transientGatedCloseContinuesBackoff` (#19). A refresh 503 keeps
+  /// the tokens (`BearerTokenStore` rethrows, nothing is cleared) and reaches the reducer as a
+  /// plain finished stream, which is what this drives: a bare close on a bearer connection
+  /// must back off and redial, never latch `awaitingReauth`. The mint itself lives in the live
+  /// gateway client and is not exercised here — only the reducer's verdict on its silence.
+  @Test func bearerCloseWithoutAnExpiryVerdictKeepsBackingOff() async {
+    let clock = TestClock()
+    let store = TestStore(initialState: ChatFeature.State(connection: bearerConn, status: .ready)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.uuid = .incrementing
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.gatewayClosed) {
+      $0.status = .reconnecting
+      $0.reconnectAttempt = 1
+    }
+    #expect(store.state.awaitingReauth == false) // NOT an expiry verdict
+    await clock.advance(by: .seconds(1))
     await store.receive(\.reconnectTick)
     await store.send(.teardown)
   }
