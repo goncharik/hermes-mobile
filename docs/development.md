@@ -56,7 +56,12 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
 - **Snapshots** (`scripts/snapshot.sh`) render the SwiftUI views via SnapshotTesting
   (iOS XCTest target `HermesMobileTests`, separate from the SPM suite). Baselines live
   in `HermesMobileTests/__Snapshots__/`. Row timestamps are pinned to a fixed reference
-  date so the images are deterministic.
+  date so the images are deterministic. The recorded baselines predate the current
+  simulator runtime, so `make snapshot` fails broadly with no code cause — 40 as of #19,
+  all at identical render size: Chat 16, Composer 11, ThinkingIndicator 5, ContextUsage 4,
+  AgentSetupGuide 2, Hydration 2. Judge a failure by render size first (a size mismatch is
+  a real regression; equal size with a small pixel residual is drift). A global re-record
+  is the pending fix and must land as its own commit.
 
 ## Verifying the protocol
 

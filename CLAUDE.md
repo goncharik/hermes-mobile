@@ -99,33 +99,18 @@ bullets below are the compressed rules.
   `ReauthFeature` with identity-aware routing (same user reconnects; different user pops +
   clears identity-scoped prefs). The Password | Token | \<provider\> toggle is capability-gated.
   Full protocol: `docs/architecture.md`.
-- **`RequestAuth` is the ONE place either auth header is written** (`.none | .sessionToken |
-  .bearer`, resolved by `resolveAuth`; `HermesProfileClient` shares it), and **every bearer
-  read goes through `BearerTokenStore.validAccessToken()`** — the store is the single owner of
-  the token pair and the only refresh path (single-flight against the portal's reuse detection,
-  persist-before-publish, generation-superseded rotations; refresh 401 → clear + `authExpired`,
-  anything else rethrown with tokens intact). Never read the Keychain or `expiresAt` directly.
-  **It has exactly ONE synchronization domain** — every mutable field behind one lock, every
-  entry point a single critical section — so no approved check can be invalidated by a
-  concurrent detach/clear/claim before its mutation; never add state outside that lock, and
-  never `await` (or cancel the refresh task) while holding it.
-  **Revoking ownership means the app DELIBERATELY abandoned the credentials** (logout, or a
-  newer attempt superseding an older one) — never that something incidental happened to them
-  (a refresh 401 discards the pair but leaves ownership) and never an unclaimed caller's say-so
-  (`clear` requires a `BearerStoreClaim`).
-  **Ordering: `rest.logout` and `rest.unregisterPush` resolve auth through the store, so both
-  MUST fire BEFORE `bearerTokens.clear(claim:)`** (`rest.logout` is `HermesRESTClient`'s one
-  deliberate exception to the never-swallow rule; the push unregister swallows too), while
-  `detachPersistence()` runs synchronously BEFORE every `keychain.deleteSession()` or a
-  mid-logout rotation rewrites the deleted entry.
+- **`RequestAuth` is the ONE place either auth header is written**, and **every bearer read
+  goes through `BearerTokenStore.validAccessToken()`** — the store owns the token pair and is
+  the only refresh path; never read the Keychain or `expiresAt` directly. One synchronization
+  domain (no state outside its lock, no `await` under it); revocation = DELIBERATE abandonment
+  (`clear` requires a `BearerStoreClaim`). Ordering: `rest.logout`/`rest.unregisterPush` BEFORE
+  `bearerTokens.clear(claim:)`; `detachPersistence()` BEFORE every `keychain.deleteSession()`.
+  `rest.logout` is the one deliberate never-swallow exception. Details:
+  `docs/features/oauth-sign-in.md`.
 - **The OAuth segment needs positive evidence, not `?? true`**: an OAuth provider AND
-  `native_pkce` in `/api/status`'s `auth_flows`. No flag → gateway too old for the RFC 8252
-  native flow → segment hidden; the pre-#19 UI is unchanged EXCEPT that a gateway advertising
-  OAuth providers without the flag gets a new "needs a newer Hermes agent" footer hint.
-  `isGated` is deliberately
-  NOT a bare `authRequired == true` — a gated server whose providers endpoint 404s stays
-  token-only and un-de-emphasized. Loopback-only redirect (`ASWebAuthenticationSession` +
-  in-app `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
+  `native_pkce` in `auth_flows`, else hidden. `isGated` is deliberately NOT a bare
+  `authRequired == true`. Loopback-only redirect (`ASWebAuthenticationSession` + in-app
+  `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
   Details: `docs/features/oauth-sign-in.md`.
 - **Login help**: the `AgentSetupGuideView` sheet is the single connection-help surface
   (four entry points toggle one local `@State`; presentation stays out of the reducer).
@@ -314,11 +299,10 @@ bullets below are the compressed rules.
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
 - **The recorded baselines predate the current simulator runtime** — `make snapshot`
-  fails broadly (40 failures as of #19 — Chat 16, Composer 11, ThinkingIndicator 5,
-  ContextUsage 4, AgentSetupGuide 2, Hydration 2 — ALL at identical render size, zero mismatches;
-  earlier "36/211" and "~92/161" figures are stale) with no code cause. Judge by size
-  mismatch first: differing render size = real regression; equal size with small pixel
-  residual = drift. A global re-record is the pending fix and must land as its own commit.
+  fails broadly (40 as of #19, ALL at identical render size; older figures are stale) with
+  no code cause. Judge by size mismatch first: differing render size = real regression;
+  equal size with small pixel residual = drift. A global re-record is the pending fix and
+  must land as its own commit. Per-suite breakdown: `docs/development.md`.
 
 ## Gotchas
 
