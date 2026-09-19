@@ -18,6 +18,12 @@ let developmentTeam = Environment.developmentTeam.getString(default: "")
 // stays upstream's, so nothing changes unless a fork sets TUIST_BUNDLE_ID.
 let bundleId = Environment.bundleId.getString(default: "me.honcharenko.HermesMobile")
 
+// Push Notifications. A personal Apple team cannot sign the capability at all ("Personal
+// development teams do not support the Push Notifications capability"), which blocks device
+// builds outright rather than just disabling notifications. Default stays on; set
+// TUIST_ENABLE_PUSH=0 to drop the entitlement and build on a personal team, losing push.
+let enablePush = Environment.enablePush.getString(default: "1") != "0"
+
 let project = Project(
   name: "HermesMobile",
   packages: [
@@ -82,9 +88,9 @@ let project = Project(
       // "development" would otherwise ship a sandbox entitlement on Release builds while
       // the app reports production — APNs would reject. The compile-time `apns_env`
       // (DEBUG → "sandbox", else "production") mirrors this.
-      entitlements: .dictionary([
-        "aps-environment": "$(APS_ENVIRONMENT)",
-      ]),
+      entitlements: enablePush
+        ? .dictionary(["aps-environment": "$(APS_ENVIRONMENT)"])
+        : nil,
       dependencies: [
         .package(product: "HermesKit"),
       ],
