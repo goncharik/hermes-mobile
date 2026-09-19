@@ -36,3 +36,6 @@ build/
 # the local machine's skills/tools inventory + home paths. Keep out of git.
 Probe/fixtures/
 /tmp/hermes-probe
+
+# Fork-local signing settings (see .envrc.example)
+.envrc

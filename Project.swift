@@ -13,6 +13,11 @@ let debugServerURL = Environment.serverUrl.getString(default: "")
 // builds pass CODE_SIGNING_ALLOWED=NO).
 let developmentTeam = Environment.developmentTeam.getString(default: "")
 
+// Apple registers an App ID to exactly ONE team, so a fork signing with its own team cannot
+// reuse the upstream identifier — device and TestFlight builds fail to register it. Default
+// stays upstream's, so nothing changes unless a fork sets TUIST_BUNDLE_ID.
+let bundleId = Environment.bundleId.getString(default: "me.honcharenko.HermesMobile")
+
 let project = Project(
   name: "HermesMobile",
   packages: [
@@ -30,7 +35,7 @@ let project = Project(
       // narrow iPadOS windows must resolve to the compact (stack) layout.
       destinations: [.iPhone, .iPad],
       product: .app,
-      bundleId: "me.honcharenko.HermesMobile",
+      bundleId: bundleId,
       deploymentTargets: .iOS("18.0"),
       infoPlist: .extendingDefault(with: [
         // Wire the bundle version/short-version to the build settings below so a
@@ -117,7 +122,7 @@ let project = Project(
       name: "HermesMobileTests",
       destinations: [.iPhone, .iPad],
       product: .unitTests,
-      bundleId: "me.honcharenko.HermesMobileTests",
+      bundleId: "\(bundleId)Tests",
       deploymentTargets: .iOS("18.0"),
       sources: ["HermesMobileTests/**"],
       dependencies: [

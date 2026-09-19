@@ -15,13 +15,13 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SCHEME="HermesMobile"
 WORKSPACE="HermesMobile.xcworkspace"
-BUNDLE_ID="me.honcharenko.HermesMobile"
+BUNDLE_ID="${BUNDLE_ID:-me.honcharenko.HermesMobile}"
 
 : "${DEVELOPMENT_TEAM:?Set DEVELOPMENT_TEAM=<your 10-char Apple team id> and re-run}"
 
 echo "▸ Generating project with team $DEVELOPMENT_TEAM"
 # Tuist only forwards TUIST_-prefixed env vars to the manifest, so translate.
-TUIST_DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" tuist generate --no-open
+TUIST_DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" TUIST_BUNDLE_ID="$BUNDLE_ID" tuist generate --no-open
 
 # First connected/available device UDID.
 DEVICE_UDID="$(
@@ -40,6 +40,7 @@ xcodebuild build \
   -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug \
   -destination "id=$DEVICE_UDID" \
   -allowProvisioningUpdates \
+  -skipMacroValidation \
   -quiet
 
 APP_PATH="$(

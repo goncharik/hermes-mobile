@@ -1,0 +1,7 @@
+# Fork-local build settings. Copy to .envrc (gitignored) and fill in.
+#
+# Apple registers an App ID to exactly one team, so a fork signing with its own team needs
+# its own bundle identifier. The scripts keep upstream's id as the default, so this file is
+# the only place a fork differs.
+export DEVELOPMENT_TEAM=YOUR_10_CHAR_TEAM_ID
+export BUNDLE_ID=com.example.HermesMobile
