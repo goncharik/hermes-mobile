@@ -23,10 +23,17 @@ echo "▸ Generating project with team $DEVELOPMENT_TEAM"
 # Tuist only forwards TUIST_-prefixed env vars to the manifest, so translate.
 TUIST_DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" TUIST_BUNDLE_ID="$BUNDLE_ID" tuist generate --no-open
 
-# First connected/available device UDID.
+# First connected/available physical device UDID.
+#
+# Two traps in `devicectl list devices` output. Simulators are listed alongside real hardware
+# and report State "connected" exactly as a plugged-in phone does, so filtering on state alone
+# installs to a simulator and still prints "Running on device". And the two use different
+# identifier shapes: a simulator has a 36-char UUID, a modern iPhone has 25 characters (8 hex,
+# dash, 16 hex), so a regex written for one silently never matches the other. Excluding
+# "simulated" rows and taking the field before the literal "(UDID)" marker avoids both.
 DEVICE_UDID="$(
   xcrun devicectl list devices 2>/dev/null \
-    | awk '/connected|available/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-Fa-f-]{36}$/) {print $i; exit}}'
+    | awk '!/simulated/ && /connected|available/ {for (i=1;i<=NF;i++) if ($i == "(UDID)") {print $(i-1); exit}}'
 )"
 if [ -z "${DEVICE_UDID:-}" ]; then
   echo "✗ No connected device found. Plug in + trust your iPhone, then retry." >&2
