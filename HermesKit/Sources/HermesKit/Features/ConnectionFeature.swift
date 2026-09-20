@@ -365,29 +365,31 @@ public struct ConnectionFeature {
 
   public var body: some ReducerOf<Self> {
     BindingReducer()
+      .onChange(of: \.serverURL) { _, _ in
+        Reduce { state, _ in
+          state.status = .idle // a new URL invalidates any prior reachability result
+          // …and so does it invalidate an OAuth attempt still running against the OLD URL: the
+          // browser leg can take minutes while this field stays editable, and its tail persists
+          // credentials, saves the server URL and connects. Retype the URL and that attempt
+          // must not be able to land. (Cancelling never drains the store — see
+          // `performNativeOAuthLogin`.)
+          let dropStaleSignIn: Effect<Action> = .cancel(id: CancelID.oauthLogin)
+          guard !state.serverURL.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return .merge(dropStaleSignIn, .cancel(id: CancelID.urlDebounce))
+          }
+          // Auto-check after the user stops typing (covers paste too).
+          return .merge(
+            dropStaleSignIn,
+            .run { [clock] send in
+              try await clock.sleep(for: .milliseconds(600))
+              await send(.checkServer)
+            }
+            .cancellable(id: CancelID.urlDebounce, cancelInFlight: true)
+          )
+        }
+      }
     Reduce { state, action in
       switch action {
-      case .binding(\.serverURL):
-        state.status = .idle // a new URL invalidates any prior reachability result
-        // …and so does it invalidate an OAuth attempt still running against the OLD URL: the
-        // browser leg can take minutes while this field stays editable, and its tail persists
-        // credentials, saves the server URL and connects. Retype the URL and that attempt
-        // must not be able to land. (Cancelling never drains the store — see
-        // `performNativeOAuthLogin`.)
-        let dropStaleSignIn: Effect<Action> = .cancel(id: CancelID.oauthLogin)
-        guard !state.serverURL.trimmingCharacters(in: .whitespaces).isEmpty else {
-          return .merge(dropStaleSignIn, .cancel(id: CancelID.urlDebounce))
-        }
-        // Auto-check after the user stops typing (covers paste too).
-        return .merge(
-          dropStaleSignIn,
-          .run { [clock] send in
-            try await clock.sleep(for: .milliseconds(600))
-            await send(.checkServer)
-          }
-          .cancellable(id: CancelID.urlDebounce, cancelInFlight: true)
-        )
-
       case .binding:
         return .none
 

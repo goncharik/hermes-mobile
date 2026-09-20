@@ -937,6 +937,42 @@ struct ConnectionFeatureTests {
     #expect(keychain.loadSession(.shared) == .bearer(winner))
   }
 
+  @Test func redundantServerBindingDoesNotCancelAnInFlightSignIn() async {
+    let clock = TestClock()
+    let started = AsyncStream<Void>.makeStream()
+    let release = AsyncStream<Void>.makeStream()
+    let cancelled = LockIsolated(false)
+    let keychain = KeychainClient.inMemory()
+    let store = TestStore(initialState: oauthReadyState()) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in
+        await withTaskCancellationHandler {
+          started.continuation.yield()
+          for await _ in release.stream { break }
+        } onCancel: {
+          cancelled.setValue(true)
+        }
+        return bearerFixture()
+      }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.bearerTokens = BearerTokenStore()
+      $0.keychain = keychain
+      $0.preferences = .inMemory()
+      $0.continuousClock = clock
+    }
+
+    await store.send(.connectTapped) { $0.status = .validating }
+    for await _ in started.stream { break }
+    await store.send(\.binding.serverURL, store.state.serverURL)
+    #expect(!cancelled.value, "an unchanged binding cancelled the browser task")
+    release.continuation.yield()
+    await store.receive(\.oauthLoginResponse.success)
+    await store.receive(\.delegate.connected)
+    #expect(keychain.loadSession(.shared) == .bearer(bearerFixture()))
+    await store.finish()
+  }
+
   /// The server field stays editable while the browser sheet is up, and the sign-in tail
   /// persists credentials, saves the URL and connects. Retyping the URL must abandon that
   /// attempt outright — it belongs to a server the user has moved off.
@@ -944,11 +980,18 @@ struct ConnectionFeatureTests {
     let keychain = KeychainClient.inMemory()
     let preferences = PreferencesClient.inMemory()
     let clock = TestClock()
+    let started = AsyncStream<Void>.makeStream()
+    let cancelled = LockIsolated(false)
     let store = TestStore(initialState: oauthReadyState()) {
       ConnectionFeature()
     } withDependencies: {
       $0.oauthLogin.signIn = { @Sendable _, _ in
-        try await Task.sleep(for: .seconds(60)) // the user is still in the browser
+        try await withTaskCancellationHandler {
+          started.continuation.yield()
+          try await Task.sleep(for: .seconds(60))
+        } onCancel: {
+          cancelled.setValue(true)
+        }
         return bearerFixture()
       }
       $0.bearerTokens = BearerTokenStore()
@@ -959,10 +1002,12 @@ struct ConnectionFeatureTests {
     }
 
     await store.send(.connectTapped) { $0.status = .validating }
+    for await _ in started.stream { break }
     await store.send(\.binding.serverURL, "http://other:9119") {
       $0.serverURL = "http://other:9119"
       $0.status = .idle
     }
+    #expect(cancelled.value, "cancel before the reachability debounce fires")
     // The abandoned attempt sends NOTHING (no `oauthLoginResponse`, no `delegate`); only the
     // debounced re-check of the new URL follows.
     await clock.advance(by: .milliseconds(600))
