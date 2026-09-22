@@ -20,6 +20,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -49,6 +50,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -68,6 +70,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -93,6 +96,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -110,7 +114,7 @@ struct AppFeatureTests {
       $0.preferences.loadServerURL = { nil }
     }
     // No creds → no state change, no auto-connect effect.
-    await store.send(.task)
+    await store.send(.task) { $0.didStartExternalObservers = true }
   }
 
   /// Exhaustive — this doubles as the no-replay guard for the manual-login path (#46):
@@ -261,7 +265,7 @@ struct AppFeatureTests {
     #expect(store.state.liveChat != nil)
 
     // The view finished disappearing → mic cleanup + the idle teardown sequence.
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     await store.receive(\.liveChat.persistNow)
     await store.receive(\.liveChat.teardown)
@@ -290,7 +294,7 @@ struct AppFeatureTests {
     store.exhaustivity = .off
 
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat != nil, "queued work keeps the slot alive across the pop")
   }
@@ -663,7 +667,7 @@ struct AppFeatureTests {
     // The view finishing its pop animation (what the destination actually sends) forwards
     // mic/voice cleanup only — a RUNNING detached slot is still not torn down (exhaustive:
     // any teardown follow-up would fail here).
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     #expect(store.state.liveChat != nil)
 
@@ -728,7 +732,7 @@ struct AppFeatureTests {
     // The idle pop's teardown (deferred until the view disappeared) terminates that one
     // stream (a leak would fail the bounded wait).
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     await store.receive(\.liveChat.viewDisappeared)
     await store.receive(\.liveChat.persistNow)
     await store.receive(\.liveChat.teardown)
@@ -2301,7 +2305,7 @@ struct AppFeatureTests {
     }
     store.exhaustivity = .off
 
-    await store.send(.task)
+    await store.send(.task) { $0.didStartExternalObservers = true }
     push.emit(tap: PushTap(sessionID: "from-stream"))
     await store.receive(\.pushTapped)
     await store.receive(\.home.delegate.openSession)
@@ -2337,7 +2341,7 @@ struct AppFeatureTests {
     await store.send(.path(.popFrom(id: store.state.path.ids.last!)))
     await store.finish()
     #expect(push.currentSession == nil)
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     // Drain the teardown follow-ups (viewDisappeared → persistNow → teardown → clear) so
     // the asserted state reflects the completed teardown.
     await store.skipReceivedActions()
@@ -3003,7 +3007,7 @@ struct AppFeatureTests {
     }
     store.exhaustivity = .off
 
-    await store.send(.task)
+    await store.send(.task) { $0.didStartExternalObservers = true }
     // The buffered tap drains into the observer and stashes (no home yet).
     await store.receive(\.pushTapped) {
       $0.pendingPushTap = PushTap(sessionID: "s-race")
@@ -3176,6 +3180,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3200,6 +3205,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3225,6 +3231,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3274,6 +3281,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3300,6 +3308,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3324,6 +3333,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3352,6 +3362,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -3386,7 +3397,7 @@ struct AppFeatureTests {
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
 
-    await store.send(.task)
+    await store.send(.task) { $0.didStartExternalObservers = true }
     await store.finish()
     #expect(store.state.autoConnecting == false)
     #expect(probes.value == 0)
@@ -3498,6 +3509,7 @@ struct AppFeatureTests {
       $0.pendingPushTap = nil
       $0.pendingPushTapServerURL = nil
       $0.pendingApprovalSessionIDs = []
+      $0.slotGeneration = 1
     }
     await store.finish()
     #expect(sessionDeleted.value)
@@ -3709,6 +3721,7 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     #expect(store.state.path.isEmpty, "no marker — the user lands on the list")
   }
@@ -3895,7 +3908,7 @@ struct AppFeatureTests {
     }
 
     // Exhaustive: no `viewDisappeared` / `persistNow` / `teardown` / `clearLiveChat`.
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == chat)
   }
 
@@ -3914,7 +3927,7 @@ struct AppFeatureTests {
       AppFeature()
     }
 
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == chat)
   }
 
@@ -3946,7 +3959,7 @@ struct AppFeatureTests {
       $0.layout = .regular
       $0.path = .init()
     }
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat?.recording == .recording)
     #expect(store.state.liveChat?.recordingSeconds == 4)
 
@@ -3955,7 +3968,7 @@ struct AppFeatureTests {
       $0.layout = .compact
       $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
     }
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat?.recording == .recording)
     #expect(store.state.liveChat?.recordingSeconds == 4)
   }
@@ -4301,10 +4314,11 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
@@ -4362,10 +4376,11 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     await store.receive(\.liveChat.task) {
       $0.liveChat?.hasStarted = true
@@ -4402,10 +4417,11 @@ struct AppFeatureTests {
     }
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     await store.receive(\.liveChat.task) {
       $0.liveChat?.hasStarted = true
@@ -4441,10 +4457,11 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     await store.receive(\.liveChat.task) {
       $0.liveChat?.hasStarted = true
@@ -4476,10 +4493,11 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
@@ -4511,12 +4529,13 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.teardown)
     await store.receive(\.clearLiveChat) {
       $0.liveChat = nil
+      $0.slotGeneration = 1
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(
         connection: self.connection, resumeStoredID: "s1", profileName: nil, title: "Chat"
       )
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
@@ -4790,7 +4809,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.fillLiveChat) {
       $0.liveChat = ChatFeature.State(connection: fresh, profileName: nil, composerText: "")
-      $0.slotGeneration = 1
+      $0.slotGeneration = 2
     }
     await store.receive(\.liveChat.task) {
       $0.liveChat?.hasStarted = true
@@ -5069,7 +5088,7 @@ struct AppFeatureTests {
       $0.path = .init()
     }
     // The chat view left the stack for the detail column: a no-op, no teardown.
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == running)
 
     // Narrow (Slide Over / a narrow window): the marker comes back, the slot stays.
@@ -5078,7 +5097,7 @@ struct AppFeatureTests {
       $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
     }
     // The detail column's view left for the stack: a no-op again.
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == running)
 
     // Widen once more (the round-trip the plan's manual pass describes).
@@ -5119,14 +5138,14 @@ struct AppFeatureTests {
       $0.layout = .regular
       $0.path = .init()
     }
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == chat)
 
     await store.send(.layoutChanged(.compact)) {
       $0.layout = .compact
       $0.path = StackState([ChatScreen.State(sessionKey: "s1")])
     }
-    await store.send(.chatViewDisappeared)
+    await store.send(.chatViewDisappeared(generation: store.state.slotGeneration))
     #expect(store.state.liveChat == chat)
   }
 
@@ -5154,6 +5173,7 @@ struct AppFeatureTests {
       $0.liveChat = nil
       $0.path = .init()
       $0.onboarding = .init()
+      $0.slotGeneration = 1
     }
     await store.finish()
     #expect(store.state.rootScreen == .onboarding)
@@ -5188,6 +5208,7 @@ struct AppFeatureTests {
       $0.liveChat = nil
       $0.path = .init()
       $0.onboarding = .init()
+      $0.slotGeneration = 1
     }
     await store.finish()
     #expect(store.state.rootScreen == .onboarding)
@@ -5678,6 +5699,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -5711,6 +5733,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
@@ -5740,6 +5763,7 @@ struct AppFeatureTests {
     }
 
     await store.send(.task) {
+      $0.didStartExternalObservers = true
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }

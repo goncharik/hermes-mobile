@@ -24,11 +24,10 @@ public struct AppFeature {
     /// slot IS the detail column and the path stays empty — a chat there is never "detached".
     /// The shell decides which one a window is (see `Layout`).
     public var layout: Layout
-    /// Bumped on every regular-width slot fill. The app shell keys the detail column's
-    /// `ChatView` on it (`.id`), so a slot replacement always gets a FRESH view — otherwise
-    /// the incoming session inherits the outgoing one's transcript scroll offset and composer
-    /// focus (`docs/features/ipad-layout.md`). Compact never bumps: there a fill pushes a new
-    /// marker, whose destination is a new view.
+    /// Slot ownership, advanced on EVERY clear (including direct identity clears) and
+    /// regular-width fill. Captured by each destination so an old disappearance cannot
+    /// clean up a replacement that has since been popped. Also keys the regular-width
+    /// detail view to reset its scroll/focus state (`docs/features/ipad-layout.md`).
     public internal(set) var slotGeneration: Int = 0
     /// True during the launch auto-connect probe — `AppView` shows a brief placeholder
     /// instead of flashing the onboarding screen.
@@ -79,6 +78,13 @@ public struct AppFeature {
     /// Accepted corner: the worst outcome is the same spurious-empty-chat the self-heal
     /// produces for any unknown id, and logout's unregister keeps the window narrow.
     var pendingPushTapServerURL: URL?
+
+    /// Local launch routes are last-wins until home exists, and outrank a deferred push.
+    var pendingLaunchIntent: LaunchIntent?
+    var pendingConflictingLaunchIntent: LaunchIntent?
+    @Presents public var launchIntentConflict: ConfirmationDialogState<LaunchIntentDialog>?
+    /// Never replace an external stream after its bridge has accepted an event.
+    var didStartExternalObservers = false
 
     public init(
       onboarding: ConnectionFeature.State = .init(),
@@ -194,6 +200,9 @@ public struct AppFeature {
   }
 
   public enum Action {
+    case launchIntentReceived(LaunchIntent)
+    case launchIntentConfirmed(LaunchIntent)
+    case launchIntentConflict(PresentationAction<LaunchIntentDialog>)
     case task
     case autoConnectSucceeded(ServerConnection)
     /// The launch probe failed. The `RESTError` decides where we land, via the one rule in
@@ -237,7 +246,7 @@ public struct AppFeature {
     /// mid-animation. The same event fires when the chat moves between columns on a layout
     /// change and when a regular-width replacement re-creates the detail view; the chat is
     /// on screen (or already torn down) in both, so those are no-ops.
-    case chatViewDisappeared
+    case chatViewDisappeared(generation: Int)
     /// The live chat slot's actions — the chat is composed here (via `.ifLet`), NOT in the
     /// navigation path, so its effects survive pops.
     case liveChat(ChatFeature.Action)
@@ -262,7 +271,11 @@ public struct AppFeature {
   }
 
   /// Ids for the long-running incoming-tap observer and the background-grace listener.
-  private enum CancelID { case pushTaps, backgroundGrace }
+  private enum CancelID { case pushTaps, launchIntents, backgroundGrace }
+
+  public enum LaunchIntentDialog: Equatable, Sendable {
+    case replace
+  }
 
   /// Name of the finite background task requested while a running turn is backgrounded
   /// (shows up in OS background-task diagnostics). Tests re-type the literal on purpose —
@@ -273,6 +286,7 @@ public struct AppFeature {
   @Dependency(\.preferences) var preferences
   @Dependency(\.hermesREST) var rest
   @Dependency(\.push) var push
+  @Dependency(\.launchIntent) var launchIntent
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
   /// Only for `releaseSlotMic` — the identity teardowns that drop the slot without a
@@ -291,567 +305,7 @@ public struct AppFeature {
       ConnectionFeature()
     }
     Reduce { state, action in
-      switch action {
-      case .task:
-        // Observe push taps for the whole app lifetime (a tap can arrive cold-launch or while
-        // running) and deep-link them; the actual nav happens in `.pushTapped`.
-        let tapObserver: Effect<Action> = .run { [push] send in
-          for await tap in push.incomingTaps() {
-            await send(.pushTapped(tap))
-          }
-        }
-        .cancellable(id: CancelID.pushTaps, cancelInFlight: true)
-        // Launch auto-connect: if a persisted session (token *or* gated cookie) + server
-        // URL exist, silently validate and skip onboarding. Only runs once, before we have
-        // a home. `loadSession` rehydrates a `.cookie` session's cookies into `.shared` so
-        // the REST/WS transports authenticate on this fresh launch.
-        // `!didRunLaunchProbe` is the real once-per-process gate (see the property): a
-        // re-sent `.task` must never start a SECOND probe while the retry screen is up (it
-        // would flip the UI back to the "Connecting…" spinner and, on success, build `home`
-        // beside a still-populated slot). The other checks are cheap belt-and-braces.
-        guard !state.didRunLaunchProbe, state.home == nil, state.connectionFailed == nil,
-              !state.autoConnecting,
-              let session = keychain.loadSession(.shared),
-              let urlString = preferences.loadServerURL(),
-              let url = parseServerURL(urlString)
-        else { return tapObserver }
-        // A `.token` session with an empty token is treated as "no creds" (matches the old
-        // `loadToken()`-non-empty guard) so we stay on onboarding rather than probe blindly.
-        if case .token("") = session { return tapObserver }
-        state.didRunLaunchProbe = true
-        state.autoConnecting = true
-        let connection = ServerConnection(baseURL: url, auth: session)
-        return .merge(
-          tapObserver,
-          .run { [rest, keychain, bearerTokens] send in
-            // Bearer restore (#19) must happen BEFORE the probe: a `.bearer` connection
-            // resolves its `Authorization` header through the token store, so probing an
-            // unseeded store sends the request with no credentials at all and 401s a
-            // perfectly good session into prefilled onboarding. Seeding also re-arms the
-            // Keychain persist hook, so a rotation during the probe is saved.
-            Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
-            do {
-              _ = try await rest.sessions(connection, 1, 0, .recent)
-              await send(.autoConnectSucceeded(connection))
-            } catch {
-              // A dead refresh token surfaces here as `RESTError.unauthorized` (the store
-              // maps the 401 verdict), so it takes the existing credentials-verdict branch
-              // in `.autoConnectFailed` — the #62 routing rule needs no bearer carve-out.
-              await send(.autoConnectFailed(connection, asRESTError(error)))
-            }
-          }
-        )
-
-      case let .autoConnectSucceeded(connection):
-        state.autoConnecting = false
-        // Defensive: a retry screen and a live list must never coexist (see the `.task` guard).
-        state.connectionFailed = nil
-        state.home = makeHomeState(connection: connection)
-        return landOnHome(&state)
-
-      case let .autoConnectFailed(connection, error):
-        state.autoConnecting = false
-        guard ConnectionFailedFeature.isRetryable(error) else {
-          // Stored creds didn't validate (expired token / dead cookies / a dead refresh
-          // token) — fall back to onboarding for re-entry; retrying can't repair dead
-          // credentials.
-          return fallBackToOnboarding(&state, connection: connection)
-        }
-        // Either we never reached the server, or a proxy told us the agent is down — the
-        // stored session is presumed fine, so keep it and offer a Retry instead of dropping to
-        // onboarding (which, in password mode, would demand a password that never expired just
-        // because the VPN was off).
-        state.connectionFailed = ConnectionFailedFeature.State(
-          connection: connection, reason: error
-        )
-        return .none
-
-      case let .connectionFailed(.delegate(.connected(connection))):
-        // The retry validated the stored session — identical landing to a successful launch
-        // auto-connect, cold-launch push-tap replay included.
-        state.connectionFailed = nil
-        state.home = makeHomeState(connection: connection)
-        return landOnHome(&state)
-
-      case let .connectionFailed(.delegate(.credentialsRejected(connection))):
-        // The retry reached the server and it turned us away — retrying can't fix that, so
-        // land exactly where a launch auth failure lands: prefilled onboarding, nothing
-        // cleared, which is also where the connection-help sheet's entry points live.
-        state.connectionFailed = nil
-        return fallBackToOnboarding(&state, connection: connection)
-
-      case .connectionFailed(.delegate(.logoutConfirmed)):
-        // "Log Out" from the retry screen (confirmed): the user is abandoning the stored
-        // session, so run the same logout as "Quit to start" (Keychain session + every pref)
-        // and land on a *fresh* onboarding — nothing prefilled, there is no session left to
-        // repair. The tap stash and the approval badge set die with the identity too.
-        let connection = state.connectionFailed?.connection
-        let releaseMic = releaseSlotMic(state)
-        bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
-        try? keychain.deleteSession()
-        preferences.clearServerURL()
-        preferences.clearIdentityScopedPrefs()
-        preferences.saveGroupingMode(.default)
-        preferences.saveDefaultSessionSwipeAction(.default)
-        preferences.saveShowCronSection(true)
-        state.connectionFailed = nil
-        state.path = .init()
-        state.liveChat = nil
-        state.home = nil
-        state.onboarding = .init()
-        state.pendingPushTap = nil
-        state.pendingPushTapServerURL = nil
-        state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
-
-      case let .scenePhaseChanged(phase):
-        // Fan lifecycle out to the live chat slot (if any) and the session list — no
-        // top-of-path hunting: the slot IS the one live chat, attached or not. We do NOT
-        // auto-restore the nav stack on cold launch — opening a session is enough.
-        switch phase {
-        case .active:
-          // Foreground: release the background-execution window (cancel the grace listener;
-          // `end()` is idempotent — a no-op when none is active), then re-hydrate the live
-          // chat via `.foreground` (which reconnects only if the socket died — a socket the
-          // grace window kept alive is reused, not redialed) and refresh the list
-          // immediately (don't wait for the poll).
-          state.isSceneBackgrounded = false
-          return .merge(
-            .cancel(id: CancelID.backgroundGrace),
-            .run { [backgroundTask] _ in await backgroundTask.end() },
-            state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
-            state.home != nil ? .send(.home(.pulledToRefresh)) : .none,
-            // Stuck on the retry screen? Foregrounding is exactly the moment the user just
-            // flipped the VPN back on — re-probe without making them tap. The child SUPERSEDES
-            // whatever is in flight (`cancelInFlight` on its probe), so this can't fan out
-            // into parallel probes; a stalled one is simply abandoned. Accepted trade-off:
-            // `.active` also fires for Control Center / notification-pull / app-switcher
-            // blips, so churn can restart the probe more often than the user asked. Gating on
-            // "was really backgrounded" would break the main case — flipping airplane mode or
-            // Wi-Fi from Control Center never backgrounds the app — and swallowing the
-            // foreground is the latch bug this design exists to avoid. One GET per blip.
-            state.connectionFailed != nil ? .send(.connectionFailed(.sceneBecameActive)) : .none
-          )
-        case .background:
-          // Backgrounding: flush the live chat's snapshot + anchor IMMEDIATELY (don't rely on
-          // the 1s debounce) so a process kill can't lose the latest paint or the timer anchor.
-          state.isSceneBackgrounded = true
-          guard let chat = state.liveChat else { return .none }
-          let flush: Effect<Action> = .send(.liveChat(.persistNow))
-          // A RUNNING turn buys itself a finite background window (~30s): the socket simply
-          // keeps streaming, no `ChatFeature` changes. If iOS expires the window while still
-          // backgrounded, the listener fires `.backgroundGraceExpired` → final flush + clean
-          // socket-only disconnect (state stays in memory for the #26-preserving foreground
-          // hydrate); catch-up is then the existing push + `.foreground` reconnect. An idle
-          // chat starts NO task — nothing to keep alive, no battery burn.
-          guard chat.isRunning else { return flush }
-          return .merge(
-            flush,
-            .run { [backgroundTask] send in
-              for await _ in await backgroundTask.begin(Self.backgroundGraceTaskName) {
-                await send(.backgroundGraceExpired)
-              }
-            }
-            .cancellable(id: CancelID.backgroundGrace, cancelInFlight: true)
-          )
-        case .inactive:
-          // Transient occlusion (app switcher, notification shade): flush only — the process
-          // isn't suspending yet, so no background window is needed.
-          return state.liveChat != nil ? .send(.liveChat(.persistNow)) : .none
-        }
-
-      case let .layoutChanged(layout):
-        return reduceLayoutChanged(&state, to: layout)
-
-      case .backgroundGraceExpired:
-        // The background window ran out while still backgrounded. Final flush, then cancel
-        // the socket ONLY — `liveChat` stays in memory so the foreground re-hydrate can
-        // preserve the live thinking/tool rows (#26). No explicit `end()` here: the client
-        // performed the mandatory end bookkeeping inside its expiration handler before
-        // yielding. Guards: an expiry whose send escaped just as `.active` cancelled the
-        // listener must be a no-op — `.active` already redialed, and tearing that fresh
-        // socket down would strand the chat with no reconnect scheduled. Likewise nothing
-        // to do when the slot was already torn down (e.g. the detached turn ended).
-        guard state.isSceneBackgrounded, state.liveChat != nil else { return .none }
-        return .concatenate(
-          .send(.liveChat(.persistNow)),
-          .send(.liveChat(.teardownSocketOnly))
-        )
-
-      case let .pushTapped(tap):
-        return reducePushTapped(&state, tap: tap)
-
-      case let .onboarding(.delegate(.connected(connection))):
-        // Defensive, mirroring `.autoConnectSucceeded`: a retry screen and a live list must
-        // never coexist. `AppView` would render `home` while the `ifLet` child stayed alive,
-        // re-probing on every foreground for the process lifetime.
-        state.connectionFailed = nil
-        state.home = makeHomeState(connection: connection)
-        // Auto-connect failure falls back to onboarding, so a manual login must also replay
-        // a stashed cold-launch tap (#46).
-        return landOnHome(&state)
-
-      case let .home(.delegate(.openSession(session))):
-        guard let home = state.home else { return .none }
-        // Approval-recovery hint (#30 workaround): a badged session (approval push tapped or
-        // received) may have missed the real `approval.request` while detached — read the flag
-        // BEFORE clearing the badge entry so the hydrating chat can synthesize a generic card
-        // when the turn is still running. Covers tap→open, slot replacement, and a badged
-        // session opened later from the list.
-        let expectsApproval = state.pendingApprovalSessionIDs.contains(session.id)
-        // Opening a session clears its pending-approval badge entry (the user is now viewing it).
-        // The current-viewing marker is updated by the `.onChange(of: currentViewingSessionID)`
-        // modifier below (one source of truth for nav-derived state).
-        state.pendingApprovalSessionIDs.remove(session.id)
-        let badge = setBadge(state)
-        // Re-opening the slot's OWN session (e.g. tapping the glowing row of a detached
-        // running turn): the accumulated live state must survive — a fresh
-        // `ChatFeature.State` would discard the detached thinking/tool/streaming rows.
-        // Push the marker back (the path is empty when coming from the list) and
-        // re-attach: hydrate against the live socket, reconnecting only if it died.
-        if let chat = state.liveChat, chat.sessionKey == session.id {
-          if expectsApproval {
-            state.liveChat?.expectsPendingApproval = true
-          }
-          let read = acknowledgeRead(
-            &state,
-            sessionID: session.id,
-            connection: chat.connection,
-            profileName: chat.profileName
-          )
-          // Marker only when the chat is actually detached (compact + empty path) — in
-          // regular the slot is already the visible detail and the path stays empty.
-          // Defensive guard too: the path is normally empty here in compact (re-opens come
-          // from the list, and an on-screen match short-circuits in `pushTapped` before
-          // reaching this delegate) — but a double-delivered open must not stack a second
-          // marker.
-          if state.isChatDetached {
-            state.path.append(ChatScreen.State(sessionKey: session.id))
-          }
-          return .merge(badge, read, .send(.liveChat(.reattached)))
-        }
-        // `resolvedTitle` keeps the server's "Untitled" placeholder out of the header
-        // (and the rename pre-fill); a real title arrives via `session.info` on resume.
-        // Carry the active profile so resume/history scope to the right `state.db`.
-        let profileName = home.scopedProfileName
-        var chat = ChatFeature.State(
-          connection: home.connection,
-          resumeStoredID: session.id,
-          profileName: profileName,
-          title: session.resolvedTitle
-        )
-        let read = acknowledgeRead(
-          &state,
-          sessionID: session.id,
-          connection: home.connection,
-          profileName: profileName
-        )
-        chat.expectsPendingApproval = expectsApproval
-        guard state.liveChat != nil else {
-          seatLiveChat(chat, into: &state)
-          return .merge(badge, read)
-        }
-        // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
-        // must be fully torn down (through the nil-out, so even its un-ID'd one-shot RPC
-        // effects are cancelled) before the new chat fills the slot.
-        return .merge(badge, read, teardownSlot(thenFill: chat))
-
-      case let .home(.delegate(.createSession(initialComposerText))):
-        guard let home = state.home else { return .none }
-        // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
-        // — regular width keeps one such seat in the detail column at all times): tearing it
-        // down to fill an identical fresh one would redial its socket for nothing. Reset the
-        // composer draft (text + staged attachments) instead — the only visible difference a
-        // fresh chat would have; `initialComposerText` still seeds it. Anything the shortcut
-        // can't reproduce (a stale profile, in-flight composer input, a failed handshake)
-        // falls through to the real refill. The marker guard is the compact safety net: a
-        // detached seat re-attaches rather than leaving the tap without a screen.
-        if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
-          state.liveChat?.composerText = initialComposerText ?? ""
-          state.liveChat?.attachments = []
-          if state.isChatDetached {
-            state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
-          }
-          return .none
-        }
-        // New chats are created under the currently-selected profile. `initialComposerText`
-        // (push "Ask agent to install") seeds the composer draft but is NOT auto-sent.
-        let chat = newChat(for: home, composerText: initialComposerText ?? "")
-        guard state.liveChat != nil else {
-          seatLiveChat(chat, into: &state)
-          return .none
-        }
-        // Slot occupied: flush + fully tear the old chat down before filling (same rule
-        // as open — the replacement goes through the nil-out).
-        return teardownSlot(thenFill: chat)
-
-      case let .fillLiveChat(chat):
-        seatLiveChat(chat, into: &state)
-        // The initial connect is the chat view's `.task` (first appearance). In compact the
-        // fresh marker's destination is a NEW view, so it fires there. In regular the whole
-        // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so SwiftUI
-        // never observes the nil slot — the detail view is re-created by `slotGeneration`
-        // instead, off state the shell has to be keyed on correctly. Dial here so the seat is
-        // connected regardless; `hasStarted` makes the view's `.task` a no-op, never a redial.
-        return state.layout == .regular ? .send(.liveChat(.task)) : .none
-
-      case .clearLiveChat:
-        // Pop-to-list teardown completed — drop the slot state. `ifLet` auto-cancels any
-        // remaining child effects on the nil-out.
-        state.liveChat = nil
-        return .none
-
-      case .path(.popFrom):
-        // Popped back to the session list. Nothing to do at pop-START: the teardown policy
-        // runs on `.chatViewDisappeared` (below), once the pop animation has finished —
-        // clearing the slot here would blank the outgoing screen mid-animation and route
-        // the view's disappearance into a nil child.
-        return .none
-
-      case .chatViewDisappeared:
-        // The chat view finished leaving the screen. Only a DETACHED slot (`isChatDetached`
-        // — compact, the pop animation completed) means the chat is genuinely off screen:
-        // forward the view-session cleanup (mic/voice) and apply the pop policy. A RUNNING
-        // detached turn keeps its slot untouched — the socket streams on, rows accumulate,
-        // and the list's row glow tracks via `runningChanged` (whose `running: false` while
-        // detached tears the slot down below). An idle detached chat has nothing to keep
-        // alive — flush the snapshot, cancel everything, clear the slot.
-        //
-        // Everything else is a no-op, cleanup included: the slot's chat is still on screen
-        // (it moved between the stack and the detail column on a layout change — releasing
-        // the mic there would cancel a recording under a visible composer) or the view that
-        // left belonged to a chat a slot replacement already tore down, whose `.teardown`
-        // released the same resources. No slot (logout/quit) → no-op too.
-        guard let chat = state.liveChat, state.isChatDetached else { return .none }
-        let cleanup: Effect<Action> = .send(.liveChat(.viewDisappeared))
-        // `hasQueuedWork` (#66) keeps the slot alive like a running turn does: queued
-        // prompts are in-memory only, so an idle pop with entries waiting (a parked
-        // queue, or the gap before a drain's turn starts) must not destroy them — the
-        // drain fires the next turn into the detached slot, and teardown comes when the
-        // queue empties and that turn ends (the `runningChanged` policy below).
-        guard !chat.isRunning, !chat.hasQueuedWork else { return cleanup }
-        return .concatenate(cleanup, teardownSlot())
-
-      case let .home(.delegate(.sessionArchived(id))):
-        // The user archived a session from the list. If it's the slot's session (possibly
-        // detached mid-turn), tear the live chat down FIRST — its socket must not keep
-        // streaming into a session that's now archived. Any other session → nothing to do
-        // (the list's optimistic archive handles itself).
-        guard let chat = state.liveChat, chat.sessionKey == id else { return .none }
-        // Deliberate asymmetry: if the archive PATCH later FAILS, the list restores the
-        // row (optimistic rollback) but the slot stays torn down — re-opening simply
-        // resumes the session fresh. Resurrecting live slot state for a rare failure path
-        // isn't worth replaying the teardown. In regular the torn-down chat WAS the detail
-        // column, so a fresh new chat is seated behind it (`detailRefill`); compact leaves
-        // the slot nil — the user is on the list.
-        return teardownSlot(thenFill: detailRefill(state))
-
-      case let .home(.delegate(.sessionDeleted(id))):
-        // The user permanently deleted a session. ALWAYS wipe its cached snapshot + turn
-        // anchor — a deleted session must never repaint from the non-authoritative cache.
-        // When it's the slot's session (possibly detached mid-turn), tear the live chat
-        // down too, WITHOUT the snapshot flush (`flushSnapshot: false`): the flush would
-        // re-save the very snapshot this wipe deletes. Same deliberate asymmetry as
-        // archive: if the DELETE later fails, the list restores the row but the slot and
-        // cache stay cleared — re-opening simply resumes the session fresh.
-        let wipeSnapshot: Effect<Action> = .run { [chatSnapshot] _ in
-          chatSnapshot.deleteSnapshot(id)
-        }
-        guard let chat = state.liveChat, chat.sessionKey == id else {
-          return wipeSnapshot
-        }
-        // Same regular-width refill as archive: the detail column must not go blank.
-        return .concatenate(
-          teardownSlot(thenFill: detailRefill(state), flushSnapshot: false), wipeSnapshot
-        )
-
-      case let .home(.delegate(.sessionDeleteSucceeded(id))):
-        // The server CONFIRMED the delete — only now drop the session's pending-approval
-        // badge entry (opening the session, the normal clear path, no longer exists).
-        // Clearing at initiation (`sessionDeleted` above) would be premature: a failed
-        // DELETE restores the row, but its still-pending approval would badge nowhere —
-        // nothing short of a fresh approval push repopulates the entry. Unlike the
-        // wipe/teardown asymmetry above, the badge waits for confirmation.
-        state.pendingApprovalSessionIDs.remove(id)
-        return setBadge(state)
-
-      case .home(.delegate(.disconnect)):
-        // Token cleared in Settings → tear down and return to onboarding. Nil-ing the slot
-        // auto-cancels its effects (socket included); the mic is the one thing that outlives
-        // them, so `releaseSlotMic` covers it. The tap stash is structurally nil here (home
-        // existed, so any stash was consumed at creation) — cleared defensively: the stash
-        // dies with the identity. The pending-approval badge set
-        // dies with it too (entries reference sessions on the server just left — they'd
-        // leak a stale icon badge into the next login), so reset the badge to zero.
-        let connection = state.home?.connection
-        let releaseMic = releaseSlotMic(state)
-        state.path = .init()
-        state.liveChat = nil
-        state.home = nil
-        state.onboarding = .init()
-        state.pendingPushTap = nil
-        state.pendingPushTapServerURL = nil
-        state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
-
-      case .liveChat(.delegate(.sessionExpired)):
-        // The live (gated) session died — attached or detached, the slot is the one chat.
-        // The chat already paused its own reconnect; raise the re-auth modal seeded from its
-        // connection (server URL + regime + identity). Ignore if a modal is already up.
-        guard state.reauth == nil, let chat = state.liveChat else { return .none }
-        state.reauth = makeReauthState(
-          for: chat.connection,
-          // Whatever the onboarding screen last probed — empty after a launch auto-restore,
-          // which `providerLabel` handles by falling back to the wire provider name.
-          oauthProviders: state.onboarding.capability?.oauthProviders ?? []
-        )
-        return .none
-
-      case let .reauth(.presented(.delegate(.reauthenticated(connection, sameUser)))):
-        state.reauth = nil
-        // NO bearer reseed here. `performNativeOAuthLogin` already put the fresh pair in the
-        // store (that is what the sheet's validating call authenticated with), and by now the
-        // store may hold a ROTATION of it that `connection` — captured when the sheet
-        // finished — does not. Re-seeding the captured pair would put a retired refresh token
-        // back in play, and the portal answers a replayed refresh token by revoking the
-        // session. The store owns the pair; this reduction only routes the connection.
-        if sameUser {
-          // Same user → adopt the fresh auth regime EVERYWHERE the app still holds the dead
-          // one. The list's connection is the snapshot every later chat is built from (a row
-          // tap, the regular-width archive/delete refill, the profile reseat) and the one its
-          // own REST calls carry: left stale it would reconnect under expired credentials
-          // and, in cookie mode, push that dead jar back into the transport's shared cookie
-          // storage (`wsTicket` rehydrates it), undoing the login that just succeeded.
-          state.home?.connection = connection
-          // Then resume the dead slot chat in place.
-          guard state.liveChat != nil else { return .none }
-          return .send(.liveChat(.resumeAfterReauth(connection)))
-        }
-        // Different user signed in → drop everything identity-scoped and force a fresh list.
-        // (`makeHomeState` reads the profile pref AFTER the clear, so it seeds defaults.)
-        // The approval badge set + tap stash are identity-scoped too — the old user's
-        // pending approvals must not badge (or replay into) the new user's list.
-        preferences.clearIdentityScopedPrefs()
-        let releaseMic = releaseSlotMic(state)
-        state.path = .init()
-        state.liveChat = nil
-        state.pendingPushTap = nil
-        state.pendingPushTapServerURL = nil
-        state.pendingApprovalSessionIDs = []
-        state.home = makeHomeState(connection: connection)
-        let identityCleanup: Effect<Action> = .merge(releaseMic, setBadge(state))
-        // The stash was just cleared, so there is nothing to replay — but in regular the new
-        // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
-        // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
-        // cancels the expired chat's remaining effects (a non-nil→non-nil swap compares equal
-        // and cancels nothing), and the action is what starts the replacement's socket.
-        guard let seat = detailRefill(state) else { return identityCleanup }
-        return .merge(identityCleanup, .send(.fillLiveChat(seat)))
-
-      case .reauth(.presented(.delegate(.quit))):
-        // "Quit to start" → full logout (Keychain session + every pref) → onboarding.
-        // The tap stash and the approval badge set die with the identity (same clears
-        // as `.disconnect`, through the other logout path); badge reset to zero.
-        let connection = state.home?.connection ?? state.liveChat?.connection
-        let releaseMic = releaseSlotMic(state)
-        bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
-        try? keychain.deleteSession()
-        preferences.clearServerURL()
-        preferences.clearIdentityScopedPrefs()
-        preferences.saveGroupingMode(.default)
-        preferences.saveDefaultSessionSwipeAction(.default)
-        preferences.saveShowCronSection(true)
-        state.reauth = nil
-        state.path = .init()
-        state.liveChat = nil
-        state.home = nil
-        state.onboarding = .init()
-        state.pendingPushTap = nil
-        state.pendingPushTapServerURL = nil
-        state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
-
-      case let .liveChat(.delegate(.branchCreated(creation))):
-        // A branch `session.create` resolved (#34). The new session lives ONLY in server
-        // memory until its first prompt (the DB row is created lazily), so it must NOT go
-        // through the resume-by-stored-id `openSession` flow — `session.resume` hard-fails
-        // "session not found" without a DB row, and the not-found self-heal would then
-        // strand the user in a fresh, unrelated, EMPTY session. Mirror the desktop's fork
-        // flow instead: prime the replacement chat straight from the create response —
-        // the stored id (list/marker identity) plus `attachLiveSessionID`, which makes
-        // the new chat's socket attach via `session.activate` (re-binding the live
-        // session's transport and returning the seeded history), plus the SEED (text +
-        // parent id) so a server-side orphan reap of the never-prompted branch can be
-        // healed by replaying the seeded create. Slot replacement still runs through
-        // `teardownSlot(thenFill:)` (persist → teardown → nil-out → fill — never a
-        // direct swap). Finally request a list refetch so the branch shows (nested
-        // under its parent) once its DB row exists server-side — an abandoned branch
-        // simply never appears (documented v1 behavior, no optimistic insert).
-        guard let home = state.home else { return .none }
-        var chat = ChatFeature.State(
-          connection: home.connection,
-          resumeStoredID: creation.handle.storedSessionID,
-          profileName: home.scopedProfileName
-        )
-        chat.attachLiveSessionID = creation.handle.sessionID
-        chat.branchSeed = creation.seed
-        let reload: Effect<Action> = .send(.home(.pulledToRefresh))
-        guard state.liveChat != nil else {
-          seatLiveChat(chat, into: &state)
-          return reload
-        }
-        return .concatenate(teardownSlot(thenFill: chat), reload)
-
-      case let .liveChat(.delegate(.runningChanged(sessionID, running))):
-        // Route the live chat's authoritative working-state change to the session list so its
-        // row glow clears/lights INSTANTLY (event-driven), without waiting for the next poll.
-        // The poll stays the backstop for not-open sessions. No `home` → nothing to patch.
-        let canPatchVisibleRow: Bool
-        if let home = state.home, let chat = state.liveChat {
-          canPatchVisibleRow = home.scopedProfileName == chat.profileName
-        } else {
-          canPatchVisibleRow = false
-        }
-        let glow: Effect<Action> = canPatchVisibleRow
-          ? .send(.home(.setSessionRunning(id: sessionID, running: running)))
-          : .none
-        // A completion that lands while this chat is on screen has already been seen. Advance
-        // the shared backend watermark after the new activity, not just when the row was first
-        // opened before the turn, so Desktop does not rediscover it as unread on its next poll.
-        let read: Effect<Action>
-        if !running,
-          state.currentViewingSessionID == sessionID,
-          let chat = state.liveChat {
-          read = acknowledgeRead(
-            &state,
-            sessionID: sessionID,
-            connection: chat.connection,
-            profileName: chat.profileName
-          )
-        } else {
-          read = .none
-        }
-        let listUpdate: Effect<Action> = .concatenate(glow, read)
-        // A DETACHED slot (`isChatDetached`: compact with no marker in the path — the user
-        // popped to the list; never the case in regular, where the slot is the visible
-        // detail column) only outlives the pop while its turn runs. The turn ending —
-        // `message.complete`, `.error`, or a foreground hydrate confirming `running == false`
-        // — means there's nothing left to keep alive: flush the snapshot, then tear the slot
-        // down.
-        // UNLESS the queue still owes work (#66): the chat's own reducer drained (or
-        // parked) in the same reduction that emitted this delegate, so by now
-        // `hasQueuedWork` is true exactly when a next turn is mid-drain or entries are
-        // parked waiting — either way the in-memory queue must survive. The drained
-        // turn's own end (queue empty by then) re-enters here and tears down normally;
-        // a queue parked by an error while detached deliberately keeps the slot (bounded
-        // by the user re-opening or archiving the session).
-        guard !running, state.isChatDetached, let chat = state.liveChat, !chat.hasQueuedWork
-        else { return listUpdate }
-        return .concatenate(listUpdate, teardownSlot())
-
-      case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
-        return .none
-      }
+      reduceCore(into: &state, action: action)
     }
     .ifLet(\.connectionFailed, action: \.connectionFailed) {
       ConnectionFailedFeature()
@@ -865,6 +319,7 @@ public struct AppFeature {
     .ifLet(\.liveChat, action: \.liveChat) {
       ChatFeature()
     }
+    .ifLet(\.$launchIntentConflict, action: \.launchIntentConflict)
     .forEach(\.path, action: \.path) {
       ChatScreen()
     }
@@ -893,6 +348,663 @@ public struct AppFeature {
     }
   }
 
+  /// Keep the reducer builder small enough for the iOS compiler.
+  private func reduceCore(into state: inout State, action: Action) -> Effect<Action> {
+    switch action {
+    case .task:
+      // Observe push taps for the whole app lifetime (a tap can arrive cold-launch or while
+      // running) and deep-link them; the actual nav happens in `.pushTapped`.
+      let externalObservers: Effect<Action>
+      if state.didStartExternalObservers {
+        externalObservers = .none
+      } else {
+        state.didStartExternalObservers = true
+        externalObservers = .merge(
+          .run { [push] send in
+            for await tap in push.incomingTaps() {
+              await send(.pushTapped(tap))
+            }
+          }.cancellable(id: CancelID.pushTaps),
+          .run { [launchIntent] send in
+            for await intent in launchIntent.incomingIntents() {
+              await send(.launchIntentReceived(intent))
+            }
+          }.cancellable(id: CancelID.launchIntents)
+        )
+      }
+      // Launch auto-connect: if a persisted session (token *or* gated cookie) + server
+      // URL exist, silently validate and skip onboarding. Only runs once, before we have
+      // a home. `loadSession` rehydrates a `.cookie` session's cookies into `.shared` so
+      // the REST/WS transports authenticate on this fresh launch.
+      // `!didRunLaunchProbe` is the real once-per-process gate (see the property): a
+      // re-sent `.task` must never start a SECOND probe while the retry screen is up (it
+      // would flip the UI back to the "Connecting…" spinner and, on success, build `home`
+      // beside a still-populated slot). The other checks are cheap belt-and-braces.
+      guard !state.didRunLaunchProbe, state.home == nil, state.connectionFailed == nil,
+            !state.autoConnecting,
+            let session = keychain.loadSession(.shared),
+            let urlString = preferences.loadServerURL(),
+            let url = parseServerURL(urlString)
+      else { return externalObservers }
+      // A `.token` session with an empty token is treated as "no creds" (matches the old
+      // `loadToken()`-non-empty guard) so we stay on onboarding rather than probe blindly.
+      if case .token("") = session { return externalObservers }
+      state.didRunLaunchProbe = true
+      state.autoConnecting = true
+      let connection = ServerConnection(baseURL: url, auth: session)
+      return .merge(
+        externalObservers,
+        .run { [rest, keychain, bearerTokens] send in
+          // Bearer restore (#19) must happen BEFORE the probe: a `.bearer` connection
+          // resolves its `Authorization` header through the token store, so probing an
+          // unseeded store sends the request with no credentials at all and 401s a
+          // perfectly good session into prefilled onboarding. Seeding also re-arms the
+          // Keychain persist hook, so a rotation during the probe is saved.
+          Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
+          do {
+            _ = try await rest.sessions(connection, 1, 0, .recent)
+            await send(.autoConnectSucceeded(connection))
+          } catch {
+            // A dead refresh token surfaces here as `RESTError.unauthorized` (the store
+            // maps the 401 verdict), so it takes the existing credentials-verdict branch
+            // in `.autoConnectFailed` — the #62 routing rule needs no bearer carve-out.
+            await send(.autoConnectFailed(connection, asRESTError(error)))
+          }
+        }
+      )
+
+    case let .autoConnectSucceeded(connection):
+      state.autoConnecting = false
+      // Defensive: a retry screen and a live list must never coexist (see the `.task` guard).
+      state.connectionFailed = nil
+      state.home = makeHomeState(connection: connection)
+      return landOnHome(&state)
+
+    case let .autoConnectFailed(connection, error):
+      state.autoConnecting = false
+      guard ConnectionFailedFeature.isRetryable(error) else {
+        // Stored creds didn't validate (expired token / dead cookies / a dead refresh
+        // token) — fall back to onboarding for re-entry; retrying can't repair dead
+        // credentials.
+        return fallBackToOnboarding(&state, connection: connection)
+      }
+      // Either we never reached the server, or a proxy told us the agent is down — the
+      // stored session is presumed fine, so keep it and offer a Retry instead of dropping to
+      // onboarding (which, in password mode, would demand a password that never expired just
+      // because the VPN was off).
+      state.connectionFailed = ConnectionFailedFeature.State(
+        connection: connection, reason: error
+      )
+      return .none
+
+    case let .connectionFailed(.delegate(.connected(connection))):
+      // The retry validated the stored session — identical landing to a successful launch
+      // auto-connect, cold-launch push-tap replay included.
+      state.connectionFailed = nil
+      state.home = makeHomeState(connection: connection)
+      return landOnHome(&state)
+
+    case let .connectionFailed(.delegate(.credentialsRejected(connection))):
+      // The retry reached the server and it turned us away — retrying can't fix that, so
+      // land exactly where a launch auth failure lands: prefilled onboarding, nothing
+      // cleared, which is also where the connection-help sheet's entry points live.
+      state.connectionFailed = nil
+      return fallBackToOnboarding(&state, connection: connection)
+
+    case .connectionFailed(.delegate(.logoutConfirmed)):
+      // "Log Out" from the retry screen (confirmed): the user is abandoning the stored
+      // session, so run the same logout as "Quit to start" (Keychain session + every pref)
+      // and land on a *fresh* onboarding — nothing prefilled, there is no session left to
+      // repair. The tap stash and the approval badge set die with the identity too.
+      let connection = state.connectionFailed?.connection
+      let releaseMic = releaseSlotMic(state)
+      bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
+      try? keychain.deleteSession()
+      preferences.clearServerURL()
+      preferences.clearIdentityScopedPrefs()
+      preferences.saveGroupingMode(.default)
+      preferences.saveDefaultSessionSwipeAction(.default)
+      preferences.saveShowCronSection(true)
+      state.connectionFailed = nil
+      state.path = .init()
+      clearLiveChat(&state)
+      state.home = nil
+      state.onboarding = .init()
+      state.pendingPushTap = nil
+      state.pendingPushTapServerURL = nil
+      state.pendingLaunchIntent = nil
+      state.pendingConflictingLaunchIntent = nil
+      state.launchIntentConflict = nil
+      state.pendingApprovalSessionIDs = []
+      return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+
+    case let .scenePhaseChanged(phase):
+      // Fan lifecycle out to the live chat slot (if any) and the session list — no
+      // top-of-path hunting: the slot IS the one live chat, attached or not. We do NOT
+      // auto-restore the nav stack on cold launch — opening a session is enough.
+      switch phase {
+      case .active:
+        // Foreground: release the background-execution window (cancel the grace listener;
+        // `end()` is idempotent — a no-op when none is active), then re-hydrate the live
+        // chat via `.foreground` (which reconnects only if the socket died — a socket the
+        // grace window kept alive is reused, not redialed) and refresh the list
+        // immediately (don't wait for the poll).
+        state.isSceneBackgrounded = false
+        return .merge(
+          .cancel(id: CancelID.backgroundGrace),
+          .run { [backgroundTask] _ in await backgroundTask.end() },
+          state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
+          state.home != nil ? .send(.home(.pulledToRefresh)) : .none,
+          // Stuck on the retry screen? Foregrounding is exactly the moment the user just
+          // flipped the VPN back on — re-probe without making them tap. The child SUPERSEDES
+          // whatever is in flight (`cancelInFlight` on its probe), so this can't fan out
+          // into parallel probes; a stalled one is simply abandoned. Accepted trade-off:
+          // `.active` also fires for Control Center / notification-pull / app-switcher
+          // blips, so churn can restart the probe more often than the user asked. Gating on
+          // "was really backgrounded" would break the main case — flipping airplane mode or
+          // Wi-Fi from Control Center never backgrounds the app — and swallowing the
+          // foreground is the latch bug this design exists to avoid. One GET per blip.
+          state.connectionFailed != nil ? .send(.connectionFailed(.sceneBecameActive)) : .none
+        )
+      case .background:
+        // Backgrounding: flush the live chat's snapshot + anchor IMMEDIATELY (don't rely on
+        // the 1s debounce) so a process kill can't lose the latest paint or the timer anchor.
+        state.isSceneBackgrounded = true
+        guard let chat = state.liveChat else { return .none }
+        let flush: Effect<Action> = .send(.liveChat(.persistNow))
+        // A RUNNING turn buys itself a finite background window (~30s): the socket simply
+        // keeps streaming, no `ChatFeature` changes. If iOS expires the window while still
+        // backgrounded, the listener fires `.backgroundGraceExpired` → final flush + clean
+        // socket-only disconnect (state stays in memory for the #26-preserving foreground
+        // hydrate); catch-up is then the existing push + `.foreground` reconnect. An idle
+        // chat starts NO task — nothing to keep alive, no battery burn.
+        guard chat.isRunning else { return flush }
+        return .merge(
+          flush,
+          .run { [backgroundTask] send in
+            for await _ in await backgroundTask.begin(Self.backgroundGraceTaskName) {
+              await send(.backgroundGraceExpired)
+            }
+          }
+          .cancellable(id: CancelID.backgroundGrace, cancelInFlight: true)
+        )
+      case .inactive:
+        // Transient occlusion (app switcher, notification shade): flush only — the process
+        // isn't suspending yet, so no background window is needed.
+        return state.liveChat != nil ? .send(.liveChat(.persistNow)) : .none
+      }
+
+    case let .layoutChanged(layout):
+      return reduceLayoutChanged(&state, to: layout)
+
+    case .backgroundGraceExpired:
+      // The background window ran out while still backgrounded. Final flush, then cancel
+      // the socket ONLY — `liveChat` stays in memory so the foreground re-hydrate can
+      // preserve the live thinking/tool rows (#26). No explicit `end()` here: the client
+      // performed the mandatory end bookkeeping inside its expiration handler before
+      // yielding. Guards: an expiry whose send escaped just as `.active` cancelled the
+      // listener must be a no-op — `.active` already redialed, and tearing that fresh
+      // socket down would strand the chat with no reconnect scheduled. Likewise nothing
+      // to do when the slot was already torn down (e.g. the detached turn ended).
+      guard state.isSceneBackgrounded, state.liveChat != nil else { return .none }
+      return .concatenate(
+        .send(.liveChat(.persistNow)),
+        .send(.liveChat(.teardownSocketOnly))
+      )
+
+    case let .pushTapped(tap):
+      return reducePushTapped(&state, tap: tap)
+
+    case let .launchIntentReceived(intent):
+      // Route an App-Intent launch (#93) through the SAME `createSession` flow the "+"
+      // button uses — the intent only routes, no agent logic runs from it (thin-client
+      // rule). No `home` yet (cold launch still auto-connecting or on onboarding) → stash
+      // for replay once the list exists, mirroring the cold-launch push-tap stash (#46).
+      // Unlike a push tap there is no badge bookkeeping and no server identity to verify:
+      // the intent originates from THIS device's UI surface (no foreign-server risk), so
+      // the replay proceeds unconditionally. The dictation variant arms the new chat's
+      // initial voice action (consumed at `.ready`); the voice-conversation variant joins
+      // with #92.
+      guard state.home != nil else {
+        state.pendingLaunchIntent = intent
+        return .none
+      }
+      // A launch intent must not silently tear down a running turn or an in-memory prompt
+      // queue. Surface the single-slot conflict and require an explicit replacement (#93).
+      if let chat = state.liveChat, chat.isRunning || chat.hasQueuedWork {
+        state.pendingConflictingLaunchIntent = intent
+        state.launchIntentConflict = ConfirmationDialogState {
+          TextState("Start a new chat?")
+        } actions: {
+          ButtonState(role: .destructive, action: .replace) {
+            TextState("Open New Chat")
+          }
+          ButtonState(role: .cancel) {
+            TextState("Cancel")
+          }
+        } message: {
+          TextState(
+            "The current chat is still working or has queued prompts. Opening a new chat will leave it and discard any queued prompts on this device."
+          )
+        }
+        return .none
+      }
+      return .send(.launchIntentConfirmed(intent))
+
+    case let .launchIntentConfirmed(intent):
+      switch intent {
+      case .startNewSession:
+        return .send(.home(.delegate(.createSession(initialComposerText: nil))))
+      case .startNewSessionWithDictation:
+        return .send(.home(.delegate(
+          .createSession(initialComposerText: nil, initialVoiceAction: .startDictation)
+        )))
+      }
+
+    case .launchIntentConflict(.presented(.replace)):
+      guard let intent = state.pendingConflictingLaunchIntent else { return .none }
+      state.pendingConflictingLaunchIntent = nil
+      return .send(.launchIntentConfirmed(intent))
+
+    case .launchIntentConflict(.dismiss):
+      state.pendingConflictingLaunchIntent = nil
+      return .none
+
+    case .launchIntentConflict:
+      return .none
+
+
+    case let .onboarding(.delegate(.connected(connection))):
+      // Defensive, mirroring `.autoConnectSucceeded`: a retry screen and a live list must
+      // never coexist. `AppView` would render `home` while the `ifLet` child stayed alive,
+      // re-probing on every foreground for the process lifetime.
+      state.connectionFailed = nil
+      state.home = makeHomeState(connection: connection)
+      // Auto-connect failure falls back to onboarding, so a manual login must also replay
+      // a stashed cold-launch tap (#46).
+      return landOnHome(&state)
+
+    case let .home(.delegate(.openSession(session))):
+      guard let home = state.home else { return .none }
+      // Approval-recovery hint (#30 workaround): a badged session (approval push tapped or
+      // received) may have missed the real `approval.request` while detached — read the flag
+      // BEFORE clearing the badge entry so the hydrating chat can synthesize a generic card
+      // when the turn is still running. Covers tap→open, slot replacement, and a badged
+      // session opened later from the list.
+      let expectsApproval = state.pendingApprovalSessionIDs.contains(session.id)
+      // Opening a session clears its pending-approval badge entry (the user is now viewing it).
+      // The current-viewing marker is updated by the `.onChange(of: currentViewingSessionID)`
+      // modifier below (one source of truth for nav-derived state).
+      state.pendingApprovalSessionIDs.remove(session.id)
+      let badge = setBadge(state)
+      // Re-opening the slot's OWN session (e.g. tapping the glowing row of a detached
+      // running turn): the accumulated live state must survive — a fresh
+      // `ChatFeature.State` would discard the detached thinking/tool/streaming rows.
+      // Push the marker back (the path is empty when coming from the list) and
+      // re-attach: hydrate against the live socket, reconnecting only if it died.
+      if let chat = state.liveChat, chat.sessionKey == session.id {
+        if expectsApproval {
+          state.liveChat?.expectsPendingApproval = true
+        }
+        let read = acknowledgeRead(
+          &state,
+          sessionID: session.id,
+          connection: chat.connection,
+          profileName: chat.profileName
+        )
+        // Marker only when the chat is actually detached (compact + empty path) — in
+        // regular the slot is already the visible detail and the path stays empty.
+        // Defensive guard too: the path is normally empty here in compact (re-opens come
+        // from the list, and an on-screen match short-circuits in `pushTapped` before
+        // reaching this delegate) — but a double-delivered open must not stack a second
+        // marker.
+        if state.isChatDetached {
+          state.path.append(ChatScreen.State(sessionKey: session.id, generation: state.slotGeneration))
+        }
+        return .merge(badge, read, .send(.liveChat(.reattached)))
+      }
+      // `resolvedTitle` keeps the server's "Untitled" placeholder out of the header
+      // (and the rename pre-fill); a real title arrives via `session.info` on resume.
+      // Carry the active profile so resume/history scope to the right `state.db`.
+      let profileName = home.scopedProfileName
+      var chat = ChatFeature.State(
+        connection: home.connection,
+        resumeStoredID: session.id,
+        profileName: profileName,
+        title: session.resolvedTitle
+      )
+      let read = acknowledgeRead(
+        &state,
+        sessionID: session.id,
+        connection: home.connection,
+        profileName: profileName
+      )
+      chat.expectsPendingApproval = expectsApproval
+      guard state.liveChat != nil else {
+        seatLiveChat(chat, into: &state)
+        return .merge(badge, read)
+      }
+      // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
+      // must be fully torn down (through the nil-out, so even its un-ID'd one-shot RPC
+      // effects are cancelled) before the new chat fills the slot.
+      return .merge(badge, read, teardownSlot(thenFill: chat))
+
+    case let .home(.delegate(.createSession(initialComposerText, initialVoiceAction))):
+      guard let home = state.home else { return .none }
+      // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
+      // — regular width keeps one such seat in the detail column at all times): tearing it
+      // down to fill an identical fresh one would redial its socket for nothing. Reset the
+      // composer draft (text + staged attachments) instead — the only visible difference a
+      // fresh chat would have; `initialComposerText` still seeds it. Anything the shortcut
+      // can't reproduce (a stale profile, in-flight composer input, a failed handshake)
+      // falls through to the real refill. The marker guard is the compact safety net: a
+      // detached seat re-attaches rather than leaving the tap without a screen.
+      if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
+        state.liveChat?.composerText = initialComposerText ?? ""
+        state.liveChat?.attachments = []
+        state.liveChat?.pendingInitialVoiceAction = initialVoiceAction
+        if state.isChatDetached {
+          state.path.append(ChatScreen.State(sessionKey: chat.sessionKey, generation: state.slotGeneration))
+        }
+        // An already-ready seat will not transition to ready again. Consume the arm
+        // now; bootstrapping seats use ChatFeature's ready transition as usual.
+        if initialVoiceAction == .startDictation, chat.status == .ready {
+          state.liveChat?.pendingInitialVoiceAction = nil
+          return .send(.liveChat(.voiceButtonTapped))
+        }
+        return .none
+      }
+      // New chats are created under the currently-selected profile. `initialComposerText`
+      // (push "Ask agent to install") seeds the composer draft but is NOT auto-sent.
+      var chat = newChat(for: home, composerText: initialComposerText ?? "")
+      chat.pendingInitialVoiceAction = initialVoiceAction
+      guard state.liveChat != nil else {
+        seatLiveChat(chat, into: &state)
+        return .none
+      }
+      // Slot occupied: flush + fully tear the old chat down before filling (same rule
+      // as open — the replacement goes through the nil-out).
+      return teardownSlot(thenFill: chat)
+
+    case let .fillLiveChat(chat):
+      seatLiveChat(chat, into: &state)
+      // The initial connect is the chat view's `.task` (first appearance). In compact the
+      // fresh marker's destination is a NEW view, so it fires there. In regular the whole
+      // teardown → clear → fill chain reduces synchronously (`.send` is a `Just`), so SwiftUI
+      // never observes the nil slot — the detail view is re-created by `slotGeneration`
+      // instead, off state the shell has to be keyed on correctly. Dial here so the seat is
+      // connected regardless; `hasStarted` makes the view's `.task` a no-op, never a redial.
+      return state.layout == .regular ? .send(.liveChat(.task)) : .none
+
+    case .clearLiveChat:
+      // Pop-to-list teardown completed — drop the slot state. `ifLet` auto-cancels any
+      // remaining child effects on the nil-out.
+      clearLiveChat(&state)
+      return .none
+
+    case .path(.popFrom):
+      // Popped back to the session list. Nothing to do at pop-START: the teardown policy
+      // runs on `.chatViewDisappeared` (below), once the pop animation has finished —
+      // clearing the slot here would blank the outgoing screen mid-animation and route
+      // the view's disappearance into a nil child.
+      return .none
+
+    case let .chatViewDisappeared(generation):
+      guard generation == state.slotGeneration else { return .none }
+      // The chat view finished leaving the screen. Only a DETACHED slot (`isChatDetached`
+      // — compact, the pop animation completed) means the chat is genuinely off screen:
+      // forward the view-session cleanup (mic/voice) and apply the pop policy. A RUNNING
+      // detached turn keeps its slot untouched — the socket streams on, rows accumulate,
+      // and the list's row glow tracks via `runningChanged` (whose `running: false` while
+      // detached tears the slot down below). An idle detached chat has nothing to keep
+      // alive — flush the snapshot, cancel everything, clear the slot.
+      //
+      // Everything else is a no-op, cleanup included: the slot's chat is still on screen
+      // (it moved between the stack and the detail column on a layout change — releasing
+      // the mic there would cancel a recording under a visible composer) or the view that
+      // left belonged to a chat a slot replacement already tore down, whose `.teardown`
+      // released the same resources. No slot (logout/quit) → no-op too.
+      guard let chat = state.liveChat, state.isChatDetached else { return .none }
+      let cleanup: Effect<Action> = .send(.liveChat(.viewDisappeared))
+      // `hasQueuedWork` (#66) keeps the slot alive like a running turn does: queued
+      // prompts are in-memory only, so an idle pop with entries waiting (a parked
+      // queue, or the gap before a drain's turn starts) must not destroy them — the
+      // drain fires the next turn into the detached slot, and teardown comes when the
+      // queue empties and that turn ends (the `runningChanged` policy below).
+      guard !chat.isRunning, !chat.hasQueuedWork else { return cleanup }
+      return .concatenate(cleanup, teardownSlot())
+
+    case let .home(.delegate(.sessionArchived(id))):
+      // The user archived a session from the list. If it's the slot's session (possibly
+      // detached mid-turn), tear the live chat down FIRST — its socket must not keep
+      // streaming into a session that's now archived. Any other session → nothing to do
+      // (the list's optimistic archive handles itself).
+      guard let chat = state.liveChat, chat.sessionKey == id else { return .none }
+      // Deliberate asymmetry: if the archive PATCH later FAILS, the list restores the
+      // row (optimistic rollback) but the slot stays torn down — re-opening simply
+      // resumes the session fresh. Resurrecting live slot state for a rare failure path
+      // isn't worth replaying the teardown. In regular the torn-down chat WAS the detail
+      // column, so a fresh new chat is seated behind it (`detailRefill`); compact leaves
+      // the slot nil — the user is on the list.
+      return teardownSlot(thenFill: detailRefill(state))
+
+    case let .home(.delegate(.sessionDeleted(id))):
+      // The user permanently deleted a session. ALWAYS wipe its cached snapshot + turn
+      // anchor — a deleted session must never repaint from the non-authoritative cache.
+      // When it's the slot's session (possibly detached mid-turn), tear the live chat
+      // down too, WITHOUT the snapshot flush (`flushSnapshot: false`): the flush would
+      // re-save the very snapshot this wipe deletes. Same deliberate asymmetry as
+      // archive: if the DELETE later fails, the list restores the row but the slot and
+      // cache stay cleared — re-opening simply resumes the session fresh.
+      let wipeSnapshot: Effect<Action> = .run { [chatSnapshot] _ in
+        chatSnapshot.deleteSnapshot(id)
+      }
+      guard let chat = state.liveChat, chat.sessionKey == id else {
+        return wipeSnapshot
+      }
+      // Same regular-width refill as archive: the detail column must not go blank.
+      return .concatenate(
+        teardownSlot(thenFill: detailRefill(state), flushSnapshot: false), wipeSnapshot
+      )
+
+    case let .home(.delegate(.sessionDeleteSucceeded(id))):
+      // The server CONFIRMED the delete — only now drop the session's pending-approval
+      // badge entry (opening the session, the normal clear path, no longer exists).
+      // Clearing at initiation (`sessionDeleted` above) would be premature: a failed
+      // DELETE restores the row, but its still-pending approval would badge nowhere —
+      // nothing short of a fresh approval push repopulates the entry. Unlike the
+      // wipe/teardown asymmetry above, the badge waits for confirmation.
+      state.pendingApprovalSessionIDs.remove(id)
+      return setBadge(state)
+
+    case .home(.delegate(.disconnect)):
+      // Token cleared in Settings → tear down and return to onboarding. Nil-ing the slot
+      // auto-cancels its effects (socket included); the mic is the one thing that outlives
+      // them, so `releaseSlotMic` covers it. The tap stash is structurally nil here (home
+      // existed, so any stash was consumed at creation) — cleared defensively: the stash
+      // dies with the identity. The pending-approval badge set
+      // dies with it too (entries reference sessions on the server just left — they'd
+      // leak a stale icon badge into the next login), so reset the badge to zero.
+      let connection = state.home?.connection
+      let releaseMic = releaseSlotMic(state)
+      state.path = .init()
+      clearLiveChat(&state)
+      state.home = nil
+      state.onboarding = .init()
+      state.pendingPushTap = nil
+      state.pendingPushTapServerURL = nil
+      state.pendingLaunchIntent = nil
+      state.pendingConflictingLaunchIntent = nil
+      state.launchIntentConflict = nil
+      state.pendingApprovalSessionIDs = []
+      return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+
+    case .liveChat(.delegate(.sessionExpired)):
+      // The live (gated) session died — attached or detached, the slot is the one chat.
+      // The chat already paused its own reconnect; raise the re-auth modal seeded from its
+      // connection (server URL + regime + identity). Ignore if a modal is already up.
+      guard state.reauth == nil, let chat = state.liveChat else { return .none }
+      state.reauth = makeReauthState(
+        for: chat.connection,
+        // Whatever the onboarding screen last probed — empty after a launch auto-restore,
+        // which `providerLabel` handles by falling back to the wire provider name.
+        oauthProviders: state.onboarding.capability?.oauthProviders ?? []
+      )
+      return .none
+
+    case let .reauth(.presented(.delegate(.reauthenticated(connection, sameUser)))):
+      state.reauth = nil
+      // NO bearer reseed here. `performNativeOAuthLogin` already put the fresh pair in the
+      // store (that is what the sheet's validating call authenticated with), and by now the
+      // store may hold a ROTATION of it that `connection` — captured when the sheet
+      // finished — does not. Re-seeding the captured pair would put a retired refresh token
+      // back in play, and the portal answers a replayed refresh token by revoking the
+      // session. The store owns the pair; this reduction only routes the connection.
+      if sameUser {
+        // Same user → adopt the fresh auth regime EVERYWHERE the app still holds the dead
+        // one. The list's connection is the snapshot every later chat is built from (a row
+        // tap, the regular-width archive/delete refill, the profile reseat) and the one its
+        // own REST calls carry: left stale it would reconnect under expired credentials
+        // and, in cookie mode, push that dead jar back into the transport's shared cookie
+        // storage (`wsTicket` rehydrates it), undoing the login that just succeeded.
+        state.home?.connection = connection
+        // Then resume the dead slot chat in place.
+        guard state.liveChat != nil else { return .none }
+        return .send(.liveChat(.resumeAfterReauth(connection)))
+      }
+      // Different user signed in → drop everything identity-scoped and force a fresh list.
+      // (`makeHomeState` reads the profile pref AFTER the clear, so it seeds defaults.)
+      // The approval badge set + tap stash are identity-scoped too — the old user's
+      // pending approvals must not badge (or replay into) the new user's list.
+      preferences.clearIdentityScopedPrefs()
+      let releaseMic = releaseSlotMic(state)
+      state.path = .init()
+      clearLiveChat(&state)
+      state.pendingPushTap = nil
+      state.pendingPushTapServerURL = nil
+      state.pendingLaunchIntent = nil
+      state.pendingConflictingLaunchIntent = nil
+      state.launchIntentConflict = nil
+      state.pendingApprovalSessionIDs = []
+      state.home = makeHomeState(connection: connection)
+      let identityCleanup: Effect<Action> = .merge(releaseMic, setBadge(state))
+      // The stash was just cleared, so there is nothing to replay — but in regular the new
+      // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
+      // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
+      // cancels the expired chat's remaining effects (a non-nil→non-nil swap compares equal
+      // and cancels nothing), and the action is what starts the replacement's socket.
+      guard let seat = detailRefill(state) else { return identityCleanup }
+      return .merge(identityCleanup, .send(.fillLiveChat(seat)))
+
+    case .reauth(.presented(.delegate(.quit))):
+      // "Quit to start" → full logout (Keychain session + every pref) → onboarding.
+      // The tap stash and the approval badge set die with the identity (same clears
+      // as `.disconnect`, through the other logout path); badge reset to zero.
+      let connection = state.home?.connection ?? state.liveChat?.connection
+      let releaseMic = releaseSlotMic(state)
+      bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
+      try? keychain.deleteSession()
+      preferences.clearServerURL()
+      preferences.clearIdentityScopedPrefs()
+      preferences.saveGroupingMode(.default)
+      preferences.saveDefaultSessionSwipeAction(.default)
+      preferences.saveShowCronSection(true)
+      state.reauth = nil
+      state.path = .init()
+      clearLiveChat(&state)
+      state.home = nil
+      state.onboarding = .init()
+      state.pendingPushTap = nil
+      state.pendingPushTapServerURL = nil
+      state.pendingLaunchIntent = nil
+      state.pendingConflictingLaunchIntent = nil
+      state.launchIntentConflict = nil
+      state.pendingApprovalSessionIDs = []
+      return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+
+    case let .liveChat(.delegate(.branchCreated(creation))):
+      // A branch `session.create` resolved (#34). The new session lives ONLY in server
+      // memory until its first prompt (the DB row is created lazily), so it must NOT go
+      // through the resume-by-stored-id `openSession` flow — `session.resume` hard-fails
+      // "session not found" without a DB row, and the not-found self-heal would then
+      // strand the user in a fresh, unrelated, EMPTY session. Mirror the desktop's fork
+      // flow instead: prime the replacement chat straight from the create response —
+      // the stored id (list/marker identity) plus `attachLiveSessionID`, which makes
+      // the new chat's socket attach via `session.activate` (re-binding the live
+      // session's transport and returning the seeded history), plus the SEED (text +
+      // parent id) so a server-side orphan reap of the never-prompted branch can be
+      // healed by replaying the seeded create. Slot replacement still runs through
+      // `teardownSlot(thenFill:)` (persist → teardown → nil-out → fill — never a
+      // direct swap). Finally request a list refetch so the branch shows (nested
+      // under its parent) once its DB row exists server-side — an abandoned branch
+      // simply never appears (documented v1 behavior, no optimistic insert).
+      guard let home = state.home else { return .none }
+      var chat = ChatFeature.State(
+        connection: home.connection,
+        resumeStoredID: creation.handle.storedSessionID,
+        profileName: home.scopedProfileName
+      )
+      chat.attachLiveSessionID = creation.handle.sessionID
+      chat.branchSeed = creation.seed
+      let reload: Effect<Action> = .send(.home(.pulledToRefresh))
+      guard state.liveChat != nil else {
+        seatLiveChat(chat, into: &state)
+        return reload
+      }
+      return .concatenate(teardownSlot(thenFill: chat), reload)
+
+    case let .liveChat(.delegate(.runningChanged(sessionID, running))):
+      // Route the live chat's authoritative working-state change to the session list so its
+      // row glow clears/lights INSTANTLY (event-driven), without waiting for the next poll.
+      // The poll stays the backstop for not-open sessions. No `home` → nothing to patch.
+      let canPatchVisibleRow: Bool
+      if let home = state.home, let chat = state.liveChat {
+        canPatchVisibleRow = home.scopedProfileName == chat.profileName
+      } else {
+        canPatchVisibleRow = false
+      }
+      let glow: Effect<Action> = canPatchVisibleRow
+        ? .send(.home(.setSessionRunning(id: sessionID, running: running)))
+        : .none
+      // A completion that lands while this chat is on screen has already been seen. Advance
+      // the shared backend watermark after the new activity, not just when the row was first
+      // opened before the turn, so Desktop does not rediscover it as unread on its next poll.
+      let read: Effect<Action>
+      if !running,
+        state.currentViewingSessionID == sessionID,
+        let chat = state.liveChat {
+        read = acknowledgeRead(
+          &state,
+          sessionID: sessionID,
+          connection: chat.connection,
+          profileName: chat.profileName
+        )
+      } else {
+        read = .none
+      }
+      let listUpdate: Effect<Action> = .concatenate(glow, read)
+      // A DETACHED slot (`isChatDetached`: compact with no marker in the path — the user
+      // popped to the list; never the case in regular, where the slot is the visible
+      // detail column) only outlives the pop while its turn runs. The turn ending —
+      // `message.complete`, `.error`, or a foreground hydrate confirming `running == false`
+      // — means there's nothing left to keep alive: flush the snapshot, then tear the slot
+      // down.
+      // UNLESS the queue still owes work (#66): the chat's own reducer drained (or
+      // parked) in the same reduction that emitted this delegate, so by now
+      // `hasQueuedWork` is true exactly when a next turn is mid-drain or entries are
+      // parked waiting — either way the in-memory queue must survive. The drained
+      // turn's own end (queue empty by then) re-enters here and tears down normally;
+      // a queue parked by an error while detached deliberately keeps the slot (bounded
+      // by the user re-opening or archiving the session).
+      guard !running, state.isChatDetached, let chat = state.liveChat, !chat.hasQueuedWork
+      else { return listUpdate }
+      return .concatenate(listUpdate, teardownSlot())
+
+    case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
+      return .none
+    }
+  }
+
   /// The layout regime changed: set `layout` FIRST (the view's column move fires
   /// `chatViewDisappeared`, which must read the NEW layout through `isChatDetached` and
   /// leave the slot alone), then reconcile the path with the slot.
@@ -917,7 +1029,7 @@ public struct AppFeature {
       // Any other live slot (attached detail moments ago, a running turn, a typed draft)
       // needs its marker so the chat stays visible. SET, never append: one slot ↔ one
       // marker.
-      state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey)])
+      state.path = StackState([ChatScreen.State(sessionKey: chat.sessionKey, generation: state.slotGeneration)])
     case .regular:
       // The slot IS the detail column; a lingering marker would render the chat twice
       // (sidebar stack + detail). The slot itself — socket, rows, ticker — is untouched.
@@ -1144,6 +1256,18 @@ public struct AppFeature {
   /// unknown origin (`nil` — no stored URL at stash time) replays unverified; see
   /// `pendingPushTapServerURL`.
   private func landOnHome(_ state: inout State) -> Effect<Action> {
+    if let intent = state.pendingLaunchIntent {
+      state.pendingLaunchIntent = nil
+      state.pendingPushTap = nil
+      let origin = state.pendingPushTapServerURL
+      state.pendingPushTapServerURL = nil
+      // Keep same-server approval badges, but never carry foreign approvals into home.
+      if let origin, let connected = state.home?.connection.baseURL,
+         !Self.isSameServer(origin, connected) {
+        state.pendingApprovalSessionIDs.removeAll()
+      }
+      return .merge(setBadge(state), .send(.launchIntentReceived(intent)))
+    }
     guard let tap = state.pendingPushTap else {
       fillNewChatIfDetailEmpty(&state)
       return .none
@@ -1206,6 +1330,12 @@ public struct AppFeature {
       && a.port == b.port
   }
 
+  /// Invalidate view ownership even when identity teardown bypasses `teardownSlot`.
+  private func clearLiveChat(_ state: inout State) {
+    state.liveChat = nil
+    state.slotGeneration &+= 1
+  }
+
   /// Fill the live-chat slot and (re)set the navigation path to that chat's single marker.
   /// One slot ↔ one marker: the path never holds more than one chat screen, so replacing the
   /// contents (rather than appending) can't stack duplicates. The marker is COMPACT-ONLY:
@@ -1220,7 +1350,7 @@ public struct AppFeature {
     state.liveChat = chat
     state.path.removeAll()
     if state.layout == .compact {
-      state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+      state.path.append(ChatScreen.State(sessionKey: chat.sessionKey, generation: state.slotGeneration))
     } else {
       // Regular has no marker to give the incoming chat a new view — `slotGeneration` does
       // (`AppView` keys the detail column's `ChatView` on it).

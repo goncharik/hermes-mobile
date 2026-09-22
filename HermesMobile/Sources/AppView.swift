@@ -20,6 +20,9 @@ struct AppView: View {
       .sheet(item: $store.scope(state: \.reauth, action: \.reauth)) { reauthStore in
         ReauthView(store: reauthStore)
       }
+      .bottomActionSheet(
+        $store.scope(state: \.launchIntentConflict, action: \.launchIntentConflict)
+      )
       // Observe lifecycle here (view stays thin) and dispatch into the reducer, which fans
       // foreground out to reconnect/re-hydrate + list refresh and background out to an
       // immediate snapshot/anchor flush. Behaviour is unit-tested via `scenePhaseChanged`.
@@ -59,10 +62,10 @@ struct AppView: View {
             // session is open, racing the reducer-owned slot on push taps, archive refills,
             // and layout changes.
             SessionListView(store: homeStore, highlightedSessionID: store.highlightedSessionID)
-          } destination: { _ in
+          } destination: { screenStore in
             // The path holds only thin session-key markers — the REAL chat state lives in
             // the app-level live-chat slot, so a running turn's socket survives pops.
-            chatDetail
+            chatDetail(generation: screenStore.generation)
           }
           .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
         } detail: {
@@ -70,7 +73,7 @@ struct AppView: View {
           // alone: leaving the detail column with no content is what stops the collapsed
           // split from pushing a SECOND copy of the chat over the marker's destination.
           if store.layout == .regular {
-            chatDetail
+            chatDetail(generation: store.slotGeneration)
               // A slot replacement in regular has no new marker to give the chat a new view,
               // so key it on the fill counter: without it the incoming session inherits the
               // outgoing one's transcript scroll offset and composer focus.
@@ -101,7 +104,7 @@ struct AppView: View {
   /// destination in compact, the detail column in regular. Defensive empty view if the slot
   /// is missing (e.g. after logout mid-pop; in regular the reducer keeps the slot seated).
   @ViewBuilder
-  private var chatDetail: some View {
+  private func chatDetail(generation: Int) -> some View {
     if let chatStore = store.scope(state: \.liveChat, action: \.liveChat) {
       ChatView(store: chatStore)
         // The view's disappearance routes through the PARENT (never the scoped child
@@ -111,7 +114,7 @@ struct AppView: View {
         // so the outgoing screen stays rendered and no action hits an absent child.
         // The same event fires when the chat moves between columns on a size-class
         // change; the reducer records the new layout first, so that one is a no-op.
-        .onDisappear { store.send(.chatViewDisappeared) }
+        .onDisappear { store.send(.chatViewDisappeared(generation: generation)) }
     }
   }
 }

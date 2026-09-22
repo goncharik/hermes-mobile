@@ -18,8 +18,12 @@ public struct ChatScreen {
     /// never from this marker.
     public var sessionKey: String?
 
-    public init(sessionKey: String? = nil) {
+    /// The slot ownership captured when this destination was created.
+    public var generation: Int
+
+    public init(sessionKey: String? = nil, generation: Int = 0) {
       self.sessionKey = sessionKey
+      self.generation = generation
     }
   }
 
