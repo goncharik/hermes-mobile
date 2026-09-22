@@ -13,11 +13,11 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SCHEME="HermesMobile"
 WORKSPACE="HermesMobile.xcworkspace"
-BUNDLE_ID="me.honcharenko.HermesMobile"
+BUNDLE_ID="${BUNDLE_ID:-me.honcharenko.HermesMobile}"
 SIM_NAME="${1:-${SIM_NAME:-iPhone 17 Pro}}"
 
 # Tuist only forwards TUIST_-prefixed env vars to the manifest, so translate.
-[ -d "$WORKSPACE" ] || TUIST_SERVER_URL="${HERMES_DEFAULT_SERVER_URL:-}" tuist generate --no-open
+[ -d "$WORKSPACE" ] || TUIST_SERVER_URL="${HERMES_DEFAULT_SERVER_URL:-}" TUIST_BUNDLE_ID="$BUNDLE_ID" tuist generate --no-open
 
 # Resolve a simulator UDID by exact name (first available match).
 SIM_UDID="$(
@@ -33,12 +33,15 @@ fi
 
 echo "▸ Simulator: $SIM_NAME ($SIM_UDID)"
 xcrun simctl bootstatus "$SIM_UDID" -b >/dev/null 2>&1 || true
-open -a Simulator
+# Xcode 27 dropped Simulator.app in favour of DeviceHub.app. The device is already booted
+# by bootstatus above, so failing to raise a window must not abort the run.
+open -a Simulator 2>/dev/null || open -a DeviceHub 2>/dev/null || true
 
 echo "▸ Building…"
 xcodebuild build \
   -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug \
   -destination "id=$SIM_UDID" \
+  -skipMacroValidation \
   CODE_SIGNING_ALLOWED=NO \
   -quiet
 
