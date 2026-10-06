@@ -369,8 +369,8 @@ public extension HermesRESTClient {
         return response.sessions.map(\.asSession)
       },
       search: { conn, query, profile in
-        var items = [URLQueryItem(name: "q", value: query)]
-        if let profile { items.append(.init(name: "profile", value: profile)) }
+        let items = [URLQueryItem(name: "q", value: query)]
+          + (profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? [])
         let url = try makeURL(conn.baseURL, "/api/sessions/search", query: items)
         let response: SearchResponse = try await get(url, auth: authFor(conn), session: session)
         return response.results.map(\.asSession)

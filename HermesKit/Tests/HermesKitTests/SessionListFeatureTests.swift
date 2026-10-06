@@ -3330,10 +3330,16 @@ struct SessionListFeatureTests {
         captured.withValue { $0.append(profile) }
       }
     }
-    store.exhaustivity = .off
 
-    await store.send(.confirmationDialog(.presented(.confirmArchive(id: "a"))))
-    await store.receive(\.archiveSucceeded)
+    await store.send(.confirmationDialog(.presented(.confirmArchive(id: "a")))) {
+      $0.confirmationDialog = nil
+      $0.sessions = []
+      $0.archivingIDs = ["a"]
+    }
+    await store.receive(\.delegate.sessionArchived)
+    await store.receive(\.archiveSucceeded) {
+      $0.archivingIDs = []
+    }
     await store.finish()
     #expect(captured.value == [c.expected])
   }
@@ -3353,12 +3359,23 @@ struct SessionListFeatureTests {
         captured.withValue { $0.append(profile) }
       }
     }
-    store.exhaustivity = .off
 
-    await store.send(.renameButtonTapped(id: "a"))
-    await store.send(\.binding.renameDraft, "New")
-    await store.send(.confirmRename)
-    await store.receive(\.renameSucceeded)
+    await store.send(.renameButtonTapped(id: "a")) {
+      $0.renamingID = "a"
+      $0.renameDraft = "Old"
+    }
+    await store.send(\.binding.renameDraft, "New") {
+      $0.renameDraft = "New"
+    }
+    await store.send(.confirmRename) {
+      $0.sessions[id: "a"]?.title = "New"
+      $0.renamingID = nil
+      $0.renameDraft = ""
+      $0.renamingInFlightIDs = ["a"]
+    }
+    await store.receive(\.renameSucceeded) {
+      $0.renamingInFlightIDs = []
+    }
     await store.finish()
     #expect(captured.value == [c.expected])
   }
@@ -3383,10 +3400,17 @@ struct SessionListFeatureTests {
         captured.withValue { $0.append(profile) }
       }
     }
-    store.exhaustivity = .off
 
-    await store.send(.confirmationDialog(.presented(.confirmDelete(id: "a"))))
-    await store.receive(\.deleteSucceeded)
+    await store.send(.confirmationDialog(.presented(.confirmDelete(id: "a")))) {
+      $0.confirmationDialog = nil
+      $0.sessions = []
+      $0.deletingIDs = ["a"]
+    }
+    await store.receive(\.delegate.sessionDeleted)
+    await store.receive(\.deleteSucceeded) {
+      $0.deletingIDs = []
+    }
+    await store.receive(\.delegate.sessionDeleteSucceeded)
     await store.finish()
     #expect(captured.value == [c.expected])
   }
@@ -3408,9 +3432,8 @@ struct SessionListFeatureTests {
         return []
       }
     }
-    store.exhaustivity = .off
 
-    await store.send(\.binding.searchQuery, "foo")
+    await store.send(\.binding.searchQuery, "foo") { $0.searchQuery = "foo" }
     await clock.advance(by: .milliseconds(300))
     await store.receive(\.sessionsResponse.success)
     #expect(captured.value == [c.expected])
@@ -3428,18 +3451,66 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
     }
-    store.exhaustivity = .off
 
     #expect(prefs.loadSelectedProfileID() == nil)
-    await store.send(.profilesResponse(.success([Profile(name: "default")])))
+    await store.send(.profilesResponse(.success([Profile(name: "default")]))) {
+      $0.profilesSupported = true
+      $0.profiles = [Profile(name: "default")]
+      $0.isLoading = true
+      $0.now = self.now
+    }
     #expect(prefs.loadSelectedProfileID() == "default")
-    await store.finish()
+    await store.receive(\.sessionsResponse.success) {
+      $0.isLoading = false
+    }
+    await store.receive(\.cronJobsResponse.failure) {
+      $0.cronJobsSupported = false
+    }
   }
 
+  // Only the probe's 404 verdict withdraws the persisted capability; a transient failure
+  // keeps it for the next launch.
+  @Test(arguments: [(RESTError.notFound, nil), (RESTError.unreachable, "work")] as [(RESTError, String?)])
+  func profilesProbeFailureWithdrawsThePersistedVerdictOnlyOnNotFound(
+    error: RESTError, persisted: String?
+  ) async {
+    let prefs = PreferencesClient.inMemory()
+    prefs.saveSelectedProfileID("work")
+    var initial = SessionListFeature.State(connection: connection, selectedProfileName: "work")
+    initial.profilesSupported = true
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = prefs
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+    }
+
+    await store.send(.profilesResponse(.failure(error))) {
+      $0.profilesSupported = false
+      $0.isLoading = true
+      $0.now = self.now
+    }
+    #expect(prefs.loadSelectedProfileID() == persisted)
+    await store.receive(\.sessionsResponse.success) {
+      $0.isLoading = false
+    }
+    await store.receive(\.cronJobsResponse.failure) {
+      $0.cronJobsSupported = false
+    }
+  }
+
+  /// `(captured, selected)`: a failed removal captured under one wire scope while the list
+  /// now shows another — including a pre-probe `nil` capture (the server's launch profile)
+  /// against the literal "default" list.
+  nonisolated static let otherWireScopeCases: [(String?, String)] = [
+    (nil, "default"), (nil, "work"), ("default", "work"),
+  ]
+
   // A failed archive/delete captured under a DIFFERENT wire scope than the list now shows
-  // is not re-inserted — including a pre-probe `nil` capture (the server's launch profile)
-  // against the literal "default" list.
-  @Test(arguments: [(nil, "default"), (nil, "work"), ("default", "work")] as [(String?, String)])
+  // is not re-inserted.
+  @Test(arguments: otherWireScopeCases)
   func archiveFailureFromAnotherWireScopeDoesNotReinsert(captured: String?, selected: String) async {
     var initial = SessionListFeature.State(
       connection: connection, sessions: [Session(id: "b")], selectedProfileName: selected
@@ -3461,7 +3532,7 @@ struct SessionListFeatureTests {
     }
   }
 
-  @Test(arguments: [(nil, "default"), (nil, "work"), ("default", "work")] as [(String?, String)])
+  @Test(arguments: otherWireScopeCases)
   func deleteFailureFromAnotherWireScopeDoesNotReinsert(captured: String?, selected: String) async {
     var initial = SessionListFeature.State(
       connection: connection, sessions: [Session(id: "b")], selectedProfileName: selected

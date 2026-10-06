@@ -1062,8 +1062,8 @@ public struct AppFeature {
   /// probe answered carries `nil` while the list moved on to the literal `"default"` (#114).
   /// The reseat paths compare WIRE values instead — a `nil` seat must be re-created scoped.
   private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
-    let key = { (name: String?) in name == SessionListFeature.State.defaultProfileName ? nil : name }
-    return key(lhs) == key(rhs)
+    (lhs ?? SessionListFeature.State.defaultProfileName)
+      == (rhs ?? SessionListFeature.State.defaultProfileName)
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn
@@ -1112,9 +1112,8 @@ public struct AppFeature {
   /// (#46) opens a chat synchronously here, as does the regular-width landing seat, and an
   /// unseeded `scopedProfileName` would leave them UNSCOPED — the server's LAUNCH profile,
   /// not the selected one (#114: a resume misses → the self-heal recreates a spurious empty
-  /// chat there). A persisted selection — any name, `"default"` included, saved on every
-  /// successful profiles probe — implies the agent supported profiles (prefs are wiped on
-  /// logout, bounding staleness); the list's capability probe still corrects
+  /// chat there). `persistedProfilesSupported` seeds the capability from the last probe's
+  /// verdict; the list's capability probe still corrects
   /// `profilesSupported` right after, and the regular-width reseat re-creates a seat whose
   /// pre-probe scope turned out wrong. A profile deleted/renamed server-side since
   /// selection is the accepted corner: the scoped resume fails exactly as a warm list-tap
@@ -1123,7 +1122,7 @@ public struct AppFeature {
     SessionListFeature.State(
       connection: connection,
       selectedProfileName: SessionListFeature.State.persistedProfileName(preferences),
-      profilesSupported: preferences.loadSelectedProfileID() != nil
+      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences)
     )
   }
 

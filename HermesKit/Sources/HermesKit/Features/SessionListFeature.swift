@@ -143,6 +143,13 @@ public struct SessionListFeature {
       preferences.loadSelectedProfileID() ?? defaultProfileName
     }
 
+    /// Whether the last profiles probe on this server succeeded: a selection is persisted
+    /// on every probe success and selection change, and cleared on the probe's 404 and on
+    /// logout. Seeds `profilesSupported` in `AppFeature.makeHomeState` before the probe.
+    static func persistedProfilesSupported(_ preferences: PreferencesClient) -> Bool {
+      preferences.loadSelectedProfileID() != nil
+    }
+
     /// Collapsed groups show at most this many rows before a "Show more".
     public static let collapsedLimit = 5
 
@@ -212,11 +219,6 @@ public struct SessionListFeature {
       self.copiedIDToastToken = copiedIDToastToken
       self.settings = settings
       self.addProfile = addProfile
-    }
-
-    /// Whether the currently-selected profile is the default (never renamable/deletable).
-    public var isDefaultProfileSelected: Bool {
-      selectedProfileName == Self.defaultProfileName
     }
 
     /// The WIRE profile threaded into every session-scoped call (list, search, cron,
@@ -1283,8 +1285,11 @@ public struct SessionListFeature {
         preferences.saveSelectedProfileID(state.selectedProfileName)
         return load(&state)
 
-      case .profilesResponse(.failure):
+      case let .profilesResponse(.failure(error)):
         // A 404 (old agent) or any failure → behave as today: no scoping, unscoped fetch.
+        // Only the 404 verdict withdraws the persisted capability (a transient failure
+        // keeps it for the next launch).
+        if error == .notFound { preferences.clearSelectedProfileID() }
         state.profilesSupported = false
         state.profiles = []
         return load(&state)
