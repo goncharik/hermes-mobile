@@ -180,10 +180,10 @@ that already happens for non-default selections; this plan doesn't widen it.
 - [x] Run tests; they must pass before Task 5.
 
 ### Task 5: Verify acceptance criteria
-- [ ] With profiles supported, every session-scoped REST mutation, the archived sheet, and chat create/resume/messages send the literal selected profile, including `"default"`.
-- [ ] Agents without the profiles API send no `profile` anywhere (grep the tests for the unsupported-path assertions).
-- [ ] No spurious reseat or glow/unread miss across the nil→`"default"` launch transition.
-- [ ] Run the full suite: `make test`.
+- [x] With profiles supported, every session-scoped REST mutation, the archived sheet, and chat create/resume/messages send the literal selected profile, including `"default"`. (Grep of `HermesKit/Sources`: archive/rename/delete/archived-sheet seed → `scopedProfileName`; archived restore/delete → the sheet's seeded `profileName`; `setUnread` → the chat's `profileName` seeded from `scopedProfileName`; every gateway `profile` param → `ChatFeature.scopedProfile`; cron + list fetch already literal. No remaining default-dropping site.)
+- [x] Agents without the profiles API send no `profile` anywhere (grep the tests for the unsupported-path assertions). (`wireProfileCases` archive/rename/delete, archived-sheet nil seed/list/restore, chat create `params == {}`, resume/foreground-hydrate/heal `nil` arguments, unread `nil`.)
+- [x] No spurious reseat or glow/unread miss across the nil→`"default"` launch transition. (`profilesProbeAnsweringDefaultDoesNotReseatAPreProbeSeat`, `preProbeChatStillPatchesGlowAndUnreadUnderLiteralDefault`, rollback `profileKey` tests.)
+- [x] Run the full suite: `make test`. (`swift test --package-path HermesKit`: 1485 tests passed, 1 known issue.)
 
 ### Task 6: [Final] Update documentation
 - [ ] `CLAUDE.md` Multi-profile bullet: replace "omitted for `"default"` so single-profile agents get byte-identical requests" with "the literal name, including `"default"`, whenever the profiles API exists; omitted only without it (an omitted profile means the server's launch profile, #114)". Keep the bullet the same length.
