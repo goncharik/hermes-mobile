@@ -139,9 +139,12 @@ public struct AppFeature {
     /// draft across. The third defers the same way across a resize: the reseat is regular-only,
     /// so a mismatch that falls due in compact (a narrowed window, a server-side rename) would
     /// otherwise be dropped for good — widening re-fires it instead.
+    /// The profile member is the IDENTITY key (`profileKey`), not the wire value: every launch
+    /// moves the wire value from `nil` to the literal `"default"` once the profiles probe
+    /// answers (#114), and that must not read as a profile switch.
     var profileReseatSignal: ProfileReseatSignal {
       ProfileReseatSignal(
-        profileName: home?.scopedProfileName,
+        profileName: SessionListFeature.State.profileKey(home?.scopedProfileName),
         composerInputInFlight: liveChat?.hasInFlightComposerInput ?? false,
         layout: layout
       )
@@ -808,7 +811,7 @@ public struct AppFeature {
         // The poll stays the backstop for not-open sessions. No `home` → nothing to patch.
         let canPatchVisibleRow: Bool
         if let home = state.home, let chat = state.liveChat {
-          canPatchVisibleRow = home.scopedProfileName == chat.profileName
+          canPatchVisibleRow = Self.isSameProfile(home.scopedProfileName, chat.profileName)
         } else {
           canPatchVisibleRow = false
         }
@@ -938,8 +941,8 @@ public struct AppFeature {
   ) -> Effect<Action> {
     // Only mutate a visible row when the sidebar is showing the same profile. The active
     // chat intentionally survives profile switches, so matching by id alone is unsafe.
-    if state.home?.scopedProfileName == profileName,
-       state.home?.sessions[id: sessionID]?.unread != nil
+    if let home = state.home, Self.isSameProfile(home.scopedProfileName, profileName),
+       home.sessions[id: sessionID]?.unread != nil
     {
       state.home?.sessions[id: sessionID]?.unread = false
     }
@@ -1027,7 +1030,7 @@ public struct AppFeature {
   /// lands and the reseat carries it across then.
   private func reduceProfileReseat(_ state: inout State) -> Effect<Action> {
     guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
-          chat.isDiscardableNewChat, chat.profileName != home.scopedProfileName
+          chat.isDiscardableNewChat, !Self.isSameProfile(chat.profileName, home.scopedProfileName)
     else { return .none }
     // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
     // attachments belong to the user, not to the profile, and unlike "New session" the
@@ -1053,8 +1056,15 @@ public struct AppFeature {
   private static func isReusableNewChat(
     _ chat: ChatFeature.State, for home: SessionListFeature.State
   ) -> Bool {
-    chat.isDiscardableNewChat && chat.profileName == home.scopedProfileName
+    chat.isDiscardableNewChat && isSameProfile(chat.profileName, home.scopedProfileName)
       && chat.errorBanner == nil
+  }
+
+  /// Whether two wire profile values name the same profile. A chat seated before the
+  /// profiles probe answers carries `nil` while the list moves on to the literal
+  /// `"default"` (#114) — the same profile, so neither a reseat nor a skipped row patch.
+  private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
+    SessionListFeature.State.profileKey(lhs) == SessionListFeature.State.profileKey(rhs)
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn

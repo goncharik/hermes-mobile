@@ -5198,8 +5198,12 @@ struct AppFeatureTests {
   /// profile — through the standard teardown chain (the seat's socket is dialled in regular),
   /// never a direct swap — so its first prompt lands in the new profile's `state.db`. The
   /// path stays empty and the parent starts the replacement (regular has no marker).
-  @Test func profileSwitchInRegularReseatsEmptyChatUnderNewProfile() async {
-    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+  /// Parameterized over the seat's default-profile wire value: `nil` (seated before the
+  /// profiles probe answered) and the literal `"default"` (#114) are both the default
+  /// profile, so a genuine switch to `work` reseats either.
+  @Test(arguments: [nil, "default"] as [String?])
+  func profileSwitchInRegularReseatsEmptyChatUnderNewProfile(seatProfile: String?) async {
+    var seat = ChatFeature.State(connection: connection, profileName: seatProfile, composerText: "")
     seat.liveSessionID = "live-new"
     let store = TestStore(
       initialState: AppFeature.State(
@@ -5460,6 +5464,122 @@ struct AppFeatureTests {
     await store.receive(\.home.sessionsResponse)
     await store.receive(\.home.cronJobsResponse)
     await store.send(.liveChat(.teardown))
+  }
+
+  // MARK: Literal default profile across the launch probe (#114)
+
+  /// Every launch moves the list's wire profile from `nil` to the literal `"default"` once the
+  /// profiles probe answers. A regular-width seat dialled before that keeps `profileName ==
+  /// nil` — the SAME profile — so the probe must not reseat it (a reseat would tear down and
+  /// redial a healthy seat on every launch). Exhaustive: no teardown chain, no refill.
+  @Test func profilesProbeAnsweringDefaultDoesNotReseatAPreProbeSeat() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          selectedProfileName: "default",
+          profilesSupported: false
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+    }
+    #expect(store.state.home?.scopedProfileName == nil)
+
+    let profiles = [Profile(name: "default", isDefault: true)]
+    await store.send(.home(.profilesResponse(.success(profiles)))) {
+      $0.home?.profilesSupported = true
+      $0.home?.profiles = IdentifiedArray(uniqueElements: profiles)
+      $0.home?.now = Date(timeIntervalSince1970: 0)
+      $0.home?.isLoading = true
+    }
+    #expect(store.state.home?.scopedProfileName == "default")
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.isLoading = false
+    }
+    await store.receive(\.home.cronJobsResponse) {
+      $0.home?.cronJobsSupported = false
+    }
+    #expect(store.state.liveChat == seat)
+  }
+
+  /// The same launch transition must not cost the open chat its row patches: a chat seated
+  /// with `profileName == nil` before the probe, under a list now on the literal `"default"`,
+  /// still lights/clears its row glow and clears its row's unread flag on a visible turn end.
+  @Test func preProbeChatStillPatchesGlowAndUnreadUnderLiteralDefault() async {
+    let writes = LockIsolated<[(String, String?)]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          sessions: [Session(id: "s1", messageCount: 4, unread: true, isActive: true)],
+          selectedProfileName: "default",
+          profilesSupported: true
+        ),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1", profileName: nil)
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.setUnread = { _, id, _, profile in
+        writes.withValue { $0.append((id, profile)) }
+      }
+    }
+
+    await store.send(.liveChat(.delegate(.runningChanged(sessionID: "s1", running: false)))) {
+      $0.home?.sessions[id: "s1"]?.unread = false
+    }
+    await store.receive(\.home.setSessionRunning) {
+      $0.home?.sessions[id: "s1"]?.isActive = false
+    }
+    await store.finish()
+    // The write goes out under the chat's OWN (pre-probe) scope.
+    #expect(writes.value.count == 1)
+    #expect(writes.value.first?.0 == "s1")
+    #expect(writes.value.first?.1 == nil)
+  }
+
+  /// Opening a session under the literal default profile seats the chat with `"default"` and
+  /// acknowledges the read with `profile: "default"` — the launch profile may not be `default`.
+  @Test func openingDefaultProfileSessionAcknowledgesReadWithLiteralDefault() async {
+    let writes = LockIsolated<[(String, String?)]>([])
+    let session = Session(id: "s1", unread: true)
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          sessions: [session],
+          selectedProfileName: "default",
+          profilesSupported: true
+        )
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.hermesREST.setUnread = { _, id, _, profile in
+        writes.withValue { $0.append((id, profile)) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.openSession(session))))
+    await store.finish()
+    #expect(store.state.liveChat?.profileName == "default")
+    #expect(store.state.home?.sessions[id: "s1"]?.unread == false)
+    #expect(writes.value.count == 1)
+    #expect(writes.value.first?.0 == "s1")
+    #expect(writes.value.first?.1 == "default")
   }
 
   /// A profile switch never touches a chat with anything in it: a resumed session on screen

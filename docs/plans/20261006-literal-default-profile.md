@@ -170,14 +170,14 @@ that already happens for non-default selections; this plan doesn't widen it.
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] Feed `profileReseatSignal` with `profileKey(home?.scopedProfileName)`.
-- [ ] Switch `canPatchVisibleRow` (`:811`), the unread row patch (`:941`), `reduceProfileReseat` (`:1030`) and `isReusableNewChat` (`:1056`) to `profileKey` equality.
-- [ ] Write tests: a chat seated with `profileName == nil` before profiles load, then the list flips to `profilesSupported` with `"default"`:
+- [x] Feed `profileReseatSignal` with `profileKey(home?.scopedProfileName)`.
+- [x] Switch `canPatchVisibleRow` (`:811`), the unread row patch (`:941`), `reduceProfileReseat` (`:1030`) and `isReusableNewChat` (`:1056`) to `profileKey` equality. (Through one private `AppFeature.isSameProfile(_:_:)` helper; a grep of `HermesKit/Sources` found no other nil-vs-`"default"` profile comparison.)
+- [x] Write tests: a chat seated with `profileName == nil` before profiles load, then the list flips to `profilesSupported` with `"default"`:
   - no reseat in regular layout,
   - the working glow still patches the row,
   - the unread row patch still applies.
-- [ ] Write tests: an open default-profile chat calls `rest.setUnread(…, "default")`, and a genuine profile switch (`"default"` → `"work"`) still reseats a pristine regular-width chat.
-- [ ] Run tests; they must pass before Task 5.
+- [x] Write tests: an open default-profile chat calls `rest.setUnread(…, "default")`, and a genuine profile switch (`"default"` → `"work"`) still reseats a pristine regular-width chat.
+- [x] Run tests; they must pass before Task 5.
 
 ### Task 5: Verify acceptance criteria
 - [ ] With profiles supported, every session-scoped REST mutation, the archived sheet, and chat create/resume/messages send the literal selected profile, including `"default"`.
