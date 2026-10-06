@@ -186,9 +186,9 @@ that already happens for non-default selections; this plan doesn't widen it.
 - [x] Run the full suite: `make test`. (`swift test --package-path HermesKit`: 1485 tests passed, 1 known issue.)
 
 ### Task 6: [Final] Update documentation
-- [ ] `CLAUDE.md` Multi-profile bullet: replace "omitted for `"default"` so single-profile agents get byte-identical requests" with "the literal name, including `"default"`, whenever the profiles API exists; omitted only without it (an omitted profile means the server's launch profile, #114)". Keep the bullet the same length.
-- [ ] `docs/architecture.md`: update the profile-omission wording at lines ~83, ~160 and ~265-269.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] `CLAUDE.md` Multi-profile bullet: replace "omitted for `"default"` so single-profile agents get byte-identical requests" with "the literal name, including `"default"`, whenever the profiles API exists; omitted only without it (an omitted profile means the server's launch profile, #114)". Keep the bullet the same length. (Still 6 lines; the `profileKey` identity rule didn't fit and lives in `docs/architecture.md`.)
+- [x] `docs/architecture.md`: update the profile-omission wording at lines ~83, ~160 and ~265-269. (Also `docs/features/ipad-layout.md`: reseat / reusable-seat comparisons now name `profileKey` identity.)
+- [x] Move this plan to docs/plans/completed/ (deferred — orchestrator moves it after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems; informational only.*

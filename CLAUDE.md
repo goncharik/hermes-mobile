@@ -273,10 +273,10 @@ bullets below are the compressed rules.
 
 - Device-local with per-call scoping: the selected profile *name* persists in
   `PreferencesClient`; never `POST /api/profiles/active` (mutates the server default
-  for all clients). Thread `profile` into `session.create`/`session.resume` and
-  session-scoped REST — **omitted for `"default"`** so single-profile agents get
-  byte-identical requests. Search is intentionally not profile-scoped. Add-profile is
-  create-then-PUT-soul; selector capability-gated; per-profile color omitted on mobile.
+  for all clients). Thread the literal name (incl. `"default"`) into `session.create`/
+  `resume` and session-scoped REST when the profiles API exists, else omit it — omitted =
+  the server's LAUNCH profile, not `"default"` (#114). Search is not profile-scoped.
+  Add-profile is create-then-PUT-soul; selector capability-gated; no per-profile color.
 
 ## Testing (required for every change)
 

@@ -80,7 +80,8 @@ a `testValue`/`.inMemory()` variant):
   and a best-effort `logout` — this client's one deliberate exception to "surface RPC failures",
   since it fires after the app has already discarded its credentials (the logout's push
   unregister swallows on the same reasoning). Session-scoped
-  reads/mutations take an optional `profile` (omitted for default).
+  reads/mutations take an optional `profile`: the literal selected name (incl. `"default"`)
+  when the agent has the profiles API, omitted only without it (#114).
 - **`HermesProfileClient`** — profile CRUD + SOUL.md (`PUT /api/profiles/{name}/soul`) +
   profile-scoped session lists (`GET /api/profiles/sessions?profile=`). Capability-gated: a
   404 from `GET /api/profiles` hides the selector.
@@ -157,8 +158,8 @@ URL and to probe capability before login).
 - **Token mode** (`.token`) — loopback/`--insecure` servers (`auth_required` absent/false).
   REST authenticates via the `X-Hermes-Session-Token` header; WS via `…/api/ws?token=<token>`.
   The token never expires. **This path is byte-identical to the legacy single-token client**
-  (a hard backward-compat requirement) — the `profile`-style omissions and request shapes are
-  unchanged so old servers behave exactly as before.
+  (a hard backward-compat requirement) — request shapes are unchanged (an agent without the
+  profiles API still gets no `profile` param) so old servers behave exactly as before.
 - **Gated mode** (`.cookie`) — public-bind servers with `auth_required=true` and a
   password-capable provider. Login is `POST /auth/password-login` `{provider, username,
   password}`; the server returns rotating session cookies via `Set-Cookie` (`hermes_session_at`
@@ -265,8 +266,15 @@ not assumed):
 - **Profiles are device-local with per-call scoping** — the selected profile *name* lives
   in `PreferencesClient`; we never call `POST /api/profiles/active`. Instead the scoped list
   comes from `GET /api/profiles/sessions?profile=`, and an optional `profile` param threads
-  into `session.create`/`session.resume` (gateway) and session-scoped archive/rename/delete
-  (REST) — omitted for `"default"` so single-profile agents are byte-identical to today.
+  into `session.create`/`session.resume` (gateway), the archived sheet, and session-scoped
+  archive/rename/delete/unread (REST). Whenever the agent has the profiles API, that param is
+  the **literal** selected name — including `"default"`; it is omitted only when the API is
+  absent, so those agents stay byte-identical. The server reads an omitted profile as the
+  dashboard's **launch** profile, not `"default"` (#114): under `hermes -p work dashboard`
+  an omitted param would mutate/resume `work`'s sessions while the list shows `default`'s.
+  Identity comparisons (reseat, glow/unread patches, rollback) go through
+  `SessionListFeature.State.profileKey`, which treats `nil` (a chat seated before the
+  profiles probe) and `"default"` as the same profile.
   **Search is not profile-scoped** (mirrors the desktop). The desktop's per-profile color is
   intentionally omitted.
 - **Slash commands have their own pipeline** — `commands.catalog` (discovery,
