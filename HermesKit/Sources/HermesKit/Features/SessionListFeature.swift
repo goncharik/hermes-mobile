@@ -214,17 +214,28 @@ public struct SessionListFeature {
       self.addProfile = addProfile
     }
 
-    /// Whether the currently-selected profile is the default (no `?profile=` scoping for
-    /// reads/mutations, and a `nil` profile threaded into archive/rename).
+    /// Whether the currently-selected profile is the default (never renamable/deletable).
     public var isDefaultProfileSelected: Bool {
       selectedProfileName == Self.defaultProfileName
     }
 
-    /// The profile name to thread into session-scoped REST calls (archive/rename): `nil`
-    /// for the default profile or when the agent lacks the profiles API, else the name.
+    /// The WIRE profile threaded into every session-scoped call (archive/rename/delete,
+    /// the archived sheet, and the chat's create/resume/messages): the LITERAL selected
+    /// name — including `"default"` — whenever the agent has the profiles API, `nil` only
+    /// without it (so those agents get byte-identical requests). An omitted profile is NOT
+    /// read as `"default"` by the server: it means the dashboard process's LAUNCH profile
+    /// (`hermes -p work dashboard` → `work`), so dropping `"default"` would mutate the
+    /// wrong profile's `state.db` (#114). Compare two of these with `profileKey(_:)`.
     public var scopedProfileName: String? {
-      guard profilesSupported, !isDefaultProfileSelected else { return nil }
-      return selectedProfileName
+      profilesSupported ? selectedProfileName : nil
+    }
+
+    /// Profile IDENTITY for comparisons: `nil` (no profiles API yet / unscoped) and
+    /// `"default"` map to the same key, so a chat seated before the profiles probe resolved
+    /// (`nil`) still matches the list once it reports the literal `"default"` (#114).
+    /// Never sent on the wire — use `scopedProfileName` for that.
+    public static func profileKey(_ name: String?) -> String? {
+      name == defaultProfileName ? nil : name
     }
 
     /// The destructive action the trailing swipe actually offers: the persisted
@@ -1545,7 +1556,9 @@ public struct SessionListFeature {
     state.seenCounts[id] = seenCount
     preferences.savePinnedIDs(state.pinnedIDs)
     preferences.saveSeenCounts(state.seenCounts)
-    if profileName == state.scopedProfileName, searchQuery == state.searchQuery {
+    if State.profileKey(profileName) == State.profileKey(state.scopedProfileName),
+      searchQuery == state.searchQuery
+    {
       let insertAt = min(index, state.sessions.count)
       state.sessions.insert(session, at: insertAt)
     }
@@ -1646,9 +1659,9 @@ private func fetchSessions(
     if !query.isEmpty {
       sessions = try await rest.search(connection, query)
     } else if profilesSupported {
-      // The dedicated profiles endpoint takes the literal name (incl. "default") — unlike the
-      // legacy per-session mutation endpoints, which use `scopedProfileName` (default→nil). The
-      // canonical default name is `SessionListFeature.State.defaultProfileName`.
+      // The dedicated profiles endpoint takes the literal name (incl. "default"), as do the
+      // per-session mutation endpoints via `scopedProfileName` (#114). The canonical default
+      // name is `SessionListFeature.State.defaultProfileName`.
       sessions = try await profiles.sessions(connection, profileName, .exclude, .recent, 50, 0)
     } else {
       sessions = try await rest.sessions(connection, 50, 0, .recent)

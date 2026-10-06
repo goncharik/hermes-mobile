@@ -1134,7 +1134,7 @@ struct SessionListFeatureTests {
     #expect(store.state.deletingIDs.isEmpty)
     #expect(deleted.value.count == 1)
     #expect(deleted.value.first?.0 == "a")
-    #expect(deleted.value.first?.1 == nil) // default profile → no scoping
+    #expect(deleted.value.first?.1 == nil) // no profiles API → no scoping
     #expect(prefs.loadPinnedIDs() == [])
     #expect(prefs.loadSeenCounts() == ["b": 2]) // deleted session's seen baseline persisted-cleared
   }
@@ -3222,5 +3222,192 @@ struct SessionListFeatureTests {
     }
 
     await store.send(.onDisappear)
+  }
+
+  // MARK: Literal default profile on the wire (#114)
+
+  /// One wire-profile scenario: the selected profile, whether the agent has the profiles
+  /// API, and the `profile` every session-scoped mutation must carry.
+  struct WireProfileCase: Sendable, CustomTestStringConvertible {
+    let selected: String
+    let profilesSupported: Bool
+    let expected: String?
+    var testDescription: String {
+      "\(selected), profilesSupported=\(profilesSupported) → \(expected ?? "nil")"
+    }
+  }
+
+  nonisolated static let wireProfileCases: [WireProfileCase] = [
+    // An omitted profile is the server's LAUNCH profile, not "default" — send it literally.
+    WireProfileCase(selected: "default", profilesSupported: true, expected: "default"),
+    WireProfileCase(selected: "work", profilesSupported: true, expected: "work"),
+    // No profiles API → byte-identical legacy requests (no `profile` at all).
+    WireProfileCase(selected: "default", profilesSupported: false, expected: nil),
+    WireProfileCase(selected: "work", profilesSupported: false, expected: nil),
+  ]
+
+  @Test(arguments: wireProfileCases)
+  func scopedProfileNameIsTheLiteralSelectionWhenProfilesAreSupported(_ c: WireProfileCase) {
+    var state = SessionListFeature.State(connection: connection, selectedProfileName: c.selected)
+    state.profilesSupported = c.profilesSupported
+    #expect(state.scopedProfileName == c.expected)
+  }
+
+  @Test func profileKeyCollapsesNilAndDefaultIntoOneIdentity() {
+    typealias S = SessionListFeature.State
+    #expect(S.profileKey(nil) == nil)
+    #expect(S.profileKey(S.defaultProfileName) == nil)
+    #expect(S.profileKey("work") == "work")
+    #expect(S.profileKey(nil) == S.profileKey("default"))
+    #expect(S.profileKey("work") != S.profileKey("default"))
+  }
+
+  @Test(arguments: wireProfileCases)
+  func archiveSendsTheWireProfile(_ c: WireProfileCase) async {
+    let captured = LockIsolated<[String?]>([])
+    var initial = SessionListFeature.State(
+      connection: connection, sessions: [Session(id: "a")], selectedProfileName: c.selected
+    )
+    initial.profilesSupported = c.profilesSupported
+    initial.confirmationDialog = ConfirmationDialogState {
+      TextState("Archive session?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmArchive(id: "a")) { TextState("Archive") }
+    }
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.archive = { @Sendable _, _, _, profile in
+        captured.withValue { $0.append(profile) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.confirmationDialog(.presented(.confirmArchive(id: "a"))))
+    await store.receive(\.archiveSucceeded)
+    await store.finish()
+    #expect(captured.value == [c.expected])
+  }
+
+  @Test(arguments: wireProfileCases)
+  func renameSendsTheWireProfile(_ c: WireProfileCase) async {
+    let captured = LockIsolated<[String?]>([])
+    var initial = SessionListFeature.State(
+      connection: connection, sessions: [Session(id: "a", title: "Old")],
+      selectedProfileName: c.selected
+    )
+    initial.profilesSupported = c.profilesSupported
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.rename = { @Sendable _, _, _, profile in
+        captured.withValue { $0.append(profile) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.renameButtonTapped(id: "a"))
+    await store.send(\.binding.renameDraft, "New")
+    await store.send(.confirmRename)
+    await store.receive(\.renameSucceeded)
+    await store.finish()
+    #expect(captured.value == [c.expected])
+  }
+
+  @Test(arguments: wireProfileCases)
+  func deleteSendsTheWireProfile(_ c: WireProfileCase) async {
+    let captured = LockIsolated<[String?]>([])
+    var initial = SessionListFeature.State(
+      connection: connection, sessions: [Session(id: "a")], selectedProfileName: c.selected
+    )
+    initial.profilesSupported = c.profilesSupported
+    initial.confirmationDialog = ConfirmationDialogState {
+      TextState("Delete session?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmDelete(id: "a")) { TextState("Delete") }
+    }
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.deleteSession = { @Sendable _, _, profile in
+        captured.withValue { $0.append(profile) }
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.confirmationDialog(.presented(.confirmDelete(id: "a"))))
+    await store.receive(\.deleteSucceeded)
+    await store.finish()
+    #expect(captured.value == [c.expected])
+  }
+
+  @Test func archiveFailureCapturedBeforeProfilesLoadedStillReinsertsUnderDefault() async {
+    // The PATCH was issued before the profiles probe answered (wire profile `nil`); by the
+    // time it fails, `profilesSupported` flipped and the list reports the literal
+    // `"default"`. Same profile identity (`profileKey`) → the row IS re-inserted.
+    let session = Session(id: "a", title: "Keep me")
+    var initial = SessionListFeature.State(connection: connection, sessions: [Session(id: "b")])
+    initial.profilesSupported = true // selectedProfileName defaults to "default"
+    initial.archivingIDs = ["a"]
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+    }
+
+    await store.send(.archiveFailed(
+      id: "a", session: session, index: 0, pinIndex: nil,
+      seenCount: nil, profileName: nil, searchQuery: ""
+    )) {
+      $0.archivingIDs = []
+      $0.sessions = [session, Session(id: "b")]
+      $0.loadError = "Couldn’t archive the session."
+    }
+  }
+
+  @Test func deleteFailureCapturedBeforeProfilesLoadedStillReinsertsUnderDefault() async {
+    // Delete mirror of the nil→"default" rollback: same identity, so the row comes back.
+    let session = Session(id: "a", title: "Keep me")
+    var initial = SessionListFeature.State(connection: connection, sessions: [Session(id: "b")])
+    initial.profilesSupported = true
+    initial.deletingIDs = ["a"]
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+    }
+
+    await store.send(.deleteFailed(
+      id: "a", session: session, index: 0, pinIndex: nil,
+      seenCount: nil, profileName: nil, searchQuery: "", error: .unreachable
+    )) {
+      $0.deletingIDs = []
+      $0.sessions = [session, Session(id: "b")]
+      $0.loadError = "Couldn’t delete the session."
+    }
+  }
+
+  @Test func archiveFailureUnderLiteralDefaultStillReinsertsUnderDefault() async {
+    // The literal `"default"` captured with profiles supported matches the same selection.
+    let session = Session(id: "a")
+    var initial = SessionListFeature.State(connection: connection, sessions: [Session(id: "b")])
+    initial.profilesSupported = true
+    initial.archivingIDs = ["a"]
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+    }
+
+    await store.send(.archiveFailed(
+      id: "a", session: session, index: 1, pinIndex: nil,
+      seenCount: nil, profileName: "default", searchQuery: ""
+    )) {
+      $0.archivingIDs = []
+      $0.sessions = [Session(id: "b"), session]
+      $0.loadError = "Couldn’t archive the session."
+    }
   }
 }

@@ -132,12 +132,12 @@ that already happens for non-default selections; this plan doesn't widen it.
 - Modify: `HermesKit/Sources/HermesKit/Features/SessionListFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SessionListFeatureTests.swift`
 
-- [ ] Change `scopedProfileName` to `profilesSupported ? selectedProfileName : nil` and rewrite its doc comment (omitted = server launch profile).
-- [ ] Add `static func profileKey(_:)` and use it in the rollback re-insert comparison (`:1548`).
-- [ ] Update the comment at `:1650` (no more "legacy endpoints use default→nil").
-- [ ] Write tests: with the default profile selected and profiles supported, archive, rename and delete send `"default"`. With profiles unsupported they send `nil`. Non-default still sends the name.
-- [ ] Write tests: an archive/delete failure rollback still re-inserts the row when the capture was `nil` and the current value is `"default"` (`profileKey` equality). Update any existing tests that expected `nil` for the default profile.
-- [ ] Run tests (`make test`); they must pass before Task 2.
+- [x] Change `scopedProfileName` to `profilesSupported ? selectedProfileName : nil` and rewrite its doc comment (omitted = server launch profile).
+- [x] Add `static func profileKey(_:)` and use it in the rollback re-insert comparison (`:1548`).
+- [x] Update the comment at `:1650` (no more "legacy endpoints use default→nil").
+- [x] Write tests: with the default profile selected and profiles supported, archive, rename and delete send `"default"`. With profiles unsupported they send `nil`. Non-default still sends the name.
+- [x] Write tests: an archive/delete failure rollback still re-inserts the row when the capture was `nil` and the current value is `"default"` (`profileKey` equality). Update any existing tests that expected `nil` for the default profile.
+- [x] Run tests (`make test`); they must pass before Task 2.
 
 ### Task 2: Scope the archived sheet to the literal default profile
 
