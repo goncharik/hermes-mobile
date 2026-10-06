@@ -138,7 +138,7 @@ struct SessionListFeatureTests {
         fetchCount.withValue { $0 += 1 }
         return []
       }
-      $0.hermesREST.search = { @Sendable _, _ in
+      $0.hermesREST.search = { @Sendable _, _, _ in
         fetchCount.withValue { $0 += 1 }
         return []
       }
@@ -192,7 +192,7 @@ struct SessionListFeatureTests {
       SessionListFeature()
     } withDependencies: {
       $0.continuousClock = clock
-      $0.hermesREST.search = { @Sendable _, _ in
+      $0.hermesREST.search = { @Sendable _, _, _ in
         fetchCount.withValue { $0 += 1 }
         return []
       }
@@ -212,7 +212,7 @@ struct SessionListFeatureTests {
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
-      $0.hermesREST.search = { @Sendable _, query in
+      $0.hermesREST.search = { @Sendable _, query, _ in
         [Session(id: "r1", title: nil, preview: query)]
       }
       $0.continuousClock = clock
@@ -285,7 +285,7 @@ struct SessionListFeatureTests {
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
-      $0.hermesREST.search = { @Sendable _, query in
+      $0.hermesREST.search = { @Sendable _, query, _ in
         [
           Session(id: "r1", title: nil, preview: query),
           Session(id: "r2", title: nil, preview: query),
@@ -687,7 +687,7 @@ struct SessionListFeatureTests {
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
-      $0.hermesREST.search = { @Sendable _, _ in
+      $0.hermesREST.search = { @Sendable _, _, _ in
         [
           Session(id: "branch", updatedAt: Date(timeIntervalSince1970: 20), parentSessionID: "parent"),
           Session(id: "other", updatedAt: Date(timeIntervalSince1970: 15)),
@@ -1455,7 +1455,7 @@ struct SessionListFeatureTests {
     } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
-      $0.hermesREST.search = { @Sendable _, query in
+      $0.hermesREST.search = { @Sendable _, query, _ in
         searched.withValue { $0.append(query) }
         return [Session(id: "b")]
       }
@@ -3310,15 +3310,6 @@ struct SessionListFeatureTests {
     #expect(state.scopedProfileName == c.expected)
   }
 
-  @Test func profileKeyCollapsesNilAndDefaultIntoOneIdentity() {
-    typealias S = SessionListFeature.State
-    #expect(S.profileKey(nil) == nil)
-    #expect(S.profileKey(S.defaultProfileName) == nil)
-    #expect(S.profileKey("work") == "work")
-    #expect(S.profileKey(nil) == S.profileKey("default"))
-    #expect(S.profileKey("work") != S.profileKey("default"))
-  }
-
   @Test(arguments: wireProfileCases)
   func archiveSendsTheWireProfile(_ c: WireProfileCase) async {
     let captured = LockIsolated<[String?]>([])
@@ -3400,13 +3391,60 @@ struct SessionListFeatureTests {
     #expect(captured.value == [c.expected])
   }
 
-  @Test func archiveFailureCapturedBeforeProfilesLoadedStillReinsertsUnderDefault() async {
-    // The PATCH was issued before the profiles probe answered (wire profile `nil`); by the
-    // time it fails, `profilesSupported` flipped and the list reports the literal
-    // `"default"`. Same profile identity (`profileKey`) → the row IS re-inserted.
-    let session = Session(id: "a", title: "Keep me")
-    var initial = SessionListFeature.State(connection: connection, sessions: [Session(id: "b")])
-    initial.profilesSupported = true // selectedProfileName defaults to "default"
+  // Search hits are opened and mutated under `scopedProfileName`, so the search must come
+  // from that same profile (an unscoped search hits the server's launch profile).
+  @Test(arguments: wireProfileCases)
+  func searchSendsTheWireProfile(_ c: WireProfileCase) async {
+    let clock = TestClock()
+    let captured = LockIsolated<[String?]>([])
+    var initial = SessionListFeature.State(connection: connection, selectedProfileName: c.selected)
+    initial.profilesSupported = c.profilesSupported
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.hermesREST.search = { @Sendable _, _, profile in
+        captured.withValue { $0.append(profile) }
+        return []
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(\.binding.searchQuery, "foo")
+    await clock.advance(by: .milliseconds(300))
+    await store.receive(\.sessionsResponse.success)
+    #expect(captured.value == [c.expected])
+  }
+
+  // A successful probe persists the selection — "default" included — which is what
+  // `AppFeature.makeHomeState` reads as "this agent has the profiles API" next launch.
+  @Test func profilesProbeSuccessPersistsTheSelectionIncludingDefault() async {
+    let prefs = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = prefs
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+    }
+    store.exhaustivity = .off
+
+    #expect(prefs.loadSelectedProfileID() == nil)
+    await store.send(.profilesResponse(.success([Profile(name: "default")])))
+    #expect(prefs.loadSelectedProfileID() == "default")
+    await store.finish()
+  }
+
+  // A failed archive/delete captured under a DIFFERENT wire scope than the list now shows
+  // is not re-inserted — including a pre-probe `nil` capture (the server's launch profile)
+  // against the literal "default" list.
+  @Test(arguments: [(nil, "default"), (nil, "work"), ("default", "work")] as [(String?, String)])
+  func archiveFailureFromAnotherWireScopeDoesNotReinsert(captured: String?, selected: String) async {
+    var initial = SessionListFeature.State(
+      connection: connection, sessions: [Session(id: "b")], selectedProfileName: selected
+    )
+    initial.profilesSupported = true
     initial.archivingIDs = ["a"]
     let store = TestStore(initialState: initial) {
       SessionListFeature()
@@ -3415,19 +3453,19 @@ struct SessionListFeatureTests {
     }
 
     await store.send(.archiveFailed(
-      id: "a", session: session, index: 0, pinIndex: nil,
-      seenCount: nil, profileName: nil, searchQuery: ""
+      id: "a", session: Session(id: "a"), index: 0, pinIndex: nil,
+      seenCount: nil, profileName: captured, searchQuery: ""
     )) {
       $0.archivingIDs = []
-      $0.sessions = [session, Session(id: "b")]
       $0.loadError = "Couldn’t archive the session."
     }
   }
 
-  @Test func deleteFailureCapturedBeforeProfilesLoadedStillReinsertsUnderDefault() async {
-    // Delete mirror of the nil→"default" rollback: same identity, so the row comes back.
-    let session = Session(id: "a", title: "Keep me")
-    var initial = SessionListFeature.State(connection: connection, sessions: [Session(id: "b")])
+  @Test(arguments: [(nil, "default"), (nil, "work"), ("default", "work")] as [(String?, String)])
+  func deleteFailureFromAnotherWireScopeDoesNotReinsert(captured: String?, selected: String) async {
+    var initial = SessionListFeature.State(
+      connection: connection, sessions: [Session(id: "b")], selectedProfileName: selected
+    )
     initial.profilesSupported = true
     initial.deletingIDs = ["a"]
     let store = TestStore(initialState: initial) {
@@ -3437,11 +3475,10 @@ struct SessionListFeatureTests {
     }
 
     await store.send(.deleteFailed(
-      id: "a", session: session, index: 0, pinIndex: nil,
-      seenCount: nil, profileName: nil, searchQuery: "", error: .unreachable
+      id: "a", session: Session(id: "a"), index: 0, pinIndex: nil,
+      seenCount: nil, profileName: captured, searchQuery: "", error: .unreachable
     )) {
       $0.deletingIDs = []
-      $0.sessions = [session, Session(id: "b")]
       $0.loadError = "Couldn’t delete the session."
     }
   }

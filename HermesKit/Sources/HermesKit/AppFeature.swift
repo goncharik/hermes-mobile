@@ -139,12 +139,9 @@ public struct AppFeature {
     /// draft across. The third defers the same way across a resize: the reseat is regular-only,
     /// so a mismatch that falls due in compact (a narrowed window, a server-side rename) would
     /// otherwise be dropped for good — widening re-fires it instead.
-    /// The profile member is the IDENTITY key (`profileKey`), not the wire value: every launch
-    /// moves the wire value from `nil` to the literal `"default"` once the profiles probe
-    /// answers (#114), and that must not read as a profile switch.
     var profileReseatSignal: ProfileReseatSignal {
       ProfileReseatSignal(
-        profileName: SessionListFeature.State.profileKey(home?.scopedProfileName),
+        profileName: home?.scopedProfileName,
         composerInputInFlight: liveChat?.hasInFlightComposerInput ?? false,
         layout: layout
       )
@@ -1030,7 +1027,7 @@ public struct AppFeature {
   /// lands and the reseat carries it across then.
   private func reduceProfileReseat(_ state: inout State) -> Effect<Action> {
     guard state.layout == .regular, let home = state.home, let chat = state.liveChat,
-          chat.isDiscardableNewChat, !Self.isSameProfile(chat.profileName, home.scopedProfileName)
+          chat.isDiscardableNewChat, chat.profileName != home.scopedProfileName
     else { return .none }
     // The seat is RE-CREATED under the new profile, not emptied: a typed draft and staged
     // attachments belong to the user, not to the profile, and unlike "New session" the
@@ -1056,15 +1053,17 @@ public struct AppFeature {
   private static func isReusableNewChat(
     _ chat: ChatFeature.State, for home: SessionListFeature.State
   ) -> Bool {
-    chat.isDiscardableNewChat && isSameProfile(chat.profileName, home.scopedProfileName)
+    chat.isDiscardableNewChat && chat.profileName == home.scopedProfileName
       && chat.errorBanner == nil
   }
 
-  /// Whether two wire profile values name the same profile. A chat seated before the
-  /// profiles probe answers carries `nil` while the list moves on to the literal
-  /// `"default"` (#114) — the same profile, so neither a reseat nor a skipped row patch.
+  /// Whether a chat's and the list's wire profiles name the same profile, for the row
+  /// patches (glow, unread) that match by session id: a chat opened before the profiles
+  /// probe answered carries `nil` while the list moved on to the literal `"default"` (#114).
+  /// The reseat paths compare WIRE values instead — a `nil` seat must be re-created scoped.
   private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
-    SessionListFeature.State.profileKey(lhs) == SessionListFeature.State.profileKey(rhs)
+    let key = { (name: String?) in name == SessionListFeature.State.defaultProfileName ? nil : name }
+    return key(lhs) == key(rhs)
   }
 
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn
@@ -1110,23 +1109,21 @@ public struct AppFeature {
   /// Build a fresh session-list state, seeding the device-local persisted profile
   /// selection (normally reloaded later, in the list view's `.task`). Seeding at creation
   /// matters for work that runs BEFORE the list appears — the cold-launch push-tap replay
-  /// (#46) opens a chat synchronously here, and an unseeded `scopedProfileName` would
-  /// resume the session UNSCOPED (wrong `state.db` on a non-default profile →
-  /// "session not found" → the self-heal recreates a spurious empty chat under
-  /// "default"). A persisted non-default name implies the agent supported profiles when
-  /// it was selected (prefs are wiped on logout, bounding staleness); the list's
-  /// capability probe still corrects `profilesSupported` right after. A profile
-  /// deleted/renamed server-side since selection is the accepted corner: the scoped
-  /// resume fails exactly as a warm list-tap under the same stale pref would — parity
-  /// with the warm path is the contract, and the rare stale-profile miss is a far
-  /// smaller surface than the unscoped-resume misroute this seeding fixes (which hit
-  /// EVERY cold-launch replay on a non-default profile).
+  /// (#46) opens a chat synchronously here, as does the regular-width landing seat, and an
+  /// unseeded `scopedProfileName` would leave them UNSCOPED — the server's LAUNCH profile,
+  /// not the selected one (#114: a resume misses → the self-heal recreates a spurious empty
+  /// chat there). A persisted selection — any name, `"default"` included, saved on every
+  /// successful profiles probe — implies the agent supported profiles (prefs are wiped on
+  /// logout, bounding staleness); the list's capability probe still corrects
+  /// `profilesSupported` right after, and the regular-width reseat re-creates a seat whose
+  /// pre-probe scope turned out wrong. A profile deleted/renamed server-side since
+  /// selection is the accepted corner: the scoped resume fails exactly as a warm list-tap
+  /// under the same stale pref would — parity with the warm path is the contract.
   private func makeHomeState(connection: ServerConnection) -> SessionListFeature.State {
-    let persisted = SessionListFeature.State.persistedProfileName(preferences)
-    return SessionListFeature.State(
+    SessionListFeature.State(
       connection: connection,
-      selectedProfileName: persisted,
-      profilesSupported: persisted != SessionListFeature.State.defaultProfileName
+      selectedProfileName: SessionListFeature.State.persistedProfileName(preferences),
+      profilesSupported: preferences.loadSelectedProfileID() != nil
     )
   }
 

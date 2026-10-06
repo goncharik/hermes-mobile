@@ -202,7 +202,9 @@ public struct HermesRESTClient: Sendable {
   public var sessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int, _ order: SessionOrder) async throws -> [Session]
   /// Just the archived (soft-hidden) sessions — `GET /api/sessions?archived=only`.
   public var archivedSessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int) async throws -> [Session]
-  public var search: @Sendable (_ connection: ServerConnection, _ query: String) async throws -> [Session]
+  /// Full-text search — `GET /api/sessions/search?q=…`. A non-nil `profile` adds
+  /// `&profile=` (searches that profile's `state.db`); `nil` → today's exact request.
+  public var search: @Sendable (_ connection: ServerConnection, _ query: String, _ profile: String?) async throws -> [Session]
   /// Soft-hide (archive) or restore a session — `PATCH /api/sessions/{id}` `{"archived":…}`.
   /// Pass `profile` (non-default) to scope to that profile (added to both query and body);
   /// `nil` → today's exact request.
@@ -366,8 +368,10 @@ public extension HermesRESTClient {
         let response: SessionsResponse = try await get(url, auth: authFor(conn), session: session)
         return response.sessions.map(\.asSession)
       },
-      search: { conn, query in
-        let url = try makeURL(conn.baseURL, "/api/sessions/search", query: [.init(name: "q", value: query)])
+      search: { conn, query, profile in
+        var items = [URLQueryItem(name: "q", value: query)]
+        if let profile { items.append(.init(name: "profile", value: profile)) }
+        let url = try makeURL(conn.baseURL, "/api/sessions/search", query: items)
         let response: SearchResponse = try await get(url, auth: authFor(conn), session: session)
         return response.results.map(\.asSession)
       },

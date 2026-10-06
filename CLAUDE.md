@@ -275,7 +275,7 @@ bullets below are the compressed rules.
   `PreferencesClient`; never `POST /api/profiles/active` (mutates the server default
   for all clients). Thread the literal name (incl. `"default"`) into `session.create`/
   `resume` and session-scoped REST when the profiles API exists, else omit it — omitted =
-  the server's LAUNCH profile, not `"default"` (#114). Search is not profile-scoped.
+  the server's LAUNCH profile, not `"default"` (#114). Search is scoped too (as on desktop).
   Add-profile is create-then-PUT-soul; selector capability-gated; no per-profile color.
 
 ## Testing (required for every change)

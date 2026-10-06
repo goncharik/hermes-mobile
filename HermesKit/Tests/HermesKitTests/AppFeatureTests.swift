@@ -473,16 +473,17 @@ struct AppFeatureTests {
 
   /// Branch open threads the selected profile like any list-tap open — the replacement
   /// chat carries `scopedProfileName` so resume/history scope to the right `state.db`.
-  @Test func branchCreatedThreadsActiveProfileIntoNewChat() async {
+  @Test(arguments: ["work", "default"])
+  func branchCreatedThreadsActiveProfileIntoNewChat(profile: String) async {
     var home = SessionListFeature.State(connection: connection)
     home.profilesSupported = true
-    home.selectedProfileName = "work"
+    home.selectedProfileName = profile
     let store = TestStore(
       initialState: AppFeature.State(
         home: home,
         path: StackState([ChatScreen.State(sessionKey: "parent")]),
         liveChat: ChatFeature.State(
-          connection: connection, resumeStoredID: "parent", profileName: "work"
+          connection: connection, resumeStoredID: "parent", profileName: profile
         )
       )
     ) {
@@ -503,7 +504,7 @@ struct AppFeatureTests {
     )))))
     await store.receive(\.fillLiveChat) {
       var chat = ChatFeature.State(
-        connection: self.connection, resumeStoredID: "branch-1", profileName: "work"
+        connection: self.connection, resumeStoredID: "branch-1", profileName: profile
       )
       chat.attachLiveSessionID = "branch-live"
       chat.branchSeed = .init(text: "seeded answer", parentSessionID: "parent")
@@ -2952,14 +2953,15 @@ struct AppFeatureTests {
 
   /// A cold-launch replay must open the session under the PERSISTED profile: the replay
   /// fires synchronously at home creation, BEFORE the list's `.task` reloads prefs — an
-  /// unseeded profile would resume unscoped (wrong `state.db` on a non-default profile),
-  /// and the "session not found" self-heal would recreate the session empty under
-  /// "default".
-  @Test func coldLaunchReplayResumesUnderPersistedProfile() async {
+  /// unseeded profile would resume unscoped (the server's LAUNCH profile), and the "session
+  /// not found" self-heal would recreate the session empty there. A persisted `"default"`
+  /// (saved by a successful profiles probe) seeds the same way (#114).
+  @Test(arguments: ["work", "default"])
+  func coldLaunchReplayResumesUnderPersistedProfile(profile: String) async {
     let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
       AppFeature()
     } withDependencies: {
-      $0.preferences.loadSelectedProfileID = { "work" }
+      $0.preferences.loadSelectedProfileID = { profile }
     }
     store.exhaustivity = .off
 
@@ -2971,7 +2973,7 @@ struct AppFeatureTests {
     await store.send(.autoConnectSucceeded(connection)) {
       $0.autoConnecting = false
       $0.home = SessionListFeature.State(
-        connection: self.connection, selectedProfileName: "work", profilesSupported: true
+        connection: self.connection, selectedProfileName: profile, profilesSupported: true
       )
       $0.pendingPushTap = nil
     }
@@ -2979,7 +2981,7 @@ struct AppFeatureTests {
     await store.receive(\.home.delegate.openSession)
     // The replayed open threads the persisted profile into the chat, so `session.resume`
     // scopes to the right `state.db`.
-    #expect(store.state.liveChat?.profileName == "work")
+    #expect(store.state.liveChat?.profileName == profile)
     #expect(store.state.liveChat?.storedSessionID == "cron_job1_20260724")
   }
 
@@ -4168,11 +4170,12 @@ struct AppFeatureTests {
 
   /// The regular seat is the same construction as "new session": it carries the list's
   /// selected profile so its first prompt lands in the right `state.db`.
-  @Test func regularSeatCarriesSelectedProfile() async {
+  @Test(arguments: ["work", "default"])
+  func regularSeatCarriesSelectedProfile(profile: String) async {
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(
-          connection: connection, selectedProfileName: "work", profilesSupported: true
+          connection: connection, selectedProfileName: profile, profilesSupported: true
         )
       )
     ) {
@@ -4181,9 +4184,59 @@ struct AppFeatureTests {
 
     await store.send(.layoutChanged(.regular)) {
       $0.layout = .regular
-      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: profile, composerText: "")
       $0.slotGeneration = 1
     }
+  }
+
+  /// "New session" builds its chat the same way: the literal selected profile, "default"
+  /// included (#114).
+  @Test(arguments: ["work", "default"])
+  func newSessionCarriesSelectedProfile(profile: String) async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: profile, profilesSupported: true
+        )
+      )
+    ) {
+      AppFeature()
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    #expect(store.state.liveChat?.profileName == profile)
+  }
+
+  /// A seat dialled before the profiles probe answered carries `nil` — the server's launch
+  /// profile — so "New session" under a list now on the literal "default" must not reuse it:
+  /// it falls through to the real refill, scoped (#114).
+  @Test func newSessionDoesNotReuseAPreProbeSeatUnderLiteralDefault() async {
+    var chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    chat.liveSessionID = "live-new"
+    chat.status = .ready
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection, selectedProfileName: "default", profilesSupported: true
+        ),
+        liveChat: chat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "default", composerText: "")
+    }
+    await store.send(.liveChat(.teardown))
   }
 
   /// "New session" over an UNPROMPTED new chat (connected but never prompted): the composer
@@ -5468,11 +5521,11 @@ struct AppFeatureTests {
 
   // MARK: Literal default profile across the launch probe (#114)
 
-  /// Every launch moves the list's wire profile from `nil` to the literal `"default"` once the
-  /// profiles probe answers. A regular-width seat dialled before that keeps `profileName ==
-  /// nil` — the SAME profile — so the probe must not reseat it (a reseat would tear down and
-  /// redial a healthy seat on every launch). Exhaustive: no teardown chain, no refill.
-  @Test func profilesProbeAnsweringDefaultDoesNotReseatAPreProbeSeat() async {
+  /// A regular-width seat dialled before the profiles probe answered (no persisted verdict —
+  /// the first launch after login) carries `nil`, the server's LAUNCH profile. When the probe
+  /// moves the list to the literal `"default"` the seat is reseated under it, so its first
+  /// prompt lands in `default`'s `state.db` (#114).
+  @Test func profilesProbeAnsweringDefaultReseatsAPreProbeSeat() async {
     var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
     seat.liveSessionID = "live-new"
     let store = TestStore(
@@ -5490,26 +5543,90 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
       $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
     }
+    store.exhaustivity = .off(showSkippedAssertions: false)
     #expect(store.state.home?.scopedProfileName == nil)
 
-    let profiles = [Profile(name: "default", isDefault: true)]
-    await store.send(.home(.profilesResponse(.success(profiles)))) {
-      $0.home?.profilesSupported = true
-      $0.home?.profiles = IdentifiedArray(uniqueElements: profiles)
-      $0.home?.now = Date(timeIntervalSince1970: 0)
-      $0.home?.isLoading = true
-    }
+    await store.send(.home(.profilesResponse(.success([Profile(name: "default", isDefault: true)]))))
     #expect(store.state.home?.scopedProfileName == "default")
-    await store.receive(\.home.sessionsResponse) {
-      $0.home?.isLoading = false
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "default", composerText: "")
     }
-    await store.receive(\.home.cronJobsResponse) {
-      $0.home?.cronJobsSupported = false
+    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.cronJobsResponse)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// A genuine switch BACK to the default profile reseats a pristine seat under the literal
+  /// `"default"`, not `nil` (#114).
+  @Test func profileSwitchToDefaultInRegularReseatsUnderLiteralDefault() async {
+    var seat = ChatFeature.State(connection: connection, profileName: "work", composerText: "")
+    seat.liveSessionID = "live-new"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+          selectedProfileName: "work",
+          profilesSupported: true
+        ),
+        liveChat: seat,
+        layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
     }
-    #expect(store.state.liveChat == seat)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "default")))
+    await store.receive(\.fillLiveChat) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "default", composerText: "")
+    }
+    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.cronJobsResponse)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The identity collapse in the row patches is nil ≡ `"default"` ONLY: a pre-probe (`nil`)
+  /// chat must not patch the glow or unread flag of a same-id row in a `work` list.
+  @Test func preProbeChatDoesNotPatchRowsOfANonDefaultList() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(
+          connection: connection,
+          sessions: [Session(id: "s1", messageCount: 4, unread: true, isActive: true)],
+          selectedProfileName: "work",
+          profilesSupported: true
+        ),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1", profileName: nil)
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesREST.setUnread = { _, _, _, _ in }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.liveChat(.delegate(.runningChanged(sessionID: "s1", running: false))))
+    await store.finish()
+    #expect(store.state.home?.sessions[id: "s1"]?.unread == true)
+    #expect(store.state.home?.sessions[id: "s1"]?.isActive == true)
   }
 
   /// The same launch transition must not cost the open chat its row patches: a chat seated
