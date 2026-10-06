@@ -32,10 +32,12 @@ public struct ChatFeature {
     static let pageSize = 50
 
     public var connection: ServerConnection
-    /// The active profile this chat is scoped to. `nil` (or `"default"`) means the
-    /// default profile — session create/resume and history hydration omit the `profile`
-    /// param, byte-identical to the single-profile behavior. A custom profile name is
-    /// threaded into `session.create`/`session.resume` and the REST `messages` fetch.
+    /// The profile this chat is scoped to, seeded from `SessionListFeature.State
+    /// .scopedProfileName`: the literal selected name (including `"default"`, #114) whenever
+    /// the agent has the profiles API, threaded verbatim into `session.create`/
+    /// `session.resume` and the REST `messages` fetch. `nil` means the profiles API is
+    /// unsupported (or not yet probed) — the `profile` param is omitted, so the server uses
+    /// its launch profile and requests stay byte-identical for single-profile agents.
     public var profileName: String?
     public var title: String?
     public var transcript: IdentifiedArrayOf<ChatRow>
@@ -676,15 +678,12 @@ public struct ChatFeature {
       return SlashSuggestionFilter.suggestions(for: composerText, catalog: commandCatalog)
     }
 
-    /// The profile name to thread into session create/resume + REST scoping, or `nil` for
-    /// the default profile. Treating the default name as `nil` keeps requests byte-identical
-    /// to the single-profile behavior. The canonical default name lives on
-    /// `SessionListFeature.State.defaultProfileName` (single source of truth).
-    var scopedProfile: String? {
-      guard let name = profileName, name != SessionListFeature.State.defaultProfileName
-      else { return nil }
-      return name
-    }
+    /// The profile name to thread into session create/resume + REST scoping: `profileName`
+    /// passed through verbatim, INCLUDING the literal `"default"` (#114). An omitted profile
+    /// means the server's LAUNCH profile, not `"default"`, so stripping it would aim a
+    /// default-profile chat at the wrong `state.db` on a dashboard launched under another
+    /// profile. `nil` only when the agent lacks the profiles API (byte-identical requests).
+    var scopedProfile: String? { profileName }
   }
 
   public enum Action: BindableAction {
@@ -2594,8 +2593,8 @@ public struct ChatFeature {
 
   /// Create a brand-new session (`session.create`). New sessions send no title so the
   /// server auto-names from the first message (passing any title disables Hermes'
-  /// auto-title generation). The default/nil profile is omitted → byte-identical to the
-  /// single-profile request.
+  /// auto-title generation). A nil profile (no profiles API) is omitted → byte-identical
+  /// to the single-profile request; any name, including `"default"`, is sent (#114).
   private func createSession(profile: String?) -> Effect<Action> {
     .run { [gateway] send in
       await send(.sessionResult(createSessionRPC(fields: [:], profile: profile, gateway: gateway)))
@@ -2604,8 +2603,8 @@ public struct ChatFeature {
 
   /// Branch a message into a new chat (#34): the desktop-parity `session.create` carrying
   /// a single-message seed (`messages`) + `parent_session_id`. Otherwise byte-identical to
-  /// `createSession` — no `title` (the server auto-names on the first submit), the
-  /// default/nil profile omitted. The server stores the parent link in memory and creates
+  /// `createSession` — no `title` (the server auto-names on the first submit), same
+  /// profile threading. The server stores the parent link in memory and creates
   /// the DB row lazily on the first prompt, so an abandoned branch never appears in the
   /// session list (documented v1 behavior — no optimistic insert).
   private func branchSession(seed: State.BranchSeed, profile: String?) -> Effect<Action> {
@@ -3633,8 +3632,9 @@ private func backoffDelay(attempt: Int) -> Duration {
 /// recreating one (`session.create`). Applies the fresh id to state via
 /// `.liveSessionIDRefreshed` (no transcript rebuild, so the optimistic row survives the retry)
 /// and returns it so the caller can replay the original RPC ONCE. Throws if the heal itself
-/// fails (the caller surfaces the banner — no second retry, no recursion). The default/nil
-/// profile is omitted so single-profile/token-mode requests stay byte-identical.
+/// fails (the caller surfaces the banner — no second retry, no recursion). A nil profile
+/// (no profiles API) is omitted so those requests stay byte-identical; any name, including
+/// the literal `"default"`, is threaded (#114).
 private func healLiveSessionID(
   storedSessionID: String?,
   branchSeed: ChatFeature.State.BranchSeed? = nil,
@@ -3684,7 +3684,7 @@ private func branchSeedFields(_ seed: ChatFeature.State.BranchSeed) -> [String: 
 
 /// One `session.create` round-trip shared by the fresh-chat and branch (#34) effects:
 /// `fields` carries the per-call extras (empty for a plain create; seed `messages` +
-/// `parent_session_id` for a branch), the default/nil profile is omitted (byte-identical
+/// `parent_session_id` for a branch), a nil profile is omitted (byte-identical
 /// to the single-profile request), and the result decodes to a `SessionHandle` — a
 /// malformed shape or a non-`GatewayError` throw maps to the same failures each caller
 /// previously produced inline.

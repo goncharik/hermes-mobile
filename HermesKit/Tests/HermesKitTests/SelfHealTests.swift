@@ -503,6 +503,57 @@ struct SelfHealTests {
     #expect(store.state.isSending)
   }
 
+  // MARK: heal profile threading (#114)
+
+  /// The heal's re-resume (stored id known) and its recreate fallback (no stored id) both
+  /// carry the chat's profile VERBATIM — the literal `"default"` included, since an omitted
+  /// profile means the server's LAUNCH profile and the heal would otherwise resume/create in
+  /// the wrong profile. Only `profileName == nil` (no profiles API) omits it.
+  @Test(arguments: [nil, "default"] as [String?], [true, false])
+  func healThreadsLiteralProfile(profileName: String?, hasStoredID: Bool) async {
+    let healCall = LockIsolated<(method: String, params: JSONValue)?>(nil)
+    var initial = ChatFeature.State(connection: conn, profileName: profileName)
+    initial.liveSessionID = "stale-live"
+    initial.storedSessionID = hasStoredID ? "stored123" : nil
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        switch method {
+        case "prompt.submit":
+          if params["session_id"]?.stringValue == "stale-live" {
+            throw GatewayError.server("session not found")
+          }
+          return .object(["status": .string("streaming")])
+        case "session.resume":
+          healCall.setValue((method, params))
+          return self.resumePayload(liveID: "fresh-live")
+        case "session.create":
+          healCall.setValue((method, params))
+          return .object([
+            "session_id": .string("fresh-live"),
+            "stored_session_id": .string("new-stored"),
+          ])
+        default:
+          return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed)
+    await store.finish()
+
+    var expected: [String: JSONValue] = hasStoredID ? ["session_id": .string("stored123")] : [:]
+    if let profileName { expected["profile"] = .string(profileName) }
+    #expect(healCall.value?.method == (hasStoredID ? "session.resume" : "session.create"))
+    #expect(healCall.value?.params == .object(expected))
+    #expect(store.state.errorBanner == nil)
+  }
+
   // MARK: malformed heal response
 
   @Test func promptSubmitHealMalformedResumeSurfacesBannerNoReplay() async {

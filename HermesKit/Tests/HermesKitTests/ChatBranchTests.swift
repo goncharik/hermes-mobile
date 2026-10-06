@@ -74,17 +74,20 @@ struct ChatBranchTests {
     #expect(messages.first?["role"]?.stringValue == "assistant")
     #expect(messages.first?["content"]?.stringValue == "# The answer\n\nUse *plan B*.")
     #expect(params?["parent_session_id"]?.stringValue == "stored123")
-    // No title (server auto-names on first submit), no source, and the default/nil
-    // profile is OMITTED — byte-identical to the plain create otherwise.
+    // No title (server auto-names on first submit), no source, and a nil profile (no
+    // profiles API) is OMITTED — byte-identical to the plain create otherwise.
     #expect(params?["title"] == nil)
     #expect(params?["source"] == nil)
     #expect(params?["profile"] == nil)
     #expect(store.state.errorBanner == nil)
   }
 
-  @Test func branchThreadsSelectedProfile() async {
+  /// The selected profile is threaded verbatim — the literal `"default"` included (#114: an
+  /// omitted profile means the server's launch profile, not `"default"`).
+  @Test(arguments: ["work", "default"])
+  func branchThreadsSelectedProfile(profileName: String) async {
     let sent = LockIsolated<JSONValue?>(nil)
-    var initial = ChatFeature.State(connection: conn, profileName: "work", status: .ready)
+    var initial = ChatFeature.State(connection: conn, profileName: profileName, status: .ready)
     initial.liveSessionID = "live"
     initial.storedSessionID = "stored123"
     initial.transcript = [
@@ -116,9 +119,9 @@ struct ChatBranchTests {
       )
     )
 
-    // A non-default profile is threaded (same convention as create/resume), and the
-    // parent link is the PERSISTED id (the one REST list rows carry, so nesting works).
-    #expect(sent.value?["profile"]?.stringValue == "work")
+    // The profile is threaded (same convention as create/resume), and the parent link
+    // is the PERSISTED id (the one REST list rows carry, so nesting works).
+    #expect(sent.value?["profile"]?.stringValue == profileName)
     #expect(sent.value?["parent_session_id"]?.stringValue == "stored123")
   }
 

@@ -159,10 +159,10 @@ that already happens for non-default selections; this plan doesn't widen it.
 - Modify: `HermesKit/Tests/HermesKitTests/ChatBranchTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` (only where a test expects the default profile to be omitted)
 
-- [ ] Make `scopedProfile` return `profileName` unchanged, and update the `profileName` doc comment (`:35-38`) and `scopedProfile` doc (`:680-683`).
-- [ ] Write tests: with `profileName == "default"`, `session.create`, `session.resume`, the #17 heal re-resume/create, and the REST `messages` fetch all carry `profile: "default"`.
-- [ ] Write tests: with `profileName == nil`, none of them carry `profile` (byte-identical for agents without the profiles API). Update existing tests that seeded `"default"` and expected omission.
-- [ ] Run tests; they must pass before Task 4.
+- [x] Make `scopedProfile` return `profileName` unchanged, and update the `profileName` doc comment (`:35-38`) and `scopedProfile` doc (`:680-683`). (Kept the property — inlining ~18 sites adds churn for no gain; also fixed the "default/nil omitted" wording on `createSession`, `branchSession`, `healLiveSessionID`, `createSessionRPC`.)
+- [x] Write tests: with `profileName == "default"`, `session.create`, `session.resume`, the #17 heal re-resume/create, and the REST `messages` fetch all carry `profile: "default"`. (ChatFeature has no REST `messages` fetch — history arrives via `session.resume`, covered by the `.ready` and foreground hydrate tests. Heal tests live in `SelfHealTests`; branch create in `ChatBranchTests`.)
+- [x] Write tests: with `profileName == nil`, none of them carry `profile` (byte-identical for agents without the profiles API). Update existing tests that seeded `"default"` and expected omission.
+- [x] Run tests; they must pass before Task 4.
 
 ### Task 4: Compare profiles by identity in `AppFeature`
 
