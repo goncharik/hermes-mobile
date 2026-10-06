@@ -145,11 +145,11 @@ that already happens for non-default selections; this plan doesn't widen it.
 - Modify: `HermesKit/Sources/HermesKit/Features/ArchivedSessionsFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ArchivedSessionsFeatureTests.swift`
 
-- [ ] Update the `profileName` doc comment: `nil` now means only that the profiles API is unsupported.
-- [ ] Verify the sheet seeded from the list with the default profile gets `"default"`, lists via `profiles.sessions(…, "default", .only, …)`, and restores with `profile: "default"`.
-- [ ] Write tests for the default-profile scoped list and restore, and for the unscoped path when `profileName == nil`.
-- [ ] Write a test confirming that the sheet's delete delegate reaches the parent and the parent sends `"default"`.
-- [ ] Run tests; they must pass before Task 3.
+- [x] Update the `profileName` doc comment: `nil` now means only that the profiles API is unsupported.
+- [x] Verify the sheet seeded from the list with the default profile gets `"default"`, lists via `profiles.sessions(…, "default", .only, …)`, and restores with `profile: "default"`.
+- [x] Write tests for the default-profile scoped list and restore, and for the unscoped path when `profileName == nil`.
+- [x] Write a test confirming that the sheet's delete delegate reaches the parent and the parent sends `"default"` (lives in `SessionListFeatureTests`, which owns the parent round-trip).
+- [x] Run tests; they must pass before Task 3.
 
 ### Task 3: Send the literal profile from `ChatFeature`
 

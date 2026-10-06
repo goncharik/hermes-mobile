@@ -118,7 +118,44 @@ struct ArchivedSessionsFeatureTests {
     #expect(captured.value?.1 == .only)
   }
 
-  @Test func loadUnderDefaultUsesRESTArchivedSessions() async {
+  @Test func loadUnderLiteralDefaultUsesProfileScopedListing() async {
+    // #114: with the profiles API the sheet is seeded with the LITERAL "default", which
+    // must hit the default profile's `state.db` via the profile-scoped listing — the
+    // unscoped endpoint would read the server's launch profile instead.
+    let captured = LockIsolated<(String, ProfileArchivedFilter)?>(nil)
+    let store = TestStore(
+      initialState: ArchivedSessionsFeature.State(
+        connection: connection, profileName: SessionListFeature.State.defaultProfileName
+      )
+    ) {
+      ArchivedSessionsFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.hermesREST.archivedSessions = { @Sendable _, _, _ in
+        Issue.record("unscoped endpoint must not be used for the literal default profile")
+        return []
+      }
+      $0.hermesProfiles.sessions = { @Sendable _, profile, archived, _, _, _ in
+        captured.setValue((profile, archived))
+        return [Session(id: "d", title: "Default-archived")]
+      }
+    }
+
+    await store.send(.task) {
+      $0.now = self.now
+      $0.isLoading = true
+    }
+    await store.receive(\.archivedResponse.success) {
+      $0.isLoading = false
+      $0.sessions = [Session(id: "d", title: "Default-archived")]
+    }
+    #expect(captured.value?.0 == "default")
+    #expect(captured.value?.1 == .only)
+  }
+
+  @Test func loadWithoutProfilesAPIUsesRESTArchivedSessions() async {
+    // `profileName == nil` now means only "the agent lacks the profiles API" — that agent
+    // keeps the byte-identical unscoped listing.
     let usedREST = LockIsolated(false)
     let store = TestStore(initialState: ArchivedSessionsFeature.State(connection: connection)) {
       ArchivedSessionsFeature()
@@ -129,7 +166,7 @@ struct ArchivedSessionsFeatureTests {
         return [Session(id: "a", title: "Old")]
       }
       $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in
-        Issue.record("profile endpoint must not be used for the default profile")
+        Issue.record("profile endpoint must not be used without the profiles API")
         return []
       }
     }
@@ -169,7 +206,35 @@ struct ArchivedSessionsFeatureTests {
     #expect(restored.value?.2 == "work")
   }
 
-  @Test func restoreUnderDefaultPassesNilProfileToArchive() async {
+  @Test func restoreUnderLiteralDefaultPassesDefaultToArchive() async {
+    // #114: the literal "default" reaches the restore PATCH, scoping it to the default
+    // profile's `state.db` rather than the server's launch profile.
+    let restored = LockIsolated<String??>(nil)
+    var state = ArchivedSessionsFeature.State(
+      connection: connection, profileName: SessionListFeature.State.defaultProfileName
+    )
+    state.sessions = [Session(id: "a", title: "Old")]
+    let store = TestStore(initialState: state) {
+      ArchivedSessionsFeature()
+    } withDependencies: {
+      $0.hermesREST.archive = { @Sendable _, _, archived, profile in
+        #expect(archived == false)
+        restored.setValue(profile)
+      }
+    }
+
+    await store.send(.restoreButtonTapped(id: "a")) {
+      $0.sessions.remove(id: "a")
+      $0.restoringIDs = ["a"]
+    }
+    await store.receive(\.restoreSucceeded) {
+      $0.restoringIDs = []
+    }
+    #expect(restored.value == .some("default"))
+  }
+
+  @Test func restoreWithoutProfilesAPIPassesNilProfileToArchive() async {
+    // No profiles API → `profileName == nil` → the restore stays unscoped (byte-identical).
     let restored = LockIsolated<String??>(nil)
     var state = ArchivedSessionsFeature.State(connection: connection)
     state.sessions = [Session(id: "a", title: "Old")]

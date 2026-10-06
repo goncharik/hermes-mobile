@@ -2438,6 +2438,63 @@ struct SessionListFeatureTests {
     #expect(profile.value == .some("work"))
   }
 
+  @Test func archivedSheetUnderLiteralDefaultSeedsAndDeletesWithDefault() async {
+    // #114: with the profiles API and the default profile selected, the sheet is seeded
+    // with the LITERAL "default" (not nil), and a delete started INSIDE the sheet reaches
+    // the parent via the delegate, whose round-trip sends `profile: "default"`.
+    let profile = LockIsolated<String??>(nil)
+    var initial = SessionListFeature.State(connection: connection)
+    initial.profilesSupported = true // selectedProfileName defaults to "default"
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteSession = { @Sendable _, _, p in profile.setValue(.some(p)) }
+    }
+
+    await store.send(.archivedButtonTapped) {
+      $0.archivedSheetGeneration = 1
+      $0.archived = ArchivedSessionsFeature.State(
+        connection: self.connection,
+        profileName: "default", // literal, not the legacy default→nil
+        now: Date(timeIntervalSince1970: 0)
+      )
+    }
+    let row = Session(id: "a", title: "Old")
+    await store.send(.archived(.presented(.archivedResponse(.success([row]))))) {
+      $0.archived?.sessions = [row]
+    }
+    await store.send(.archived(.presented(.deleteButtonTapped(id: "a")))) {
+      $0.archived?.sessions = []
+      $0.archived?.deletingIDs = ["a"]
+    }
+    await store.receive(\.archived.presented.delegate.deleted)
+    await store.receive(\.delegate.sessionDeleted)
+    await store.receive(\.archivedDeleteSucceeded)
+    await store.receive(\.delegate.sessionDeleteSucceeded)
+    await store.receive(\.archived.presented.deleteSucceeded) {
+      $0.archived?.deletingIDs = []
+    }
+    #expect(profile.value == .some("default"))
+  }
+
+  @Test func archivedSheetWithoutProfilesAPISeedsNilProfile() async {
+    // No profiles API → the sheet stays unscoped even with "default" selected, keeping
+    // those agents' archived list/restore/delete requests byte-identical.
+    var initial = SessionListFeature.State(connection: connection)
+    initial.profilesSupported = false
+    initial.selectedProfileName = SessionListFeature.State.defaultProfileName
+    let store = TestStore(initialState: initial) { SessionListFeature() }
+
+    await store.send(.archivedButtonTapped) {
+      $0.archivedSheetGeneration = 1
+      $0.archived = ArchivedSessionsFeature.State(
+        connection: self.connection,
+        profileName: nil,
+        now: Date(timeIntervalSince1970: 0)
+      )
+    }
+  }
+
   @Test func archivedSheetDeleteSurvivesSheetDismissal() async {
     // THE reason the round-trip is parent-run: dismissing the sheet (Done / swipe-down)
     // while the DELETE is still in flight must not cancel it — the cache and badge were
