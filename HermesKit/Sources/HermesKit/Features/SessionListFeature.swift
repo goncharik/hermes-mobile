@@ -1608,8 +1608,7 @@ public struct SessionListFeature {
 }
 
 /// Fetch the cron jobs and map to a response action. `profile` is the list's
-/// `scopedProfileName`; nil (no profiles API) makes the server aggregate all — which on a
-/// single-profile agent is just "default".
+/// `scopedProfileName`; nil (no profiles API) omits the param (see `rest.cronJobs`).
 private func fetchCronJobs(
   rest: HermesRESTClient,
   connection: ServerConnection,

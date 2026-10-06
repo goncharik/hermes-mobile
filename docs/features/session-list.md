@@ -78,8 +78,8 @@ archived / cron stay flat. Row identity and swipe/context affordances are unchan
 
 ## Session delete (#73)
 
-**Delete is permanent and server-side**: REST `DELETE /api/sessions/{id}` (+`?profile=` only
-when non-default — same per-call scoping rule as archive), idempotent upstream (`already_absent`
+**Delete is permanent and server-side**: REST `DELETE /api/sessions/{id}` (+`?profile=` per
+the per-call scoping rule in `docs/architecture.md`, same as archive), idempotent upstream (`already_absent`
 is success by contract; a ghost row never 404s). The main-list flow **mirrors archive exactly**:
 `deleteButtonTapped` raises a `ConfirmationDialogState` ("This permanently deletes the session
 and its history."), `confirmDelete` captures a full rollback payload (session + index + pin

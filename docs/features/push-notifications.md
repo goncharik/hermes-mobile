@@ -73,7 +73,7 @@ The stash records the persisted server URL at stash time and a login to a **diff
 drops it (scrubbing its badge entry) instead of replaying — resuming a foreign session id would
 trip the resume self-heal into creating a spurious empty chat; an unknown origin (logged out, no
 stored URL) replays unverified. Home creation seeds the persisted profile selection
-(`makeHomeState`) so the replayed open resumes under the right profile — the replay fires before
+and capability verdict (`makeHomeState`; see `docs/architecture.md`) so the replayed open resumes under the right profile — the replay fires before
 the list's `.task` prefs reload.
 
 ## Internal agent forks never push (#64)

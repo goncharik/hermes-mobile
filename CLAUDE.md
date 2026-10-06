@@ -277,6 +277,7 @@ bullets below are the compressed rules.
   `resume` and session-scoped REST when the profiles API exists, else omit it — omitted =
   the server's LAUNCH profile, not `"default"` (#114). Search is scoped too (as on desktop).
   Add-profile is create-then-PUT-soul; selector capability-gated; no per-profile color.
+  Profile comparison and the persisted capability verdict: `docs/architecture.md`.
 
 ## Testing (required for every change)
 

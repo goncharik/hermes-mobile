@@ -17,7 +17,7 @@
   `get_profile_dir("default")`). So when the dashboard runs under a non-default launch profile
   (`hermes -p work dashboard`, a desktop pool backend), the list shows `default`'s sessions
   while archive/rename/delete/unread, the archived sheet, and chat
-  `session.create`/`session.resume`/`messages` all hit `work`'s `state.db`. The symptoms are
+  `session.create`/`session.resume` all hit `work`'s `state.db`. The symptoms are
   the wrong row changing, a 404 or silent no-op, or a resume that misses and #17-self-heals
   into a brand-new session in the wrong profile.
 - Fix: whenever the agent has the profiles API, send the literal selected name (including
@@ -36,8 +36,7 @@
     `:159-161`, `:255-265`): nil → the unscoped `rest.archivedSessions` list and an unscoped
     restore.
   - Unread (#104): `AppFeature.swift:947` passes the chat's `profileName` to `rest.setUnread`.
-- Identity comparisons that use the same nil-for-default value, and must keep treating
-  "default" and "unknown yet" as the same profile:
+- Identity comparisons that use the same nil-for-default value:
   - `AppFeature.swift:144` (`profileReseatSignal`)
   - `:811` (`canPatchVisibleRow`)
   - `:941` (unread row patch)
@@ -80,44 +79,55 @@
 - Keep the plan in sync with the work actually done.
 
 ## Solution Overview
-Two concepts are currently conflated in one nil-for-default value. Split them:
+As shipped (see "Review-driven changes" below):
 
-1. **Wire profile**: what goes on the request. `scopedProfileName` becomes
-   `profilesSupported ? selectedProfileName : nil`, so the literal `"default"` is sent when
-   the API exists. `ChatFeature.scopedProfile` stops stripping `"default"` and passes
-   `profileName` through. Every existing mutation call site then sends the right value
-   without being touched.
-2. **Profile identity**: how two values compare. A new `SessionListFeature.State.profileKey(_:)`
-   maps `nil` and `"default"` to the same key. Comparisons use it, so a chat seated before
-   the profiles probe (`nil`) and the list after it (`"default"`) still count as the same
-   profile. Without this, every launch would trigger a spurious regular-width reseat, which
-   tears down and redials a healthy seat, and the glow/unread patches would be skipped.
+1. **Wire profile**: `scopedProfileName` becomes `profilesSupported ? selectedProfileName : nil`,
+   so the literal `"default"` is sent when the API exists. `ChatFeature` threads its
+   `profileName` verbatim (`scopedProfile` is deleted). Search, cron, archive/rename/delete,
+   the archived sheet, unread and chat create/resume all take this value. The reseat,
+   reusable-seat and rollback checks compare wire values, so a seat dialled `nil` before the
+   profiles probe is reseated once the list moves to `"default"`.
+2. **Persisted capability verdict**: the selection is saved on every successful profiles
+   probe and cleared on its 404 (and on logout).
+   `SessionListFeature.State.persistedProfilesSupported` seeds `profilesSupported` in
+   `AppFeature.makeHomeState`, so chats opened before the probe answers (cold-launch push
+   replay, the regular-width landing seat) are already scoped.
+3. **Row-patch identity**: only the glow/unread patches, which match by session id, treat
+   `nil` and `"default"` as the same profile (private `AppFeature.isSameProfile`).
 
 Rejected alternative: a separate `requestProfileName` used only by REST mutations. It
 leaves the gateway create/resume asymmetry in place, which is the worst symptom (a resume
 miss silently self-heals into a new session in the wrong profile), and it needs two
 parallel properties.
 
-Known limitation (pre-existing, out of scope): a chat seated before `profilesSupported`
-resolves keeps `profileName == nil` and stays unscoped, i.e. on the launch profile. Today
-that already happens for non-default selections; this plan doesn't widen it.
+Known limitation: with nothing persisted yet (the very first launch after login), a chat
+opened before the probe answers stays unscoped, i.e. on the launch profile. The
+regular-width seat is reseated; nothing else is.
+
+Review-driven changes: the first cut (Tasks 1 and 4) added `profileKey` (`nil` ≡
+`"default"`) for every comparison and kept the old non-default-only capability seeding.
+Review showed that left a pre-probe `nil` seat unscoped and uncorrectable, so `profileKey`
+was replaced by wire equality plus the persisted verdict, identity was kept only for the
+row patches, search was scoped (as on desktop), `isDefaultProfileSelected` was deleted as
+dead, and a profiles 404 withdraws the persisted verdict.
 
 ## Technical Details
 - `SessionListFeature.State`:
   - `public var scopedProfileName: String? { profilesSupported ? selectedProfileName : nil }`
     (doc comment rewritten: an omitted profile means the server's LAUNCH profile, not
     `"default"`).
-  - `public static func profileKey(_ name: String?) -> String?`: returns `nil` for `nil` or
-    `defaultProfileName`, otherwise the name.
-  - `isDefaultProfileSelected` stays; it still drives rename/delete-profile gating.
-- `ChatFeature.State.scopedProfile`: returns `profileName`. Inline it at the call sites
-  only if that stays a mechanical rename; otherwise keep the property with a corrected doc.
+  - `static func persistedProfilesSupported(_:)` (`loadSelectedProfileID() != nil`) next to
+    `persistedProfileName`; `.profilesResponse(.success)` saves the selection every time,
+    `.profilesResponse(.failure(.notFound))` clears it.
+  - List, search and cron fetches take one `profile: scopedProfileName`; `rest.search` gains
+    a `profile` parameter. The rollback re-insert compares wire values.
+- `ChatFeature.State.scopedProfile` is deleted; its call sites pass `profileName`.
 - `ArchivedSessionsFeature`: no logic change. A non-nil `"default"` now takes the existing
   profile-scoped branch (`profiles.sessions(…, "default", .only, …)`) and the scoped restore.
   Update the doc comment.
-- Comparisons → `profileKey(a) == profileKey(b)`: `AppFeature.swift:811`, `:941`, `:1030`,
-  `:1056`, `SessionListFeature.swift:1548`. `profileReseatSignal.profileName` is fed
-  `profileKey(home?.scopedProfileName)`.
+- `AppFeature`: `makeHomeState` seeds `profilesSupported` from `persistedProfilesSupported`;
+  `profileReseatSignal`, `reduceProfileReseat` and `isReusableNewChat` compare wire values;
+  `canPatchVisibleRow` and the unread row patch go through `isSameProfile`.
 
 ## What Goes Where
 - **Implementation Steps**: code, tests, and docs in this repo.

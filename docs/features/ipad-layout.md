@@ -104,9 +104,7 @@ Regular renders the detail column at all times, so an empty slot would be a blan
 - **Profile-switch reseat** — a reducer-level `.onChange(of: \.profileReseatSignal)` (the
   list's `scopedProfileName`, whether the seat's composer input is in flight, and `layout`),
   evaluated after the list reducer so it reads the new selection. In regular only, an
-  `isDiscardableNewChat` slot whose `profileName` no longer matches the list (compared via
-  `SessionListFeature.State.profileKey`, so a seat dialled before the profiles probe with
-  `nil` still matches the literal `"default"` — no spurious reseat, #114) is reseated
+  `isDiscardableNewChat` slot whose `profileName` no longer matches the list is reseated
   through the standard teardown chain (its socket may already be dialled) so its first prompt
   lands in the right profile's `state.db`; its draft and staged attachments ride across into the
   replacement — unlike "New session", a profile switch is not a request to clear them. A chat
@@ -119,11 +117,12 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   because the rule is regular-only and nothing else would ever look again.
   Observing the value (not `.selectProfile`) covers every path that changes it: the profiles-404
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
-  off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled
+  on or off (a seat dialled `nil` before the probe is reseated under the literal `"default"`,
+  #114). Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled
   matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
-  `isDiscardableNewChat` AND the same profile (`profileKey` identity) AND `errorBanner == nil`.
-  Tearing such a seat down to fill an identical fresh one would redial the socket for nothing, so it
+  `isDiscardableNewChat` AND the same `scopedProfileName` AND `errorBanner == nil`. Tearing
+  such a seat down to fill an identical fresh one would redial the socket for nothing, so it
   resets the composer draft (text → the `initialComposerText` seed or empty; attachments
   cleared) and returns `.none`. Everything the reset cannot reproduce falls through to a real
   refill: a stale profile, in-flight composer input, and a surfaced failure — a seat whose

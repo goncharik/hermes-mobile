@@ -266,17 +266,19 @@ not assumed):
 - **Profiles are device-local with per-call scoping** — the selected profile *name* lives
   in `PreferencesClient`; we never call `POST /api/profiles/active`. Instead the scoped list
   comes from `GET /api/profiles/sessions?profile=`, and an optional `profile` param threads
-  into `session.create`/`session.resume` (gateway), the archived sheet, and session-scoped
-  archive/rename/delete/unread (REST). Whenever the agent has the profiles API, that param is
-  the **literal** selected name — including `"default"`; it is omitted only when the API is
-  absent, so those agents stay byte-identical. The server reads an omitted profile as the
-  dashboard's **launch** profile, not `"default"` (#114): under `hermes -p work dashboard`
-  an omitted param would mutate/resume `work`'s sessions while the list shows `default`'s.
-  Identity comparisons (reseat, glow/unread patches, rollback) go through
-  `SessionListFeature.State.profileKey`, which treats `nil` (a chat seated before the
-  profiles probe) and `"default"` as the same profile.
-  **Search is not profile-scoped** (mirrors the desktop). The desktop's per-profile color is
-  intentionally omitted.
+  into `session.create`/`session.resume` (gateway), the archived sheet, search, cron, and
+  session-scoped archive/rename/delete/unread (REST). Whenever the agent has the profiles API,
+  that param is the **literal** selected name — including `"default"`; it is omitted only when
+  the API is absent, so those agents stay byte-identical. The server reads an omitted profile
+  as the dashboard's **launch** profile, not `"default"` (#114): under `hermes -p work
+  dashboard` an omitted param would mutate/resume `work`'s sessions while the list shows
+  `default`'s. The capability verdict is persisted (a selection saved on every successful
+  profiles probe, cleared on its 404 and on logout) and seeds `profilesSupported` before the
+  probe answers (`SessionListFeature.State.persistedProfilesSupported`). Profiles compare by
+  wire value (reseat, reusable seat, rollback), so a seat dialled `nil` before the first probe
+  after login is reseated under `"default"`; only the glow/unread row patches treat `nil` and
+  `"default"` as the same profile (`AppFeature.isSameProfile`). Search is scoped like the
+  desktop's. The desktop's per-profile color is intentionally omitted.
 - **Slash commands have their own pipeline** — `commands.catalog` (discovery,
   capability-gated like attachments) → `slash.exec` → `command.dispatch` fallback. A
   *successful* `slash.exec` can itself answer a typed dispatch directive (the server routes

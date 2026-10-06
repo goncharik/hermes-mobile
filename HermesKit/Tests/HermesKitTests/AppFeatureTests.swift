@@ -158,7 +158,8 @@ struct AppFeatureTests {
       $0.liveChat = ChatFeature.State(
         connection: self.connection,
         resumeStoredID: "20260610_abc",
-        // Default profile → unscoped (nil), so the chat is byte-identical to single-profile.
+        // No profiles API (profilesSupported false) → unscoped (nil), byte-identical to
+        // single-profile.
         profileName: nil,
         title: "Protocol chat"
       )
