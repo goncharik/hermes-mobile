@@ -128,6 +128,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   let turnState: TurnState
   let canLoadOlder: Bool
   let onLoadOlder: () -> Void
+  /// Whether arriving content may move the viewport to the bottom (#55). `false` freezes
+  /// the viewport where the user left it; only an explicit "jump to latest" moves it.
+  let autoFollowEnabled: Bool
   let cell: (ChatRow) -> Cell
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -137,12 +140,14 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     turnState: TurnState,
     canLoadOlder: Bool,
     onLoadOlder: @escaping () -> Void,
+    autoFollowEnabled: Bool = true,
     @ViewBuilder cell: @escaping (ChatRow) -> Cell
   ) {
     self.rows = rows
     self.turnState = turnState
     self.canLoadOlder = canLoadOlder
     self.onLoadOlder = onLoadOlder
+    self.autoFollowEnabled = autoFollowEnabled
     self.cell = cell
   }
 
@@ -181,6 +186,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     context.coordinator.reduceMotion = reduceMotion
     context.coordinator.turnState = turnState
     context.coordinator.canLoadOlder = canLoadOlder
+    context.coordinator.autoFollowEnabled = autoFollowEnabled
     context.coordinator.apply(rows: rows)
   }
 
@@ -198,6 +204,31 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// Whether older history exists above the window. Gates the top-sentinel load trigger so
     /// `pendingPrependPreservation` is only armed when a prepend can actually follow.
     var canLoadOlder = false
+
+    /// Whether arriving content may move the viewport to the bottom (#55). Renderer-local
+    /// like the rest of the pin state: the reducer owns the user's PREFERENCE, this owns
+    /// what it does to geometry. All follow paths funnel through `followIfAllowed()` so the
+    /// pref can never be honoured on one path and ignored on another.
+    var autoFollowEnabled = true
+
+    /// Whether a content-driven re-pin may move the viewport.
+    ///
+    /// The initial open-at-bottom settle ALWAYS wins: that path is the open contract (a
+    /// freshly opened chat must land at the bottom), and pin state isn't trustworthy while
+    /// self-sizing cells are still measuring — `updatePinState` deliberately doesn't run
+    /// then. Afterwards the user's follow pref decides, combined with the ordinary pin rule
+    /// in `TranscriptScrollMath.shouldFollow`.
+    ///
+    /// Scope note: this gates CONTENT-driven scrolling (streaming deltas, appended rows).
+    /// The keyboard-avoidance re-pin (`viewportDidShrink`) is deliberately NOT gated — it
+    /// only ever fires while already pinned, and its job is to stop the keyboard covering
+    /// the newest rows rather than to follow new content.
+    private var mayFollowContent: Bool {
+      needsInitialBottomSettle
+        || TranscriptScrollMath.shouldFollow(
+          isPinnedToBottom: isPinnedToBottom, autoFollowEnabled: autoFollowEnabled
+        )
+    }
 
     private weak var collectionView: UICollectionView?
     private var dataSource: UICollectionViewDiffableDataSource<Section, ChatRow.ID>!
@@ -286,12 +317,18 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           let old = change.oldValue,
           let new = change.newValue,
           new.height > old.height,                 // content grew
-          self.isPinnedToBottom || self.needsInitialBottomSettle, // at bottom, or still settling open
           !self.isAdjustingOffset,                 // not our own programmatic change
           !self.isApplyingSnapshot,                // apply completion owns the re-pin
           !self.pendingPrependPreservation,        // a prepend handles its own offset
           self.didInitialJump                      // skip first population (handled by jump)
         else { return }
+        guard self.mayFollowContent else {
+          // Following is off (#55): the viewport stays put, so this growth moved the bottom
+          // away from the user. Re-sample the pin state so the "jump to latest" button
+          // appears — otherwise the only affordance for catching up would stay hidden.
+          self.updatePinState()
+          return
+        }
         self.scrollToBottom(animated: false)
       }
 
@@ -413,8 +450,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
             previousContentHeight: capturedContentHeight
           )
         } else if wasPinned {
-          // Appended row or streaming delta grew the last cell: follow only if pinned.
-          self.scrollToBottom(animated: !self.reduceMotion)
+          // Appended row or streaming delta grew the last cell: follow only if pinned AND the
+          // user hasn't turned following off (#55).
+          if self.autoFollowEnabled {
+            self.scrollToBottom(animated: !self.reduceMotion)
+          } else {
+            // Following disabled: leave the offset where it is, but content just grew below
+            // it — re-sample the pin state so the "jump to latest" button appears and
+            // catching up stays one explicit tap (never an automatic yank).
+            self.updatePinState()
+          }
         }
         // Scrolled-up reader: do nothing (no yank), the jump button stays.
       }

@@ -179,7 +179,11 @@ struct ChatView: View {
     if store.showsEmptyHero {
       ChatEmptyHeroView()
     } else {
-      let rows = Array(store.visibleRows)
+      // Display prefs (#55) filter the ROW LIST here, at the view boundary — never the
+      // reducer's `transcript`. Row identity, the client-side window, and the streaming fold
+      // all read `transcript`, so hiding a row must not touch any of them: the renderer just
+      // doesn't receive it. `visibleRows` is the window; `displayPrefs.apply` is the view.
+      let rows = store.displayPrefs.apply(to: store.visibleRows)
       let turnState: TurnState = store.isSending ? .streaming : .idle
       let canLoadOlder = store.hasMoreAbove
       let onLoadOlder = { _ = store.send(.loadOlderRequested) }
@@ -192,6 +196,7 @@ struct ChatView: View {
         turnState: turnState,
         canLoadOlder: canLoadOlder,
         onLoadOlder: onLoadOlder,
+        autoFollowEnabled: store.displayPrefs.autoFollowEnabled,
         cell: transcriptCell
       )
       // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a

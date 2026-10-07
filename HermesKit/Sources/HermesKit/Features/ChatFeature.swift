@@ -210,6 +210,13 @@ public struct ChatFeature {
     /// Cleared by the drain that consumes it and by a manual Stop (stop intent wins).
     var sendNowArmed: Bool
 
+    /// Which row kinds this chat renders, and whether arriving content follows to the
+    /// bottom (#55). Device-local display prefs, seeded from `PreferencesClient` when the
+    /// slot starts. Filtering is applied at the VIEW boundary (`ChatView`), never to
+    /// `transcript` — hidden rows must not disturb row identity, windowing, or the
+    /// streaming fold, and toggling the pref back on must not require a re-fetch.
+    public var displayPrefs: ChatDisplayPrefs
+
     /// Mid-turn counterpart to `canSend` (#66): whether `.composerSubmitted` while
     /// `isSending`/`slashExecInFlight` will queue the draft. Same gates as `canSend`
     /// minus the two turn-lock flags (which are the whole point). The view's send arrow
@@ -571,6 +578,10 @@ public struct ChatFeature {
       self.drainingEntry = nil
       self.drainingRowID = nil
       self.sendNowArmed = false
+      // Not a dependency read (see the init-time-read note below): the display prefs are
+      // seeded from `PreferencesClient` in `.task`, the same slot-start seam
+      // `SessionListFeature` uses for `reloadPrefs`. Default here = pre-feature behavior.
+      self.displayPrefs = .default
 
       // Instant paint: read the non-authoritative snapshot synchronously so the chat shows
       // its cached tail + model/usage immediately, before `session.resume` lands. The
@@ -761,6 +772,12 @@ public struct ChatFeature {
     /// (already over, or lost on a reconnecting socket). Safe to send any time; every
     /// precondition is re-checked in `drainQueueIfReady`.
     case maybeDrainQueue
+    /// Display prefs (#55) — seeded from `PreferencesClient` on the slot's first
+    /// appearance, edited from the chat's ellipsis menu, persisted immediately.
+    case displayPrefsReloaded(ChatDisplayPrefs)
+    case showToolRowsToggled(Bool)
+    case showThinkingRowsToggled(Bool)
+    case autoFollowToggled(Bool)
     case respondToApproval(approve: Bool, all: Bool)
     /// Outcome of the awaited `approval.respond` RPC. `resolved` carries the server's
     /// `{"resolved": n}` count — `0` means the per-session queue was already empty (the
@@ -990,6 +1007,15 @@ public struct ChatFeature {
         // which must not cancel-and-redial a healthy socket.
         guard !state.hasStarted else { return .none }
         state.hasStarted = true
+        // Seed the display prefs (#55) on the FIRST appearance only, right where the slot
+        // starts — a re-appearance over a live slot must not reload them (they're already
+        // in state, and a reload would fight a toggle the user just made). `AppFeature`
+        // keeps the slot alive across nav pops, so this really is once per slot.
+        state.displayPrefs = ChatDisplayPrefs(
+          showToolRows: preferences.loadShowToolRows(),
+          showThinkingRows: preferences.loadShowThinkingRows(),
+          autoFollowEnabled: preferences.loadAutoFollowEnabled()
+        )
         return connect(state.connection)
 
       case .viewDisappeared:
@@ -1395,6 +1421,30 @@ public struct ChatFeature {
 
       case .maybeDrainQueue:
         return drainQueueIfReady(into: &state)
+
+      // MARK: Display prefs (#55)
+
+      case let .displayPrefsReloaded(prefs):
+        state.displayPrefs = prefs
+        return .none
+
+      case let .showToolRowsToggled(show):
+        guard state.displayPrefs.showToolRows != show else { return .none }
+        state.displayPrefs.showToolRows = show
+        preferences.saveShowToolRows(show)
+        return .none
+
+      case let .showThinkingRowsToggled(show):
+        guard state.displayPrefs.showThinkingRows != show else { return .none }
+        state.displayPrefs.showThinkingRows = show
+        preferences.saveShowThinkingRows(show)
+        return .none
+
+      case let .autoFollowToggled(enabled):
+        guard state.displayPrefs.autoFollowEnabled != enabled else { return .none }
+        state.displayPrefs.autoFollowEnabled = enabled
+        preferences.saveAutoFollowEnabled(enabled)
+        return .none
 
       case let .respondToApproval(approve, all):
         guard case .approval = state.pendingInteraction,

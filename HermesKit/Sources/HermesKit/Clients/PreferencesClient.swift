@@ -28,6 +28,23 @@ public struct PreferencesClient: Sendable {
   /// pref; defaults to `true` (shown) so the section stays visible until the user opts out.
   public var loadShowCronSection: @Sendable () -> Bool = { true }
   public var saveShowCronSection: @Sendable (_ show: Bool) -> Void
+  /// Whether the transcript renders tool/skill activity rows. Device-local UI pref;
+  /// defaults to `true` (shown) so existing users see no change. Hiding them keeps the
+  /// conversation readable while the agent works (#55) — the rows are pure activity
+  /// reporting, never the answer itself.
+  public var loadShowToolRows: @Sendable () -> Bool = { true }
+  public var saveShowToolRows: @Sendable (_ show: Bool) -> Void
+  /// Whether the transcript renders the live/frozen "Thinking" disclosure rows.
+  /// Device-local UI pref; defaults to `true` (shown).
+  public var loadShowThinkingRows: @Sendable () -> Bool = { true }
+  public var saveShowThinkingRows: @Sendable (_ show: Bool) -> Void
+  /// Whether the transcript follows new rows to the bottom while a turn streams, i.e.
+  /// whether arriving content may move the viewport. Device-local UI pref; defaults to
+  /// `true` (follow) — the pre-feature behavior. Turning it off freezes the viewport
+  /// where the user left it, so a long-running turn can't scroll the text away from
+  /// under someone reading an earlier reply.
+  public var loadAutoFollowEnabled: @Sendable () -> Bool = { true }
+  public var saveAutoFollowEnabled: @Sendable (_ enabled: Bool) -> Void
   /// Currently selected Hermes profile name. Device-local — we never change the server's
   /// sticky active profile. Also carries the profiles capability verdict — read it through
   /// `SessionListFeature.State.persistedProfileName` / `persistedProfilesSupported`.
@@ -69,6 +86,9 @@ public extension PreferencesClient {
     let groupingKey = "hermes.session-grouping-mode"
     let swipeActionKey = "hermes.default-session-swipe-action"
     let showCronSectionKey = "hermes.show-cron-section"
+    let showToolRowsKey = "hermes.show-tool-rows"
+    let showThinkingRowsKey = "hermes.show-thinking-rows"
+    let autoFollowEnabledKey = "hermes.auto-follow-enabled"
     let selectedProfileKey = "hermes.selected-profile-id"
     let pushTokenKey = "hermes.push-device-token"
     let pushSnoozeCountKey = "hermes.push-prompt-snooze-count"
@@ -98,6 +118,19 @@ public extension PreferencesClient {
           : store.bool(forKey: showCronSectionKey)
       },
       saveShowCronSection: { store.set($0, forKey: showCronSectionKey) },
+      // Every display pref below follows the same rule as the cron-section toggle: an
+      // absent key means the pre-feature behavior (rows shown, following on), so an
+      // upgrade never silently changes what a user sees.
+      loadShowToolRows: { store.object(forKey: showToolRowsKey) == nil ? true : store.bool(forKey: showToolRowsKey) },
+      saveShowToolRows: { store.set($0, forKey: showToolRowsKey) },
+      loadShowThinkingRows: {
+        store.object(forKey: showThinkingRowsKey) == nil ? true : store.bool(forKey: showThinkingRowsKey)
+      },
+      saveShowThinkingRows: { store.set($0, forKey: showThinkingRowsKey) },
+      loadAutoFollowEnabled: {
+        store.object(forKey: autoFollowEnabledKey) == nil ? true : store.bool(forKey: autoFollowEnabledKey)
+      },
+      saveAutoFollowEnabled: { store.set($0, forKey: autoFollowEnabledKey) },
       loadSelectedProfileID: { store.string(forKey: selectedProfileKey) },
       saveSelectedProfileID: { store.set($0, forKey: selectedProfileKey) },
       clearSelectedProfileID: { store.removeObject(forKey: selectedProfileKey) },
@@ -129,6 +162,9 @@ public extension PreferencesClient {
     let grouping = LockIsolated<SessionGroupingMode>(.default)
     let swipeAction = LockIsolated<SessionSwipeAction>(.default)
     let showCronSection = LockIsolated<Bool>(true)
+    let showToolRows = LockIsolated<Bool>(true)
+    let showThinkingRows = LockIsolated<Bool>(true)
+    let autoFollowEnabled = LockIsolated<Bool>(true)
     let selectedProfile = LockIsolated<String?>(nil)
     let pushToken = LockIsolated<String?>(nil)
     let pushSnooze = LockIsolated<(count: Int, until: Date)?>(nil)
@@ -146,6 +182,12 @@ public extension PreferencesClient {
       saveDefaultSessionSwipeAction: { swipeAction.setValue($0) },
       loadShowCronSection: { showCronSection.value },
       saveShowCronSection: { showCronSection.setValue($0) },
+      loadShowToolRows: { showToolRows.value },
+      saveShowToolRows: { showToolRows.setValue($0) },
+      loadShowThinkingRows: { showThinkingRows.value },
+      saveShowThinkingRows: { showThinkingRows.setValue($0) },
+      loadAutoFollowEnabled: { autoFollowEnabled.value },
+      saveAutoFollowEnabled: { autoFollowEnabled.setValue($0) },
       loadSelectedProfileID: { selectedProfile.value },
       saveSelectedProfileID: { selectedProfile.setValue($0) },
       clearSelectedProfileID: { selectedProfile.setValue(nil) },
