@@ -202,10 +202,13 @@ public struct HermesRESTClient: Sendable {
   public var sessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int, _ order: SessionOrder) async throws -> [Session]
   /// Just the archived (soft-hidden) sessions — `GET /api/sessions?archived=only`.
   public var archivedSessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int) async throws -> [Session]
-  public var search: @Sendable (_ connection: ServerConnection, _ query: String) async throws -> [Session]
+  /// Full-text search — `GET /api/sessions/search?q=…`. A non-nil `profile` adds
+  /// `&profile=` (searches that profile's `state.db`); `nil` → today's exact request.
+  public var search: @Sendable (_ connection: ServerConnection, _ query: String, _ profile: String?) async throws -> [Session]
   /// Soft-hide (archive) or restore a session — `PATCH /api/sessions/{id}` `{"archived":…}`.
-  /// Pass `profile` (non-default) to scope to that profile (added to both query and body);
-  /// `nil` → today's exact request.
+  /// Pass `profile` (the literal name, `"default"` included — see
+  /// `SessionListFeature.State.scopedProfileName`) to scope to that profile (added to both
+  /// query and body); `nil` → today's exact request.
   public var archive: @Sendable (_ connection: ServerConnection, _ id: String, _ archived: Bool, _ profile: String?) async throws -> Void
   /// Set the shared unread flag — `PATCH /api/sessions/{id}` `{"unread":…}`. Sending
   /// `false` on every open both acknowledges current activity and starts tracking a legacy
@@ -213,12 +216,10 @@ public struct HermesRESTClient: Sendable {
   public var setUnread: @Sendable (_ connection: ServerConnection, _ id: String, _ unread: Bool, _ profile: String?) async throws -> Void
   /// Rename a session — `PATCH /api/sessions/{id}` `{"title":…}`. An empty title clears it.
   /// The server may reject with 400 (too long / invalid chars / duplicate).
-  /// Pass `profile` (non-default) to scope to that profile (added to both query and body);
-  /// `nil` → today's exact request.
+  /// `profile` follows the archive rule.
   public var rename: @Sendable (_ connection: ServerConnection, _ id: String, _ title: String, _ profile: String?) async throws -> Void
-  /// Permanently delete a session — `DELETE /api/sessions/{id}`. Pass `profile`
-  /// (non-default) to scope to that profile (query param only — DELETE has no body);
-  /// `nil` omits it entirely, same threading rule as `archive`. The endpoint is
+  /// Permanently delete a session — `DELETE /api/sessions/{id}`. `profile` follows
+  /// the archive rule (query param only — DELETE has no body). The endpoint is
   /// idempotent: deleting an already-absent session still answers 2xx
   /// (`{ok, already_absent}`), so any 2xx is success and the body is discarded.
   ///
@@ -243,7 +244,7 @@ public struct HermesRESTClient: Sendable {
   /// `RESTError.notFound` (404).
   public var sendTestPush: @Sendable (_ connection: ServerConnection) async throws -> Void
   /// Cron jobs on the connected agent — `GET /api/cron/jobs` (hermes-agent v0.16+). Pass
-  /// `profile` (non-default) to scope to that profile's jobs; `nil` omits the param and the
+  /// `profile` (the literal name, `"default"` included) to scope to that profile's jobs; `nil` omits the param and the
   /// server aggregates every profile (each job carries its `profile` annotation). A missing
   /// endpoint (older agent) surfaces as `RESTError.notFound` so the caller can
   /// capability-gate back to the flat cron section.
@@ -366,8 +367,10 @@ public extension HermesRESTClient {
         let response: SessionsResponse = try await get(url, auth: authFor(conn), session: session)
         return response.sessions.map(\.asSession)
       },
-      search: { conn, query in
-        let url = try makeURL(conn.baseURL, "/api/sessions/search", query: [.init(name: "q", value: query)])
+      search: { conn, query, profile in
+        let items = [URLQueryItem(name: "q", value: query)]
+          + (profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? [])
+        let url = try makeURL(conn.baseURL, "/api/sessions/search", query: items)
         let response: SearchResponse = try await get(url, auth: authFor(conn), session: session)
         return response.results.map(\.asSession)
       },
@@ -406,7 +409,7 @@ public extension HermesRESTClient {
       deleteSession: { conn, id, profile in
         // Same URL shape as `archive`/`rename`: interpolate the RAW id (`makeURL`
         // percent-encodes the path). A non-nil profile rides in the query only — DELETE
-        // carries no body; `nil` → no `profile` anywhere (default-profile rule).
+        // carries no body; `nil` → no `profile` anywhere.
         // Any 2xx is success (`{ok, already_absent}` included); the body is discarded.
         // 404 → `.notFound`, 405 (older agent, path exists for PATCH/GET only) →
         // `.server(status: 405, …)` via the shared `validate` mapping.

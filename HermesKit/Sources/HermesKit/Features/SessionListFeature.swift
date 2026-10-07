@@ -143,6 +143,13 @@ public struct SessionListFeature {
       preferences.loadSelectedProfileID() ?? defaultProfileName
     }
 
+    /// Whether the last profiles probe on this server succeeded: a selection is persisted
+    /// on every probe success and selection change, and cleared on the probe's 404 and on
+    /// logout. Seeds `profilesSupported` in `AppFeature.makeHomeState` before the probe.
+    static func persistedProfilesSupported(_ preferences: PreferencesClient) -> Bool {
+      preferences.loadSelectedProfileID() != nil
+    }
+
     /// Collapsed groups show at most this many rows before a "Show more".
     public static let collapsedLimit = 5
 
@@ -214,17 +221,15 @@ public struct SessionListFeature {
       self.addProfile = addProfile
     }
 
-    /// Whether the currently-selected profile is the default (no `?profile=` scoping for
-    /// reads/mutations, and a `nil` profile threaded into archive/rename).
-    public var isDefaultProfileSelected: Bool {
-      selectedProfileName == Self.defaultProfileName
-    }
-
-    /// The profile name to thread into session-scoped REST calls (archive/rename): `nil`
-    /// for the default profile or when the agent lacks the profiles API, else the name.
+    /// The WIRE profile threaded into every session-scoped call (list, search, cron,
+    /// archive/rename/delete, the archived sheet, and the chat's create/resume): the LITERAL
+    /// selected name — including `"default"` — whenever the agent has the profiles API, `nil`
+    /// only without it (so those agents get byte-identical requests). An omitted profile is
+    /// NOT read as `"default"` by the server: it means the dashboard process's LAUNCH profile
+    /// (`hermes -p work dashboard` → `work`), so dropping `"default"` would mutate the
+    /// wrong profile's `state.db` (#114).
     public var scopedProfileName: String? {
-      guard profilesSupported, !isDefaultProfileSelected else { return nil }
-      return selectedProfileName
+      profilesSupported ? selectedProfileName : nil
     }
 
     /// The destructive action the trailing swipe actually offers: the persisted
@@ -714,10 +719,7 @@ public struct SessionListFeature {
         // the full load (sessions + jobs); pause/resume only changed the job, so a
         // jobs-only refetch avoids churning the list.
         if refetchSessions { return load(&state) }
-        return .run { [
-          rest, connection = state.connection,
-          profile = state.profilesSupported ? state.selectedProfileName : nil
-        ] send in
+        return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
           await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
         }
 
@@ -826,12 +828,11 @@ public struct SessionListFeature {
         guard state.isSearching else { return load(&state) }
         return .run { [
           rest, profiles, connection = state.connection, query = state.searchQuery, clock,
-          profileName = state.selectedProfileName, profilesSupported = state.profilesSupported
+          profile = state.scopedProfileName
         ] send in
           try await clock.sleep(for: .milliseconds(300))
           await send(fetchSessions(
-            rest: rest, profiles: profiles, connection: connection, query: query,
-            profileName: profileName, profilesSupported: profilesSupported
+            rest: rest, profiles: profiles, connection: connection, query: query, profile: profile
           ))
         }
         // Shared `fetch` id: cancels any in-flight list load so a late list response can't
@@ -1277,12 +1278,18 @@ public struct SessionListFeature {
         // If the persisted selection no longer exists on the server, re-home to default.
         if state.profiles[id: state.selectedProfileName] == nil {
           state.selectedProfileName = Self.State.defaultProfileName
-          preferences.saveSelectedProfileID(state.selectedProfileName)
         }
+        // Persisted on EVERY successful probe, "default" included: a persisted selection is
+        // what `AppFeature.makeHomeState` reads as "this agent has the profiles API", so the
+        // next launch scopes chats opened before its own probe answers (#114).
+        preferences.saveSelectedProfileID(state.selectedProfileName)
         return load(&state)
 
-      case .profilesResponse(.failure):
+      case let .profilesResponse(.failure(error)):
         // A 404 (old agent) or any failure → behave as today: no scoping, unscoped fetch.
+        // Only the 404 verdict withdraws the persisted capability (a transient failure
+        // keeps it for the next launch).
+        if error == .notFound { preferences.clearSelectedProfileID() }
         state.profilesSupported = false
         state.profiles = []
         return load(&state)
@@ -1473,30 +1480,23 @@ public struct SessionListFeature {
   }
 
   /// Refresh "now", clear errors, reload persisted prefs, and fetch the session list
-  /// (profile-scoped when supported; unscoped otherwise — search always unscoped).
+  /// (scoped to `scopedProfileName`; unscoped without the profiles API).
   private func load(_ state: inout State) -> Effect<Action> {
     reloadPrefs(&state)
     state.isLoading = true
     return .run { [
       rest, profiles, connection = state.connection, query = state.searchQuery,
-      profileName = state.selectedProfileName, profilesSupported = state.profilesSupported,
-      cronJobsSupported = state.cronJobsSupported
+      profile = state.scopedProfileName, cronJobsSupported = state.cronJobsSupported
     ] send in
       await send(fetchSessions(
-        rest: rest, profiles: profiles, connection: connection, query: query,
-        profileName: profileName, profilesSupported: profilesSupported
+        rest: rest, profiles: profiles, connection: connection, query: query, profile: profile
       ))
       // Refresh the cron jobs in the SAME effect, after the list, so the two responses
       // arrive in a deterministic order (no racy merge). Skipped while searching (the
-      // section is hidden then) and once the agent proved it lacks the API. When the agent
-      // supports profiles the fetch is scoped to the SELECTED profile (the literal name,
-      // incl. "default" — matching the scoped session list, so a job's runs are actually
-      // in `sessions`); unscoped agents omit the param.
+      // section is hidden then) and once the agent proved it lacks the API. Scoped like the
+      // session list, so a job's runs are actually in `sessions`.
       if cronJobsSupported, query.trimmingCharacters(in: .whitespaces).isEmpty {
-        await send(fetchCronJobs(
-          rest: rest, connection: connection,
-          profile: profilesSupported ? profileName : nil
-        ))
+        await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
       }
     }
     // Shared `fetch` id: a newer load/search/poll cancels this one, so an older in-flight
@@ -1560,8 +1560,7 @@ public struct SessionListFeature {
 
   /// Shared trigger/pause/resume flow: guard against a double-fire while the job's RPC is
   /// in flight, then run it and funnel the outcome through `.cronJobActionFinished`.
-  /// Threads the same profile scoping as the jobs fetch (literal selected name when the
-  /// agent supports profiles, else nil).
+  /// Threads the same profile scoping as the jobs fetch (`scopedProfileName`).
   private func performCronAction(
     _ state: inout State,
     id: String,
@@ -1570,8 +1569,7 @@ public struct SessionListFeature {
   ) -> Effect<Action> {
     guard !state.cronActionInFlightIDs.contains(id) else { return .none }
     state.cronActionInFlightIDs.insert(id)
-    let profile = state.profilesSupported ? state.selectedProfileName : nil
-    return .run { [rest, connection = state.connection] send in
+    return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
       do {
         try await rpc(rest, connection, id, profile)
         await send(.cronJobActionFinished(id: id, refetchSessions: refetchSessions, error: nil))
@@ -1609,15 +1607,8 @@ public struct SessionListFeature {
   }
 }
 
-/// Fetch the list (or search results when a query is present) and map to a response.
-///
-/// When `profilesSupported` is true the active list is fetched via the profile-scoped
-/// endpoint (`profiles.sessions(profile:…)`); otherwise it falls back to today's
-/// unscoped `/api/sessions`. Search is never profile-scoped (mirrors the desktop) — it
-/// always goes through `rest.search`.
-/// Fetch the cron jobs and map to a response action. `profile` is the literal selected
-/// name when the agent supports profiles (matching the scoped session list), else nil
-/// (the server aggregates all — which on a single-profile agent is just "default").
+/// Fetch the cron jobs and map to a response action. `profile` is the list's
+/// `scopedProfileName`; nil (no profiles API) omits the param (see `rest.cronJobs`).
 private func fetchCronJobs(
   rest: HermesRESTClient,
   connection: ServerConnection,
@@ -1632,24 +1623,25 @@ private func fetchCronJobs(
   }
 }
 
+/// Fetch the list (or search results when a query is present) and map to a response.
+///
+/// `profile` is the list's `scopedProfileName`: when set, the list goes through the
+/// profile-scoped endpoint and search carries it too (mirrors the desktop); nil (no
+/// profiles API) keeps today's unscoped requests.
 private func fetchSessions(
   rest: HermesRESTClient,
   profiles: HermesProfileClient,
   connection: ServerConnection,
   query rawQuery: String,
-  profileName: String,
-  profilesSupported: Bool
+  profile: String?
 ) async -> SessionListFeature.Action {
   let query = rawQuery.trimmingCharacters(in: .whitespaces)
   do {
     let sessions: [Session]
     if !query.isEmpty {
-      sessions = try await rest.search(connection, query)
-    } else if profilesSupported {
-      // The dedicated profiles endpoint takes the literal name (incl. "default") — unlike the
-      // legacy per-session mutation endpoints, which use `scopedProfileName` (default→nil). The
-      // canonical default name is `SessionListFeature.State.defaultProfileName`.
-      sessions = try await profiles.sessions(connection, profileName, .exclude, .recent, 50, 0)
+      sessions = try await rest.search(connection, query, profile)
+    } else if let profile {
+      sessions = try await profiles.sessions(connection, profile, .exclude, .recent, 50, 0)
     } else {
       sessions = try await rest.sessions(connection, 50, 0, .recent)
     }

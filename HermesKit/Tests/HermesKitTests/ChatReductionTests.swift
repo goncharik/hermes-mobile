@@ -739,8 +739,10 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
-  @Test func defaultProfileNameThreadsNoProfileParam() async {
-    // A profileName of "default" must produce byte-identical params to nil (regression).
+  @Test func defaultProfileNameThreadsLiteralDefaultParam() async {
+    // #114: a profileName of "default" is sent LITERALLY — an omitted profile means the
+    // server's launch profile, not "default". Only nil (no profiles API) omits it, which
+    // `createsSessionOnFirstReady` pins as `params == {}`.
     let sent = LockIsolated<JSONValue?>(nil)
     let store = TestStore(
       initialState: ChatFeature.State(connection: conn, profileName: "default")
@@ -777,7 +779,44 @@ struct ChatReductionTests {
       $0.status = .ready
       $0.hasHydrated = true
     }
-    #expect(sent.value?["params"] == .object([:]))
+    #expect(sent.value?["method"]?.stringValue == "session.create")
+    #expect(sent.value?["params"] == .object(["profile": .string("default")]))
+    await store.send(.teardown)
+  }
+
+  /// #114: the `.ready` hydrate's `session.resume` sends the literal `"default"`; a nil
+  /// profile (no profiles API) omits the key so those agents see byte-identical params.
+  @Test(arguments: [nil, "default"] as [String?])
+  func resumeThreadsLiteralDefaultOrOmitsWithoutProfilesAPI(profileName: String?) async {
+    let resumeParams = LockIsolated<JSONValue?>(nil)
+    let store = TestStore(
+      initialState: ChatFeature.State(
+        connection: conn, resumeStoredID: "stored123", profileName: profileName
+      )
+    ) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method == "session.resume" { resumeParams.setValue(params) }
+        return .object([
+          "session_id": .string("live123"),
+          "stored_session_id": .string("stored123"),
+          "messages": .array([]),
+          "running": .bool(false),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    var expected: [String: JSONValue] = ["session_id": .string("stored123")]
+    if let profileName { expected["profile"] = .string(profileName) }
+    #expect(resumeParams.value == .object(expected))
     await store.send(.teardown)
   }
 

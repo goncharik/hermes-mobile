@@ -808,7 +808,7 @@ public struct AppFeature {
         // The poll stays the backstop for not-open sessions. No `home` → nothing to patch.
         let canPatchVisibleRow: Bool
         if let home = state.home, let chat = state.liveChat {
-          canPatchVisibleRow = home.scopedProfileName == chat.profileName
+          canPatchVisibleRow = Self.isSameProfile(home.scopedProfileName, chat.profileName)
         } else {
           canPatchVisibleRow = false
         }
@@ -938,8 +938,8 @@ public struct AppFeature {
   ) -> Effect<Action> {
     // Only mutate a visible row when the sidebar is showing the same profile. The active
     // chat intentionally survives profile switches, so matching by id alone is unsafe.
-    if state.home?.scopedProfileName == profileName,
-       state.home?.sessions[id: sessionID]?.unread != nil
+    if let home = state.home, Self.isSameProfile(home.scopedProfileName, profileName),
+       home.sessions[id: sessionID]?.unread != nil
     {
       state.home?.sessions[id: sessionID]?.unread = false
     }
@@ -1057,6 +1057,15 @@ public struct AppFeature {
       && chat.errorBanner == nil
   }
 
+  /// Whether a chat's and the list's wire profiles name the same profile, for the row
+  /// patches (glow, unread) that match by session id: a chat opened before the profiles
+  /// probe answered carries `nil` while the list moved on to the literal `"default"` (#114).
+  /// The reseat paths compare WIRE values instead — a `nil` seat must be re-created scoped.
+  private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
+    (lhs ?? SessionListFeature.State.defaultProfileName)
+      == (rhs ?? SessionListFeature.State.defaultProfileName)
+  }
+
   /// The standard "slot is done" sequence (idle view-disappearance, detached turn
   /// completion, archived session, slot replacement): flush the snapshot + turn anchor
   /// first (the debounced persist is about to be cancelled), cancel every long-running
@@ -1100,23 +1109,20 @@ public struct AppFeature {
   /// Build a fresh session-list state, seeding the device-local persisted profile
   /// selection (normally reloaded later, in the list view's `.task`). Seeding at creation
   /// matters for work that runs BEFORE the list appears — the cold-launch push-tap replay
-  /// (#46) opens a chat synchronously here, and an unseeded `scopedProfileName` would
-  /// resume the session UNSCOPED (wrong `state.db` on a non-default profile →
-  /// "session not found" → the self-heal recreates a spurious empty chat under
-  /// "default"). A persisted non-default name implies the agent supported profiles when
-  /// it was selected (prefs are wiped on logout, bounding staleness); the list's
-  /// capability probe still corrects `profilesSupported` right after. A profile
-  /// deleted/renamed server-side since selection is the accepted corner: the scoped
-  /// resume fails exactly as a warm list-tap under the same stale pref would — parity
-  /// with the warm path is the contract, and the rare stale-profile miss is a far
-  /// smaller surface than the unscoped-resume misroute this seeding fixes (which hit
-  /// EVERY cold-launch replay on a non-default profile).
+  /// (#46) opens a chat synchronously here, as does the regular-width landing seat, and an
+  /// unseeded `scopedProfileName` would leave them UNSCOPED — the server's LAUNCH profile,
+  /// not the selected one (#114: a resume misses → the self-heal recreates a spurious empty
+  /// chat there). `persistedProfilesSupported` seeds the capability from the last probe's
+  /// verdict; the list's capability probe still corrects
+  /// `profilesSupported` right after, and the regular-width reseat re-creates a seat whose
+  /// pre-probe scope turned out wrong. A profile deleted/renamed server-side since
+  /// selection is the accepted corner: the scoped resume fails exactly as a warm list-tap
+  /// under the same stale pref would — parity with the warm path is the contract.
   private func makeHomeState(connection: ServerConnection) -> SessionListFeature.State {
-    let persisted = SessionListFeature.State.persistedProfileName(preferences)
-    return SessionListFeature.State(
+    SessionListFeature.State(
       connection: connection,
-      selectedProfileName: persisted,
-      profilesSupported: persisted != SessionListFeature.State.defaultProfileName
+      selectedProfileName: SessionListFeature.State.persistedProfileName(preferences),
+      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences)
     )
   }
 

@@ -367,12 +367,26 @@ struct HermesRESTClientTests {
     MockURLProtocol.set(json: #"""
     {"results":[{"session_id":"20260610_120231_afcca6","snippet":"matched text","role":"user","model":"gpt-5.5","session_started":1749550000.0}]}
     """#)
-    let results = try await makeClient().search(connection, "matched")
+    let results = try await makeClient().search(connection, "matched", nil)
     let s = try #require(results.first)
     #expect(s.id == "20260610_120231_afcca6")
     #expect(s.title == nil)
     #expect(s.preview == "matched text")
     #expect(s.updatedAt == Date(timeIntervalSince1970: 1749550000.0))
+    let req = try #require(MockURLProtocol.lastRequest)
+    let query = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    #expect(query == [URLQueryItem(name: "q", value: "matched")])
+  }
+
+  @Test func searchThreadsLiteralProfileIntoQuery() async throws {
+    MockURLProtocol.set(json: #"{"results":[]}"#)
+    _ = try await makeClient().search(connection, "matched", "default")
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.url?.path == "/api/sessions/search")
+    let query = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    #expect(query == [
+      URLQueryItem(name: "q", value: "matched"), URLQueryItem(name: "profile", value: "default"),
+    ])
   }
 
   @Test func archiveSendsPatchWithBodyAndAuthHeader() async throws {

@@ -117,7 +117,8 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   because the rule is regular-only and nothing else would ever look again.
   Observing the value (not `.selectProfile`) covers every path that changes it: the profiles-404
   verdict re-homing to default, a rename/delete of the selected profile, the capability flipping
-  off. Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled
+  on or off (a seat dialled `nil` before the probe is reseated under the literal `"default"`,
+  #114). Landing on a fresh `home` trips it too, but the seat `landOnHome` just filled
   matches → no-op.
 - **"New session" is a no-op over a reusable seat** — `isReusableNewChat(chat, for: home)` =
   `isDiscardableNewChat` AND the same `scopedProfileName` AND `errorBanner == nil`. Tearing

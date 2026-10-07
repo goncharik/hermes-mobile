@@ -12,10 +12,12 @@ public struct ArchivedSessionsFeature {
   @ObservableState
   public struct State: Equatable {
     public var connection: ServerConnection
-    /// Active profile to scope the archived list/restore to — `nil` for the default
-    /// profile or when profiles are unsupported (matches `scopedProfileName`). When set,
-    /// listing/restore go through the profile-scoped endpoints so they hit the right
-    /// profile's `state.db` rather than the default's.
+    /// Active profile to scope the archived list/restore/delete to — seeded from the
+    /// list's `scopedProfileName`, so it is the LITERAL selected name (including
+    /// `"default"`) whenever the agent has the profiles API, and `nil` only when it
+    /// doesn't (#114). When set, listing/restore go through the profile-scoped endpoints
+    /// so they hit that profile's `state.db`; `nil` takes the unscoped endpoints, which
+    /// the server resolves to its LAUNCH profile (not necessarily `"default"`).
     public var profileName: String?
     public var sessions: IdentifiedArrayOf<Session>
     public var isLoading: Bool
@@ -259,7 +261,8 @@ public struct ArchivedSessionsFeature {
       do {
         let sessions: [Session]
         if let profileName {
-          // Profile-scoped list → hits this profile's `state.db`, not the default's.
+          // Profile-scoped list → hits this profile's `state.db` (the literal `"default"`
+          // included), not the server's launch profile's.
           sessions = try await profiles.sessions(connection, profileName, .only, .recent, 100, 0)
         } else {
           sessions = try await rest.archivedSessions(connection, 100, 0)

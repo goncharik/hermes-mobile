@@ -32,10 +32,12 @@ public struct ChatFeature {
     static let pageSize = 50
 
     public var connection: ServerConnection
-    /// The active profile this chat is scoped to. `nil` (or `"default"`) means the
-    /// default profile — session create/resume and history hydration omit the `profile`
-    /// param, byte-identical to the single-profile behavior. A custom profile name is
-    /// threaded into `session.create`/`session.resume` and the REST `messages` fetch.
+    /// The profile this chat is scoped to, seeded from `SessionListFeature.State
+    /// .scopedProfileName`: the literal selected name (including `"default"`, #114) whenever
+    /// the agent has the profiles API, threaded verbatim into `session.create`/
+    /// `session.resume` (incl. the #17 heal and branch create). `nil` means the profiles API is
+    /// unsupported (or not yet probed) — the `profile` param is omitted, so the server uses
+    /// its launch profile and requests stay byte-identical for single-profile agents.
     public var profileName: String?
     public var title: String?
     public var transcript: IdentifiedArrayOf<ChatRow>
@@ -675,16 +677,6 @@ public struct ChatFeature {
       guard !commandsUnsupported, pendingInteraction == nil else { return [] }
       return SlashSuggestionFilter.suggestions(for: composerText, catalog: commandCatalog)
     }
-
-    /// The profile name to thread into session create/resume + REST scoping, or `nil` for
-    /// the default profile. Treating the default name as `nil` keeps requests byte-identical
-    /// to the single-profile behavior. The canonical default name lives on
-    /// `SessionListFeature.State.defaultProfileName` (single source of truth).
-    var scopedProfile: String? {
-      guard let name = profileName, name != SessionListFeature.State.defaultProfileName
-      else { return nil }
-      return name
-    }
   }
 
   public enum Action: BindableAction {
@@ -1154,7 +1146,7 @@ public struct ChatFeature {
           // concurrent submit's own independent self-heal from racing this recovery with
           // a second, untracked `session.create`.
           state.liveSessionID = nil
-          return probeBranchResume(sessionID: storedID, profile: state.scopedProfile)
+          return probeBranchResume(sessionID: storedID, profile: state.profileName)
         }
         return handleActivateFailure(error, into: &state)
 
@@ -1254,7 +1246,7 @@ public struct ChatFeature {
         }
         state.hasRequestedSession = true
         state.hydrateRetriedAfterTimeout = false // fresh hydrate: the retry budget resets
-        return hydrate(sessionID: sessionID, profile: state.scopedProfile)
+        return hydrate(sessionID: sessionID, profile: state.profileName)
 
       case .composerSubmitted:
         // Mid-turn the draft QUEUES instead of submitting (#66): the send arrow returns as
@@ -1557,7 +1549,7 @@ public struct ChatFeature {
         let seed = State.BranchSeed(text: text, parentSessionID: parentID)
         state.pendingBranchSeed = seed
         state.isBranching = true
-        return branchSession(seed: seed, profile: state.scopedProfile)
+        return branchSession(seed: seed, profile: state.profileName)
 
       case let .branchResult(.success(handle)):
         state.isBranching = false
@@ -1624,7 +1616,7 @@ public struct ChatFeature {
         // asking follow-ups about it.
         state.errorBanner = "Couldn’t restore the branch — starting a fresh chat."
         state.branchSeed = nil
-        return createSession(profile: state.scopedProfile)
+        return createSession(profile: state.profileName)
 
       case .copySessionIDTapped:
         // No session yet (brand-new chat before `session.create` resolves) — nothing to
@@ -2061,7 +2053,7 @@ public struct ChatFeature {
         return configSet(
           key: "model", value: wireValue, previousValue: previousModel, sessionID: sessionID,
           storedSessionID: state.storedSessionID, branchSeed: state.branchSeed,
-          profile: state.scopedProfile
+          profile: state.profileName
         )
 
       case let .reasoningSelected(effort):
@@ -2073,7 +2065,7 @@ public struct ChatFeature {
         return configSet(
           key: "reasoning", value: effort, previousValue: previousEffort, sessionID: sessionID,
           storedSessionID: state.storedSessionID, branchSeed: state.branchSeed,
-          profile: state.scopedProfile
+          profile: state.profileName
         )
 
       case let .configSetFailed(key, value, previousValue, error):
@@ -2129,7 +2121,7 @@ public struct ChatFeature {
         state.renameDraft = nil
         state.errorBanner = nil
         let stored = state.storedSessionID
-        let profile = state.scopedProfile
+        let profile = state.profileName
         return .run { [gateway] send in
           func rename(_ targetID: String) async throws {
             _ = try await gateway.send("session.title", .object([
@@ -2182,7 +2174,7 @@ public struct ChatFeature {
       // re-hydrate server-authoritatively via the unified `hydrate` path.
       if let stored = state.storedSessionID {
         state.hydrateRetriedAfterTimeout = false // fresh hydrate: the retry budget resets
-        return hydrate(sessionID: stored, profile: state.scopedProfile)
+        return hydrate(sessionID: stored, profile: state.profileName)
       }
       // A standing branch seed with no stored id (an interrupted replay on a branch
       // whose create returned no session_key) recovers the branch here — never a
@@ -2191,12 +2183,12 @@ public struct ChatFeature {
       if let seed = state.branchSeed {
         if !state.hasReplayedBranchSeed {
           state.hasReplayedBranchSeed = true
-          return replayBranchSeed(seed, profile: state.scopedProfile)
+          return replayBranchSeed(seed, profile: state.profileName)
         }
         state.errorBanner = "Couldn’t restore the branch — starting a fresh chat."
         state.branchSeed = nil
       }
-      return createSession(profile: state.scopedProfile)
+      return createSession(profile: state.profileName)
 
     case .messageStart:
       // Defer creating the assistant row until the first delta — a tool-only turn emits
@@ -2594,8 +2586,8 @@ public struct ChatFeature {
 
   /// Create a brand-new session (`session.create`). New sessions send no title so the
   /// server auto-names from the first message (passing any title disables Hermes'
-  /// auto-title generation). The default/nil profile is omitted → byte-identical to the
-  /// single-profile request.
+  /// auto-title generation). A nil profile (no profiles API) is omitted → byte-identical
+  /// to the single-profile request; any name, including `"default"`, is sent (#114).
   private func createSession(profile: String?) -> Effect<Action> {
     .run { [gateway] send in
       await send(.sessionResult(createSessionRPC(fields: [:], profile: profile, gateway: gateway)))
@@ -2604,8 +2596,8 @@ public struct ChatFeature {
 
   /// Branch a message into a new chat (#34): the desktop-parity `session.create` carrying
   /// a single-message seed (`messages`) + `parent_session_id`. Otherwise byte-identical to
-  /// `createSession` — no `title` (the server auto-names on the first submit), the
-  /// default/nil profile omitted. The server stores the parent link in memory and creates
+  /// `createSession` — no `title` (the server auto-names on the first submit), same
+  /// profile threading. The server stores the parent link in memory and creates
   /// the DB row lazily on the first prompt, so an abandoned branch never appears in the
   /// session list (documented v1 behavior — no optimistic insert).
   private func branchSession(seed: State.BranchSeed, profile: String?) -> Effect<Action> {
@@ -2937,7 +2929,7 @@ public struct ChatFeature {
       state.attachLiveSessionID = nil // re-armed by the replay's fresh live id
       state.hasRequestedSession = true // the replayed create is the in-flight request
       state.hasReplayedBranchSeed = true
-      return replayBranchSeed(seed, profile: state.scopedProfile)
+      return replayBranchSeed(seed, profile: state.profileName)
     }
     // A real server "session not found" from the foreground `session.resume` is NOT a
     // benign socket drop: the stored id the agent had is gone (e.g. it expired/rebuilt).
@@ -2963,7 +2955,7 @@ public struct ChatFeature {
       state.liveSessionID = nil
       state.attachLiveSessionID = nil
       state.hasRequestedSession = true // createSession is the in-flight request
-      return createSession(profile: state.scopedProfile)
+      return createSession(profile: state.profileName)
     }
     // Offline / connection error: keep the cached instant-paint on screen (never blank
     // it) and show a subtle reconnecting status. The cached rows stay until a successful
@@ -3004,7 +2996,7 @@ public struct ChatFeature {
       }
       if !state.hydrateRetriedAfterTimeout, let sessionID = state.sessionKey {
         state.hydrateRetriedAfterTimeout = true
-        return hydrate(sessionID: sessionID, profile: state.scopedProfile)
+        return hydrate(sessionID: sessionID, profile: state.profileName)
       }
       state.hydrateRetriedAfterTimeout = false
       state.hasRequestedSession = false
@@ -3186,7 +3178,7 @@ public struct ChatFeature {
     guard refresh, let sessionID = state.liveSessionID else { return runningChanged(false, state) }
     return .merge(
       runningChanged(false, state),
-      refreshAfterSlashCommand(sessionID: sessionID, profile: state.scopedProfile)
+      refreshAfterSlashCommand(sessionID: sessionID, profile: state.profileName)
     )
   }
 
@@ -3223,7 +3215,7 @@ public struct ChatFeature {
       // reap only removed them server-side).
       let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
       let seed = state.branchSeed
-      let profile = state.scopedProfile
+      let profile = state.profileName
       return .merge(anchor, .run { [gateway, uuid] send in
         // The uploads + submit target the live id, which can be stale after a
         // background→foreground; self-heal the whole upload→submit sequence once on a
@@ -3323,7 +3315,7 @@ public struct ChatFeature {
       // client-held seed, not by resuming a row-less stored id).
       let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
       let seed = state.branchSeed
-      let profile = state.scopedProfile
+      let profile = state.profileName
       let focusTopic = parseSlashCommand(text).arg
       return .run { [gateway] send in
         await executeCompress(
@@ -3361,7 +3353,7 @@ public struct ChatFeature {
       // parent link rebuilt) exactly like the plain-prompt / attachments paths do.
       let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
       let seed = state.branchSeed
-      let profile = state.scopedProfile
+      let profile = state.profileName
       // Resolve a typed ALIAS to its canonical name for the WIRE command only (#36
       // follow-up): the gateway's live handler recognizes only canonical names, so a
       // raw alias (`/compact`) would fall through to the isolated slash-worker and
@@ -3393,7 +3385,7 @@ public struct ChatFeature {
     // (context + parent link rebuilt) instead of resuming.
     let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
     let seed = state.branchSeed
-    let profile = state.scopedProfile
+    let profile = state.profileName
     return .merge(anchor, .run { [gateway] send in
       await submitPrompt(
         sessionID: sessionID, storedSessionID: stored, branchSeed: seed,
@@ -3633,8 +3625,9 @@ private func backoffDelay(attempt: Int) -> Duration {
 /// recreating one (`session.create`). Applies the fresh id to state via
 /// `.liveSessionIDRefreshed` (no transcript rebuild, so the optimistic row survives the retry)
 /// and returns it so the caller can replay the original RPC ONCE. Throws if the heal itself
-/// fails (the caller surfaces the banner — no second retry, no recursion). The default/nil
-/// profile is omitted so single-profile/token-mode requests stay byte-identical.
+/// fails (the caller surfaces the banner — no second retry, no recursion). A nil profile
+/// (no profiles API) is omitted so those requests stay byte-identical; any name, including
+/// the literal `"default"`, is threaded (#114).
 private func healLiveSessionID(
   storedSessionID: String?,
   branchSeed: ChatFeature.State.BranchSeed? = nil,
@@ -3684,7 +3677,7 @@ private func branchSeedFields(_ seed: ChatFeature.State.BranchSeed) -> [String: 
 
 /// One `session.create` round-trip shared by the fresh-chat and branch (#34) effects:
 /// `fields` carries the per-call extras (empty for a plain create; seed `messages` +
-/// `parent_session_id` for a branch), the default/nil profile is omitted (byte-identical
+/// `parent_session_id` for a branch), a nil profile is omitted (byte-identical
 /// to the single-profile request), and the result decodes to a `SessionHandle` — a
 /// malformed shape or a non-`GatewayError` throw maps to the same failures each caller
 /// previously produced inline.

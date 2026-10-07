@@ -29,7 +29,8 @@ public struct PreferencesClient: Sendable {
   public var loadShowCronSection: @Sendable () -> Bool = { true }
   public var saveShowCronSection: @Sendable (_ show: Bool) -> Void
   /// Currently selected Hermes profile name. Device-local — we never change the server's
-  /// sticky active profile. `nil` means the default profile.
+  /// sticky active profile. Also carries the profiles capability verdict — read it through
+  /// `SessionListFeature.State.persistedProfileName` / `persistedProfilesSupported`.
   public var loadSelectedProfileID: @Sendable () -> String? = { nil }
   public var saveSelectedProfileID: @Sendable (_ id: String) -> Void
   public var clearSelectedProfileID: @Sendable () -> Void

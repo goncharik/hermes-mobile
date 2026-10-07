@@ -1025,6 +1025,52 @@ struct HydrateTests {
     await store.send(.teardown)
   }
 
+  /// #114: the foreground re-hydrate threads the chat's profile VERBATIM — the literal
+  /// `"default"` included, since an omitted profile means the server's LAUNCH profile and a
+  /// dashboard launched under another profile would resume from the wrong `state.db`. It is
+  /// omitted only for `profileName == nil` (no profiles API → byte-identical requests).
+  @Test(arguments: [nil, "default"] as [String?])
+  func foregroundHydrateThreadsLiteralProfile(profileName: String?) async {
+    let resumeParams = LockIsolated<JSONValue?>(nil)
+    var initial = ChatFeature.State(
+      connection: conn, resumeStoredID: "stored123", profileName: profileName
+    )
+    initial.status = .ready
+    initial.liveSessionID = "live123"
+    initial.hasRequestedSession = true
+    initial.hasStarted = true
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.hermesGateway.send = { @Sendable method, params in
+        guard method == "session.resume" else { return .object([:]) }
+        resumeParams.setValue(params)
+        return .object([
+          "session_id": .string("live123"),
+          "stored_session_id": .string("stored123"),
+          "messages": .array([]),
+          "running": .bool(false),
+        ])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+
+    var expected: [String: JSONValue] = ["session_id": .string("stored123")]
+    if let profileName { expected["profile"] = .string(profileName) }
+    #expect(resumeParams.value == .object(expected))
+
+    await store.send(.teardown)
+  }
+
   // Foregrounding an IDLE chat starts no background grace window, so after a suspension the
   // status can be a stale `.ready` over a HALF-OPEN socket (NAT rebind): the hydrate RPC
   // times out while `.gatewayClosed` may not fire for minutes. A single timeout is
