@@ -152,10 +152,12 @@ struct ApprovalCardView: View {
           Text("Deny").frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
-        Button { onApprove(approveAll) } label: {
-          Text(Self.approveTitle(all: approveAll)).frame(maxWidth: .infinity)
+        if request.allowsOnce {
+          Button { onApprove(approveAll) } label: {
+            Text(Self.approveTitle(all: approveAll)).frame(maxWidth: .infinity)
+          }
+          .buttonStyle(.borderedProminent)
         }
-        .buttonStyle(.borderedProminent)
       }
     }
     .padding()
