@@ -1397,8 +1397,9 @@ public struct ChatFeature {
         return drainQueueIfReady(into: &state)
 
       case let .respondToApproval(approve, all):
-        guard case .approval = state.pendingInteraction,
-              let sessionID = state.liveSessionID
+        guard case let .approval(request) = state.pendingInteraction,
+              let sessionID = state.liveSessionID,
+              !approve || request.allowsOnce
         else { return .none }
         state.pendingInteraction = nil
         // Answering ANY approval moots the push-tap recovery hint (#30 workaround) — an
@@ -1410,25 +1411,45 @@ public struct ChatFeature {
           ChatRow(id: rowID, kind: .status(kind: "approval", text: approve ? "Approved" : "Denied"))
         )
         // Choice vocabulary matches `tools/approval.py`: "deny" blocks; "once" allows
-        // just this command; "session" persists the pattern for the rest of the session
-        // (the "Approve all in this session" toggle). Approvals are resolved by the
-        // server's per-session queue, so NO `request_id` is sent (unlike clarify/secret);
-        // `all` maps to `resolve_all` to clear any other queued approvals at once.
-        let choice = approve ? (all ? "session" : "once") : "deny"
+        // just this command; "session" persists the pattern for the rest of the session.
+        // Newer gateways require request-bound responses and ignore `all` when a
+        // request id is present. Older gateways retain the session FIFO wire shape.
+        let effectiveChoice = approve
+          ? (all && request.allowsSessionChoice ? "session" : "once")
+          : "deny"
+        let params: JSONValue
+        if let requestID = request.requestID {
+          params = .object([
+            "session_id": .string(sessionID),
+            "request_id": .string(requestID),
+            "choice": .string(effectiveChoice),
+            "all": .bool(false),
+          ])
+        } else {
+          let choice = approve ? (all ? "session" : "once") : "deny"
+          params = .object([
+            "session_id": .string(sessionID),
+            "choice": .string(choice),
+            "all": .bool(all),
+          ])
+        }
         return .run { [gateway] send in
           do {
-            let result = try await gateway.send("approval.respond", .object([
-              "session_id": .string(sessionID),
-              "choice": .string(choice),
-              "all": .bool(all),
-            ]))
-            // The server answers `{"resolved": n}` — the count of queue entries this
-            // respond resolved. `0` means the queue was already empty (handled on another
-            // client, or a recovered-card blind respond after the fact), so the optimistic
-            // row must stop claiming "Approved"/"Denied". A missing key (older agent) is
-            // treated as success — decode leniently, only actionable outcomes feed back.
-            if result["resolved"]?.intValue == 0 {
-              await send(.approvalRespondResult(rowID: rowID, resolved: 0))
+            if let serverRequestID = request.serverRequestID {
+              try await gateway.respond(serverRequestID, .object([
+                "choice": .string(effectiveChoice),
+                "all": .bool(false),
+              ]))
+            } else {
+              let result = try await gateway.send("approval.respond", params)
+              // The server answers `{"resolved": n}` — the count of queue entries this
+              // respond resolved. `0` means the queue was already empty (handled on another
+              // client, or a recovered-card blind respond after the fact), so the optimistic
+              // row must stop claiming "Approved"/"Denied". A missing key (older agent) is
+              // treated as success — decode leniently, only actionable outcomes feed back.
+              if result["resolved"]?.intValue == 0 {
+                await send(.approvalRespondResult(rowID: rowID, resolved: 0))
+              }
             }
           } catch {
             await send(.approvalRespondResult(rowID: rowID, resolved: nil))
@@ -2353,6 +2374,13 @@ public struct ChatFeature {
         .cancel(id: CancelID.thinkingTimer),
         .send(.delegate(.sessionExpired))
       )
+
+    case let .approvalServerRequest(serverRequestID, request):
+      var request = request
+      request.serverRequestID = serverRequestID
+      state.present(.approval(request))
+      state.expectsPendingApproval = false
+      return .none
 
     case let .approvalRequest(request):
       // Nice-to-have skipped: the thinking timer keeps running while a blocking card is the
@@ -3476,7 +3504,7 @@ public struct ChatFeature {
       // Blank text is dropped by the fold with zero state change — don't schedule a
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
-    case .ready, .error, .authExpired, .approvalRequest, .clarifyRequest,
+    case .ready, .error, .authExpired, .approvalRequest, .approvalServerRequest, .clarifyRequest,
          .sudoRequest, .secretRequest, .unknown:
       return false
     }

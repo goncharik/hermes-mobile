@@ -31,6 +31,8 @@ public struct HermesGatewayClient: Sendable {
   /// passed per call — the budget is a property of the server handler, not of the call
   /// site, so it can't be forgotten by a caller.
   public var send: @Sendable (_ method: String, _ params: JSONValue) async throws -> JSONValue
+  /// Answer a server→client JSON-RPC request using its original string id.
+  public var respond: @Sendable (_ id: String, _ result: JSONValue) async throws -> Void
   /// Tear down the current connection.
   public var disconnect: @Sendable () -> Void
 
@@ -272,6 +274,10 @@ public extension HermesGatewayClient {
         guard let connection = store.get() else { throw GatewayError.notConnected }
         return try await connection.send(method: method, params: params)
       },
+      respond: { id, result in
+        guard let connection = store.get() else { throw GatewayError.notConnected }
+        try await connection.respond(id: id, result: result)
+      },
       disconnect: {
         let connection = store.get()
         store.set(nil)
@@ -308,6 +314,13 @@ actor GatewayConnection {
   private var timeoutTasks: [Int: Task<Void, Never>] = [:]
   private var receiveTask: Task<Void, Never>?
   private var isFinished = false
+  private var advertisedServerRequests = false
+
+  private static let jsonEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.withoutEscapingSlashes]
+    return encoder
+  }()
 
   init(
     transport: any WebSocketTransport,
@@ -402,11 +415,63 @@ actor GatewayConnection {
     finish(error: .disconnected)
   }
 
+  private func handleServerRequest(id: String, method: String, params: JSONValue) {
+    guard method == "approval" else {
+      Task { [transport] in
+        let frame: JSONValue = .object([
+          "jsonrpc": .string("2.0"),
+          "id": .string(id),
+          "error": .object([
+            "code": .number(-32601),
+            "message": .string("no handler for server request: \(method)"),
+          ]),
+        ])
+        if let data = try? Self.jsonEncoder.encode(frame) {
+          try? await transport.send(String(decoding: data, as: UTF8.self))
+        }
+      }
+      return
+    }
+    var payload = params
+    if case var .object(values) = payload {
+      values.removeValue(forKey: "session_id")
+      payload = .object(values)
+    }
+    guard var request = payload.decoded(ApprovalRequest.self) else { return }
+    request.serverRequestID = id
+    events.yield(.approvalServerRequest(serverRequestID: id, request))
+  }
+
+  private func advertiseServerRequestsIfNeeded() {
+    guard !advertisedServerRequests else { return }
+    advertisedServerRequests = true
+    Task { [weak self] in
+      guard let self else { return }
+      _ = try? await send(method: "client.capabilities", params: .object(["server_requests": .bool(true)]))
+    }
+  }
+
+  func respond(id: String, result: JSONValue) async throws {
+    guard !isFinished else { throw GatewayError.disconnected }
+    let frame: JSONValue = .object([
+      "jsonrpc": .string("2.0"),
+      "id": .string(id),
+      "result": result,
+    ])
+    let data = try Self.jsonEncoder.encode(frame)
+    try await transport.send(String(decoding: data, as: UTF8.self))
+  }
+
   private func handle(frame: String) {
     guard let parsed = try? InboundFrame(data: Data(frame.utf8)) else { return }
     switch parsed {
     case let .event(_, event):
+      if case .ready = event {
+        advertiseServerRequestsIfNeeded()
+      }
       events.yield(event)
+    case let .serverRequest(id, method, params):
+      handleServerRequest(id: id, method: method, params: params)
     case let .response(id, result):
       cancelTimeout(id)
       pending.removeValue(forKey: id)?.resume(returning: result)

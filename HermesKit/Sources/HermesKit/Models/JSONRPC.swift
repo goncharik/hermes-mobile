@@ -136,6 +136,9 @@ public struct JSONRPCRequest: Encodable, Equatable, Sendable {
 public enum InboundFrame: Equatable, Sendable {
   /// A server-pushed event notification: `{method:"event", params:{type, session_id, payload}}`.
   case event(sessionID: String?, GatewayEvent)
+  /// A server→client request. Server request ids are strings (`srq-…`) and must be
+  /// answered with a JSON-RPC response carrying the same id.
+  case serverRequest(id: String, method: String, params: JSONValue)
   /// A successful response to a request we sent: `{id, result}`.
   case response(id: Int, result: JSONValue)
   /// An error response: `{id, error:{message}}`.
@@ -150,6 +153,13 @@ public enum InboundFrame: Equatable, Sendable {
       let type = params["type"]?.stringValue ?? ""
       let sessionID = params["session_id"]?.stringValue
       self = .event(sessionID: sessionID, GatewayEvent(type: type, payload: params["payload"]))
+      return
+    }
+
+    if let method = frame["method"]?.stringValue,
+       let id = frame["id"]?.stringValue,
+       let params = frame["params"] {
+      self = .serverRequest(id: id, method: method, params: params)
       return
     }
 

@@ -83,6 +83,44 @@ private func requestID(_ frame: String) -> Int? {
     #expect(await iterator.next() == .messageDelta(text: "hi"))
   }
 
+  @Test func serverApprovalRequestIsYieldedAndCanBeAnsweredByOriginalID() async throws {
+    let transport = FakeTransport()
+    let client = HermesGatewayClient.make { _ in transport }
+    let stream = client.connect(url, .token("t"))
+    var iterator = stream.makeAsyncIterator()
+
+    transport.inject(#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready"}}"#)
+    transport.inject(#"{"jsonrpc":"2.0","id":"srq-abc123","method":"approval","params":{"session_id":"s","request_id":"approval-7","command":"rm foo","choices":["once","deny"]}}"#)
+
+    // The ready notification is part of the normal event stream; the next item is the approval.
+    #expect(await iterator.next() == .ready)
+    let event = await iterator.next()
+    #expect(event == .approvalServerRequest(
+      serverRequestID: "srq-abc123",
+      ApprovalRequest(
+        requestID: "approval-7",
+        serverRequestID: "srq-abc123",
+        command: "rm foo",
+        choices: ["once", "deny"]
+      )
+    ))
+
+    try await client.respond("srq-abc123", .object([
+      "choice": .string("once"),
+      "all": .bool(false),
+    ]))
+
+    let response = try #require(transport.sent.last(where: {
+      (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)))?["id"]?.stringValue == "srq-abc123"
+    }))
+    let decoded = try JSONDecoder().decode(JSONValue.self, from: Data(response.utf8))
+    #expect(decoded == .object([
+      "jsonrpc": .string("2.0"),
+      "id": .string("srq-abc123"),
+      "result": .object(["choice": .string("once"), "all": .bool(false)]),
+    ]))
+  }
+
   @Test func multipleNewlineDelimitedFramesInOneMessage() async throws {
     let transport = FakeTransport()
     let client = HermesGatewayClient.make { _ in transport }

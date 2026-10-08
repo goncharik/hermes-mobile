@@ -86,6 +86,88 @@ struct ChatInteractionTests {
     #expect(store.state.errorBanner == nil)
   }
 
+  @Test func requestBoundApprovalSendsRequestIDAndNeverResolvesAll() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var initial = readyState()
+    initial.pendingInteraction = .approval(ApprovalRequest(
+      requestID: "approval-7",
+      command: "rm -rf /tmp/x",
+      detail: "Delete /tmp/x",
+      choices: ["once", "session", "deny"]
+    ))
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { @Sendable _, params in
+        sent.setValue(params)
+        return .object(["resolved": .number(1)])
+      }
+    }
+
+    await store.send(.respondToApproval(approve: true, all: true)) {
+      $0.pendingInteraction = nil
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "approval", text: "Approved"))]
+    }
+    await store.finish()
+
+    #expect(sent.value?["request_id"]?.stringValue == "approval-7")
+    #expect(sent.value?["all"]?.boolValue == false)
+    #expect(sent.value?["choice"]?.stringValue == "session")
+  }
+
+  @Test func requestBoundApprovalDenySendsDenyChoice() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var initial = readyState()
+    initial.pendingInteraction = .approval(ApprovalRequest(
+      requestID: "approval-deny",
+      command: "rm -rf /tmp/x",
+      choices: ["once", "deny"]
+    ))
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { @Sendable _, params in
+        sent.setValue(params)
+        return .object(["resolved": .number(1)])
+      }
+    }
+
+    await store.send(.respondToApproval(approve: false, all: false)) {
+      $0.pendingInteraction = nil
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "approval", text: "Denied"))]
+    }
+    await store.finish()
+
+    #expect(sent.value?["session_id"]?.stringValue == "live")
+    #expect(sent.value?["request_id"]?.stringValue == "approval-deny")
+    #expect(sent.value?["choice"]?.stringValue == "deny")
+    #expect(sent.value?["all"]?.boolValue == false)
+  }
+
+  @Test func requestBoundApprovalCannotWidenUnsupportedSessionChoice() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var initial = readyState()
+    initial.pendingInteraction = .approval(ApprovalRequest(
+      requestID: "approval-once",
+      command: "rm -rf /tmp/x",
+      choices: ["once", "deny"]
+    ))
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { @Sendable _, params in
+        sent.setValue(params)
+        return .object(["resolved": .number(1)])
+      }
+    }
+
+    await store.send(.respondToApproval(approve: true, all: true)) {
+      $0.pendingInteraction = nil
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "approval", text: "Approved"))]
+    }
+    await store.finish()
+
+    #expect(sent.value?["request_id"]?.stringValue == "approval-once")
+    #expect(sent.value?["choice"]?.stringValue == "once")
+    #expect(sent.value?["all"]?.boolValue == false)
+  }
   @Test func approveAllSendsAllTrue() async {
     let sent = LockIsolated<JSONValue?>(nil)
     var initial = readyState()

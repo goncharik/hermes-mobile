@@ -32,6 +32,20 @@ import Testing
     #expect(try InboundFrame(data: data) == .ignored)
   }
 
+  @Test func serverApprovalRequestIsClassifiedWithStringID() throws {
+    let data = Data(#"{"jsonrpc":"2.0","id":"srq-abc123","method":"approval","params":{"session_id":"s","request_id":"approval-7","command":"rm foo","choices":["once","deny"]}}"#.utf8)
+    #expect(try InboundFrame(data: data) == .serverRequest(
+      id: "srq-abc123",
+      method: "approval",
+      params: .object([
+        "session_id": .string("s"),
+        "request_id": .string("approval-7"),
+        "command": .string("rm foo"),
+        "choices": .array([.string("once"), .string("deny")]),
+      ])
+    ))
+  }
+
   // MARK: JSONValue Codable
 
   @Test func roundTripsEveryKind() throws {
