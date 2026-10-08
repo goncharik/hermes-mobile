@@ -210,6 +210,13 @@ public struct ChatFeature {
     /// Cleared by the drain that consumes it and by a manual Stop (stop intent wins).
     var sendNowArmed: Bool
 
+    /// Entries removed from `queuedPrompts` optimistically because a steer is in flight
+    /// (#66). A steer delivers text into the LIVE turn, so the entry must leave the queue
+    /// immediately (otherwise the ordinary drain would send it a second time). Holding it
+    /// here until the RPC answers is what lets a refusal put the message back instead of
+    /// losing it — the "a queued message is never silently lost" invariant.
+    var pendingSteerEntries: [UUID: QueuedPrompt]
+
     /// Mid-turn counterpart to `canSend` (#66): whether `.composerSubmitted` while
     /// `isSending`/`slashExecInFlight` will queue the draft. Same gates as `canSend`
     /// minus the two turn-lock flags (which are the whole point). The view's send arrow
@@ -229,7 +236,9 @@ public struct ChatFeature {
     /// app-level slot policy reads this alongside `isRunning`: a detached slot with
     /// queued work must not be torn down at turn end (the drain fires the next turn
     /// into it), and an idle pop must not destroy a parked queue.
-    public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
+    public var hasQueuedWork: Bool {
+      !queuedPrompts.isEmpty || drainingEntry != nil || !pendingSteerEntries.isEmpty
+    }
 
     /// No prompt has been sent yet — but the composer may hold a draft. This chat was
     /// created as a NEW session (`resumesStoredSession` false, no branch attach), nothing is
@@ -571,6 +580,7 @@ public struct ChatFeature {
       self.drainingEntry = nil
       self.drainingRowID = nil
       self.sendNowArmed = false
+      self.pendingSteerEntries = [:]
 
       // Instant paint: read the non-authoritative snapshot synchronously so the chat shows
       // its cached tail + model/usage immediately, before `session.resume` lands. The
@@ -752,6 +762,18 @@ public struct ChatFeature {
     /// Lift a queued entry back into the composer for editing (`/undo`-prefill style).
     /// Guarded to an EMPTY composer so it can never clobber a draft mid-typing.
     case queuedPromptEditTapped(id: UUID)
+    /// Deliver this entry into the RUNNING turn as a mid-turn correction, without cancelling
+    /// it (desktop "Steer now"). Only offered for steerable entries (text-only, non-empty,
+    /// not a slash command) while a turn is actually in flight — the view mirrors the gate,
+    /// the reducer stays authoritative.
+    case queuedPromptSteer(id: UUID)
+    /// Outcome of the `session.steer` RPC for a promoted entry. `accepted` mirrors the
+    /// server's status (`queued`/`steered` vs `rejected`); a rejection must put the entry back
+    /// rather than silently drop it.
+    case queuedPromptSteerResult(id: UUID, accepted: Bool, error: GatewayError?)
+    /// Reject a steer attempt that had no live turn to receive it (the turn ended in the
+    /// window between the tap and the effect) — the entry stays queued for the normal drain.
+    case queuedPromptSteerAborted(id: UUID)
     /// Fire this entry next, immediately: idle → submit now (ahead of any parked
     /// entries); mid-turn → interrupt-then-send (desktop semantics — stop the current
     /// turn, the entry fires as the next one). Un-parks the queue.
@@ -1359,6 +1381,75 @@ public struct ChatFeature {
         let entry = state.queuedPrompts.remove(at: index)
         state.composerText = entry.text
         state.attachments = entry.attachments
+        return .none
+
+      case let .queuedPromptSteer(id):
+        // Deliver this entry into the RUNNING turn without cancelling it (desktop "Steer
+        // now"). Distinct from Send-now, which interrupts: steering corrects the live turn
+        // in place, so it must only fire when a turn is actually in flight — otherwise there
+        // is nothing to steer into and the entry belongs to the ordinary drain.
+        guard let sessionID = state.liveSessionID,
+              state.pendingInteraction == nil,
+              !state.isBranching,
+              state.status == .ready,
+              let index = state.queuedPrompts.firstIndex(where: { $0.id == id }),
+              SteerEligibility.canSteerNow(
+                state.queuedPrompts[index],
+                isTurnRunning: state.isSending || state.slashExecInFlight
+              )
+        else { return .none }
+        // Optimistically remove it: a steer is accepted into the live turn, so keeping it
+        // queued would double-send it at drain. A REJECTION puts it back (see the result
+        // action) — the message is never silently lost.
+        let entry = state.queuedPrompts.remove(at: index)
+        state.pendingSteerEntries[entry.id] = entry
+        let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
+        let seed = state.branchSeed
+        let profile = state.scopedProfile
+        return .run { [gateway] send in
+          func steer(_ targetID: String) async throws -> JSONValue {
+            try await gateway.send(
+              "session.steer",
+              .object(["session_id": .string(targetID), "text": .string(entry.text)])
+            )
+          }
+          do {
+            let result = try await withSessionHeal(
+              steer, sessionID: sessionID, storedSessionID: stored,
+              branchSeed: seed, profile: profile, gateway: gateway, send: send
+            )
+            // The server answers `{"status": ...}`: `steered`/`queued` mean the text reached
+            // the live turn. An explicit `rejected` is a refusal, not a success.
+            let status = result["status"]?.stringValue
+            await send(.queuedPromptSteerResult(
+              id: entry.id, accepted: status != "rejected", error: nil
+            ))
+          } catch let error as GatewayError {
+            await send(.queuedPromptSteerResult(id: entry.id, accepted: false, error: error))
+          } catch {
+            await send(.queuedPromptSteerResult(id: entry.id, accepted: false, error: .disconnected))
+          }
+        }
+
+      case let .queuedPromptSteerResult(id, accepted, error):
+        guard let entry = pendingSteerEntry(id: id, in: state) else { return .none }
+        state.pendingSteerEntries.removeValue(forKey: id)
+        guard !accepted else { return .none }
+        // Refused (an older agent without `session.steer` → 4010, a transient failure, or the
+        // turn ended before the RPC landed): put it back at the HEAD so the ordinary drain
+        // still delivers it, and park so nothing auto-fires into whatever just refused.
+        // Never silently drop the user's text.
+        state.queuedPrompts.insert(entry, at: 0)
+        state.isQueueParked = true
+        if case let .some(err) = error, !err.isUnknownMethod {
+          state.errorBanner = "Couldn't steer: \(err.message)"
+        }
+        return .none
+
+      case let .queuedPromptSteerAborted(id):
+        guard let entry = pendingSteerEntry(id: id, in: state) else { return .none }
+        state.pendingSteerEntries.removeValue(forKey: id)
+        state.queuedPrompts.insert(entry, at: 0)
         return .none
 
       case let .queuedPromptSendNow(id):
@@ -3436,6 +3527,13 @@ public struct ChatFeature {
       text: entry.text, attachments: entry.attachments, fromQueue: true,
       sessionID: sessionID, state: &state
     )
+  }
+
+  /// The queued entry a steer currently has in flight, if any. A steer removes its entry
+  /// from `queuedPrompts` optimistically (so the drain cannot double-send it) and parks it
+  /// here until the RPC answers — which is what lets a refusal put the entry back.
+  private func pendingSteerEntry(id: UUID, in state: State) -> QueuedPrompt? {
+    state.pendingSteerEntries[id]
   }
 
   /// A drained entry's submit failed before demonstrably reaching the server (submit RPC

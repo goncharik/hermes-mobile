@@ -12,13 +12,15 @@ import XCTest
 /// tested in `ChatQueueTests`.
 final class QueuedPromptsPanelSnapshotTests: SnapshotTestCase {
   private func panel(
-    entries: [QueuedPrompt], isParked: Bool = false, composerHasDraft: Bool = false
+    entries: [QueuedPrompt], isParked: Bool = false, composerHasDraft: Bool = false,
+    isTurnRunning: Bool = true
   ) -> some View {
     QueuedPromptsPanel(
       entries: entries,
       isParked: isParked,
       composerHasDraft: composerHasDraft,
-      onSendNow: { _ in }, onEdit: { _ in }, onDelete: { _ in }
+      isTurnRunning: isTurnRunning,
+      onSteer: { _ in }, onSendNow: { _ in }, onEdit: { _ in }, onDelete: { _ in }
     )
     .frame(width: device.size?.width ?? 390)
     .background(Color(uiColor: .systemBackground))
