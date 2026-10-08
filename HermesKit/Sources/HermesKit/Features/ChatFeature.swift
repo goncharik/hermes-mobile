@@ -112,6 +112,12 @@ public struct ChatFeature {
     /// Current model + reasoning effort (from `session.info`), shown in the composer chip.
     public var model: String?
     public var reasoningEffort: String?
+    /// The profile-scoped approval policy shown by the composer lightning menu.
+    public var approvalMode: ApprovalMode?
+    /// True while an approval-mode read or write is awaiting the gateway.
+    public var approvalModePending: Bool
+    /// Monotonic guard preventing an older read from overwriting a newer selection.
+    var approvalModeRevision: Int
     /// Rollback target for an in-flight `config.set`, keyed by config key — the value the
     /// SERVER last confirmed, captured before the FIRST optimistic pick of a run. A second
     /// same-key pick must NOT capture the first pick's still-unconfirmed value: when the first
@@ -548,6 +554,9 @@ public struct ChatFeature {
       self.presentedTool = nil
       self.model = nil
       self.reasoningEffort = nil
+      self.approvalMode = nil
+      self.approvalModePending = false
+      self.approvalModeRevision = 0
       self.pendingConfigRollback = [:]
       self.usage = nil
       self.modelPicker = nil
@@ -811,6 +820,8 @@ public struct ChatFeature {
     case toolDetailDismissed
     case modelChipTapped
     case modelOptionsResponse(Result<ModelOptions, GatewayError>)
+    case approvalModeSelected(ApprovalMode)
+    case approvalModeResponse(revision: Int, isWrite: Bool, result: Result<ApprovalMode, GatewayError>)
     /// The provider SLUG of the section the row was tapped in (nil for a programmatic
     /// selection with no section context). Appended to the `config.set` value as
     /// `--provider <slug>` so the gateway routes the model to the provider the picker
@@ -1101,7 +1112,12 @@ public struct ChatFeature {
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
-        return commandCatalogEffect(state, sessionID: handle.sessionID)
+        return .merge(
+          commandCatalogEffect(state, sessionID: handle.sessionID),
+          state.approvalModePending
+            ? .none
+            : approvalModeEffect(profile: state.profileName, revision: state.approvalModeRevision)
+        )
 
       case let .usageResponse(usage):
         state.usage = usage
@@ -1397,8 +1413,9 @@ public struct ChatFeature {
         return drainQueueIfReady(into: &state)
 
       case let .respondToApproval(approve, all):
-        guard case .approval = state.pendingInteraction,
-              let sessionID = state.liveSessionID
+        guard case let .approval(request) = state.pendingInteraction,
+              let sessionID = state.liveSessionID,
+              !approve || request.allowsOnce
         else { return .none }
         state.pendingInteraction = nil
         // Answering ANY approval moots the push-tap recovery hint (#30 workaround) — an
@@ -1410,25 +1427,45 @@ public struct ChatFeature {
           ChatRow(id: rowID, kind: .status(kind: "approval", text: approve ? "Approved" : "Denied"))
         )
         // Choice vocabulary matches `tools/approval.py`: "deny" blocks; "once" allows
-        // just this command; "session" persists the pattern for the rest of the session
-        // (the "Approve all in this session" toggle). Approvals are resolved by the
-        // server's per-session queue, so NO `request_id` is sent (unlike clarify/secret);
-        // `all` maps to `resolve_all` to clear any other queued approvals at once.
-        let choice = approve ? (all ? "session" : "once") : "deny"
+        // just this command; "session" persists the pattern for the rest of the session.
+        // Newer gateways require request-bound responses and ignore `all` when a
+        // request id is present. Older gateways retain the session FIFO wire shape.
+        let effectiveChoice = approve
+          ? (all && request.allowsSessionChoice ? "session" : "once")
+          : "deny"
+        let params: JSONValue
+        if let requestID = request.requestID {
+          params = .object([
+            "session_id": .string(sessionID),
+            "request_id": .string(requestID),
+            "choice": .string(effectiveChoice),
+            "all": .bool(false),
+          ])
+        } else {
+          let choice = approve ? (all ? "session" : "once") : "deny"
+          params = .object([
+            "session_id": .string(sessionID),
+            "choice": .string(choice),
+            "all": .bool(all),
+          ])
+        }
         return .run { [gateway] send in
           do {
-            let result = try await gateway.send("approval.respond", .object([
-              "session_id": .string(sessionID),
-              "choice": .string(choice),
-              "all": .bool(all),
-            ]))
-            // The server answers `{"resolved": n}` — the count of queue entries this
-            // respond resolved. `0` means the queue was already empty (handled on another
-            // client, or a recovered-card blind respond after the fact), so the optimistic
-            // row must stop claiming "Approved"/"Denied". A missing key (older agent) is
-            // treated as success — decode leniently, only actionable outcomes feed back.
-            if result["resolved"]?.intValue == 0 {
-              await send(.approvalRespondResult(rowID: rowID, resolved: 0))
+            if let serverRequestID = request.serverRequestID {
+              try await gateway.respond(serverRequestID, .object([
+                "choice": .string(effectiveChoice),
+                "all": .bool(false),
+              ]))
+            } else {
+              let result = try await gateway.send("approval.respond", params)
+              // The server answers `{"resolved": n}` — the count of queue entries this
+              // respond resolved. `0` means the queue was already empty (handled on another
+              // client, or a recovered-card blind respond after the fact), so the optimistic
+              // row must stop claiming "Approved"/"Denied". A missing key (older agent) is
+              // treated as success — decode leniently, only actionable outcomes feed back.
+              if result["resolved"]?.intValue == 0 {
+                await send(.approvalRespondResult(rowID: rowID, resolved: 0))
+              }
             }
           } catch {
             await send(.approvalRespondResult(rowID: rowID, resolved: nil))
@@ -2037,6 +2074,26 @@ public struct ChatFeature {
         state.modelPicker?.error = error.message
         return .none
 
+      case let .approvalModeSelected(mode):
+        guard !state.approvalModePending else { return .none }
+        state.approvalModePending = true
+        state.approvalModeRevision &+= 1
+        let revision = state.approvalModeRevision
+        return setApprovalMode(mode, profile: state.profileName, revision: revision)
+
+      case let .approvalModeResponse(revision, isWrite, result):
+        guard revision == state.approvalModeRevision else { return .none }
+        // A hydrate read that was already in flight must not overwrite a newer write.
+        guard isWrite || !state.approvalModePending else { return .none }
+        if isWrite { state.approvalModePending = false }
+        switch result {
+        case let .success(mode):
+          state.approvalMode = mode
+        case let .failure(error):
+          state.errorBanner = "Approval mode failed: \(error.message)"
+        }
+        return .none
+
       case let .modelSelected(model, providerSlug):
         // Blocked mid-turn (server returns 4009); the picker disables selection too.
         guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
@@ -2353,6 +2410,13 @@ public struct ChatFeature {
         .cancel(id: CancelID.thinkingTimer),
         .send(.delegate(.sessionExpired))
       )
+
+    case let .approvalServerRequest(serverRequestID, request):
+      var request = request
+      request.serverRequestID = serverRequestID
+      state.present(.approval(request))
+      state.expectsPendingApproval = false
+      return .none
 
     case let .approvalRequest(request):
       // Nice-to-have skipped: the thinking timer keeps running while a blocking card is the
@@ -2893,13 +2957,16 @@ public struct ChatFeature {
 
     // Pull usage on-demand only when the response didn't carry it (older agents) — mirrors
     // the prior resume behavior so the gauge isn't blank until the next turn.
+    let approvalMode: Effect<Action> = state.approvalModePending
+      ? .none
+      : approvalModeEffect(profile: state.profileName, revision: state.approvalModeRevision)
     if state.usage == nil {
       return .merge(
         fetchUsage(sessionID: response.sessionID), persist, timerEffect, runningEffect,
-        catalogEffect, drainEffect
+        catalogEffect, drainEffect, approvalMode
       )
     }
-    return .merge(persist, timerEffect, runningEffect, catalogEffect, drainEffect)
+    return .merge(persist, timerEffect, runningEffect, catalogEffect, drainEffect, approvalMode)
   }
 
   /// The not-found/degrade/reconnect handling shared by a plain `session.activate` or
@@ -3476,7 +3543,7 @@ public struct ChatFeature {
       // Blank text is dropped by the fold with zero state change — don't schedule a
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
-    case .ready, .error, .authExpired, .approvalRequest, .clarifyRequest,
+    case .ready, .error, .authExpired, .approvalRequest, .approvalServerRequest, .clarifyRequest,
          .sudoRequest, .secretRequest, .unknown:
       return false
     }
@@ -3578,6 +3645,49 @@ public struct ChatFeature {
   private func clearConfigError(_ state: inout State) {
     state.errorBanner = nil
     state.modelPicker?.applyError = nil
+  }
+
+  private func approvalModeEffect(profile: String?, revision: Int) -> Effect<Action> {
+    .run { [gateway] send in
+      do {
+        var params: [String: JSONValue] = ["key": .string("approvals.mode")]
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          params["profile"] = .string(profile)
+        }
+        let result = try await gateway.send("config.get", .object(params))
+        guard let mode = ApprovalMode(rawValue: result["value"]?.stringValue ?? "") else {
+          throw GatewayError.server("Malformed approvals.mode result")
+        }
+        await send(.approvalModeResponse(revision: revision, isWrite: false, result: .success(mode)))
+      } catch let error as GatewayError {
+        await send(.approvalModeResponse(revision: revision, isWrite: false, result: .failure(error)))
+      } catch {
+        await send(.approvalModeResponse(revision: revision, isWrite: false, result: .failure(.disconnected)))
+      }
+    }
+  }
+
+  private func setApprovalMode(_ mode: ApprovalMode, profile: String?, revision: Int) -> Effect<Action> {
+    .run { [gateway] send in
+      do {
+        var params: [String: JSONValue] = [
+          "key": .string("approvals.mode"),
+          "value": .string(mode.rawValue),
+        ]
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          params["profile"] = .string(profile)
+        }
+        let result = try await gateway.send("config.set", .object(params))
+        guard let confirmed = ApprovalMode(rawValue: result["value"]?.stringValue ?? "") else {
+          throw GatewayError.server("Malformed approvals.mode result")
+        }
+        await send(.approvalModeResponse(revision: revision, isWrite: true, result: .success(confirmed)))
+      } catch let error as GatewayError {
+        await send(.approvalModeResponse(revision: revision, isWrite: true, result: .failure(error)))
+      } catch {
+        await send(.approvalModeResponse(revision: revision, isWrite: true, result: .failure(.disconnected)))
+      }
+    }
   }
 
   /// Change a session setting (model / reasoning) over the gateway. If iOS resumed with a

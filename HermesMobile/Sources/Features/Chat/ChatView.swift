@@ -50,6 +50,8 @@ struct ChatView: View {
         model: store.model,
         reasoningEffort: store.reasoningEffort,
         usage: store.usage,
+        approvalMode: store.approvalMode,
+        approvalModePending: store.approvalModePending,
         recording: store.recording,
         waveformLevels: store.waveformLevels,
         recordingSeconds: store.recordingSeconds,
@@ -61,6 +63,7 @@ struct ChatView: View {
         // root cause. Not a disable: the field stays live for a draft.
         blockingCardToken: store.pendingInteraction != nil ? store.pendingInteractionToken : nil,
         onModelTap: { store.send(.modelChipTapped) },
+        onApprovalModeSelected: { store.send(.approvalModeSelected($0)) },
         onSend: { store.send(.composerSubmitted) },
         onInterrupt: { store.send(.interruptTapped) },
         onVoiceTap: { store.send(.voiceButtonTapped) },

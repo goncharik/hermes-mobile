@@ -7,6 +7,7 @@ import SwiftUI
 /// time, and cancel/stop controls.
 struct ComposerView: View {
   @Binding var text: String
+  @State private var approvalModeMenuPresented = false
   let isSending: Bool
   let canSend: Bool
   /// Mid-turn queueability (#66, `ChatFeature.State.canQueue`): true when the composer
@@ -20,6 +21,10 @@ struct ComposerView: View {
   /// Context-window usage (#4): a compact gauge beside the model chip. Hidden when nil or
   /// when the usage has no usable label.
   var usage: Usage? = nil
+  /// Profile-scoped approval policy shown by the lightning menu. `nil` means the gateway has
+  /// not answered yet, so the menu stays available without pretending a mode is confirmed.
+  var approvalMode: ApprovalMode? = nil
+  var approvalModePending: Bool = false
   /// Voice-input state (#7): drives whether the composer shows text entry or the recorder.
   var recording: ChatFeature.State.RecordingState = .idle
   var waveformLevels: [Float] = []
@@ -32,7 +37,8 @@ struct ComposerView: View {
   /// `ComposerTextView.blockingCardToken`. The composer is **not** disabled: only Send is
   /// (`canSend` is false while a card stands), so the field stays available for a draft.
   var blockingCardToken: Int? = nil
-  let onModelTap: () -> Void
+  var onModelTap: () -> Void
+  var onApprovalModeSelected: (ApprovalMode) -> Void = { _ in }
   let onSend: () -> Void
   let onInterrupt: () -> Void
   var onVoiceTap: () -> Void = {}
@@ -87,6 +93,7 @@ struct ComposerView: View {
           .layoutPriority(1)
         if let usage { ContextUsageRing(usage: usage) }
         Spacer()
+        approvalModeButton
         if attachmentsSupported { attachButton }
         voiceButton
         sendButton
@@ -178,6 +185,30 @@ struct ComposerView: View {
     .buttonStyle(.plain)
   }
 
+  private var approvalModeButton: some View {
+    Button {
+      approvalModeMenuPresented.toggle()
+    } label: {
+      Image(systemName: approvalMode == .off ? "bolt.fill" : "bolt")
+        .font(.title3)
+        .foregroundStyle(approvalMode == .off ? Color.hermesAccent : .secondary)
+    }
+    .buttonStyle(.plain)
+    .popover(isPresented: $approvalModeMenuPresented, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
+      ApprovalModePopover(
+        selectedMode: approvalMode,
+        isPending: approvalModePending,
+        onSelect: { mode in
+          onApprovalModeSelected(mode)
+          approvalModeMenuPresented = false
+        }
+      )
+      .presentationCompactAdaptation(.popover)
+    }
+    .accessibilityLabel("Approval mode")
+    .accessibilityValue(approvalMode?.title ?? "Loading")
+  }
+
   private var voiceButton: some View {
     Button(action: onVoiceTap) {
       Image(systemName: "mic.fill").font(.title3)
@@ -210,6 +241,58 @@ struct ComposerView: View {
   private var modelLabel: String {
     if let model, !model.isEmpty { return model }
     return "Model"
+  }
+}
+
+/// Desktop-parity approval-mode popover. A custom popover is used instead of `Menu` because
+/// iOS menus do not reliably preserve the desktop-style title, descriptions, and right-aligned
+/// checkmark together.
+private struct ApprovalModePopover: View {
+  let selectedMode: ApprovalMode?
+  let isPending: Bool
+  let onSelect: (ApprovalMode) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text("Approval mode")
+        .font(.headline)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 24)
+        .padding(.top, 18)
+        .padding(.bottom, 16)
+
+      Divider()
+
+      ForEach(ApprovalMode.allCases, id: \.self) { mode in
+        Button { onSelect(mode) } label: {
+          HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+              Text(mode.title)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.primary)
+              Text(mode.detail)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if selectedMode == mode {
+              Image(systemName: "checkmark")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .padding(.top, 1)
+            }
+          }
+          .contentShape(Rectangle())
+          .padding(.horizontal, 24)
+          .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .disabled(isPending)
+      }
+    }
+    .frame(minWidth: 280, maxWidth: 340)
+    .background(.regularMaterial)
   }
 }
 

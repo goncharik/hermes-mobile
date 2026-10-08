@@ -18,6 +18,9 @@ public enum GatewayEvent: Equatable, Sendable {
     args: JSONValue?, resultText: String?, inlineDiff: String?, durationS: Double?
   )
   case approvalRequest(ApprovalRequest)
+  /// A server→client approval request. The server waits for a JSON-RPC response with the
+  /// same request id; it is not an `approval.request` notification.
+  case approvalServerRequest(serverRequestID: String, ApprovalRequest)
   case clarifyRequest(ClarifyRequest)
   case sudoRequest(SecretPrompt)
   case secretRequest(SecretPrompt)
