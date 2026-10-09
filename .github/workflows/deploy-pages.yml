@@ -1,0 +1,62 @@
+# Deploys the marketing site (site/) to GitHub Pages.
+#
+# One-time setup: repo Settings → Pages → Source = "GitHub Actions".
+#
+# The workflow injects live build stats (commit count, short SHA, deploy date)
+# into index.html by replacing {{COMMITS}} / {{SHORT_SHA}} / {{LAST_UPDATED}}.
+# The page also carries static fallbacks (site.js), so it renders fine without
+# this step — e.g. when previewed locally.
+
+name: Deploy site to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the commit count is accurate
+
+      - name: Inject build stats
+        run: |
+          cd site
+          sed -i "s/{{COMMITS}}/$(git rev-list --count HEAD)/g" index.html
+          sed -i "s/{{SHORT_SHA}}/commit $(git rev-parse --short HEAD) ·/g" index.html
+          sed -i "s/{{LAST_UPDATED}}/$(date -u +%Y-%m-%d)/g" index.html
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
