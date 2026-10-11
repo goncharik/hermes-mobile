@@ -603,13 +603,16 @@ struct SessionListView: View {
   private func pinButton(_ session: Session, isPinned: Bool) -> some View {
     // Animate the send so the row glides between its workspace group and the Pinned
     // section (and the section itself fades in/out) instead of jumping.
-    if isPinned {
-      Button("Unpin", systemImage: "pin.slash") {
-        store.send(.unpinSession(id: session.id), animation: .snappy)
-      }
-    } else {
-      Button("Pin", systemImage: "pin") {
-        store.send(.pinSession(id: session.id), animation: .snappy)
+    // Use the reducer's ownership and operation checks, not just search visibility.
+    if store.state.canChangePin(id: session.id) {
+      if isPinned {
+        Button("Unpin", systemImage: "pin.slash") {
+          store.send(.unpinSession(id: session.id), animation: .snappy)
+        }
+      } else {
+        Button("Pin", systemImage: "pin") {
+          store.send(.pinSession(id: session.id), animation: .snappy)
+        }
       }
     }
   }

@@ -46,6 +46,36 @@ previous jobs (no flapping). Jobs are fetched with the LITERAL selected profile 
 `profilesSupported` (matching the scoped session list, so a job's runs are actually present),
 unscoped otherwise.
 
+## Shared pin membership, local order
+
+`Session.pinned` is an optional server membership flag shared with Desktop; pin order remains
+**device-local** in `PreferencesClient.pinnedIDs`. Profile-capable list and search rows may pin
+or unpin when the row exposes an explicit `pinned` value. Requests always carry the selected
+literal profile name, including `"default"`; legacy agents and rows without the field retain
+local-only pin behavior. Same-ID pin, archive, and delete operations remain mutually exclusive.
+
+The first capable profile-list response—or a capable explicit search response—saves a migration
+checkpoint per normalized server URL through `PreferencesClient`. Search saves the checkpoint
+before importing server membership, but never starts automatic migration uploads. Local pins
+eligible for migration in the initial capable list remain protected while their uploads are in
+flight. After checkpoint creation, explicit server `true` adds a pin and explicit `false`
+removes it, subject to pending user writes. This also applies to **first-observed `false` on
+later pages or profiles**: an off-page legacy pin is retired without uploading `true`, even if
+no earlier response reported `true`. Missing/null values and absent rows preserve local
+membership until an explicit value is observed.
+
+Automatic migration is limited to eligible rows visible when the checkpoint is created;
+later polls, pages, profiles, and normal relaunches do not reopen it. The checkpoint is saved
+before dispatch, and upload failures remain silent. Explicit user pin/unpin actions remain
+available and supersede stale migration intent. Logout clears migration checkpoints.
+Persistence uses the existing `PreferencesClient` storage contract; crash-durable flushing
+and atomic persistence with network dispatch are not guaranteed.
+
+Fetches use the existing cancellable `CancelID.fetch` effect. A newer list, search, or profile
+request cancels the previous one; no response-generation counter or response provenance state is
+needed. User pin writes are optimistic and restore only the affected ID at its bounded previous
+index on failure. Search rows use the same visible Pin/Unpin affordances as normal rows.
+
 ## Shared unread state
 
 On agents that return the optional `unread` field, the backend owns read state: its

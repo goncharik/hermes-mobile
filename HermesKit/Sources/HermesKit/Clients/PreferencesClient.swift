@@ -2,6 +2,17 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
+/// Legacy pins not yet reconciled with server membership.
+/// Checkpoint existence exhausts automatic migration: only its creation may dispatch
+/// visible legacy pins, at most once. Pending absent/nil IDs stay local until an explicit
+/// server value wins, including first-observed false. Explicit user Pin is the retry path.
+public struct PinMigration: Codable, Equatable, Sendable {
+  public var id: UUID = UUID()
+  public var pendingIDs: [String]
+
+  public init(pendingIDs: [String]) { self.pendingIDs = pendingIDs }
+}
+
 /// Non-secret, persisted app preferences. Currently just the last server URL, kept so
 /// the app can auto-reconnect on launch without re-running onboarding (the token lives
 /// in `KeychainClient`). Live implementation backs onto `UserDefaults`; an in-memory
@@ -17,6 +28,10 @@ public struct PreferencesClient: Sendable {
   /// Pinned session ids, ordered = display order in the top "Pinned" section.
   public var loadPinnedIDs: @Sendable () -> [String] = { [] }
   public var savePinnedIDs: @Sendable (_ ids: [String]) -> Void
+  /// Legacy pin migration snapshots keyed by stable server URL, never by bearer token.
+  public var loadPinMigration: @Sendable (_ server: String) -> PinMigration? = { _ in nil }
+  public var savePinMigration: @Sendable (_ server: String, _ migration: PinMigration) -> Void
+  public var clearPinMigrations: @Sendable () -> Void
   /// How the session list groups its rows (workspace vs chronological). Device-local UI pref.
   public var loadGroupingMode: @Sendable () -> SessionGroupingMode = { .default }
   public var saveGroupingMode: @Sendable (_ mode: SessionGroupingMode) -> Void
@@ -55,6 +70,7 @@ public extension PreferencesClient {
   /// The server URL (and grouping mode) survive — the user stays on the same server.
   func clearIdentityScopedPrefs() {
     savePinnedIDs([])
+    clearPinMigrations()
     saveSeenCounts([:])
     clearSelectedProfileID()
   }
@@ -66,6 +82,7 @@ public extension PreferencesClient {
     let key = "hermes.server-url"
     let seenKey = "hermes.seen-message-counts"
     let pinnedKey = "hermes.pinned-session-ids"
+    let migrationKey = "hermes.pin-migrations-v1"
     let groupingKey = "hermes.session-grouping-mode"
     let swipeActionKey = "hermes.default-session-swipe-action"
     let showCronSectionKey = "hermes.show-cron-section"
@@ -83,6 +100,17 @@ public extension PreferencesClient {
       saveSeenCounts: { store.set($0, forKey: seenKey) },
       loadPinnedIDs: { (store.array(forKey: pinnedKey) as? [String]) ?? [] },
       savePinnedIDs: { store.set($0, forKey: pinnedKey) },
+      loadPinMigration: { server in
+        guard let data = store.dictionary(forKey: migrationKey)?[server] as? Data else { return nil }
+        return try? JSONDecoder().decode(PinMigration.self, from: data)
+      },
+      savePinMigration: { server, migration in
+        guard let data = try? JSONEncoder().encode(migration) else { return }
+        var migrations = store.dictionary(forKey: migrationKey) ?? [:]
+        migrations[server] = data
+        store.set(migrations, forKey: migrationKey)
+      },
+      clearPinMigrations: { store.removeObject(forKey: migrationKey) },
       loadGroupingMode: {
         store.string(forKey: groupingKey).flatMap(SessionGroupingMode.init(rawValue:)) ?? .default
       },
@@ -126,6 +154,7 @@ public extension PreferencesClient {
     let box = LockIsolated<String?>(nil)
     let seen = LockIsolated<[String: Int]>([:])
     let pinned = LockIsolated<[String]>([])
+    let migrations = LockIsolated<[String: PinMigration]>([:])
     let grouping = LockIsolated<SessionGroupingMode>(.default)
     let swipeAction = LockIsolated<SessionSwipeAction>(.default)
     let showCronSection = LockIsolated<Bool>(true)
@@ -140,6 +169,9 @@ public extension PreferencesClient {
       saveSeenCounts: { seen.setValue($0) },
       loadPinnedIDs: { pinned.value },
       savePinnedIDs: { pinned.setValue($0) },
+      loadPinMigration: { migrations.value[$0] },
+      savePinMigration: { server, migration in migrations.withValue { $0[server] = migration } },
+      clearPinMigrations: { migrations.setValue([:]) },
       loadGroupingMode: { grouping.value },
       saveGroupingMode: { grouping.setValue($0) },
       loadDefaultSessionSwipeAction: { swipeAction.value },

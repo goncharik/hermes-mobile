@@ -152,7 +152,7 @@ struct HermesProfileClientTests {
 
   @Test func sessionsBuildsScopedQueryAndDecodesRows() async throws {
     MockURLProtocol.set(json: #"""
-    {"sessions":[{"id":"20260610_120231_afcca6","title":"Work chat","preview":"hi","last_active":1749556800.0,"started_at":1749550000.0,"message_count":2,"cwd":"/w","is_active":false}],"profile_totals":{"total":1}}
+    {"sessions":[{"id":"20260610_120231_afcca6","title":"Work chat","preview":"hi","last_active":1749556800.0,"started_at":1749550000.0,"message_count":2,"cwd":"/w","is_active":false,"pinned":true}],"profile_totals":{"total":1}}
     """#)
     let sessions = try await makeClient().sessions(connection, "work", .exclude, .recent, 20, 0)
     #expect(sessions.count == 1)
@@ -161,6 +161,7 @@ struct HermesProfileClientTests {
     #expect(s.title == "Work chat")
     #expect(s.preview == "hi")
     #expect(s.cwd == "/w")
+    #expect(s.pinned == true)
 
     let req = try #require(MockURLProtocol.lastRequest)
     #expect(req.url?.path == "/api/profiles/sessions")

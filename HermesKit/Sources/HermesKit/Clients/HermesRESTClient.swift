@@ -214,6 +214,9 @@ public struct HermesRESTClient: Sendable {
   /// `false` on every open both acknowledges current activity and starts tracking a legacy
   /// row whose server watermark is still nil. `profile` follows the archive/rename rule.
   public var setUnread: @Sendable (_ connection: ServerConnection, _ id: String, _ unread: Bool, _ profile: String?) async throws -> Void
+  /// Set Desktop-shared pin state — `PATCH /api/sessions/{id}` `{"pinned":…}`.
+  /// `profile` scopes the mutation to the session's owning profile.
+  public var setPinned: @Sendable (_ connection: ServerConnection, _ id: String, _ pinned: Bool, _ profile: String?) async throws -> Void
   /// Rename a session — `PATCH /api/sessions/{id}` `{"title":…}`. An empty title clears it.
   /// The server may reject with 400 (too long / invalid chars / duplicate).
   /// `profile` follows the archive rule.
@@ -390,6 +393,14 @@ public extension HermesRESTClient {
         let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
         let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
         var payload: [String: Any] = ["unread": unread]
+        if let profile { payload["profile"] = profile }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+      },
+      setPinned: { conn, id, pinned, profile in
+        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
+        var payload: [String: Any] = ["pinned": pinned]
         if let profile { payload["profile"] = profile }
         let body = try JSONSerialization.data(withJSONObject: payload)
         try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
@@ -846,6 +857,7 @@ struct SessionListDTO: Decodable {
   let startedAt: Double?
   let messageCount: Int?
   let unread: Bool?
+  let pinned: Bool?
   let cwd: String?
   let isActive: Bool?
   let source: String?
@@ -857,7 +869,7 @@ struct SessionListDTO: Decodable {
     case lastActive = "last_active"
     case startedAt = "started_at"
     case messageCount = "message_count"
-    case unread
+    case unread, pinned
     case isActive = "is_active"
     case parentSessionID = "parent_session_id"
     // Present only on compression-projected rows: the ORIGINAL id the row had before the
@@ -875,6 +887,7 @@ struct SessionListDTO: Decodable {
       startedAt: startedAt.map { Date(timeIntervalSince1970: $0) },
       messageCount: messageCount,
       unread: unread,
+      pinned: pinned,
       isActive: isActive,
       source: source,
       parentSessionID: parentSessionID?.trimmedNonEmpty,
@@ -892,10 +905,11 @@ private struct SearchResultDTO: Decodable {
   let sessionID: String
   let snippet: String?
   let sessionStarted: Double?
+  let pinned: Bool?
 
   enum CodingKeys: String, CodingKey {
     case sessionID = "session_id"
-    case snippet
+    case snippet, pinned
     case sessionStarted = "session_started"
   }
 
@@ -904,7 +918,8 @@ private struct SearchResultDTO: Decodable {
       id: sessionID,
       title: nil,
       updatedAt: sessionStarted.map { Date(timeIntervalSince1970: $0) },
-      preview: snippet?.nonEmpty
+      preview: snippet?.nonEmpty,
+      pinned: pinned
     )
   }
 }

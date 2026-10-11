@@ -24,6 +24,26 @@ public struct CronJobGroup: Equatable, Sendable, Identifiable {
 /// (resume) or start a new session — `ChatFeature` wiring lands in Task 8.
 @Reducer
 public struct SessionListFeature {
+  public struct PinMutation: Equatable, Sendable {
+    public var generation: Int
+    public var pinned: Bool
+    public var previousIndex: Int?
+    public var profileName: String
+    public var searchQuery: String
+    /// A different profile has since supplied explicit membership for this global ID.
+    public var rollbackAllowed: Bool = true
+    /// Unique per migration attempt, including reducer recreation with reset generations.
+    public var migrationAttemptID: UUID? = nil
+
+    public init(generation: Int, pinned: Bool, previousIndex: Int?, profileName: String, searchQuery: String) {
+      self.generation = generation
+      self.pinned = pinned
+      self.previousIndex = previousIndex
+      self.profileName = profileName
+      self.searchQuery = searchQuery
+    }
+  }
+
   @ObservableState
   public struct State: Equatable {
     public var connection: ServerConnection
@@ -38,6 +58,10 @@ public struct SessionListFeature {
     public var seenCounts: [String: Int]
     /// Pinned session ids (persisted), order = display order in the top "Pinned" section.
     public var pinnedIDs: [String]
+    /// Profile pin writes in flight, guarding changes and destructive actions for the same ID.
+    public var pinMutations: [String: PinMutation] = [:]
+    /// Monotonic token correlating pin-write completions with the optimistic mutation.
+    public var pinMutationGeneration: Int = 0
     /// Workspace group ids the user expanded past the collapsed limit.
     public var expandedGroups: Set<String>
     /// Ids whose archive PATCH is currently IN FLIGHT. Transient: an id is added when its
@@ -129,7 +153,29 @@ public struct SessionListFeature {
     /// outcome is applied at the list instead (capability verdict / banner), exactly like
     /// an outcome landing after dismissal.
     public var archivedSheetGeneration: Int = 0
+    /// Parent-owned DELETEs outlive sheet dismissal. Track every presentation per ID so
+    /// an older completion cannot enable Pin/Unpin while a newer delete is still pending.
+    /// Separate from main-list `deletingIDs`, whose completion/rollback owns that guard.
+    public var archivedDeleteGenerations: [Session.ID: Set<Int>] = [:]
     @Presents public var addProfile: AddProfileFeature.State?
+    /// Shared row eligibility for Pin/Unpin and its UI affordance.
+    /// Search and list rows share the same per-ID operation guards.
+    public func canChangePin(id: Session.ID) -> Bool {
+      guard sessions[id: id] != nil, pinMutations[id] == nil,
+        !archivingIDs.contains(id), !deletingIDs.contains(id),
+        archived?.deletingIDs.contains(id) != true, archivedDeleteGenerations[id] == nil
+      else { return false }
+      return true
+    }
+
+    /// Both list and search requests use the selected literal profile.
+    fileprivate var canWritePinsToServer: Bool { profilesSupported }
+
+    /// Stable across token refreshes and equivalent trailing-slash server URLs.
+    public var pinMigrationServerID: String {
+      connection.baseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
     @Presents public var confirmationDialog: ConfirmationDialogState<Action.Dialog>?
 
     /// The default profile name — never renamable/deletable, and the implicit fallback.
@@ -162,6 +208,8 @@ public struct SessionListFeature {
       now: Date = Date(timeIntervalSince1970: 0),
       seenCounts: [String: Int] = [:],
       pinnedIDs: [String] = [],
+      pinMutations: [String: PinMutation] = [:],
+      pinMutationGeneration: Int = 0,
       expandedGroups: Set<String> = [],
       archivingIDs: Set<String> = [],
       deletingIDs: Set<String> = [],
@@ -195,6 +243,8 @@ public struct SessionListFeature {
       self.now = now
       self.seenCounts = seenCounts
       self.pinnedIDs = pinnedIDs
+      self.pinMutations = pinMutations
+      self.pinMutationGeneration = pinMutationGeneration
       self.expandedGroups = expandedGroups
       self.archivingIDs = archivingIDs
       self.deletingIDs = deletingIDs
@@ -225,9 +275,7 @@ public struct SessionListFeature {
     /// archive/rename/delete, the archived sheet, and the chat's create/resume): the LITERAL
     /// selected name — including `"default"` — whenever the agent has the profiles API, `nil`
     /// only without it (so those agents get byte-identical requests). An omitted profile is
-    /// NOT read as `"default"` by the server: it means the dashboard process's LAUNCH profile
-    /// (`hermes -p work dashboard` → `work`), so dropping `"default"` would mutate the
-    /// wrong profile's `state.db` (#114).
+    /// NOT read as `"default"` by the server: it means the dashboard process's LAUNCH profile.
     public var scopedProfileName: String? {
       profilesSupported ? selectedProfileName : nil
     }
@@ -401,6 +449,8 @@ public struct SessionListFeature {
     case newSessionButtonTapped
     case pinSession(id: Session.ID)
     case unpinSession(id: Session.ID)
+    case pinMigrationFinished(server: String, migrationID: UUID, attemptID: UUID, id: Session.ID, generation: Int, profileName: String, error: RESTError?)
+    case pinWriteFinished(id: Session.ID, generation: Int, profileName: String, pinned: Bool, previousIndex: Int?, query: String, error: RESTError?)
     /// Put a row's session id on the pasteboard and raise the transient confirmation toast.
     case copyIDButtonTapped(id: Session.ID)
     /// The copy toast's dwell time elapsed — hide it.
@@ -719,7 +769,10 @@ public struct SessionListFeature {
         // the full load (sessions + jobs); pause/resume only changed the job, so a
         // jobs-only refetch avoids churning the list.
         if refetchSessions { return load(&state) }
-        return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
+        return .run { [
+          rest, connection = state.connection,
+          profile = state.profilesSupported ? state.selectedProfileName : nil
+        ] send in
           await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
         }
 
@@ -843,34 +896,9 @@ public struct SessionListFeature {
         // Other bindings (e.g. renameDraft) are pure state edits — no side effects.
         return .none
 
-      case let .sessionsResponse(.success(sessions)):
-        state.isLoading = false
-        state.loadError = nil
-        // Belt-and-suspenders: drop any session whose archive PATCH or DELETE is still in
-        // flight, so a fetch that completes during that window can't repopulate the removed row.
-        let inFlight = state.archivingIDs.union(state.deletingIDs)
-        let filtered = inFlight.isEmpty
-          ? sessions
-          : sessions.filter { !inFlight.contains($0.id) }
-        // The list AND search endpoints can return the same session id more than once
-        // (#78). `IdentifiedArray(uniqueElements:)` preconditions on unique ids and
-        // trapped in the field, so dedupe first — keep the FIRST occurrence (server order).
-        state.sessions = IdentifiedArray(filtered, uniquingIDsWith: { first, _ in first })
-        let visible = state.sessions
-        // Seed last-seen counts for newly-discovered sessions so they don't all show as
-        // unread on first sight; only later increases flag unread.
-        var seeded = false
-        for session in visible where state.seenCounts[session.id] == nil {
-          state.seenCounts[session.id] = session.messageCount ?? 0
-          seeded = true
-        }
-        guard seeded else { return .none }
-        return persistSeenCounts(state.seenCounts)
-
-      case let .sessionsResponse(.failure(error)):
-        state.isLoading = false
-        state.loadError = error.message
-        return .none
+      case let .sessionsResponse(result):
+        let reconcilePins = state.profilesSupported && !state.isSearching
+        return applySessionsResponse(result, state: &state, reconcilePins: reconcilePins)
 
       case let .sessionTapped(id):
         guard let session = state.sessions[id: id] else { return .none }
@@ -880,13 +908,48 @@ public struct SessionListFeature {
         )
 
       case let .pinSession(id):
-        guard !state.pinnedIDs.contains(id) else { return .none }
-        state.pinnedIDs.append(id)
-        return persistPinnedIDs(state.pinnedIDs)
+        return setPinned(&state, id: id, pinned: true)
 
       case let .unpinSession(id):
-        state.pinnedIDs.removeAll { $0 == id }
-        return persistPinnedIDs(state.pinnedIDs)
+        return setPinned(&state, id: id, pinned: false)
+
+      case let .pinMigrationFinished(server, migrationID, attemptID, id, generation, profileName, _):
+        guard server == state.pinMigrationServerID,
+          let mutation = state.pinMutations[id], mutation.generation == generation,
+          mutation.profileName == profileName, mutation.migrationAttemptID == attemptID,
+          let migration = preferences.loadPinMigration(server), migration.id == migrationID
+        else { return .none }
+        state.pinMutations[id] = nil
+        // The checkpoint was saved before dispatch. Completion never reenrolls an ID;
+        // automatic failures stay silent and explicit user Pin is the retry path.
+        // Cancel lists fetched before this acknowledgement; they may contain the old value.
+        let fetch: Effect<Action> = state.isLoading || state.isSearching
+          ? load(&state) : .cancel(id: CancelID.fetch)
+        return fetch
+
+      case let .pinWriteFinished(id, generation, profileName, pinned, previousIndex, query, error):
+        guard let mutation = state.pinMutations[id], mutation.generation == generation,
+          mutation.migrationAttemptID == nil,
+          mutation.profileName == profileName, mutation.pinned == pinned,
+          mutation.previousIndex == previousIndex, mutation.searchQuery == query
+        else { return .none }
+        state.pinMutations[id] = nil
+        if error != nil {
+          // Restore only this ID, never a snapshot that could erase another pin edit.
+          if mutation.rollbackAllowed {
+            state.pinnedIDs.removeAll { $0 == id }
+            if let previousIndex {
+              state.pinnedIDs.insert(id, at: min(previousIndex, state.pinnedIDs.count))
+            }
+            preferences.savePinnedIDs(state.pinnedIDs)
+          }
+        }
+        // Any list requested during this write may still contain pre-write membership.
+        // Invalidate it even after a scope switch; restart if a load is pending.
+        let fetch: Effect<Action> = state.isLoading || state.isSearching
+          ? load(&state) : .cancel(id: CancelID.fetch)
+        if let error { state.loadError = error.message }
+        return fetch
 
       case let .copyIDButtonTapped(id):
         state.copiedIDToastToken = (state.copiedIDToastToken ?? 0) + 1
@@ -937,6 +1000,11 @@ public struct SessionListFeature {
         return .none
 
       case let .confirmationDialog(.presented(.confirmArchive(id))):
+        // Serialize same-session removal behind pin persistence, including failure rollback.
+        guard state.pinMutations[id] == nil else {
+          state.loadError = "Wait for the pin change to finish, then try again."
+          return .none
+        }
         guard let index = state.sessions.index(id: id) else { return .none }
         // Capture rollback info BEFORE mutating: the session + its list index, the pin position
         // (if pinned) and prior seen baseline — so a failed RPC can restore everything locally.
@@ -1002,7 +1070,12 @@ public struct SessionListFeature {
       case let .confirmationDialog(.presented(.confirmDelete(id))):
         // Same capability guard as `deleteButtonTapped` — the flag can flip (e.g. mirrored
         // from the archived sheet) while this dialog is already up.
-        guard state.deleteSupported, let index = state.sessions.index(id: id) else { return .none }
+        guard state.deleteSupported else { return .none }
+        guard state.pinMutations[id] == nil else {
+          state.loadError = "Wait for the pin change to finish, then try again."
+          return .none
+        }
+        guard let index = state.sessions.index(id: id) else { return .none }
         // Mirror of `.confirmArchive`: capture rollback info BEFORE mutating (session + list
         // index + pin position + seen baseline), then optimistically remove + persist and run
         // the DELETE. On failure everything is restored locally.
@@ -1200,6 +1273,7 @@ public struct SessionListFeature {
         return .send(.delegate(.openSession(session)))
 
       case let .archived(.presented(.delegate(.deleted(id, session, index)))):
+        guard state.pinMutations[id] == nil else { return .none }
         // A delete inside the archived sheet. The sheet already removed the row
         // optimistically; the DELETE round-trip runs HERE — a presented child's effects
         // are cancelled on dismissal, so a sheet-run DELETE racing Done/swipe-down would
@@ -1213,6 +1287,7 @@ public struct SessionListFeature {
         // re-injected into this sheet instance (id alone is ambiguous after a
         // dismiss-and-reopen re-deletes the same session).
         let generation = state.archivedSheetGeneration
+        state.archivedDeleteGenerations[id, default: []].insert(generation)
         return .concatenate(
           .send(.delegate(.sessionDeleted(id: id))),
           .run { [rest, connection = state.connection] send in
@@ -1229,6 +1304,10 @@ public struct SessionListFeature {
         )
 
       case let .archivedDeleteSucceeded(id, generation):
+        state.archivedDeleteGenerations[id]?.remove(generation)
+        if state.archivedDeleteGenerations[id]?.isEmpty == true {
+          state.archivedDeleteGenerations[id] = nil
+        }
         // Server confirmed the sheet-initiated delete → the badge delegate fires (see
         // `Delegate.sessionDeleteSucceeded`), and the outcome is re-injected into the
         // sheet ONLY while the SAME presentation (`generation`) still owns this delete
@@ -1242,6 +1321,10 @@ public struct SessionListFeature {
         return .merge(confirmed, .send(.archived(.presented(.deleteSucceeded(id: id)))))
 
       case let .archivedDeleteFailed(id, session, index, generation, error):
+        state.archivedDeleteGenerations[id]?.remove(generation)
+        if state.archivedDeleteGenerations[id]?.isEmpty == true {
+          state.archivedDeleteGenerations[id] = nil
+        }
         // Re-inject into the sheet while the SAME presentation still owns the delete
         // (rollback + capability verdict happen there, and `deleteUnsupported` mirrors
         // back here). With the sheet gone — or the outcome stamped by a PREVIOUS
@@ -1275,20 +1358,17 @@ public struct SessionListFeature {
       case let .profilesResponse(.success(result)):
         state.profilesSupported = true
         state.profiles = Self.dedupedProfiles(result)
-        // If the persisted selection no longer exists on the server, re-home to default.
+        // A successful probe is the durable capability verdict, including the literal default.
+        // Persist the selected name so the next launch can seed scoped requests before probing.
         if state.profiles[id: state.selectedProfileName] == nil {
           state.selectedProfileName = Self.State.defaultProfileName
         }
-        // Persisted on EVERY successful probe, "default" included: a persisted selection is
-        // what `AppFeature.makeHomeState` reads as "this agent has the profiles API", so the
-        // next launch scopes chats opened before its own probe answers (#114).
         preferences.saveSelectedProfileID(state.selectedProfileName)
         return load(&state)
 
       case let .profilesResponse(.failure(error)):
-        // A 404 (old agent) or any failure → behave as today: no scoping, unscoped fetch.
-        // Only the 404 verdict withdraws the persisted capability (a transient failure
-        // keeps it for the next launch).
+        // A 404 (old agent) withdraws the persisted capability. Transient failures keep it
+        // for the next launch while this session falls back to unscoped requests.
         if error == .notFound { preferences.clearSelectedProfileID() }
         state.profilesSupported = false
         state.profiles = []
@@ -1466,6 +1546,193 @@ public struct SessionListFeature {
     .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
   }
 
+  private func setPinned(_ state: inout State, id: Session.ID, pinned: Bool) -> Effect<Action> {
+    guard state.pinMutations[id] == nil, state.pinnedIDs.contains(id) != pinned else { return .none }
+    guard state.canChangePin(id: id) else { return .none }
+    let previousIndex = state.pinnedIDs.firstIndex(of: id)
+    if pinned { state.pinnedIDs.append(id) }
+    else { state.pinnedIDs.removeAll { $0 == id } }
+    // Persist synchronously before a concurrent refresh can reload preferences.
+    preferences.savePinnedIDs(state.pinnedIDs)
+    // Eligibility above guards unavailable rows and conflicting operations.
+    // Legacy agents and rows without pin capability remain device-local.
+    // Check the target row, not the whole list: mixed responses can still have explicit pins.
+    guard state.canWritePinsToServer, state.sessions[id: id]?.pinned != nil else {
+      // A mixed-capability list may already have completed its initial checkpoint.
+      // Enroll only a newly-created local fallback pin, never all current membership:
+      // successfully uploaded pins must still accept later explicit server unpins.
+      let server = state.pinMigrationServerID
+      if pinned, var migration = preferences.loadPinMigration(server),
+        !migration.pendingIDs.contains(id) {
+        migration.pendingIDs.append(id)
+        preferences.savePinMigration(server, migration)
+      }
+      return .none
+    }
+
+    // A deliberate server pin/unpin supersedes any stale automatic migration intent.
+    let server = state.pinMigrationServerID
+    if var migration = preferences.loadPinMigration(server) {
+      migration.pendingIDs.removeAll { $0 == id }
+      preferences.savePinMigration(server, migration)
+    }
+    state.pinMutationGeneration += 1
+    let mutation = PinMutation(
+      generation: state.pinMutationGeneration, pinned: pinned, previousIndex: previousIndex,
+      profileName: state.selectedProfileName, searchQuery: state.searchQuery
+    )
+    state.pinMutations[id] = mutation
+    // Keep a canceled refresh pending so completion restarts the current context.
+    return .merge(
+      .cancel(id: CancelID.fetch),
+      .run { [rest, connection = state.connection, mutation] send in
+        let error: RESTError?
+        do {
+          try await rest.setPinned(connection, id, pinned, mutation.profileName)
+          error = nil
+        } catch let failure { error = asRESTError(failure) }
+        await send(.pinWriteFinished(
+          id: id, generation: mutation.generation, profileName: mutation.profileName,
+          pinned: pinned, previousIndex: previousIndex, query: mutation.searchQuery, error: error
+        ))
+      }
+    )
+  }
+
+  private func applySessionsResponse(
+    _ result: Result<[Session], RESTError>, state: inout State, reconcilePins: Bool
+  ) -> Effect<Action> {
+    switch result {
+    case let .success(sessions):
+      state.isLoading = false
+      state.loadError = nil
+      // Belt-and-suspenders: drop any session whose archive PATCH or DELETE is still in
+      // flight, so a fetch that completes during that window can't repopulate the removed row.
+      let inFlight = state.archivingIDs.union(state.deletingIDs)
+      let filtered = inFlight.isEmpty
+        ? sessions
+        : sessions.filter { !inFlight.contains($0.id) }
+      // The list AND search endpoints can return the same session id more than once
+      // (#78). `IdentifiedArray(uniqueElements:)` preconditions on unique ids and
+      // trapped in the field, so dedupe first — keep the FIRST occurrence (server order).
+      state.sessions = IdentifiedArray(filtered, uniquingIDsWith: { first, _ in first })
+      let visible = state.sessions
+      // Seed last-seen counts for newly-discovered sessions so they don't all show as
+      // unread on first sight; only later increases flag unread.
+      var seeded = false
+      for session in visible where state.seenCounts[session.id] == nil {
+        state.seenCounts[session.id] = session.messageCount ?? 0
+        seeded = true
+      }
+      var effects: [Effect<Action>] = []
+      if seeded { effects.append(persistSeenCounts(state.seenCounts)) }
+      // Search membership is authoritative for explicit fields in this selected profile,
+      // but search must never upload a stale local pin. Keep absent/nil rows local and
+      // leave every same-ID operation's optimistic state alone.
+      if state.profilesSupported && state.isSearching {
+        let oldPins = state.pinnedIDs
+        let server = state.pinMigrationServerID
+        if visible.contains(where: { $0.pinned != nil }),
+          preferences.loadPinMigration(server) == nil {
+          // Freeze legacy membership BEFORE importing server pins. Otherwise the first
+          // capable list could mistake a search-imported pin for legacy intent and
+          // upload it over a newer desktop unpin. Search only checkpoints; it never writes.
+          preferences.savePinMigration(server, PinMigration(pendingIDs: oldPins))
+        }
+        for session in visible where state.canChangePin(id: session.id) {
+          switch session.pinned {
+          case true?:
+            if !state.pinnedIDs.contains(session.id) { state.pinnedIDs.append(session.id) }
+          case false?:
+            state.pinnedIDs.removeAll { $0 == session.id }
+          case nil:
+            break
+          }
+        }
+        if state.pinnedIDs != oldPins { preferences.savePinnedIDs(state.pinnedIDs) }
+      }
+      // Do not freeze a migration checkpoint until this server advertises pin support.
+      // Otherwise an empty legacy list permanently excludes later local-fallback pins.
+      if reconcilePins && visible.contains(where: { $0.pinned != nil }) {
+        // These rows are already filtered and deduplicated (first wins). The endpoint is
+        // incomplete: absent rows and nil fields cannot unpin. Preferences remain global,
+        // not profile-owned; only explicit values in this selected-profile list are applied.
+        let oldPins = state.pinnedIDs
+        let server = state.pinMigrationServerID
+        // Only checkpoint creation may upload currently visible legacy pins. Persisting
+        // the checkpoint exhausts automatic migration, even if the app exits before the
+        // effects run. Later pages/profiles must honor desktop false on FIRST observation.
+        let savedMigration = preferences.loadPinMigration(server)
+        let isInitialMigration = savedMigration == nil
+        var migration = savedMigration ?? PinMigration(pendingIDs: oldPins)
+        // An optimistic removal can still roll back; it must not retire the checkpoint.
+        migration.pendingIDs.removeAll {
+          !state.pinnedIDs.contains($0) && state.pinMutations[$0] == nil
+            && !state.archivingIDs.contains($0) && !state.deletingIDs.contains($0)
+        }
+        // True already satisfies migration. After checkpoint creation, either explicit
+        // value retires a pending ID without a write; absent/nil rows remain local only.
+        migration.pendingIDs.removeAll { id in
+          guard let pinned = visible[id: id]?.pinned, state.canChangePin(id: id) else { return false }
+          return pinned || !isInitialMigration
+        }
+        for session in visible where isInitialMigration
+          && migration.pendingIDs.contains(session.id) && session.pinned == false
+          && state.canChangePin(id: session.id) {
+          // Consume before dispatch so a timeout/crash cannot cause an unbounded retry loop
+          // on the next poll or relaunch. A failed completion stays silent; explicit user
+          // Pin remains available as the retry path.
+          migration.pendingIDs.removeAll { $0 == session.id }
+          state.pinMutationGeneration += 1
+          var mutation = PinMutation(
+            generation: state.pinMutationGeneration, pinned: true,
+            previousIndex: state.pinnedIDs.firstIndex(of: session.id),
+            profileName: state.selectedProfileName, searchQuery: state.searchQuery
+          )
+          let attemptID = UUID()
+          mutation.migrationAttemptID = attemptID
+          state.pinMutations[session.id] = mutation
+          effects.append(.run { [rest, connection = state.connection, migrationID = migration.id, mutation] send in
+            let error: RESTError?
+            do {
+              try await rest.setPinned(connection, session.id, true, mutation.profileName)
+              error = nil
+            } catch let failure { error = asRESTError(failure) }
+            await send(.pinMigrationFinished(
+              server: server, migrationID: migrationID, attemptID: attemptID, id: session.id,
+              generation: mutation.generation, profileName: mutation.profileName, error: error
+            ))
+          })
+        }
+        preferences.savePinMigration(server, migration)
+        let pending = Set(migration.pendingIDs)
+        for session in visible where session.pinned != nil {
+          if let mutation = state.pinMutations[session.id],
+            mutation.profileName != state.selectedProfileName {
+            state.pinMutations[session.id]?.rollbackAllowed = false
+          }
+        }
+        let unpinned = Set(visible.filter {
+          $0.pinned == false && !pending.contains($0.id)
+            && state.pinMutations[$0.id]?.profileName != state.selectedProfileName
+        }.map(\.id))
+        state.pinnedIDs.removeAll { unpinned.contains($0) }
+        var membership = Set(state.pinnedIDs)
+        for session in visible where session.pinned == true && state.pinMutations[session.id]?.profileName != state.selectedProfileName {
+          if membership.insert(session.id).inserted { state.pinnedIDs.append(session.id) }
+        }
+        if state.pinnedIDs != oldPins { preferences.savePinnedIDs(state.pinnedIDs) }
+      }
+      return .merge(effects)
+
+    case let .failure(error):
+      state.isLoading = false
+      state.loadError = error.message
+      return .none
+
+    }
+  }
+
   /// Refresh "now", clear errors, and reload the non-secret persisted prefs (seen counts,
   /// pins, grouping). Shared by `.task` and `load()` — `.task` additionally reloads the
   /// selected profile before probing the profiles capability.
@@ -1560,7 +1827,8 @@ public struct SessionListFeature {
 
   /// Shared trigger/pause/resume flow: guard against a double-fire while the job's RPC is
   /// in flight, then run it and funnel the outcome through `.cronJobActionFinished`.
-  /// Threads the same profile scoping as the jobs fetch (`scopedProfileName`).
+  /// Threads the same profile scoping as the jobs fetch (literal selected name when the
+  /// agent supports profiles, else nil).
   private func performCronAction(
     _ state: inout State,
     id: String,
@@ -1569,7 +1837,8 @@ public struct SessionListFeature {
   ) -> Effect<Action> {
     guard !state.cronActionInFlightIDs.contains(id) else { return .none }
     state.cronActionInFlightIDs.insert(id)
-    return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
+    let profile = state.profilesSupported ? state.selectedProfileName : nil
+    return .run { [rest, connection = state.connection] send in
       do {
         try await rpc(rest, connection, id, profile)
         await send(.cronJobActionFinished(id: id, refetchSessions: refetchSessions, error: nil))
@@ -1594,10 +1863,6 @@ public struct SessionListFeature {
 
   private func persistSeenCounts(_ counts: [String: Int]) -> Effect<Action> {
     .run { [preferences] _ in preferences.saveSeenCounts(counts) }
-  }
-
-  private func persistPinnedIDs(_ ids: [String]) -> Effect<Action> {
-    .run { [preferences] _ in preferences.savePinnedIDs(ids) }
   }
 
   /// Build the profile array tolerating a duplicate `name` in the server response (keep
