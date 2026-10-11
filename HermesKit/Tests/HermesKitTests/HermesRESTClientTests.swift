@@ -185,7 +185,7 @@ struct HermesRESTClientTests {
 
   @Test func sessionsMapsListToDomain() async throws {
     MockURLProtocol.set(json: #"""
-    {"sessions":[{"id":"20260610_120231_afcca6","title":"My chat","preview":"hello there","last_active":1749556800.0,"started_at":1749550000.0,"message_count":4,"unread":true,"cwd":"/Users/me/dev/hermes-mobile","is_active":true,"archived":false}],"total":1,"limit":20,"offset":0}
+    {"sessions":[{"id":"20260610_120231_afcca6","title":"My chat","preview":"hello there","last_active":1749556800.0,"started_at":1749550000.0,"message_count":4,"unread":true,"pinned":true,"cwd":"/Users/me/dev/hermes-mobile","is_active":true,"archived":false}],"total":1,"limit":20,"offset":0}
     """#)
     let sessions = try await makeClient().sessions(connection, 20, 0, .recent)
     #expect(sessions.count == 1)
@@ -197,6 +197,26 @@ struct HermesRESTClientTests {
     #expect(s.cwd == "/Users/me/dev/hermes-mobile")
     #expect(s.startedAt == Date(timeIntervalSince1970: 1749550000.0))
     #expect(s.unread == true)
+    #expect(s.pinned == true)
+  }
+
+  /// The profile-scoped list and the legacy list share this row mapping.
+  @Test func sessionsDecodesExplicitUnpinnedFlag() async throws {
+    MockURLProtocol.set(json: #"{"sessions":[{"id":"sid","pinned":false}]}"#)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    #expect(session.pinned == false)
+  }
+
+  @Test func sessionsDecodesAbsentPinnedAsNil() async throws {
+    MockURLProtocol.set(json: #"{"sessions":[{"id":"sid"}]}"#)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    #expect(session.pinned == nil)
+  }
+
+  @Test func sessionsDecodesNullPinnedAsNil() async throws {
+    MockURLProtocol.set(json: #"{"sessions":[{"id":"sid","pinned":null}]}"#)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    #expect(session.pinned == nil)
   }
 
   @Test func sessionsDecodesCronSource() async throws {
@@ -378,6 +398,18 @@ struct HermesRESTClientTests {
     #expect(query == [URLQueryItem(name: "q", value: "matched")])
   }
 
+  @Test(arguments: ["true", "false", "null", "omitted"])
+  func searchDecodesOptionalPinnedField(value: String) async throws {
+    let field = value == "omitted" ? "" : ",\"pinned\":\(value)"
+    MockURLProtocol.set(json: "{\"results\":[{\"session_id\":\"sid\"\(field)}]}")
+    let results = try await makeClient().search(connection, "matched", "default")
+    let session = try #require(results.first)
+    let expected: Bool? = value == "true" ? true : value == "false" ? false : nil
+    #expect(results.count == 1)
+    #expect(session.id == "sid")
+    #expect(session.pinned == expected)
+  }
+
   @Test func searchThreadsLiteralProfileIntoQuery() async throws {
     MockURLProtocol.set(json: #"{"results":[]}"#)
     _ = try await makeClient().search(connection, "matched", "default")
@@ -413,6 +445,53 @@ struct HermesRESTClientTests {
     } ?? Data()
     let json = try JSONSerialization.jsonObject(with: body) as? [String: Bool]
     #expect(json == ["archived": true])
+  }
+
+  @Test(arguments: [true, false])
+  func setPinnedSendsProfileScopedPatchWithBooleanBody(pinned: Bool) async throws {
+    MockURLProtocol.set(status: 200)
+    try await makeClient().setPinned(connection, "sid", pinned, "work")
+
+    let request = try #require(MockURLProtocol.lastRequest)
+    #expect(request.httpMethod == "PATCH")
+    #expect(request.url?.path == "/api/sessions/sid")
+    #expect(request.url?.query == "profile=work")
+    let body = try #require(JSONSerialization.jsonObject(with: mockRequestBody(request)) as? [String: Any])
+    #expect(body["pinned"] as? Bool == pinned)
+    #expect(body["profile"] as? String == "work")
+  }
+
+  @Test func setPinnedWithOmittedProfileSendsFalse() async throws {
+    MockURLProtocol.set(status: 200)
+    try await makeClient().setPinned(connection, "sid", false, nil)
+
+    let request = try #require(MockURLProtocol.lastRequest)
+    #expect(request.httpMethod == "PATCH")
+    #expect(request.url?.path == "/api/sessions/sid")
+    #expect(request.url?.query == nil)
+    let body = try #require(JSONSerialization.jsonObject(with: mockRequestBody(request)) as? [String: Any])
+    #expect(body["pinned"] as? Bool == false)
+    #expect(body["profile"] == nil)
+  }
+
+  @Test func setPinnedWithExplicitDefaultProfileIncludesProfileInBody() async throws {
+    MockURLProtocol.set(status: 200)
+    try await makeClient().setPinned(connection, "sid", true, "default")
+
+    let request = try #require(MockURLProtocol.lastRequest)
+    #expect(request.httpMethod == "PATCH")
+    #expect(request.url?.path == "/api/sessions/sid")
+    #expect(request.url?.query == "profile=default")
+    let body = try #require(JSONSerialization.jsonObject(with: mockRequestBody(request)) as? [String: Any])
+    #expect(body["pinned"] as? Bool == true)
+    #expect(body["profile"] as? String == "default")
+  }
+
+  @Test func setPinnedMapsUnsupportedEndpointStatus() async throws {
+    MockURLProtocol.set(status: 405)
+    await #expect(throws: RESTError.server(status: 405)) {
+      try await makeClient().setPinned(connection, "sid", true, nil)
+    }
   }
 
   @Test func setUnreadSendsSharedReadStatePatchWithProfileScope() async throws {

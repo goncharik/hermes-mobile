@@ -22,6 +22,9 @@ public struct Session: Equatable, Sendable, Identifiable {
   /// mobile client. Nil means an older agent omitted the field; the list then falls back
   /// to this device's message-count watermark.
   public var unread: Bool?
+  /// Server-backed pin state shared with Desktop. Nil means the server omitted the field;
+  /// callers must not infer unpinned from an absent value or an absent row.
+  public var pinned: Bool?
   /// Whether the session is currently active (a turn ran recently).
   public var isActive: Bool?
   /// Where the session originated (`cron`, `cli`, `telegram`, `discord`, `slack`,
@@ -49,6 +52,7 @@ public struct Session: Equatable, Sendable, Identifiable {
     startedAt: Date? = nil,
     messageCount: Int? = nil,
     unread: Bool? = nil,
+    pinned: Bool? = nil,
     isActive: Bool? = nil,
     source: String? = nil,
     parentSessionID: String? = nil,
@@ -62,6 +66,7 @@ public struct Session: Equatable, Sendable, Identifiable {
     self.startedAt = startedAt
     self.messageCount = messageCount
     self.unread = unread
+    self.pinned = pinned
     self.isActive = isActive
     self.source = source
     self.parentSessionID = parentSessionID
