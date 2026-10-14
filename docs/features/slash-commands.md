@@ -19,9 +19,10 @@ worker-routed commands in a separate `slash_worker` subprocess and mirrors only
 (`_mirror_slash_side_effects`), so `/new`+`/reset`, `/sessions`, `/resume`, `/reasoning`,
 `/branch`(+`/fork`), `/yolo`, `/voice` and the `_TUI_EXTRA` chrome (`/density`, `/logs`,
 `/mouse`) would render success while this session stayed untouched — all have native affordances
-instead (`/branch` is desktop-native, `/yolo` desktop drives via a dedicated RPC, `/voice` the
-app owns its own mic UI). `/title` DOES work (the worker shares the session key, so its DB write
-lands here).
+instead (`/branch` is desktop-native; `/yolo` stays hidden because desktop and mobile's
+composer lightning picker use the profile-scoped `approvals.mode` RPC, gated on desktop
+contract 3+ — see `approval-mode.md`; `/voice` uses the app's own mic UI). `/title` DOES work
+(the worker shares the session key, so its DB write lands here).
 
 **Capability gate = the attach pattern verbatim**: `isUnknownMethod` → `commandsUnsupported`
 (fetch skipped thereafter); other failures leave the catalog `nil`, silently retried on the next

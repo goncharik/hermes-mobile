@@ -162,6 +162,15 @@ public struct ChatFeature {
     /// Current model + reasoning effort (from `session.info`), shown in the composer chip.
     public var model: String?
     public var reasoningEffort: String?
+    /// The profile-scoped approval policy shown by the composer lightning menu.
+    public var approvalMode: ApprovalMode?
+    public var displayedApprovalMode: ApprovalMode? {
+      (desktopContract ?? 0) >= 3 ? approvalMode : nil
+    }
+    /// A single explicit write may be outstanding; scoped reads confirm passive updates.
+    public var approvalModePending: Bool
+    /// Latest server policy to restore if the single in-flight write fails.
+    var approvalModeRollback: ApprovalMode?
     /// Rollback target for an in-flight `config.set`, keyed by config key — the value the
     /// SERVER last confirmed, captured before the FIRST optimistic pick of a run. A second
     /// same-key pick must NOT capture the first pick's still-unconfirmed value: when the first
@@ -952,6 +961,9 @@ public struct ChatFeature {
       self.presentedTool = nil
       self.model = nil
       self.reasoningEffort = nil
+      self.approvalMode = nil
+      self.approvalModePending = false
+      self.approvalModeRollback = nil
       self.pendingConfigRollback = [:]
       self.sessionFences = nil
       self.pendingModelConfirmation = nil
@@ -1377,6 +1389,9 @@ public struct ChatFeature {
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
+    case approvalModeSelected(ApprovalMode)
+    case approvalModeResponse(Result<ApprovalMode, GatewayError>)
+    case approvalModeReadResponse(profile: String?, Result<ApprovalMode, GatewayError>)
     /// The picker sheet. Its `.delegate(.modelSelected(model:provider:))` carries the provider
     /// SLUG of the section the row was tapped in (nil when there is none), appended to the
     /// `config.set` value as `--provider <slug>` so the gateway routes the model to the
@@ -1574,6 +1589,7 @@ public struct ChatFeature {
     /// The reconnect `session.events.since` read (#98): one outstanding; a deliberate
     /// teardown or a socket drop cancels it (the next `.ready` re-runs it).
     case eventReplay
+    case approvalModeRead
     /// One id per `config.set` key so a newer pick for that key supersedes the in-flight
     /// one: a cancelled effect never emits `.configSetFailed`, so a stale rejection can't
     /// roll the newer value back. The two keys never cancel each other.
@@ -1662,6 +1678,7 @@ public struct ChatFeature {
         return releaseVoiceResources(&state)
 
       case .teardown:
+        resetPendingApprovalMode(&state)
         state.isReplayReadPending = false
         state.fold = FoldExpansion()
         // `filePreview` and `modelPicker` (the `@Presents` children) are deliberately NOT in
@@ -1680,10 +1697,13 @@ public struct ChatFeature {
           .cancel(id: CancelID.hydrate),
           .cancel(id: CancelID.eventReplay),
           .cancel(id: CancelID.turnTimer),
-          .cancel(id: CancelID.persist)
+          .cancel(id: CancelID.persist),
+          .cancel(id: CancelID.configSet("approvals.mode")),
+          .cancel(id: CancelID.approvalModeRead)
         )
 
       case .teardownSocketOnly:
+        resetPendingApprovalMode(&state)
         // Cancelling the socket effect drops its trailing `await send(.gatewayClosed)`
         // (TCA discards sends from a cancelled task), so no backoff reconnect is
         // scheduled while suspended — `.foreground` owns the redial. Everything else
@@ -1709,7 +1729,9 @@ public struct ChatFeature {
           .cancel(id: CancelID.socket),
           .cancel(id: CancelID.reconnect),
           .cancel(id: CancelID.hydrate),
-          .cancel(id: CancelID.eventReplay)
+          .cancel(id: CancelID.eventReplay),
+          .cancel(id: CancelID.configSet("approvals.mode")),
+          .cancel(id: CancelID.approvalModeRead)
         )
 
       case .loadOlderRequested:
@@ -1749,6 +1771,7 @@ public struct ChatFeature {
         return applyEventReplayResult(result, into: &state)
 
       case .gatewayClosed:
+        resetPendingApprovalMode(&state)
         state.hasRequestedSession = false
         // Finalize anything mid-stream so a dropped socket doesn't leave a row
         // spinning forever; the transcript itself persists across the reconnect.
@@ -1759,7 +1782,8 @@ public struct ChatFeature {
         // A dead session already paused us (see `.authExpired`): the stream finishing is just
         // the tail of that — don't schedule a backoff reconnect, wait for re-auth.
         guard !state.awaitingReauth else {
-          return .merge(.cancel(id: CancelID.turnTimer), .cancel(id: CancelID.eventReplay))
+          return .merge(.cancel(id: CancelID.turnTimer), .cancel(id: CancelID.eventReplay),
+                        .cancel(id: CancelID.configSet("approvals.mode")), .cancel(id: CancelID.approvalModeRead))
         }
         state.status = .reconnecting
         state.reconnectAttempt += 1
@@ -1767,6 +1791,8 @@ public struct ChatFeature {
         return .merge(
           .cancel(id: CancelID.turnTimer),
           .cancel(id: CancelID.eventReplay),
+          .cancel(id: CancelID.configSet("approvals.mode")),
+          .cancel(id: CancelID.approvalModeRead),
           .run { [clock] send in
             try await clock.sleep(for: delay)
             await send(.reconnectTick)
@@ -1791,6 +1817,7 @@ public struct ChatFeature {
         )
 
       case let .sessionResult(.success(handle)):
+        if let contract = handle.info?.desktopContract { state.desktopContract = contract }
         // `session.create` only — a fresh session has no context yet, so no usage fetch.
         // (Re-hydration of a stored session goes through `.activateResult` instead.)
         state.liveSessionID = handle.sessionID
@@ -1805,7 +1832,7 @@ public struct ChatFeature {
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
-        return commandCatalogEffect(state, sessionID: handle.sessionID)
+        return .merge(commandCatalogEffect(state, sessionID: handle.sessionID), readApprovalMode(state))
 
       case let .usageResponse(usage):
         state.usage = usage
@@ -2935,6 +2962,41 @@ public struct ChatFeature {
       case .modelPicker:
         return .none
 
+      case let .approvalModeSelected(mode):
+        guard (state.desktopContract ?? 0) >= 3, state.status == .ready,
+          let previous = state.approvalMode, !state.approvalModePending,
+          previous != mode else { return .none }
+        state.approvalModeRollback = previous
+        state.approvalMode = mode
+        state.approvalModePending = true
+        state.errorBanner = nil
+        return .merge(.cancel(id: CancelID.approvalModeRead),
+                      setApprovalMode(mode, profile: state.profileName))
+
+      case let .approvalModeResponse(result):
+        guard state.approvalModePending else { return .none }
+        state.approvalModePending = false
+        switch result {
+        case let .success(mode): state.approvalMode = mode
+        case let .failure(error):
+          state.approvalMode = state.approvalModeRollback
+          state.errorBanner = "Approval mode failed: \(error.message)"
+        }
+        state.approvalModeRollback = nil
+        // Broadcasts during a write are unscoped; confirm our profile after a rejection.
+        if case .failure = result { return readApprovalMode(state) }
+        return .none
+
+      case let .approvalModeReadResponse(profile, result):
+        guard profile == state.profileName, !state.approvalModePending,
+          (state.desktopContract ?? 0) >= 3 else { return .none }
+        switch result {
+        case let .success(mode): state.approvalMode = mode
+        case let .failure(error):
+          state.errorBanner = "Approval mode unavailable: \(error.message)"
+        }
+        return .none
+
       case let .configSetFailed(key, value, previousValue, previousProvider, error):
         // Roll the optimistic picker write back so the chip stops lying (the next authoritative
         // `session.info` wins again anyway), then surface the failure — never swallowed.
@@ -3499,6 +3561,13 @@ public struct ChatFeature {
         adoptFences(fences, into: &state)
       }
       confirmConfigKeys(info, into: &state)
+      // The server broadcasts the writer's profile value to every session. Never paint
+      // it directly, even as rollback state: ask for THIS slot's profile instead.
+      // Even an equal hint supersedes an older in-flight read.
+      if info.approvalMode.flatMap(ApprovalMode.init(rawValue:)) != nil {
+        return readApprovalMode(state)
+      }
+      if state.approvalMode == nil { return readApprovalMode(state) }
       return .none
 
     case let .reviewSummary(text):
@@ -4361,7 +4430,8 @@ public struct ChatFeature {
   /// scrolled up.
   private func reduceGatewayEvent(_ event: GatewayEvent, into state: inout State) -> Effect<Action> {
     let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
-    let effect = reduce(event: event, into: &state)
+    var effect = reduce(event: event, into: &state)
+    if case .ready = event { effect = .merge(effect, readApprovalMode(state)) }
     maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
     // Write-back: any event that mutates the transcript / model / usage schedules a
     // debounced snapshot persist so the next open paints instantly. Debounced (and
@@ -4767,7 +4837,8 @@ public struct ChatFeature {
     // Runtime info: model / reasoning / usage straight from the response (fixes the blank
     // model + context-0 bugs on re-open).
     if let info = response.info {
-      // The hydrate's `info` is a full snapshot, so its contract (or its absence) wins.
+      // Hydration is authoritative for the protocol generation. Unlike an omitted
+      // approval_mode, an absent contract must restore legacy request recovery.
       state.desktopContract = info.desktopContract
       var target = RuntimeInfoTarget(
         model: state.model, reasoningEffort: state.reasoningEffort, usage: state.usage
@@ -5011,10 +5082,10 @@ public struct ChatFeature {
     if state.usage == nil {
       return .merge(
         fetchUsage(sessionID: response.sessionID), persist, timerEffect, runningEffect,
-        catalogEffect, drainEffect
+        catalogEffect, drainEffect, readApprovalMode(state)
       )
     }
-    return .merge(persist, timerEffect, runningEffect, catalogEffect, drainEffect)
+    return .merge(persist, timerEffect, runningEffect, catalogEffect, drainEffect, readApprovalMode(state))
   }
 
   /// A running hydrate's (#26) client-only live rows, in transcript order.
@@ -6063,6 +6134,59 @@ public struct ChatFeature {
       key: "reasoning", value: effort, previousValue: previousEffort, sessionID: sessionID,
       heal: state.healTarget
     )
+  }
+
+  private func resetPendingApprovalMode(_ state: inout State) {
+    if state.approvalModePending { state.approvalMode = state.approvalModeRollback }
+    state.approvalModePending = false
+    state.approvalModeRollback = nil
+  }
+
+  private func readApprovalMode(_ state: State) -> Effect<Action> {
+    guard (state.desktopContract ?? 0) >= 3, !state.approvalModePending,
+      state.status == .ready else { return .none }
+    let profile = state.profileName
+    return .run { [gateway] send in
+      let result: Result<ApprovalMode, GatewayError>
+      do {
+        var params: [String: JSONValue] = ["key": .string("approvals.mode")]
+        if let profile { params["profile"] = .string(profile) }
+        let response = try await gateway.send("config.get", .object(params))
+        result = .success(try Self.decodeApprovalMode(response))
+      } catch let error as GatewayError {
+        result = .failure(error)
+      } catch {
+        result = .failure(.disconnected)
+      }
+      await send(.approvalModeReadResponse(profile: profile, result))
+    }
+    .cancellable(id: CancelID.approvalModeRead, cancelInFlight: true)
+  }
+
+  private static func decodeApprovalMode(_ response: JSONValue) throws -> ApprovalMode {
+    guard case let .string(raw)? = response["value"], let mode = ApprovalMode(rawValue: raw) else {
+      throw GatewayError.server("Invalid approval mode response")
+    }
+    return mode
+  }
+
+  private func setApprovalMode(_ mode: ApprovalMode, profile: String?) -> Effect<Action> {
+    .run { [gateway] send in
+      do {
+        var params: [String: JSONValue] = [
+          "key": .string("approvals.mode"),
+          "value": .string(mode.rawValue),
+        ]
+        if let profile { params["profile"] = .string(profile) }
+        let response = try await gateway.send("config.set", .object(params))
+        await send(.approvalModeResponse(.success(try Self.decodeApprovalMode(response))))
+      } catch let error as GatewayError {
+        await send(.approvalModeResponse(.failure(error)))
+      } catch {
+        await send(.approvalModeResponse(.failure(.disconnected)))
+      }
+    }
+    .cancellable(id: CancelID.configSet("approvals.mode"))
   }
 
   /// Change a session setting (model / reasoning) over the gateway. If iOS resumed with a

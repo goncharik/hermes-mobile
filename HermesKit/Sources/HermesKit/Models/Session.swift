@@ -116,17 +116,32 @@ public struct SessionHandle: Equatable, Sendable, Decodable {
   /// Persisted id (e.g. `20260610_120231_afcca6`); the id REST lists.
   public var storedSessionID: String?
   public var messageCount: Int?
+  /// Lazy create carries capability info before the agent is built.
+  public var info: SessionInfo?
 
   enum CodingKeys: String, CodingKey {
     case sessionID = "session_id"
     case storedSessionID = "stored_session_id"
     case messageCount = "message_count"
+    case info
   }
 
-  public init(sessionID: String, storedSessionID: String? = nil, messageCount: Int? = nil) {
+  public init(
+    sessionID: String, storedSessionID: String? = nil, messageCount: Int? = nil,
+    info: SessionInfo? = nil
+  ) {
     self.sessionID = sessionID
     self.storedSessionID = storedSessionID
     self.messageCount = messageCount
+    self.info = info
+  }
+
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    sessionID = try c.decode(String.self, forKey: .sessionID)
+    storedSessionID = try c.decodeIfPresent(String.self, forKey: .storedSessionID)
+    messageCount = try c.decodeIfPresent(Int.self, forKey: .messageCount)
+    info = try? c.decodeIfPresent(SessionInfo.self, forKey: .info)
   }
 }
 
