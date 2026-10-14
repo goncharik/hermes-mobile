@@ -21,10 +21,21 @@ hydrate clear any standing `.approval` card + the hint (a card must never outliv
 lock the composer), and answering any approval clears the hint too. A real `approval.request`
 always overwrites the synthetic card AND clears the hint.
 
-This works because approvals have **no `request_id`** — `approval.respond` resolves a per-session
-FIFO, and the `{"resolved": n}` result surfaces the outcome: `0` → patch the optimistic status
-row to "Already handled elsewhere" (blind respond on an empty queue is a verified server no-op);
-RPC failure → `errorBanner` (no swallowed `try?`).
+Approvals are server-request-bound when delivered through the WebSocket JSON-RPC gateway. The
+server sends an `approval` request with a transport request id; the card preserves that id and
+answers through `request.answer {id, result: {choice}}`. The server returns `status: "ok"` when it
+was handled and `status: "expired"` when another client already handled or the request timed out;
+the latter patches the optimistic status row to **"Already handled elsewhere"**. Older event-based
+approvals continue to use `approval.respond` and its `{"resolved": n}` result for compatibility.
+RPC failures surface through `errorBanner` (no swallowed `try?`).
+
+The phone advertises `client.capabilities {server_requests: true}` after the gateway is ready.
+Approval requests are rendered locally. Unsupported server requests are intentionally left alone so
+another attached client can handle them. The phone sends the non-settling `4404` decline only for
+window-owned methods (`terminal.read`, `preview.read`, `window.read`, `preview.act`, `tour`) when
+the backend advertises `declines_not_shown: true`. It never declines `vault.*`, `setup_choose`,
+`display.install.sudo`, or the other prompt kinds that are not yet rendered here. A malformed
+`approval` payload is answered with `{choice: "deny"}` so the agent is not left waiting.
 
 The **"Approve all in this session" toggle is content-gated**
 (`ApprovalRequest.offersSessionApproval`): hidden on the command-less/pattern-less recovered

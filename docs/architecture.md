@@ -88,8 +88,17 @@ a `testValue`/`.inMemory()` variant):
 - **`HermesGatewayClient`** — WebSocket JSON-RPC connect/send. The socket is one
   long-running cancellable effect; reconnect/backoff lives in the reducer (testable
   with `TestClock`). Each `send` enforces a per-request timeout (default 30s) so a
-  stuck/never-acking RPC throws `GatewayError.timedOut` instead of hanging forever.
-  `connect` branches on the `AuthSession`: `.token` → `?token=` (byte-identical to the
+ stuck/never-acking RPC throws `GatewayError.timedOut` instead of hanging forever.
+ When the gateway receives `ready`, it advertises `client.capabilities` with
+ `{server_requests: true}`. The server can then deliver an `approval` as a JSON-RPC
+ server request; the phone presents the request-bound card and answers with
+ `request.answer {id, result: {choice}}`. A response with `status: "expired"` means another
+ client handled the request (or it timed out), and the UI reports **Already handled elsewhere**.
+ The phone ignores unsupported prompt methods so another attached client can handle them. It
+ sends the non-settling `4404` decline only for window-owned methods when the backend advertises
+ `declines_not_shown: true`; malformed approval payloads are denied. Every outbound JSON-RPC
+ frame uses `JSONRPCRequest.wireEncoder` so wire formatting is consistent.
+ `connect` branches on the `AuthSession`: `.token` → `?token=` (byte-identical to the
   legacy path); `.cookie` and `.bearer` SHARE one branch → mint a fresh single-use `?ticket=`
   via `POST /api/auth/ws-ticket` per connect (never cached), the regimes differing only inside
   `mintTicket` (cookie jar vs `Authorization: Bearer`). A `401` from the mint surfaces as
