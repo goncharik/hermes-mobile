@@ -84,7 +84,11 @@ private func requestID(_ frame: String) -> Int? {
   }
 
   @Test func serverApprovalRequestIsYieldedAndCanBeAnsweredByOriginalID() async throws {
-    let transport = FakeTransport()
+    let transport = FakeTransport { frame, inbound in
+      if let id = requestID(frame) {
+        inbound.yield(#"{"jsonrpc":"2.0","id":\#(id),"result":{"status":"ok"}}"#)
+      }
+    }
     let client = HermesGatewayClient.make { _ in transport }
     let stream = client.connect(url, .token("t"))
     var iterator = stream.makeAsyncIterator()
@@ -105,19 +109,18 @@ private func requestID(_ frame: String) -> Int? {
       )
     ))
 
-    try await client.respond("srq-abc123", .object([
-      "choice": .string("once"),
-      "all": .bool(false),
+    let result = try await client.send("request.answer", .object([
+      "id": .string("srq-abc123"),
+      "result": .object(["choice": .string("once")]),
     ]))
-
+    #expect(result["status"]?.stringValue == "ok")
     let response = try #require(transport.sent.last(where: {
-      (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)))?["id"]?.stringValue == "srq-abc123"
+      (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)))?["method"]?.stringValue == "request.answer"
     }))
     let decoded = try JSONDecoder().decode(JSONValue.self, from: Data(response.utf8))
-    #expect(decoded == .object([
-      "jsonrpc": .string("2.0"),
+    #expect(decoded["params"] == .object([
       "id": .string("srq-abc123"),
-      "result": .object(["choice": .string("once"), "all": .bool(false)]),
+      "result": .object(["choice": .string("once")]),
     ]))
   }
 

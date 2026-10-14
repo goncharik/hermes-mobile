@@ -762,13 +762,10 @@ public struct ChatFeature {
     /// precondition is re-checked in `drainQueueIfReady`.
     case maybeDrainQueue
     case respondToApproval(approve: Bool, all: Bool)
-    /// Outcome of the awaited `approval.respond` RPC. `resolved` carries the server's
-    /// `{"resolved": n}` count — `0` means the per-session queue was already empty (the
-    /// approval was handled elsewhere), so the optimistic "Approved"/"Denied" status row
-    /// at `rowID` is patched to say so. `nil` means the RPC threw → user-facing banner.
-    /// The effect feeds back only those two actionable outcomes: a `resolved >= 1` or
-    /// missing-key (older agent, lenient decode) success sends nothing — the optimistic
-    /// row is already correct.
+    /// Outcome of `approval.respond` (legacy) or `request.answer` (server requests).
+    /// `resolved == 0` also represents `request.answer {status: "expired"}` and patches
+    /// the optimistic row to "Already handled elsewhere". `nil` surfaces a send failure.
+    /// Successful answers need no action: the optimistic row is already correct.
     case approvalRespondResult(rowID: ChatRow.ID, resolved: Int?)
     case respondToClarify(answer: String)
     case respondToSecret(value: String)
@@ -1436,10 +1433,17 @@ public struct ChatFeature {
         return .run { [gateway] send in
           do {
             if let serverRequestID = request.serverRequestID {
-              try await gateway.respond(serverRequestID, .object([
-                "choice": .string(effectiveChoice),
-                "all": .bool(false),
+              let result = try await gateway.send("request.answer", .object([
+                "id": .string(serverRequestID),
+                "result": .object(["choice": .string(effectiveChoice)]),
               ]))
+              switch result["status"]?.stringValue {
+              case "ok": break
+              case "expired":
+                await send(.approvalRespondResult(rowID: rowID, resolved: 0))
+              default:
+                throw GatewayError.server("Malformed request.answer result")
+              }
             } else {
               let result = try await gateway.send("approval.respond", params)
               // The server answers `{"resolved": n}` — the count of queue entries this
@@ -2336,6 +2340,11 @@ public struct ChatFeature {
         )))
       }
       keepThinkingLast(into: &state)
+      return .none
+
+    case let .serverRequestFailed(message):
+      // Advertisement/decline/automatic-denial failures do not end the agent turn.
+      state.errorBanner = message
       return .none
 
     case let .error(message):
@@ -3504,7 +3513,7 @@ public struct ChatFeature {
       // Blank text is dropped by the fold with zero state change — don't schedule a
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
-    case .ready, .error, .authExpired, .approvalRequest, .approvalServerRequest, .clarifyRequest,
+    case .ready, .error, .serverRequestFailed, .authExpired, .approvalRequest, .approvalServerRequest, .clarifyRequest,
          .sudoRequest, .secretRequest, .unknown:
       return false
     }

@@ -58,7 +58,7 @@ public struct ApprovalRequest: Equatable, Sendable, Decodable {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     requestID = try c.decodeIfPresent(String.self, forKey: .requestID)
     serverRequestID = nil
-    choices = (try? c.decodeIfPresent([String].self, forKey: .choices)) ?? []
+    choices = try c.decodeIfPresent([String].self, forKey: .choices) ?? []
     command = try c.decodeIfPresent(String.self, forKey: .command)
     detail = try c.decodeIfPresent(String.self, forKey: .detail)
     patternKey = try c.decodeIfPresent(String.self, forKey: .patternKey)

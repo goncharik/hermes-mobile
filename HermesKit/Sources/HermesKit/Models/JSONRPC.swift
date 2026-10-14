@@ -137,7 +137,7 @@ public enum InboundFrame: Equatable, Sendable {
   /// A server-pushed event notification: `{method:"event", params:{type, session_id, payload}}`.
   case event(sessionID: String?, GatewayEvent)
   /// A server→client request. Server request ids are strings (`srq-…`) and must be
-  /// answered with a JSON-RPC response carrying the same id.
+  /// answered with `request.answer {id, result}` for an acknowledged outcome.
   case serverRequest(id: String, method: String, params: JSONValue)
   /// A successful response to a request we sent: `{id, result}`.
   case response(id: Int, result: JSONValue)
@@ -157,9 +157,8 @@ public enum InboundFrame: Equatable, Sendable {
     }
 
     if let method = frame["method"]?.stringValue,
-       let id = frame["id"]?.stringValue,
-       let params = frame["params"] {
-      self = .serverRequest(id: id, method: method, params: params)
+       let id = frame["id"]?.stringValue {
+      self = .serverRequest(id: id, method: method, params: frame["params"] ?? .null)
       return
     }
 

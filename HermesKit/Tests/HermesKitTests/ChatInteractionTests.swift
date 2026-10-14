@@ -18,6 +18,72 @@ struct ChatInteractionTests {
     return state
   }
 
+  @Test(arguments: ["ok", "expired", "failure", "malformed"])
+  func serverApprovalAnswer(status: String) async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var initial = readyState()
+    initial.expectsPendingApproval = true
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { method, params in
+        sent.setValue(.object(["method": .string(method), "params": params]))
+        if status == "failure" { throw GatewayError.timedOut(method: method) }
+        return .object(["status": .string(status)])
+      }
+    }
+    let approval = ApprovalRequest(command: "rm foo", choices: ["once", "deny"])
+    await store.send(.gatewayEvent(.approvalServerRequest(serverRequestID: "srq/7", approval))) {
+      var bound = approval
+      bound.serverRequestID = "srq/7"
+      $0.present(.approval(bound))
+      $0.expectsPendingApproval = false
+    }
+    #expect(!store.state.canSend)
+    await store.send(.respondToApproval(approve: true, all: true)) {
+      $0.pendingInteraction = nil
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "approval", text: "Approved"))]
+    }
+    if status == "expired" {
+      await store.receive(\.approvalRespondResult) {
+        $0.transcript[id: self.uuid(0)]?.kind = .status(kind: "approval", text: "Already handled elsewhere")
+      }
+    } else if status != "ok" {
+      await store.receive(\.approvalRespondResult) {
+        $0.errorBanner = "Failed to send the approval response."
+      }
+    }
+    await store.finish()
+    #expect(sent.value == .object([
+      "method": .string("request.answer"),
+      "params": .object(["id": .string("srq/7"), "result": .object(["choice": .string("once")])]),
+    ]))
+  }
+
+  @Test(arguments: [false, true])
+  func serverApprovalDenyOrSessionChoice(approve: Bool) async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var initial = readyState()
+    initial.present(.approval(ApprovalRequest(
+      serverRequestID: "srq-choice", command: "rm foo", choices: ["once", "session", "deny"]
+    )))
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.hermesGateway.send = { method, params in
+        #expect(method == "request.answer")
+        sent.setValue(params)
+        return .object(["status": .string("ok")])
+      }
+    }
+    await store.send(.respondToApproval(approve: approve, all: true)) {
+      $0.pendingInteraction = nil
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "approval", text: approve ? "Approved" : "Denied"))]
+    }
+    await store.finish()
+    #expect(sent.value == .object([
+      "id": .string("srq-choice"), "result": .object(["choice": .string(approve ? "session" : "deny")]),
+    ]))
+  }
+
   @Test func approvalRequestPinsCardAndBlocksComposer() async {
     var initial = readyState()
     initial.composerText = "hi"
