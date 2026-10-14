@@ -276,6 +276,8 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
   public var version: String?
   public var cwd: String?
   public var profileName: String?
+  /// Raw wire value so a future policy does not break decoding the entire session.
+  public var approvalMode: String?
   public var usage: Usage?
   /// The session's live title. Deliberately read in ONE place: the post-slash
   /// server-authoritative refresh (`.slashHistoryRefreshed`) applies it on top of
@@ -294,12 +296,13 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     case reasoningEffort = "reasoning_effort"
     case profileName = "profile_name"
     case desktopContract = "desktop_contract"
+    case approvalMode = "approval_mode"
   }
 
   public init(
     model: String? = nil, reasoningEffort: String? = nil, running: Bool? = nil,
     version: String? = nil, cwd: String? = nil, profileName: String? = nil, usage: Usage? = nil,
-    title: String? = nil, desktopContract: Int? = nil
+    title: String? = nil, desktopContract: Int? = nil, approvalMode: String? = nil
   ) {
     self.model = model
     self.reasoningEffort = reasoningEffort
@@ -310,6 +313,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     self.usage = usage
     self.title = title
     self.desktopContract = desktopContract
+    self.approvalMode = approvalMode
   }
 
   /// Hand-written only for `desktopContract`'s lenient decode; every other field keeps the
@@ -325,6 +329,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     usage = try c.decodeIfPresent(Usage.self, forKey: .usage)
     title = try c.decodeIfPresent(String.self, forKey: .title)
     desktopContract = Self.lenientContract(c)
+    approvalMode = try c.decodeIfPresent(String.self, forKey: .approvalMode)
   }
 
   private static func lenientContract(_ c: KeyedDecodingContainer<CodingKeys>) -> Int? {
@@ -334,6 +339,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     }
     return nil
   }
+
 }
 
 /// Payload of a sudo / secret prompt: the legacy `sudo.request` / `secret.request` events
