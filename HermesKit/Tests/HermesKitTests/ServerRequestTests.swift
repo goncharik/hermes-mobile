@@ -204,6 +204,28 @@ struct ServerRequestTests {
     client.disconnect()
   }
 
+  @Test func unknownAdvertisementMethodIsSilentAndNotRetried() async throws {
+    let clock = TestClock()
+    let attempts = LockIsolated(0)
+    let transport = FakeTransport { frame, inbound in
+      let request = try! JSONDecoder().decode(JSONValue.self, from: Data(frame.utf8))
+      guard let id = request["id"]?.intValue else { return }
+      attempts.withValue { $0 += 1 }
+      inbound.yield(#"{"jsonrpc":"2.0","id":\#(id),"error":{"message":"unknown method: client.capabilities"}}"#)
+    }
+    let (events, continuation) = AsyncStream<GatewayEvent>.makeStream()
+    let connection = GatewayConnection(transport: transport, events: continuation, clock: clock)
+    await connection.start()
+    await connection.advertiseServerRequestsIfNeeded()
+
+    // Unknown-method compatibility probes must not emit a user-facing failure event.
+    #expect(attempts.value == 1)
+    await clock.advance(by: .seconds(120))
+    #expect(attempts.value == 1)
+
+    await connection.shutdown()
+  }
+
   @Test func advertisementFailureSurfacesWithoutEndingTurnAndCanRetry() async throws {
     let attempts = LockIsolated(0)
     let transport = FakeTransport { frame, inbound in

@@ -311,6 +311,8 @@ actor GatewayConnection {
   private var advertisedServerRequests = false
   private var advertisingServerRequests = false
   private var declinesNotShown = false
+  private var advertisementUnsupported = false
+  private var advertisementFailureReported = false
   private var advertisementTask: Task<Void, Never>?
 
   init(
@@ -459,13 +461,22 @@ actor GatewayConnection {
       guard !isFinished else { return }
       declinesNotShown = result["declines_not_shown"]?.boolValue == true
       advertisedServerRequests = true
+    } catch let error as GatewayError where error.isUnknownMethod {
+      // Older gateways may support server requests but predate the capability probe.
+      // Treat -32601 as a permanent per-connection capability miss: do not retry and
+      // do not show a user-facing banner for a passive compatibility probe.
+      advertisementUnsupported = true
+      advertisedServerRequests = true
     } catch {
-      reportFailure("Couldn’t enable approval requests", error: error)
+      if !advertisementFailureReported {
+        advertisementFailureReported = true
+        reportFailure("Couldn’t enable approval requests", error: error)
+      }
     }
   }
 
   private func startAdvertisement() {
-    guard advertisementTask == nil, !advertisedServerRequests else { return }
+    guard advertisementTask == nil, !advertisedServerRequests, !advertisementUnsupported else { return }
     advertisementTask = Task { [weak self] in
       guard let self else { return }
       await retryAdvertisement()
