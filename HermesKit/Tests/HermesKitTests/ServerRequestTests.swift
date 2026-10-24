@@ -177,7 +177,7 @@ struct ServerRequestTests {
     )
     var iterator = events.makeAsyncIterator()
     #expect(await iterator.next() == .approvalServerRequest(
-      serverRequestID: "approval", ApprovalRequest(serverRequestID: "approval", command: "rm foo")
+      ApprovalRequest(serverRequestID: "approval", command: "rm foo")
     ))
     #expect(await iterator.next() == .messageComplete(text: "done", usage: nil))
     client.disconnect()

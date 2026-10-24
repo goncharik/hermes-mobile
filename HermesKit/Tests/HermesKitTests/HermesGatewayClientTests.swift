@@ -100,7 +100,6 @@ private func requestID(_ frame: String) -> Int? {
     #expect(await iterator.next() == .ready)
     let event = await iterator.next()
     #expect(event == .approvalServerRequest(
-      serverRequestID: "srq-abc123",
       ApprovalRequest(
         requestID: "approval-7",
         serverRequestID: "srq-abc123",

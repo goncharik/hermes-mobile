@@ -446,7 +446,7 @@ actor GatewayConnection {
   private func presentApproval(id: String, params: JSONValue) -> Bool {
     guard var request = params.decoded(ApprovalRequest.self) else { return false }
     request.serverRequestID = id
-    events.yield(.approvalServerRequest(serverRequestID: id, request))
+    events.yield(.approvalServerRequest(request))
     return true
   }
 

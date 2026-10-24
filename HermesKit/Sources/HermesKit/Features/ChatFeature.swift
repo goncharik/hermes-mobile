@@ -2384,9 +2384,7 @@ public struct ChatFeature {
         .send(.delegate(.sessionExpired))
       )
 
-    case let .approvalServerRequest(serverRequestID, request):
-      var request = request
-      request.serverRequestID = serverRequestID
+    case let .approvalServerRequest(request):
       state.present(.approval(request))
       state.expectsPendingApproval = false
       return .none

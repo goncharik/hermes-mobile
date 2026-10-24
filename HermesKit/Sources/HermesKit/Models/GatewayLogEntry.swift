@@ -66,7 +66,7 @@ public extension GatewayEvent {
       let d = durationS.map { String(format: " (%.1fs)", $0) } ?? ""
       return (name ?? "") + d
     case let .approvalRequest(req): return req.command ?? req.detail ?? "approval"
-    case let .approvalServerRequest(_, req): return req.command ?? req.detail ?? "approval"
+    case let .approvalServerRequest(req): return req.command ?? req.detail ?? "approval"
     case let .clarifyRequest(req): return req.question
     case let .sudoRequest(p): return p.prompt ?? p.requestID
     case let .secretRequest(p): return p.prompt ?? p.requestID

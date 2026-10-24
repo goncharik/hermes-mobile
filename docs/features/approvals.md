@@ -29,6 +29,15 @@ the latter patches the optimistic status row to **"Already handled elsewhere"**.
 approvals continue to use `approval.respond` and its `{"resolved": n}` result for compatibility.
 RPC failures surface through `errorBanner` (no swallowed `try?`).
 
+Once the phone advertises server requests, a phone-only session may receive unsupported prompt kinds
+such as clarify, sudo, secret, or vault requests. The phone intentionally leaves those requests
+untouched for another attached client, so a phone-only agent can wait until the server-side prompt
+deadline rather than fail immediately. Support for those prompt kinds is part of the #97 follow-up.
+
+The legacy push-tap recovery path remains compatible: a recovered card has no transport request id,
+so it answers through the FIFO `approval.respond` path; the server withdraws the corresponding
+server-side request as part of that compatibility flow.
+
 The phone advertises `client.capabilities {server_requests: true}` after the gateway is ready.
 Approval requests are rendered locally. Unsupported server requests are intentionally left alone so
 another attached client can handle them. The phone sends the non-settling `4404` decline only for

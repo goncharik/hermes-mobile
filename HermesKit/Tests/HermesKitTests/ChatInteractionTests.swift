@@ -32,7 +32,11 @@ struct ChatInteractionTests {
       }
     }
     let approval = ApprovalRequest(command: "rm foo", choices: ["once", "deny"])
-    await store.send(.gatewayEvent(.approvalServerRequest(serverRequestID: "srq/7", approval))) {
+    await store.send(.gatewayEvent(.approvalServerRequest({
+      var request = approval
+      request.serverRequestID = "srq/7"
+      request
+    }))) {
       var bound = approval
       bound.serverRequestID = "srq/7"
       $0.present(.approval(bound))

@@ -18,9 +18,9 @@ public enum GatewayEvent: Equatable, Sendable {
     args: JSONValue?, resultText: String?, inlineDiff: String?, durationS: Double?
   )
   case approvalRequest(ApprovalRequest)
-  /// A server→client approval, answered by `request.answer` using its transport id.
-  /// This is distinct from a legacy `approval.request` notification.
-  case approvalServerRequest(serverRequestID: String, ApprovalRequest)
+  /// A server→client approval, answered by `request.answer` using the request metadata
+  /// attached to the payload. This is distinct from a legacy `approval.request` notification.
+  case approvalServerRequest(ApprovalRequest)
   case clarifyRequest(ClarifyRequest)
   case sudoRequest(SecretPrompt)
   case secretRequest(SecretPrompt)
