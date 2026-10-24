@@ -31,15 +31,10 @@ struct ChatInteractionTests {
         return .object(["status": .string(status)])
       }
     }
-    let approval = ApprovalRequest(command: "rm foo", choices: ["once", "deny"])
-    await store.send(.gatewayEvent(.approvalServerRequest({
-      var request = approval
-      request.serverRequestID = "srq/7"
-      request
-    }))) {
-      var bound = approval
-      bound.serverRequestID = "srq/7"
-      $0.present(.approval(bound))
+    var serverApproval = ApprovalRequest(command: "rm foo", choices: ["once", "deny"])
+    serverApproval.serverRequestID = "srq/7"
+    await store.send(.gatewayEvent(.approvalServerRequest(serverApproval))) {
+      $0.present(.approval(serverApproval))
       $0.expectsPendingApproval = false
     }
     #expect(!store.state.canSend)
