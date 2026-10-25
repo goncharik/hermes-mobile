@@ -17,6 +17,24 @@ public enum TranscriptScrollMath {
   /// load-older trigger distance is conceptually independent of the bottom pin tolerance.
   public static let loadOlderTopThreshold: CGFloat = 60
 
+  /// Decide whether arriving content may move the viewport to the bottom.
+  ///
+  /// The at-bottom pin is necessary but NOT sufficient: a user who has deliberately turned
+  /// following OFF (#55) wants the viewport to stay where they left it even while parked at
+  /// the bottom — otherwise a long turn's tool calls scroll the reply they are reading out
+  /// from under them, which is the reported complaint. This is the single place the two
+  /// conditions are combined so both renderers agree, and so "following" is one testable
+  /// rule rather than a condition duplicated at each call site.
+  ///
+  /// `isPinnedToBottom` is the geometry read (`isPinnedToBottom(contentHeight:…)` below),
+  /// passed in rather than recomputed so this stays pure over already-sampled numbers.
+  public static func shouldFollow(
+    isPinnedToBottom: Bool,
+    autoFollowEnabled: Bool
+  ) -> Bool {
+    autoFollowEnabled && isPinnedToBottom
+  }
+
   /// Given the content's full height, the visible viewport height, the bottom inset, and the
   /// current vertical offset, decide whether the viewport is pinned to the bottom edge.
   /// `≤ threshold` of remaining scroll distance below the viewport ⇒ pinned to the latest row.

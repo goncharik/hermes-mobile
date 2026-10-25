@@ -190,4 +190,66 @@ struct PreferencesClientTests {
     prefs.clearPushPromptSnooze()
     #expect(prefs.loadPushPromptSnooze() == nil)
   }
+
+  // MARK: Display prefs (#55)
+
+  @Test func inMemoryDisplayPrefsDefaultToPreFeatureBehavior() {
+    let prefs = PreferencesClient.inMemory()
+    // Every one of these must default to what the app did before the feature existed —
+    // absent-and-unset has to mean "rows shown, following on", or an upgrade silently
+    // changes what a user sees.
+    #expect(prefs.loadShowToolRows() == true)
+    #expect(prefs.loadShowThinkingRows() == true)
+    #expect(prefs.loadAutoFollowEnabled() == true)
+  }
+
+  @Test func inMemoryDisplayPrefsRoundTrip() {
+    let prefs = PreferencesClient.inMemory()
+
+    prefs.saveShowToolRows(false)
+    prefs.saveShowThinkingRows(false)
+    prefs.saveAutoFollowEnabled(false)
+    #expect(prefs.loadShowToolRows() == false)
+    #expect(prefs.loadShowThinkingRows() == false)
+    #expect(prefs.loadAutoFollowEnabled() == false)
+
+    prefs.saveShowToolRows(true)
+    prefs.saveShowThinkingRows(true)
+    prefs.saveAutoFollowEnabled(true)
+    #expect(prefs.loadShowToolRows() == true)
+    #expect(prefs.loadShowThinkingRows() == true)
+    #expect(prefs.loadAutoFollowEnabled() == true)
+  }
+
+  @Test func liveDisplayPrefsBackOntoProvidedDefaults() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.display")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.display")
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    // Absent keys → the pre-feature behavior.
+    #expect(prefs.loadShowToolRows() == true)
+    #expect(prefs.loadShowThinkingRows() == true)
+    #expect(prefs.loadAutoFollowEnabled() == true)
+
+    prefs.saveShowToolRows(false)
+    prefs.saveShowThinkingRows(false)
+    prefs.saveAutoFollowEnabled(false)
+    #expect(suite.bool(forKey: "hermes.show-tool-rows") == false)
+    #expect(suite.bool(forKey: "hermes.show-thinking-rows") == false)
+    #expect(suite.bool(forKey: "hermes.auto-follow-enabled") == false)
+    #expect(prefs.loadShowToolRows() == false)
+    #expect(prefs.loadShowThinkingRows() == false)
+    #expect(prefs.loadAutoFollowEnabled() == false)
+  }
+
+  /// The prefs are independent: turning one off must not disturb the others (each `Menu`
+  /// toggle writes only its own key).
+  @Test func displayPrefsAreIndependent() {
+    let prefs = PreferencesClient.inMemory()
+
+    prefs.saveShowToolRows(false)
+    #expect(prefs.loadShowToolRows() == false)
+    #expect(prefs.loadShowThinkingRows() == true)
+    #expect(prefs.loadAutoFollowEnabled() == true)
+  }
 }
