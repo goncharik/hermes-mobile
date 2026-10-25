@@ -4279,8 +4279,8 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
-        unscopedFetch.withValue { $0 += 1 }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, source in
+        if source == .interactive { unscopedFetch.withValue { $0 += 1 } }
         return [Session(id: "s1")]
       }
     }
@@ -4322,8 +4322,8 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = prefs
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
-        scopedFetch.withValue { $0.append(profile) }
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, source in
+        if source == .interactive { scopedFetch.withValue { $0.append(profile) } }
         return [Session(id: "w1")]
       }
     }
