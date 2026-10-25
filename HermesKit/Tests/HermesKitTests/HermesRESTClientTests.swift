@@ -203,19 +203,19 @@ struct HermesRESTClientTests {
   /// The profile-scoped list and the legacy list share this row mapping.
   @Test func sessionsDecodesExplicitUnpinnedFlag() async throws {
     MockURLProtocol.set(json: #"{"sessions":[{"id":"sid","pinned":false}]}"#)
-    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent, .interactive).first)
     #expect(session.pinned == false)
   }
 
   @Test func sessionsDecodesAbsentPinnedAsNil() async throws {
     MockURLProtocol.set(json: #"{"sessions":[{"id":"sid"}]}"#)
-    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent, .interactive).first)
     #expect(session.pinned == nil)
   }
 
   @Test func sessionsDecodesNullPinnedAsNil() async throws {
     MockURLProtocol.set(json: #"{"sessions":[{"id":"sid","pinned":null}]}"#)
-    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent).first)
+    let session = try #require(try await makeClient().sessions(connection, 20, 0, .recent, .interactive).first)
     #expect(session.pinned == nil)
   }
 
