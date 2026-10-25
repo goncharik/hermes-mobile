@@ -1639,7 +1639,6 @@ public struct SessionListFeature {
   ) -> Effect<Action> {
     switch result {
     case let .success(sessions):
-      state.isLoading = false
       state.loadError = nil
       // Belt-and-suspenders: drop any session whose archive PATCH or DELETE is still in
       // flight, so a fetch that completes during that window can't repopulate the removed row.
@@ -1651,6 +1650,7 @@ public struct SessionListFeature {
       // (#78). `IdentifiedArray(uniqueElements:)` preconditions on unique ids and
       // trapped in the field, so dedupe first — keep the FIRST occurrence (server order).
       state.sessions = IdentifiedArray(filtered, uniquingIDsWith: { first, _ in first })
+      state.isLoading = state.awaitsCronJobs
       let visible = state.sessions
       // Seed last-seen counts for newly-discovered sessions so they don't all show as
       // unread on first sight; only later increases flag unread.
