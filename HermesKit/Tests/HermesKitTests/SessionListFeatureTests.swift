@@ -867,9 +867,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -1024,9 +1022,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -3359,9 +3355,7 @@ struct SessionListFeatureTests {
       $0.isLoading = true
       $0.defaultSwipeAction = .delete // seeded from prefs with the other pref reloads
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -3442,9 +3436,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -4391,9 +4383,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -4448,9 +4438,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -5023,9 +5011,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
     }
     #expect(prefs.loadSelectedProfileID() == "default")
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -5057,9 +5043,7 @@ struct SessionListFeatureTests {
       $0.now = self.now
     }
     #expect(prefs.loadSelectedProfileID() == persisted)
-    await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = true
-    }
+    await store.receive(\.sessionsResponse.success)
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
