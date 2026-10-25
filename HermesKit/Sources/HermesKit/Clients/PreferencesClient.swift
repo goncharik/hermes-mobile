@@ -32,9 +32,6 @@ public struct PreferencesClient: Sendable {
   public var loadPinMigration: @Sendable (_ server: String) -> PinMigration? = { _ in nil }
   public var savePinMigration: @Sendable (_ server: String, _ migration: PinMigration) -> Void
   public var clearPinMigrations: @Sendable () -> Void
-  /// How the session list groups its rows (workspace vs chronological). Device-local UI pref.
-  public var loadGroupingMode: @Sendable () -> SessionGroupingMode = { .default }
-  public var saveGroupingMode: @Sendable (_ mode: SessionGroupingMode) -> Void
   /// Which destructive action the session list's trailing swipe defaults to
   /// (archive vs permanent delete). Device-local UI pref; reset on logout.
   public var loadDefaultSessionSwipeAction: @Sendable () -> SessionSwipeAction = { .default }
@@ -79,7 +76,6 @@ public extension PreferencesClient {
     let seenKey = "hermes.seen-message-counts"
     let pinnedKey = "hermes.pinned-session-ids"
     let migrationKey = "hermes.pin-migrations-v1"
-    let groupingKey = "hermes.session-grouping-mode"
     let swipeActionKey = "hermes.default-session-swipe-action"
     let selectedProfileKey = "hermes.selected-profile-id"
     let pushTokenKey = "hermes.push-device-token"
@@ -115,10 +111,6 @@ public extension PreferencesClient {
         store.set(migrations, forKey: migrationKey)
       },
       clearPinMigrations: { store.removeObject(forKey: migrationKey) },
-      loadGroupingMode: {
-        store.string(forKey: groupingKey).flatMap(SessionGroupingMode.init(rawValue:)) ?? .default
-      },
-      saveGroupingMode: { store.set($0.rawValue, forKey: groupingKey) },
       loadDefaultSessionSwipeAction: {
         store.string(forKey: swipeActionKey).flatMap(SessionSwipeAction.init(rawValue:)) ?? .default
       },
@@ -152,7 +144,6 @@ public extension PreferencesClient {
     let seen = LockIsolated<[String: Int]>([:])
     let pinned = LockIsolated<[String]>([])
     let migrations = LockIsolated<[String: PinMigration]>([:])
-    let grouping = LockIsolated<SessionGroupingMode>(.default)
     let swipeAction = LockIsolated<SessionSwipeAction>(.default)
     let selectedProfile = LockIsolated<String?>(nil)
     let pushToken = LockIsolated<String?>(nil)
@@ -168,8 +159,6 @@ public extension PreferencesClient {
       loadPinMigration: { migrations.value[$0] },
       savePinMigration: { server, migration in migrations.withValue { $0[server] = migration } },
       clearPinMigrations: { migrations.setValue([:]) },
-      loadGroupingMode: { grouping.value },
-      saveGroupingMode: { grouping.setValue($0) },
       loadDefaultSessionSwipeAction: { swipeAction.value },
       saveDefaultSessionSwipeAction: { swipeAction.setValue($0) },
       loadSelectedProfileID: { selectedProfile.value },
