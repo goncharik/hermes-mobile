@@ -868,9 +868,10 @@ struct SessionListFeatureTests {
       $0.isLoading = true
     }
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
   }
@@ -1024,9 +1025,10 @@ struct SessionListFeatureTests {
       $0.isLoading = true
     }
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
 
@@ -3438,9 +3440,10 @@ struct SessionListFeatureTests {
       $0.isLoading = true
     }
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
   }
@@ -4386,9 +4389,10 @@ struct SessionListFeatureTests {
       $0.isLoading = true
     }
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
     #expect(prefs.loadSelectedProfileID() == "fresh")
@@ -4442,9 +4446,10 @@ struct SessionListFeatureTests {
       $0.isLoading = true
     }
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
     #expect(deleted.value == ["work"])
@@ -5016,9 +5021,10 @@ struct SessionListFeatureTests {
     }
     #expect(prefs.loadSelectedProfileID() == "default")
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
   }
@@ -5049,9 +5055,10 @@ struct SessionListFeatureTests {
     }
     #expect(prefs.loadSelectedProfileID() == persisted)
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
+      $0.isLoading = true
     }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
   }
