@@ -3359,8 +3359,11 @@ struct SessionListFeatureTests {
       $0.isLoading = true
       $0.defaultSwipeAction = .delete // seeded from prefs with the other pref reloads
     }
-    await store.receive(\.sessionsResponse.success) { $0.isLoading = false }
+    await store.receive(\.sessionsResponse.success) {
+      $0.isLoading = true
+    }
     await store.receive(\.cronJobsResponse.failure) {
+      $0.isLoading = false
       $0.cronJobsSupported = false
     }
   }
