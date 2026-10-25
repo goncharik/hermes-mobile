@@ -775,8 +775,8 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
-        fetchCount.withValue { $0 += 1 }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, source in
+        if source == .interactive { fetchCount.withValue { $0 += 1 } }
         return [Session(id: "s1", isActive: true)]
       }
     }
@@ -1429,11 +1429,15 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.preferences = prefs
       $0.date = .constant(now)
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, source in
         #expect(profile == context)
+        if source == .cron { return [] }
         return try await fetch()
       }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in try await fetch() }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, source in
+        if source == .cron { return [] }
+        return try await fetch()
+      }
       $0.hermesREST.search = { @Sendable _, query, profile in
         #expect(query == "find" && profile == "work")
         return try await fetch()
@@ -1978,8 +1982,9 @@ struct SessionListFeatureTests {
         try await clock.sleep(for: .seconds(1))
         if fails { throw RESTError.unreachable }
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, source in
         #expect(profile == "work")
+        if source == .cron { return [] }
         let number = requests.withValue { $0 += 1; return $0 }
         if number == 1 { try await Task.never() }
         try await clock.sleep(for: .seconds(1))
@@ -4235,8 +4240,8 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in
         [Profile(name: "default", isDefault: true), Profile(name: "work")]
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
-        scopedFetch.withValue { $0.append(profile) }
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, source in
+        if source == .interactive { scopedFetch.withValue { $0.append(profile) } }
         return [Session(id: "w1", title: "Work")]
       }
     }
@@ -4307,7 +4312,6 @@ struct SessionListFeatureTests {
       initialState: SessionListFeature.State(
         connection: connection,
         searchQuery: "stale",
-        expandedGroups: ["g1"],
         profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
         selectedProfileName: "default",
         profilesSupported: true
@@ -4327,7 +4331,6 @@ struct SessionListFeatureTests {
     await store.send(.selectProfile(name: "work")) {
       $0.selectedProfileName = "work"
       $0.searchQuery = "" // list UI reset on switch
-      $0.expandedGroups = []
       $0.now = self.now
       $0.isLoading = true
     }
