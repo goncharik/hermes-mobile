@@ -591,7 +591,7 @@ struct SessionListFeatureTests {
         writes.withValue { $0 += 1 }
         try await clock.sleep(for: .seconds(1))
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == "work")
         return [Session(id: "work-row", pinned: true)]
       }
@@ -710,7 +710,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown } // can't tell → don't nag
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         [Session(id: "s1", title: "Hello", preview: "hi")]
       }
     }
@@ -742,7 +742,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
     }
 
     await store.send(.task) {
@@ -775,7 +775,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         fetchCount.withValue { $0 += 1 }
         return [Session(id: "s1", isActive: true)]
       }
@@ -824,7 +824,7 @@ struct SessionListFeatureTests {
       SessionListFeature()
     } withDependencies: {
       $0.continuousClock = TestClock()
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         fetchCount.withValue { $0 += 1 }
         return []
       }
@@ -850,7 +850,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
 
     // While the archive is in flight, the poll skips (guard non-empty).
@@ -1009,7 +1009,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = prefs
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
     }
 
     let duplicated = [
@@ -1082,7 +1082,7 @@ struct SessionListFeatureTests {
         writes.withValue { $0 += 1 }
         Issue.record("Search-imported membership must never trigger migration PATCH")
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == "work")
         return [Session(id: "a", pinned: false)]
       }
@@ -1346,7 +1346,7 @@ struct SessionListFeatureTests {
     } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = prefs
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == "work")
         return sessions
       }
@@ -1387,7 +1387,7 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.preferences = prefs
       $0.date = .constant(now)
-      $0.hermesProfiles.sessions = { @Sendable _, name, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, name, _, _, _, _, _ in
         #expect(name == profile) // includes literal "default", never nil
         return rows
       }
@@ -1429,11 +1429,11 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.preferences = prefs
       $0.date = .constant(now)
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == context)
         return try await fetch()
       }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in try await fetch() }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in try await fetch() }
       $0.hermesREST.search = { @Sendable _, query, profile in
         #expect(query == "find" && profile == "work")
         return try await fetch()
@@ -1465,7 +1465,7 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = prefs
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == "work")
         return sessions
       }
@@ -1490,7 +1490,7 @@ struct SessionListFeatureTests {
       connection: connection, profilesSupported: true, cronJobsSupported: false
     )) { SessionListFeature() } withDependencies: {
       $0.date = .constant(now)
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in throw RESTError.unreachable }
     }
     await store.send(.pulledToRefresh) {
       $0.now = now
@@ -1513,7 +1513,7 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = prefs
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in rows }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in rows }
       $0.hermesREST.search = { @Sendable _, _, _ in rows }
     }
     await store.send(.pulledToRefresh) {
@@ -1544,7 +1544,7 @@ struct SessionListFeatureTests {
     )) { SessionListFeature() } withDependencies: {
       $0.preferences = .inMemory()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [Session(id: "a", pinned: false)] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [Session(id: "a", pinned: false)] }
       $0.hermesREST.setPinned = { @Sendable _, id, pinned, profile in
         writes.withValue { $0.append((id, pinned, profile)) }
       }
@@ -1594,7 +1594,7 @@ struct SessionListFeatureTests {
     let store = TestStore(initialState: initial) { SessionListFeature() } withDependencies: {
       $0.preferences = prefs
       $0.date = .constant(Date(timeIntervalSince1970: 0))
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in
         [Session(id: "a", pinned: !pinned)]
       }
       $0.hermesREST.setPinned = { @Sendable _, id, value, profile in
@@ -1978,7 +1978,7 @@ struct SessionListFeatureTests {
         try await clock.sleep(for: .seconds(1))
         if fails { throw RESTError.unreachable }
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         #expect(profile == "work")
         let number = requests.withValue { $0 += 1; return $0 }
         if number == 1 { try await Task.never() }
@@ -2095,7 +2095,7 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.continuousClock = clock
-      $0.hermesProfiles.sessions = { @Sendable _, name, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, name, _, _, _, _, _ in
         if name == "other" { try await clock.sleep(for: .seconds(1)) }
         return [Session(id: name)]
       }
@@ -2179,7 +2179,7 @@ struct SessionListFeatureTests {
     let store = TestStore(initialState: initial) { SessionListFeature() } withDependencies: {
       $0.preferences = prefs
       $0.date = .constant(Date(timeIntervalSince1970: 0))
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [Session(id: "a", pinned: false)] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [Session(id: "a", pinned: false)] }
       $0.hermesREST.setPinned = { @Sendable _, _, _, profile in
         #expect(profile == "work")
         try await clock.sleep(for: .seconds(1))
@@ -2590,7 +2590,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [Session(id: "s1")] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [Session(id: "s1")] }
     }
 
     await store.send(.task) {
@@ -2756,7 +2756,7 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
       $0.hermesREST.archive = { @Sendable _, _, _, _ in }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         // First call (in flight at confirm time) parks forever with the STALE list —
         // cancelled, its response must never arrive. Second call (the restart) returns
         // the authoritative post-archive list.
@@ -2817,7 +2817,7 @@ struct SessionListFeatureTests {
       $0.preferences = .inMemory()
       $0.hermesREST.archive = { @Sendable _, _, _, _ in throw RESTError.unreachable }
       // No reload happens; if one did, it would throw — the row must come back regardless.
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
     }
 
     await store.send(.confirmationDialog(.presented(.confirmArchive(id: "a")))) {
@@ -2858,7 +2858,7 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
       $0.hermesREST.archive = { @Sendable _, _, _, _ in throw RESTError.unreachable }
       // No reload happens; if one did it would throw — restore must be purely local.
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
     }
 
     // Optimistic removal clears pin + seen and persists the cleared prefs.
@@ -3027,7 +3027,7 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
       $0.hermesREST.deleteSession = { @Sendable _, _, _ in throw RESTError.unreachable }
       // No reload happens; if one did it would throw — restore must be purely local.
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
     }
 
     await store.send(.confirmationDialog(.presented(.confirmDelete(id: "a")))) {
@@ -3227,7 +3227,7 @@ struct SessionListFeatureTests {
       // The cancelled load still runs its trailing cron fetch (the send is dropped) — stub
       // it so the unimplemented-dependency check doesn't trip; no response is received.
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         // Block until released, then return the OLD list (both sessions) — stale data.
         var iterator = gate.stream.makeAsyncIterator()
         await iterator.next()
@@ -3278,7 +3278,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         // First call (the mid-window refresh) parks forever — stale, its response must
         // never land. Second call (the restart) returns the authoritative list.
         if calls.withValue({ $0 += 1; return $0 }) == 1 { try await Task.never() }
@@ -3490,7 +3490,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
       $0.continuousClock = TestClock() // never advanced — proves there is no debounce
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [Session(id: "fresh")] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [Session(id: "fresh")] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
     }
 
@@ -3525,7 +3525,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         // The cleared-search reload parks (a pre-archive response that must never
         // land); the restart returns the authoritative post-archive list.
         if calls.withValue({ $0 += 1; return $0 }) == 1 { try await Task.never() }
@@ -3571,7 +3571,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = prefs
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
 
     await store.send(.pulledToRefresh) {
@@ -3642,7 +3642,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
 
     // While the rename is in flight, the poll skips (guard non-empty).
@@ -4049,7 +4049,7 @@ struct SessionListFeatureTests {
     } withDependencies: {
       $0.date = .constant(now)
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [Session(id: "s1")] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [Session(id: "s1")] }
     }
 
     await store.send(.settings(.presented(.delegate(.reconnect))))
@@ -4109,7 +4109,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
 
     await store.send(.task) {
@@ -4159,7 +4159,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
 
     await store.send(.task) {
@@ -4554,7 +4554,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in
         [Profile(name: "default", isDefault: true), Profile(name: "work")]
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         scopedFetch.withValue { $0.append(profile) }
         return [Session(id: "w1", title: "Work")]
       }
@@ -4593,7 +4593,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         unscopedFetch.withValue { $0 += 1 }
         return [Session(id: "s1")]
       }
@@ -4637,7 +4637,7 @@ struct SessionListFeatureTests {
       $0.date = .constant(now)
       $0.preferences = prefs
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         scopedFetch.withValue { $0.append(profile) }
         return [Session(id: "w1")]
       }
@@ -4685,7 +4685,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in
         [Profile(name: "default", isDefault: true), Profile(name: "fresh")]
       }
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
     }
 
     await store.send(.addProfile(.presented(.delegate(.created(name: "fresh"))))) {
@@ -4727,7 +4727,7 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
       $0.hermesProfiles.delete = { @Sendable _, name in deleted.withValue { $0.append(name) } }
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
     }
 
     // Tapping delete presents the confirmation dialog.
@@ -4835,7 +4835,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in
         [Profile(name: "default", isDefault: true), Profile(name: "work")]
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _ in
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
         scopedFetch.withValue { $0.append(profile) }
         return [Session(id: "d1")]
       }
@@ -5118,7 +5118,7 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
       $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
         [Session(id: "s1", isActive: active.value)]
       }
     }
@@ -5319,7 +5319,7 @@ struct SessionListFeatureTests {
     } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = prefs
-      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
     }
 
@@ -5354,7 +5354,7 @@ struct SessionListFeatureTests {
     } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = prefs
-      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
     }
 
