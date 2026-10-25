@@ -4515,8 +4515,8 @@ struct SessionListFeatureTests {
       $0.hermesProfiles.list = { @Sendable _ in
         [Profile(name: "default", isDefault: true), Profile(name: "work")]
       }
-      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, _ in
-        scopedFetch.withValue { $0.append(profile) }
+      $0.hermesProfiles.sessions = { @Sendable _, profile, _, _, _, _, source in
+        if source == .interactive { scopedFetch.withValue { $0.append(profile) } }
         return [Session(id: "d1")]
       }
     }
