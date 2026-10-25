@@ -1962,11 +1962,10 @@ private func fetchSessions(
     if !query.isEmpty {
       return .sessionsResponse(.success(try await rest.search(connection, query, profile)))
     }
-    // Two independent slices, like the desktop sidebar: cron runs are always the newest
-    // rows, so one shared page lets a busy job starve the interactive list.
-    let interactive = try await page(.interactive, limit: SessionListFeature.interactivePageSize)
-    let cron = try await page(.cron, limit: SessionListFeature.cronPageSize)
-    return .sessionsResponse(.success(mergeSessionSlices(interactive, cron)))
+    // Keep the list request single-shot. The API's session response is already the
+    // authoritative mixed list; a second cron-slice request duplicates fetches, breaks
+    // cancellation/replacement semantics, and makes profile reloads race each other.
+    return .sessionsResponse(.success(try await page(.interactive, limit: SessionListFeature.interactivePageSize)))
   } catch let error as RESTError {
     return .sessionsResponse(.failure(error))
   } catch {
