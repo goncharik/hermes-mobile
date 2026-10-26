@@ -153,6 +153,12 @@ public struct ChatFeature {
     /// Current model + reasoning effort (from `session.info`), shown in the composer chip.
     public var model: String?
     public var reasoningEffort: String?
+    /// The profile-scoped approval policy shown by the composer lightning menu.
+    public var approvalMode: ApprovalMode?
+    /// Only explicit selections issue RPCs; passive discovery uses session.info.
+    public var approvalModePending: Bool
+    /// Latest server policy to restore if the single in-flight write fails.
+    var approvalModeRollback: ApprovalMode?
     /// Rollback target for an in-flight `config.set`, keyed by config key — the value the
     /// SERVER last confirmed, captured before the FIRST optimistic pick of a run. A second
     /// same-key pick must NOT capture the first pick's still-unconfirmed value: when the first
@@ -642,6 +648,9 @@ public struct ChatFeature {
       self.presentedTool = nil
       self.model = nil
       self.reasoningEffort = nil
+      self.approvalMode = nil
+      self.approvalModePending = false
+      self.approvalModeRollback = nil
       self.pendingConfigRollback = [:]
       self.usage = nil
       self.modelPicker = nil
@@ -937,6 +946,8 @@ public struct ChatFeature {
     case toolDetailDismissed
     case modelChipTapped
     case modelOptionsResponse(Result<ModelOptions, GatewayError>)
+    case approvalModeSelected(ApprovalMode)
+    case approvalModeResponse(Result<Void, GatewayError>)
     /// The provider SLUG of the section the row was tapped in (nil for a programmatic
     /// selection with no section context). Appended to the `config.set` value as
     /// `--provider <slug>` so the gateway routes the model to the provider the picker
@@ -1149,7 +1160,8 @@ public struct ChatFeature {
           .cancel(id: CancelID.hydrate),
           .cancel(id: CancelID.eventReplay),
           .cancel(id: CancelID.thinkingTimer),
-          .cancel(id: CancelID.persist)
+          .cancel(id: CancelID.persist),
+          .cancel(id: CancelID.configSet("approvals.mode"))
         )
 
       case .teardownSocketOnly:
@@ -2236,6 +2248,26 @@ public struct ChatFeature {
         state.modelPicker?.error = error.message
         return .none
 
+      case let .approvalModeSelected(mode):
+        guard let previous = state.approvalMode, !state.approvalModePending,
+          previous != mode else { return .none }
+        state.approvalModeRollback = previous
+        state.approvalMode = mode
+        state.approvalModePending = true
+        state.errorBanner = nil
+        return setApprovalMode(mode, profile: state.profileName)
+
+      case let .approvalModeResponse(result):
+        guard state.approvalModePending else { return .none }
+        state.approvalModePending = false
+        if case let .failure(error) = result {
+          state.approvalMode = state.approvalModeRollback
+          state.errorBanner = "Approval mode failed: \(error.message)"
+        }
+        state.approvalModeRollback = nil
+        // Acknowledgment is not authority: never overwrite a newer session.info event.
+        return .none
+
       case let .modelSelected(model, providerSlug):
         // Blocked mid-turn (server returns 4009); the picker disables selection too.
         guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
@@ -2645,6 +2677,9 @@ public struct ChatFeature {
       if let effort = info.reasoningEffort?.nonEmpty { state.reasoningEffort = effort }
       if let u = info.usage { state.usage = u }
       if let contract = info.desktopContract { state.desktopContract = contract }
+      if let rawMode = info.approvalMode {
+        applyApprovalMode(rawMode, into: &state)
+      }
       confirmConfigKeys(info, into: &state)
       return .none
 
@@ -3442,6 +3477,9 @@ public struct ChatFeature {
     // A successful hydrate means we're connected — clear any stale connection banner, but
     // keep this connection's standing advertisement failure up (it is not stale).
     state.errorBanner = state.serverRequestsUnavailable
+
+    // A full resume without the field is an older/unsupported server, unlike a partial event.
+    applyApprovalMode(response.info?.approvalMode, into: &state)
 
     // Runtime info: model / reasoning / usage straight from the response (fixes the blank
     // model + context-0 bugs on re-open).
@@ -4299,6 +4337,33 @@ public struct ChatFeature {
   private func clearConfigError(_ state: inout State) {
     state.errorBanner = nil
     state.modelPicker?.applyError = nil
+  }
+
+  private func applyApprovalMode(_ rawMode: String?, into state: inout State) {
+    state.approvalMode = rawMode.flatMap(ApprovalMode.init(rawValue:))
+    // Even a failed write must not restore policy older than a broadcast/resume.
+    if state.approvalModePending { state.approvalModeRollback = state.approvalMode }
+  }
+
+  private func setApprovalMode(_ mode: ApprovalMode, profile: String?) -> Effect<Action> {
+    .run { [gateway] send in
+      do {
+        var params: [String: JSONValue] = [
+          "key": .string("approvals.mode"),
+          "value": .string(mode.rawValue),
+        ]
+        if let profile, !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          params["profile"] = .string(profile)
+        }
+        _ = try await gateway.send("config.set", .object(params))
+        await send(.approvalModeResponse(.success(())))
+      } catch let error as GatewayError {
+        await send(.approvalModeResponse(.failure(error)))
+      } catch {
+        await send(.approvalModeResponse(.failure(.disconnected)))
+      }
+    }
+    .cancellable(id: CancelID.configSet("approvals.mode"), cancelInFlight: true)
   }
 
   /// Change a session setting (model / reasoning) over the gateway. If iOS resumed with a
