@@ -16,6 +16,8 @@ struct SettingsFeatureTests {
     preferences.saveSeenCounts(["s1": 4])
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.saveSelectedProfileID("staging")
+    preferences.savePinMigration("https://first", PinMigration(pendingIDs: ["legacy"]))
+    preferences.savePinMigration("https://second", PinMigration(pendingIDs: []))
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -33,6 +35,8 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSeenCounts() == [:]) // unread state cleared too
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive) // swipe pref reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
+    #expect(preferences.loadPinMigration("https://first") == nil)
+    #expect(preferences.loadPinMigration("https://second") == nil)
   }
 
   @Test func clearTokenWipesChatSnapshotStore() async {

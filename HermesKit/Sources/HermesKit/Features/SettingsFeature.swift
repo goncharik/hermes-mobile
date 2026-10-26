@@ -353,6 +353,7 @@ public struct SettingsFeature {
         preferences.saveSeenCounts([:]) // unread state is per-server; drop it too
         preferences.saveDefaultSessionSwipeAction(.default) // reset the swipe-action pref on logout
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
+        preferences.clearPinMigrations()
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         return .merge(
           .send(.delegate(.disconnect)),

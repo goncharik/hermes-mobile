@@ -3,11 +3,9 @@ import DependenciesMacros
 import Foundation
 
 /// Legacy pins not yet reconciled with server membership.
-/// Checkpoint existence exhausts automatic migration: only its creation may dispatch
-/// visible legacy pins, at most once. Pending absent/nil IDs stay local until an explicit
-/// server value wins, including first-observed false. Explicit user Pin is the retry path.
+/// Server-keyed pending IDs survive incomplete lists, profile switches, and failed
+/// writes. Retire them only on explicit server true or an acknowledged upload.
 public struct PinMigration: Codable, Equatable, Sendable {
-  public var id: UUID = UUID()
   public var pendingIDs: [String]
 
   public init(pendingIDs: [String]) { self.pendingIDs = pendingIDs }

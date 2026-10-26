@@ -173,32 +173,33 @@ unscoped otherwise.
 ## Shared pin membership, local order
 
 `Session.pinned` is an optional server membership flag shared with Desktop; pin order remains
-**device-local** in `PreferencesClient.pinnedIDs`. Profile-capable list and search rows may pin
-or unpin when the row exposes an explicit `pinned` value. Requests always carry the selected
-literal profile name, including `"default"`; legacy agents and rows without the field retain
-local-only pin behavior. Same-ID pin, archive, and delete operations remain mutually exclusive.
+**device-local** in `PreferencesClient.pinnedIDs`. A capable profile-list response establishes
+server-level pin support through a checkpoint keyed by normalized server URL. After discovery,
+Pin/Unpin also PATCHes search rows whose `pinned` field is absent or null. Requests carry the
+selected literal profile, including `"default"`. Before discovery, search pins stay local.
+Search responses never reconcile membership or create migration checkpoints.
 
-The first capable profile-list response—or a capable explicit search response—saves a migration
-checkpoint per normalized server URL through `PreferencesClient`. Search saves the checkpoint
-before importing server membership, but never starts automatic migration uploads. Local pins
-eligible for migration in the initial capable list remain protected while their uploads are in
-flight. After checkpoint creation, explicit server `true` adds a pin and explicit `false`
-removes it, subject to pending user writes. This also applies to **first-observed `false` on
-later pages or profiles**: an off-page legacy pin is retired without uploading `true`, even if
-no earlier response reported `true`. Missing/null values and absent rows preserve local
-membership until an explicit value is observed.
+The first capable list snapshots legacy local pins into the checkpoint's pending IDs. These
+survive later pages, profile switches, absent/null rows, failed uploads, and normal relaunches.
+An explicit server `true` retires a pending ID; an explicit `false` uploads it, even on a later
+page or profile. IDs remain pending until success, so silent failures retry on the next capable
+list. The per-ID in-flight mutation prevents duplicate concurrent writes. Once retired, a later
+server `false` removes membership normally. Successful explicit user writes also retire their
+pending migration ID. Logout clears every migration checkpoint.
 
-Automatic migration is limited to eligible rows visible when the checkpoint is created;
-later polls, pages, profiles, and normal relaunches do not reopen it. The checkpoint is saved
-before dispatch, and upload failures remain silent. Explicit user pin/unpin actions remain
-available and supersede stale migration intent. Logout clears migration checkpoints.
 Persistence uses the existing `PreferencesClient` storage contract; crash-durable flushing
-and atomic persistence with network dispatch are not guaranteed.
+and atomic persistence with network dispatch are not guaranteed. Nil and absent list rows
+preserve cached membership. Server reconciliation skips IDs with a pending pin write.
 
-Fetches use the existing cancellable `CancelID.fetch` effect. A newer list, search, or profile
-request cancels the previous one; no response-generation counter or response provenance state is
-needed. User pin writes are optimistic and restore only the affected ID at its bounded previous
-index on failure. Search rows use the same visible Pin/Unpin affordances as normal rows.
+Fetches use the existing cancellable `CancelID.fetch` effect. Starting a pin does not cancel an
+in-flight fetch. Completion uses `cancelOrRestartFetch` to invalidate pre-write results and
+restart a pending list/search; user failures restore only that ID at its bounded previous index
+and surface the error. Switching profiles clears old rows before loading the new scope.
+
+Archive/Delete remain available while a pin is pending, including in the archived sheet.
+Pending pins retain their own rollback until removal succeeds; confirmed removal clears their
+prior pin index so a late failed pin cannot restore removed membership. A pending removal still
+guards new pin actions for that ID. Search and list share the same Pin/Unpin affordances.
 
 ## Shared unread state
 
