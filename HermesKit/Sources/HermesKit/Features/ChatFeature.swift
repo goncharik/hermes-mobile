@@ -13,21 +13,6 @@ public enum ChatLayout {
   public static let readableMaxWidth: CGFloat = 760
 }
 
-/// What a completed assistant reply's "Read aloud" action-bar button shows (#74), derived by
-/// `ChatFeature.State.readAloudState(for:)`.
-public enum ReadAloudButtonState: Equatable, Sendable {
-  /// No TTS route on this agent (404/405 verdict): no button at all.
-  case hidden
-  /// Tappable: reads this reply.
-  case idle
-  /// Another reply's clip is preparing or playing (one clip at a time).
-  case disabled
-  /// This reply's audio is being synthesized.
-  case preparing
-  /// This reply is playing; a tap stops it.
-  case speaking
-}
-
 /// The live chat surface for one session. Owns the WebSocket lifecycle, folds the
 /// gateway event stream into a transcript, sends prompts, and reconnects with backoff.
 ///
@@ -284,7 +269,7 @@ public struct ChatFeature {
     var spokenAssistantCount: Int
     /// Barge-in latch: when a user submit/mic tap silenced playback. The next regular
     /// `prompt.submit` within 120 s carries `interrupted: true` and clears it.
-    var ttsInterruptedAt: Date?
+    var readAloudInterruptedAt: Date?
     /// The app scene went to the background: auto-speak holds until `.foreground`.
     var isSceneBackgrounded: Bool
     /// The chat view is on screen (set on `.task`/`.reattached`, cleared on
@@ -302,6 +287,21 @@ public struct ChatFeature {
 
       /// Preparing or speaking.
       public var isActive: Bool { self != .idle }
+    }
+
+    /// What a completed assistant reply's "Read aloud" action-bar button shows, derived by
+    /// `readAloudState(for:)`.
+    public enum ReadAloudButtonState: Equatable, Sendable {
+      /// No TTS route on this agent (404/405 verdict): no button at all.
+      case hidden
+      /// Tappable: reads this reply.
+      case idle
+      /// Another reply's clip is preparing or playing (one clip at a time).
+      case disabled
+      /// This reply's audio is being synthesized.
+      case preparing
+      /// This reply is playing; a tap stops it.
+      case speaking
     }
 
     /// Keep-awake (#74): the screen must not auto-lock during the hands-off loop — while a
@@ -338,21 +338,34 @@ public struct ChatFeature {
       return false
     }
 
+    static func isUserMessage(_ row: ChatRow) -> Bool {
+      if case .message(.user, _, _) = row.kind { return true }
+      return false
+    }
+
     /// The turn `rowID` belongs to: how many user message rows precede it. Survives a
     /// hydrate's rebuild, which renames rows and may split one live assistant row in several.
     func turnOrdinal(of rowID: ChatRow.ID) -> Int? {
       guard let index = transcript.index(id: rowID) else { return nil }
-      return transcript[..<index].reduce(into: 0) { count, row in
-        if case .message(.user, _, _) = row.kind { count += 1 }
-      }
+      return transcript[..<index].count(where: Self.isUserMessage)
+    }
+
+    /// How many COMPLETED assistant message rows precede `rowID` — its position on the
+    /// auto-speak anchor's scale (see `spokenAssistantCount`). `nil` unless `rowID` is itself
+    /// a completed assistant message row.
+    func completedAssistantOrdinal(of rowID: ChatRow.ID) -> Int? {
+      guard let index = transcript.index(id: rowID),
+            Self.isCompletedAssistantMessage(transcript[index])
+      else { return nil }
+      return transcript[..<index].count(where: Self.isCompletedAssistantMessage)
     }
 
     /// The newest COMPLETED assistant message row of turn `ordinal` (see `turnOrdinal`).
-    func lastCompletedAssistantRow(inTurn ordinal: Int) -> ChatRow? {
+    func newestCompletedAssistantRow(inTurn ordinal: Int) -> ChatRow? {
       var turn = 0
       var match: ChatRow?
       for row in transcript {
-        if case .message(.user, _, _) = row.kind {
+        if Self.isUserMessage(row) {
           turn += 1
           if turn > ordinal { break }
         } else if turn == ordinal, Self.isCompletedAssistantMessage(row) {
@@ -795,7 +808,7 @@ public struct ChatFeature {
       self.ttsSupported = true
       self.ttsPlayback = .idle
       self.spokenAssistantCount = 0
-      self.ttsInterruptedAt = nil
+      self.readAloudInterruptedAt = nil
       self.isSceneBackgrounded = false
       self.isOnScreen = false
 
@@ -1255,6 +1268,9 @@ public struct ChatFeature {
   /// "Session ID copied" toast so the two can't visually desync.
   static let copiedFeedbackDuration: Duration = .seconds(1.5)
 
+  /// How long a read-aloud barge-in stamp stays valid (#74; desktop `INTERRUPT_TTL_MS`).
+  private static let readAloudInterruptTTL: TimeInterval = 120
+
   @Dependency(\.hermesGateway) var gateway
   @Dependency(\.hermesREST) var rest
   @Dependency(\.chatSnapshot) var chatSnapshot
@@ -1542,21 +1558,19 @@ public struct ChatFeature {
           anchor
         )
 
-      case .foreground, .reattached:
+      case .foreground:
         // Read aloud (#74): returning to the app is a speak edge — a reply that completed
         // LIVE while backgrounded was held, and is read now whatever the socket is doing
-        // (so the check runs before the redial / pending-read early returns). A re-push of
-        // the chat (`.reattached`) is not: navigating back never starts reading — it only
-        // puts the chat back on screen.
-        let speak: Effect<Action>
-        if case .foreground = action {
-          state.isSceneBackgrounded = false
-          speak = autoSpeakIfReady(&state)
-        } else {
-          returnOnScreen(&state)
-          speak = .none
-        }
+        // (so the check runs before the redial / pending-read early returns).
+        state.isSceneBackgrounded = false
+        let speak = autoSpeakIfReady(&state)
         return .merge(speak, reattach(&state))
+
+      case .reattached:
+        // A re-push of the chat is not a speak edge (#74): navigating back never starts
+        // reading — it only puts the chat back on screen.
+        returnOnScreen(&state)
+        return reattach(&state)
 
       case .composerSubmitted:
         // Mid-turn the draft QUEUES instead of submitting (#66): the send arrow returns as
@@ -2142,8 +2156,7 @@ public struct ChatFeature {
         else { return .none }
         // The row counts as read: bump the anchor past it (never lower it), so a later idle
         // edge does not read it again — while a NEWER pending reply stays pending.
-        if let ordinal = state.transcript
-          .filter(State.isCompletedAssistantMessage).index(id: id) {
+        if let ordinal = state.completedAssistantOrdinal(of: id) {
           state.spokenAssistantCount = max(state.spokenAssistantCount, ordinal + 1)
         }
         return speakRow(id, into: &state)
@@ -3316,7 +3329,7 @@ public struct ChatFeature {
     case let .preparing(id), let .speaking(id): rowID = id
     }
     guard state.transcript[id: rowID] == nil,
-          let replacement = (playbackTurn.flatMap(state.lastCompletedAssistantRow(inTurn:))
+          let replacement = (playbackTurn.flatMap(state.newestCompletedAssistantRow(inTurn:))
             ?? state.lastCompletedAssistantRow)?.id
     else { return }
     state.ttsPlayback = switch state.ttsPlayback {
@@ -3384,13 +3397,13 @@ public struct ChatFeature {
   }
 
   /// The state half of every read-aloud stop (#74): back to `.idle`; a `bargeIn` (USER
-  /// submit or mic tap) that silenced an active clip also stamps `ttsInterruptedAt`, consumed
-  /// by the next regular `prompt.submit`. Returns whether a clip was active. The caller cancels
-  /// `CancelID.ttsPlayback` and runs `tts.stop()` (see `stopReadAloudPlayback`).
+  /// submit or mic tap) that silenced an active clip also stamps `readAloudInterruptedAt`,
+  /// consumed by the next regular `prompt.submit`. Returns whether a clip was active. The
+  /// caller cancels `CancelID.ttsPlayback` and runs `tts.stop()` (see `stopReadAloudPlayback`).
   @discardableResult
   private func silenceReadAloud(_ state: inout State, bargeIn: Bool = false) -> Bool {
     let wasActive = state.ttsPlayback.isActive
-    if wasActive, bargeIn { state.ttsInterruptedAt = now }
+    if wasActive, bargeIn { state.readAloudInterruptedAt = now }
     state.ttsPlayback = .idle
     return wasActive
   }
@@ -3412,13 +3425,10 @@ public struct ChatFeature {
   /// submit/mic tap silenced playback less than 120 s ago (the desktop's interrupt TTL).
   /// Always clears the stamp — a stale one is dropped, not carried forward.
   private func takeReadAloudInterruption(_ state: inout State) -> Bool {
-    defer { state.ttsInterruptedAt = nil }
-    guard let stamp = state.ttsInterruptedAt else { return false }
+    defer { state.readAloudInterruptedAt = nil }
+    guard let stamp = state.readAloudInterruptedAt else { return false }
     return now.timeIntervalSince(stamp) < Self.readAloudInterruptTTL
   }
-
-  /// How long a barge-in stamp stays valid (desktop `INTERRUPT_TTL_MS`).
-  static let readAloudInterruptTTL: TimeInterval = 120
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
   /// state, cancel the level/tick effects, and release the mic/session if we leave
@@ -4579,10 +4589,10 @@ public struct ChatFeature {
     })
   }
 
-  /// The params of a regular `prompt.submit` (both `submitDraft` builders, incl. the #17 heal
-  /// replay). `interrupted: true` (#74 barge-in, v2026.7.30+; older agents ignore unknown
+  /// The params of every `prompt.submit` (both `submitDraft` builders, incl. the #17 heal
+  /// replay, and the slash `send` directive). `interrupted: true` (#74 barge-in, v2026.7.30+; older agents ignore unknown
   /// keys) is added ONLY when set, so every other frame stays byte-identical to the legacy one.
-  private static func promptSubmitParams(sessionID: String, text: String, interrupted: Bool) -> JSONValue {
+  fileprivate static func promptSubmitParams(sessionID: String, text: String, interrupted: Bool) -> JSONValue {
     var params: [String: JSONValue] = [
       "session_id": .string(sessionID), "text": .string(text),
     ]
@@ -5071,9 +5081,10 @@ private func runDispatchDirective(
     do {
       try await withSessionHeal(
         { targetID in
-          _ = try await gateway.send("prompt.submit", .object([
-            "session_id": .string(targetID), "text": .string(message),
-          ]))
+          _ = try await gateway.send(
+            "prompt.submit",
+            ChatFeature.promptSubmitParams(sessionID: targetID, text: message, interrupted: false)
+          )
         },
         sessionID: sessionID, storedSessionID: storedSessionID,
         branchSeed: branchSeed, profile: profile, gateway: gateway, send: send

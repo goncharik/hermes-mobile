@@ -3,10 +3,10 @@ import SwiftUI
 
 /// The visible per-message action row under a completed assistant message (#34):
 /// **Copy** (raw Markdown, with the same transient green-checkmark feedback as the
-/// code-block copy button), **Branch in new chat** (desktop-parity seed of the
-/// message into a fresh session), and **Read aloud** (#74, hidden when the agent has no
-/// TTS route). Small secondary-tinted icons, leading-aligned to
-/// the bubble-less assistant layout — always visible, since iOS has no hover.
+/// code-block copy button), **Branch in new chat** (desktop-parity seed of the message
+/// into a fresh session), and **Read aloud** (#74, hidden when the agent has no TTS
+/// route). Small secondary-tinted icons, leading-aligned to the bubble-less assistant
+/// layout — always visible, since iOS has no hover.
 struct MessageActionBar: View {
   /// True while the reducer's copy-feedback token matches this row
   /// (`ChatFeature.rowCopyToken(_:)`); swaps the copy icon to a checkmark.
@@ -18,7 +18,7 @@ struct MessageActionBar: View {
   let onBranch: () -> Void
   /// The per-reply Read aloud button (#74), from `ChatFeature.State.readAloudState(for:)`.
   /// Defaulted to `.hidden` so a bar built without it renders exactly as before.
-  var readAloud: ReadAloudButtonState = .hidden
+  var readAloud: ChatFeature.State.ReadAloudButtonState = .hidden
   var onReadAloud: () -> Void = {}
   var onStopReading: () -> Void = {}
 
@@ -93,7 +93,7 @@ struct MessageActionBar: View {
 
   private var readAloudLabel: String {
     switch readAloud {
-    case .preparing: "Preparing audio..."
+    case .preparing: "Preparing audio…"
     case .speaking: "Stop reading"
     case .hidden, .idle, .disabled: "Read aloud"
     }

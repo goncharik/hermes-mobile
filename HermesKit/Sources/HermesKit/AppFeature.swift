@@ -286,7 +286,7 @@ public struct AppFeature {
   @Dependency(\.push) var push
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
-  /// Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
+  // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.idleTimer) var idleTimer
   /// The `.bearer` regime's single token owner (#19). `AppFeature` owns its LIFECYCLE — seed
@@ -695,11 +695,11 @@ public struct AppFeature {
       case .home(.delegate(.disconnect)):
         // Token cleared in Settings → tear down and return to onboarding. Nil-ing the slot
         // auto-cancels its effects (socket included); the mic and the idle timer outlive
-        // them, so `releaseSlotDeviceResources` covers those. The tap stash is structurally nil here (home
-        // existed, so any stash was consumed at creation) — cleared defensively: the stash
-        // dies with the identity. The pending-approval badge set
-        // dies with it too (entries reference sessions on the server just left — they'd
-        // leak a stale icon badge into the next login), so reset the badge to zero.
+        // them, so `releaseSlotDeviceResources` covers those. The tap stash is structurally
+        // nil here (home existed, so any stash was consumed at creation) — cleared
+        // defensively: the stash dies with the identity. The pending-approval badge set dies
+        // with it too (entries reference sessions on the server just left — they'd leak a
+        // stale icon badge into the next login), so reset the badge to zero.
         let connection = state.home?.connection
         let releaseSlot = releaseSlotDeviceResources(state)
         state.path = .init()
@@ -1283,7 +1283,8 @@ public struct AppFeature {
   ///   composer, so this is reachable without ever leaving the chat;
   /// - the idle timer (#74): an awake slot (`wantsScreenAwake`, e.g. a running auto-speak
   ///   turn) disabled auto-lock, and once the slot is gone no `.onChange` edge can restore it.
-  /// No slot, or an idle one → nothing.
+  /// The idle-timer release runs IMMEDIATELY, when this is called; only the mic release is
+  /// the returned effect. No slot, or an idle one → nothing.
   private func releaseSlotDeviceResources(_ state: State) -> Effect<Action> {
     guard let chat = state.liveChat else { return .none }
     if chat.wantsScreenAwake { idleTimer.setDisabled(false) }

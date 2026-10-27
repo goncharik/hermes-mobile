@@ -4,9 +4,8 @@ import Testing
 
 @testable import HermesKit
 
-/// Read replies aloud (#74): the device-local toggle, the auto-speak anchor (arming on
-/// toggle-on / pref load / first hydrate, re-basing on every later hydrate), and the dropped
-/// partial consumed by `finalizeInFlight`.
+/// Read replies aloud (#74): the toggle, the auto-speak anchor, playback and failures, the
+/// #98 replay fold, the barge-in latch, slot lifecycle, and keep-awake.
 @MainActor
 struct ChatReadAloudTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
@@ -111,7 +110,7 @@ struct ChatReadAloudTests {
     #expect(state.ttsSupported)
     #expect(state.ttsPlayback == .idle)
     #expect(state.spokenAssistantCount == 0)
-    #expect(state.ttsInterruptedAt == nil)
+    #expect(state.readAloudInterruptedAt == nil)
     #expect(state.isSceneBackgrounded == false)
     #expect(state.isOnScreen == false)
   }
@@ -1295,7 +1294,7 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsSpeaking)
     await store.send(.composerSubmitted) {
       $0.ttsPlayback = .idle
-      $0.ttsInterruptedAt = nil // stamped, then taken by this very submit
+      $0.readAloudInterruptedAt = nil // stamped, then taken by this very submit
       $0.isSending = true
     }
     await store.finish() // the cancelled clip never reports `.ttsFinished`
@@ -1320,10 +1319,10 @@ struct ChatReadAloudTests {
     let recorder = TTSRecorder()
     let submits = LockIsolated<[JSONValue]>([])
     var initial = idleSlotWithDraft("later")
-    initial.ttsInterruptedAt = Self.now.addingTimeInterval(-age)
+    initial.readAloudInterruptedAt = Self.now.addingTimeInterval(-age)
     let store = submitStore(initial, recorder, submits: submits)
 
-    await store.send(.composerSubmitted) { $0.ttsInterruptedAt = nil } // taken either way
+    await store.send(.composerSubmitted) { $0.readAloudInterruptedAt = nil } // taken either way
     await store.finish()
     #expect(submits.value == [submitParams("later", interrupted: flagged)])
   }
@@ -1388,7 +1387,7 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsSpeaking)
     await store.send(.composerSubmitted)
     await store.receive(\.promptSubmitFailed)
-    #expect(store.state.ttsInterruptedAt == nil)
+    #expect(store.state.readAloudInterruptedAt == nil)
     await store.send(.binding(.set(\.composerText, "next")))
     await store.send(.composerSubmitted)
     await store.finish()
@@ -1411,14 +1410,14 @@ struct ChatReadAloudTests {
       $0.queuedPrompts = [QueuedPrompt(id: self.uuid(0), text: "queued", attachments: [])]
       $0.composerText = ""
       $0.ttsPlayback = .idle
-      $0.ttsInterruptedAt = Self.now
+      $0.readAloudInterruptedAt = Self.now
     }
     #expect(recorder.stops.value == 1)
     #expect(submits.value.isEmpty) // never submitted against the running turn
 
     await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
       $0.queuedPrompts = []
-      $0.ttsInterruptedAt = nil
+      $0.readAloudInterruptedAt = nil
     }
     await store.finish()
     #expect(submits.value == [submitParams("queued", interrupted: true)])
@@ -1442,7 +1441,7 @@ struct ChatReadAloudTests {
     await waitUntil { submits.value.count == 1 }
     #expect(submits.value == [submitParams("queued")])
     #expect(recorder.stops.value == 0)
-    #expect(store.state.ttsInterruptedAt == nil)
+    #expect(store.state.readAloudInterruptedAt == nil)
     await playClock.advance(by: TTSRecorder.clipLength)
     await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
   }
@@ -1463,7 +1462,7 @@ struct ChatReadAloudTests {
     await store.send(.voiceButtonTapped) {
       $0.recording = .requestingPermission
       $0.ttsPlayback = .idle
-      $0.ttsInterruptedAt = Self.now
+      $0.readAloudInterruptedAt = Self.now
     }
     await store.receive(\.recordingPermission) { $0.recording = .idle }
     // The player released the session BEFORE the recorder's `.playAndRecord` could start.
@@ -1471,7 +1470,7 @@ struct ChatReadAloudTests {
 
     // The dictated (here: typed) follow-up carries the flag.
     await store.send(.binding(.set(\.composerText, "follow-up")))
-    await store.send(.composerSubmitted) { $0.ttsInterruptedAt = nil }
+    await store.send(.composerSubmitted) { $0.readAloudInterruptedAt = nil }
     await store.finish()
     #expect(submits.value == [submitParams("follow-up", interrupted: true)])
   }
@@ -1501,7 +1500,7 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
     await store.send(.sceneBackgrounded) {
       $0.isSceneBackgrounded = true
-      $0.ttsPlayback = .idle // not a barge-in: `ttsInterruptedAt` stays nil
+      $0.ttsPlayback = .idle // not a barge-in: `readAloudInterruptedAt` stays nil
     }
     await store.finish()
     #expect(recorder.stops.value == 1)

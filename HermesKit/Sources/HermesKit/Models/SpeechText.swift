@@ -74,16 +74,15 @@ public enum SpeechText {
   /// character otherwise ("peyton dash sample dash two zero two six…").
   static func isDenseIdentifier(_ token: String) -> Bool {
     if token.contains("@") || Pattern.dateToken.matches(token) {
-      return false  // email addresses, dates ("2026-09-28", "2026/06/02")
+      return false // email addresses, dates ("2026-09-28", "2026/06/02")
     }
     if token.hasPrefix("~/") || token.hasPrefix("./") || token.hasPrefix("../")
-      || token.hasPrefix("/")
-    {
-      return true  // filesystem paths
+      || token.hasPrefix("/") {
+      return true // filesystem paths
     }
     let hasDigit = token.unicodeScalars.contains { ("0"..."9").contains($0) }
     if token.contains("/") && (Pattern.filenameExtension.matches(token) || hasDigit) {
-      return true  // paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
+      return true // paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
     }
     if Pattern.filenameExtension.matches(token) || Pattern.uuid.matches(token) {
       return true
@@ -98,7 +97,7 @@ public enum SpeechText {
     let separators = ["_", ".", "/"].filter { token.contains($0) }.count
     let hyphens = token.unicodeScalars.filter { $0 == "-" }.count
     if separators >= 2 || hyphens >= 2 {
-      return true  // v2.1.0-beta.3, Llama-3.3-70B, dated filename slugs
+      return true // v2.1.0-beta.3, Llama-3.3-70B, dated filename slugs
     }
     return token.contains("/") || (hyphens >= 1 && separators >= 1)
   }
@@ -188,8 +187,7 @@ public enum SpeechText {
   /// The header row is spoken in place of the table ("Model, Price, Context."); a table
   /// with an all-empty header stays silent.
   private static func speakableTableHeader(_ cells: [String]) -> String {
-    let header =
-      cells
+    let header = cells
       .map {
         $0.replacingOccurrences(of: "\\|", with: " ")
           .trimmingCharacters(in: .whitespacesAndNewlines)

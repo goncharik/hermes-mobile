@@ -821,8 +821,7 @@ func validate(
   case 200..<300: break
   case 401: throw RESTError.unauthorized
   case 404 where notFoundMeansNoRoute:
-    if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       let detail = object["detail"] as? String, !detail.isEmpty, detail != "Not Found" {
+    if let detail = jsonDetail(from: data), detail != fastAPIUnmatchedRouteDetail {
       throw RESTError.server(status: 404, detail: detail)
     }
     throw RESTError.notFound
@@ -833,14 +832,21 @@ func validate(
   }
 }
 
+/// The `detail` FastAPI returns for a path no route matches.
+private let fastAPIUnmatchedRouteDetail = "Not Found"
+
+/// The non-empty string `detail` of a JSON error body, else `nil`.
+private func jsonDetail(from data: Data) -> String? {
+  guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let detail = object["detail"] as? String, !detail.isEmpty
+  else { return nil }
+  return detail
+}
+
 /// Lenient extraction of a human-readable error reason from a non-2xx body: prefer the
 /// JSON `{"detail": …}` field, else the trimmed plain-text body, else `nil` (empty body).
 func serverDetail(from data: Data) -> String? {
-  if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-     let detail = object["detail"] as? String,
-     !detail.isEmpty {
-    return detail
-  }
+  if let detail = jsonDetail(from: data) { return detail }
   let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
   return text.isEmpty ? nil : text
 }

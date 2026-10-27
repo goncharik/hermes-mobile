@@ -167,7 +167,7 @@ drops the rule (desktop parity, since the desktop has no replay gating).
 ## Barge-in latch
 
 A USER submit while a clip is preparing or playing silences the clip and stamps
-`ttsInterruptedAt = now` (`stopReadAloudPlayback(bargeIn: true)`). This covers both branches of
+`readAloudInterruptedAt = now` (`stopReadAloudPlayback(bargeIn: true)`). This covers both branches of
 `.composerSubmitted`:
 
 - the idle send;
@@ -232,7 +232,7 @@ teardowns). Off screen, including on the session list, auto-lock behaves normall
 TTS is not advertised anywhere: not in `/api/status`, not in `gateway.ready`, not in
 `client.capabilities`. So the gate is reactive. The first `RESTError.isMissingEndpointVerdict`
 from `speak` silently flips `ttsSupported = false`, and both controls disappear: the composer
-toggle (`showsAutoSpeak`) and the action-bar button (`ReadAloudButtonState.hidden`). That
+toggle (`showsAutoSpeak`) and the action-bar button (`State.ReadAloudButtonState.hidden`). That
 verdict is FastAPI's unmatched-route 404 (`{"detail": "Not Found"}` or no detail), or the
 **405** an older agent returns, because its GET-only SPA catch-all matches the path. A 404 with
 any other detail (an unknown `?profile=`) is a `.server(404, detail)` banner. The flag is per slot and unpersisted, so an agent upgrade is picked up by
@@ -256,7 +256,7 @@ older hides both controls after the first attempt.
   re-truncates the model chip. Mobile has no voice menu (the desktop's toggle is a voice-menu
   row), so the toggle is a standalone button.
 - **`ReadAloudPill`** sits in `ChatView`'s fixed region between the queued-prompts panel and
-  the slash suggestions, shown while `ttsPlayback.isActive`. It shows "Preparing audio" with a
+  the slash suggestions, shown while `ttsPlayback.isActive`. It shows "Preparing audio…" with a
   spinner or "Reading aloud" with `speaker.wave.2`, plus a trailing Stop. It is one fixed line,
   so the region still does not scroll (#65). VoiceOver announces each state, including the
   first appearance.
@@ -265,7 +265,7 @@ older hides both controls after the first attempt.
   - `hidden`: unsupported;
   - `idle`: `waveform`, "Read aloud";
   - `disabled`: another row's clip is active, or the mic is busy;
-  - `preparing`: spinner, "Preparing audio...";
+  - `preparing`: spinner, "Preparing audio…";
   - `speaking`: `speaker.slash`, "Stop reading", and a tap sends `.stopReadAloud`.
 
   `.readAloudTapped` re-checks the guards (supported, no active clip, mic not busy, a completed

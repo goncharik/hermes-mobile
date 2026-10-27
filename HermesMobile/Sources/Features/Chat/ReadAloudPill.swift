@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The "Reading aloud" pill (#74): one fixed line pinned above the composer while a
 /// read-aloud clip is preparing or playing — the desktop's `VoicePlaybackActivity`. Preparing
-/// shows a spinner + "Preparing audio" (`POST /api/audio/speak` is synthesizing), speaking a
+/// shows a spinner + "Preparing audio…" (`POST /api/audio/speak` is synthesizing), speaking a
 /// speaker glyph + "Reading aloud"; the trailing Stop silences the clip (`.stopReadAloud`).
 ///
 /// Mounted by `ChatView` only while `ttsPlayback` is active, so `.idle` is never rendered.
@@ -18,7 +18,7 @@ struct ReadAloudPill: View {
     if case .preparing = state { true } else { false }
   }
 
-  private var title: String { isPreparing ? "Preparing audio" : "Reading aloud" }
+  private var title: String { isPreparing ? "Preparing audio…" : "Reading aloud" }
 
   var body: some View {
     HStack(spacing: 8) {
@@ -49,8 +49,8 @@ struct ReadAloudPill: View {
     .padding(.leading, 12)
     .padding(.trailing, 4)
     .padding(.vertical, 4)
-    // Styled like a `QueuedPromptsPanel` row (secondary background, same insets) so the two
-    // pinned panels read as one family when both stand.
+    // Shares the `QueuedPromptsPanel` background colour and outer insets (horizontal, top 6)
+    // so the two pinned panels read as one family when both stand.
     .background(Color(uiColor: .secondarySystemBackground), in: .capsule)
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(.updatesFrequently)

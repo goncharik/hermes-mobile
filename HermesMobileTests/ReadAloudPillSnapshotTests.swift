@@ -7,7 +7,7 @@ import XCTest
 
 /// The "Reading aloud" pill (#74), pinned above the composer while a read-aloud clip is
 /// preparing or playing. Each baseline stacks both states top to bottom — PREPARING (spinner +
-/// "Preparing audio") and SPEAKING (accent speaker + "Reading aloud") — with the Stop button
+/// "Preparing audio…") and SPEAKING (accent speaker + "Reading aloud") — with the Stop button
 /// trailing; the render HEIGHT pins the pill to one fixed line (#65's non-scrolling region).
 /// The Stop wiring is reducer-tested (`.stopReadAloud` in `ChatReadAloudTests`).
 final class ReadAloudPillSnapshotTests: SnapshotTestCase {
