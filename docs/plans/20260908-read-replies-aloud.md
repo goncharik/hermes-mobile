@@ -719,20 +719,24 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Create: `HermesMobileTests/ReadAloudPillSnapshotTests.swift`
 
-- [ ] `ReadAloudPill(state: ChatFeature.State.TTSPlayback, onStop:)`: preparing ⇒
+- [x] `ReadAloudPill(state: ChatFeature.State.TTSPlayback, onStop:)`: preparing ⇒
       `ProgressView().controlSize(.small)` + "Preparing audio"; speaking ⇒
       `speaker.wave.2` + "Reading aloud"; trailing "Stop" button; secondary-background
       capsule matching `QueuedPromptsPanel` styling; `.accessibilityElement(children:
       .combine)` + `.accessibilityAddTraits(.updatesFrequently)`; announce state changes via
-      `AccessibilityNotification.Announcement`.
-- [ ] Mount in `ChatView`'s fixed region between `queuedPromptsPanel` (:45) and
+      `AccessibilityNotification.Announcement`. (➕ the Stop label carries `speaker.slash`
+      like the desktop's VolumeX + "Stop"; leading glyph in a fixed-width slot so the label
+      does not shift on preparing → speaking; announced on appearance too — `onChange(initial:)`.)
+- [x] Mount in `ChatView`'s fixed region between `queuedPromptsPanel` (:45) and
       `suggestionPanel` (:46) — below `pendingCard`, whose `.layoutPriority` keeps winning the
       height (#65: the region does not scroll; the pill is one fixed line) — with
       `.transition(.opacity)`, shown while `ttsPlayback != .idle`; `onStop: {
       store.send(.stopReadAloud) }`; add an emptiness-style `.animation` keyed on
       `store.ttsPlayback == .idle` next to the queue's (~:96).
-- [ ] Add snapshots: preparing and speaking, light + dark.
-- [ ] run `make snapshot` — must pass before Task 11
+- [x] Add snapshots: preparing and speaking, light + dark. (➕ one two-row stack per
+      appearance, `ReadAloudPillSnapshotTests`; no existing baseline changed — every fixture
+      is idle.)
+- [x] run `make snapshot` — must pass before Task 11
 
 ### Task 11: Per-message "Read aloud" action
 

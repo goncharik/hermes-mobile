@@ -43,6 +43,7 @@ struct ChatView: View {
         .id(store.pendingInteractionToken)
         .layoutPriority(store.isCompressibleCardPending ? 1 : 0)
       queuedPromptsPanel
+      readAloudPill
       suggestionPanel
       Divider()
       ComposerView(
@@ -97,6 +98,9 @@ struct ChatView: View {
     // Same treatment for the queued-prompt panel (#66): animate appear/disappear (keyed
     // to emptiness, so edits/reorders within the queue never animate the whole region).
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.queuedPrompts.isEmpty)
+    // And for the read-aloud pill (#74): keyed to idle-vs-active, so preparing → speaking
+    // swaps the pill's label in place without animating the region.
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.ttsPlayback == .idle)
     .navigationTitle(store.title ?? "Chat")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -329,6 +333,17 @@ struct ChatView: View {
         onDelete: { store.send(.queuedPromptDeleted(id: $0)) }
       )
       .transition(.opacity)
+    }
+  }
+
+  /// The "Reading aloud" pill (#74), shown while a read-aloud clip is preparing or playing.
+  /// Below `pendingCard` on purpose: the pill is one fixed line, and the card's
+  /// `layoutPriority` keeps winning the region's height (#65).
+  @ViewBuilder
+  private var readAloudPill: some View {
+    if store.ttsPlayback.isActive {
+      ReadAloudPill(state: store.ttsPlayback) { store.send(.stopReadAloud) }
+        .transition(.opacity)
     }
   }
 
