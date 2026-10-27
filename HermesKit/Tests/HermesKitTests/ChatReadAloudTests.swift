@@ -1230,4 +1230,222 @@ struct ChatReadAloudTests {
     #expect(recorder.stops.value == 1)
     #expect(recorder.plays.value.count == 1)
   }
+
+  // MARK: - Keep-awake (Task 8)
+
+  /// `makeStore` with the recording `IdleTimerClient` (every `setDisabled` value, in order).
+  private func keepAwakeStore(
+    _ initial: ChatFeature.State, _ recorder: TTSRecorder, idleCalls: LockIsolated<[Bool]>
+  ) -> TestStoreOf<ChatFeature> {
+    let store = makeStore(initial, recorder)
+    store.dependencies.idleTimer = .recording(into: idleCalls)
+    return store
+  }
+
+  @Test func wantsScreenAwakeNeedsAnOnScreenChatAndOneTrigger() {
+    var state = ChatFeature.State(connection: conn)
+    state.isOnScreen = true
+    #expect(!state.wantsScreenAwake) // on screen alone
+
+    // Each trigger alone keeps the screen awake.
+    for playback in [ChatFeature.State.TTSPlayback.preparing(uuid(1)), .speaking(uuid(1))] {
+      state.ttsPlayback = playback
+      #expect(state.wantsScreenAwake)
+    }
+    state.ttsPlayback = .idle
+    state.isSending = true
+    #expect(!state.wantsScreenAwake) // a running turn needs auto-speak on
+    state.autoSpeakReplies = true
+    #expect(state.wantsScreenAwake)
+    state.isSending = false
+    #expect(!state.wantsScreenAwake) // auto-speak on with nothing running
+    state.autoSpeakReplies = false
+    for recording in [ChatFeature.State.RecordingState.requestingPermission, .recording, .transcribing] {
+      state.recording = recording
+      #expect(state.wantsScreenAwake)
+    }
+
+    // Off screen (a detached slot) never keeps it awake, whatever runs.
+    state.ttsPlayback = .speaking(uuid(1))
+    state.autoSpeakReplies = true
+    state.isSending = true
+    state.isOnScreen = false
+    #expect(!state.wantsScreenAwake)
+  }
+
+  @Test func playbackStartAndFinishToggleTheIdleTimer() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await waitUntil { calls.value == [true] }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) } // no edge
+    await playClock.advance(by: TTSRecorder.clipLength)
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    await store.finish()
+    #expect(calls.value == [true, false])
+  }
+
+  @Test func autoSpeakOnWhileATurnRunsKeepsTheScreenAwake() async {
+    // The toggle flips the running-turn trigger both ways; the turn's terminal releases it.
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    var initial = streamingSlot(autoSpeak: false)
+    initial.ttsSupported = false // the reply is not read, so `messageComplete` is the edge
+    let store = keepAwakeStore(initial, recorder, idleCalls: calls)
+
+    await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = true }
+    await waitUntil { calls.value == [true] }
+    await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = false }
+    await waitUntil { calls.value == [true, false] }
+    await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = true }
+    await waitUntil { calls.value == [true, false, true] }
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    await store.finish()
+    #expect(calls.value == [true, false, true, false])
+  }
+
+  @Test func aTurnWithAutoSpeakOnStaysAwakeThroughTheReadOfItsReply() async {
+    // Turn start wakes the screen; `messageComplete` hands straight over to the clip (no
+    // edge in between, so no auto-lock flicker); the clip's end releases it.
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = idleSlotWithDraft("hi")
+    initial.autoSpeakReplies = true
+    let store = submitStore(initial, recorder, submits: submits)
+    store.dependencies.idleTimer = .recording(into: calls)
+
+    await store.send(.composerSubmitted) { $0.isSending = true }
+    await waitUntil { calls.value == [true] }
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Hello")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.isSending = false
+    }
+    #expect(store.state.ttsPlayback.isActive)
+    await store.receive(\.ttsSpeaking)
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    await waitUntil { calls.value.count == 2 }
+    #expect(calls.value == [true, false])
+    #expect(recorder.spokenTexts == ["Hello"])
+  }
+
+  @Test func aTurnWithAutoSpeakOffNeverTouchesTheIdleTimer() async {
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(streamingSlot(autoSpeak: false), recorder, idleCalls: calls)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    await store.finish()
+    #expect(calls.value.isEmpty)
+  }
+
+  @Test func recordingKeepsTheScreenAwakeFromPermissionUntilTheTranscript() async {
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    store.dependencies.audioRecorder.requestPermission = { @Sendable in true }
+    store.dependencies.audioRecorder.startRecording = { @Sendable in }
+    store.dependencies.audioRecorder.levels = { @Sendable in AsyncStream { $0.finish() } }
+    store.dependencies.audioRecorder.stopRecording = { @Sendable in
+      RecordedAudio(data: Data([1, 2, 3]), mimeType: "audio/m4a")
+    }
+    store.dependencies.hermesREST.transcribe = { @Sendable _, _, _ in "dictated" }
+
+    await store.send(.voiceButtonTapped) { $0.recording = .requestingPermission }
+    await waitUntil { calls.value == [true] }
+    await store.receive(\.recordingPermission)
+    await store.receive(\.recordingStarted) { $0.recording = .recording } // still awake: no edge
+    await store.send(.voiceButtonTapped) { $0.recording = .transcribing }
+    await store.receive(\.recordingStopped)
+    await store.receive(\.transcriptionSucceeded) {
+      $0.recording = .idle
+      $0.composerText = "dictated"
+    }
+    await waitUntil { calls.value.count == 2 }
+    #expect(calls.value == [true, false])
+  }
+
+  @Test func recordingDeniedReleasesTheScreen() async {
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+    store.dependencies.audioRecorder.requestPermission = { @Sendable in false }
+
+    await store.send(.voiceButtonTapped) { $0.recording = .requestingPermission }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    await store.finish()
+    #expect(calls.value == [true, false])
+  }
+
+  @Test func viewDisappearedWhilePlayingReleasesTheScreen() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.send(.viewDisappeared) {
+      $0.isOnScreen = false
+      $0.ttsPlayback = .idle
+    }
+    await store.finish()
+    #expect(calls.value == [true, false])
+  }
+
+  @Test func viewDisappearedReleasesARunningAutoSpeakTurnAndReappearingWakesItAgain() async {
+    // The turn keeps running on the detached slot; only the on-screen gate flips.
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    var initial = streamingSlot()
+    initial.isOnScreen = false
+    let store = keepAwakeStore(initial, recorder, idleCalls: calls)
+
+    await store.send(.reattached) { $0.isOnScreen = true }
+    await waitUntil { calls.value == [true] }
+    await store.send(.viewDisappeared) { $0.isOnScreen = false }
+    await store.finish()
+    #expect(calls.value == [true, false])
+  }
+
+  @Test func teardownReleasesTheScreenExplicitly() async {
+    // Nothing kept it awake: teardown still sends `false` (the slot is about to be dropped).
+    let recorder = TTSRecorder()
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+
+    await store.send(.teardown)
+    await store.finish()
+    #expect(calls.value == [false])
+  }
+
+  @Test func teardownWhilePlayingReleasesTheScreen() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let calls = LockIsolated<[Bool]>([])
+    let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.send(.teardown) { $0.ttsPlayback = .idle }
+    await store.finish()
+    // The `.onChange` edge and the explicit release — both `false`.
+    #expect(calls.value == [true, false, false])
+  }
 }

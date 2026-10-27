@@ -676,15 +676,16 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 
-- [ ] Add `public var wantsScreenAwake: Bool` on `State` (`isOnScreen && (ttsPlayback
+- [x] Add `public var wantsScreenAwake: Bool` on `State` (`isOnScreen && (ttsPlayback
       != .idle || (autoSpeakReplies && isSending) || recording.isBusy)`).
-- [ ] Add `@Dependency(\.idleTimer)` and a `Reduce` `.onChange(of: \.wantsScreenAwake)`
+- [x] Add `@Dependency(\.idleTimer)` and a `Reduce` `.onChange(of: \.wantsScreenAwake)`
       effect calling `idleTimer.setDisabled(new)`; `.teardown` additionally sends an explicit
-      `setDisabled(false)`.
-- [ ] Write tests with the recording `IdleTimerClient`: on/off transitions for each of the
+      `setDisabled(false)`. (➕ the `.onChange` wraps the main `Reduce` only, not the
+      `BindingReducer` — no binding writes a predicate input.)
+- [x] Write tests with the recording `IdleTimerClient`: on/off transitions for each of the
       four triggers (playback start/finish; auto-speak on + turn start/`messageComplete`;
       recording start/stop; `viewDisappeared` while playing ⇒ false); teardown emits `false`.
-- [ ] run `make test` — must pass before Task 9
+- [x] run `make test` — must pass before Task 9
 
 ### Task 9: Composer auto-speak toggle button
 

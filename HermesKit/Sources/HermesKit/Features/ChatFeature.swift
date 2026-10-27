@@ -291,6 +291,14 @@ public struct ChatFeature {
       public var isActive: Bool { self != .idle }
     }
 
+    /// Keep-awake (#74): the screen must not auto-lock during the hands-off loop — while a
+    /// clip is preparing/playing, while a turn runs with auto-speak on (its reply is about to
+    /// be read), or while the mic is busy — and only while the chat is on screen. The reducer
+    /// reports each edge to `IdleTimerClient` via `.onChange`.
+    public var wantsScreenAwake: Bool {
+      isOnScreen && (ttsPlayback != .idle || (autoSpeakReplies && isSending) || recording.isBusy)
+    }
+
     /// Number of COMPLETED assistant message rows — what the auto-speak anchor counts. A
     /// still-streaming assistant row never counts (only finished replies are read).
     var completedAssistantCount: Int {
@@ -1203,6 +1211,7 @@ public struct ChatFeature {
   @Dependency(\.pasteboard) var pasteboard
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.tts) var tts
+  @Dependency(\.idleTimer) var idleTimer
   @Dependency(\.attachmentPicker) var attachmentPicker
   @Dependency(\.debugLog) var debugLog
 
@@ -1252,6 +1261,9 @@ public struct ChatFeature {
         state.isReplayReadPending = false
         return .merge(
           releaseVoiceResources(&state),
+          // Keep-awake (#74): the slot is about to be nilled out, so no later `.onChange`
+          // edge can restore auto-lock — release it explicitly (idempotent).
+          .run { [idleTimer] _ in await idleTimer.setDisabled(false) },
           .cancel(id: CancelID.socket),
           .cancel(id: CancelID.reconnect),
           .cancel(id: CancelID.hydrate),
@@ -2515,6 +2527,14 @@ public struct ChatFeature {
       case .cancelRename:
         state.renameDraft = nil
         return .none
+      }
+    }
+    // Keep-awake (#74): report every `wantsScreenAwake` edge to the system idle timer.
+    // Attached to the `Reduce` (not the `BindingReducer`): no binding writes any of the
+    // predicate's inputs.
+    .onChange(of: \.wantsScreenAwake) { _, wantsAwake in
+      Reduce { _, _ in
+        .run { [idleTimer] _ in await idleTimer.setDisabled(wantsAwake) }
       }
     }
   }
