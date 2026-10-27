@@ -858,6 +858,28 @@ struct ChatReadAloudTests {
     #expect(recorder.stops.value == 1)
   }
 
+  @Test func stopConsumesAReplyThatCompletedDuringTheClip() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let store = makeStore(streamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "First", usage: nil)))
+    await store.receive(\.ttsSpeaking)
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Second")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Second", usage: nil)))
+    #expect(store.state.spokenAssistantCount == 1) // "Second" is pending behind the clip
+
+    await store.send(.stopReadAloud)
+    #expect(store.state.spokenAssistantCount == 2)
+    // A later speak edge (a scene `.active` blip) reads nothing.
+    await store.send(.foreground)
+    await store.finish()
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.spokenTexts == ["First"])
+  }
+
   // MARK: Failures
 
   @Test(arguments: [RESTError.notFound, .server(status: 405, detail: nil)])

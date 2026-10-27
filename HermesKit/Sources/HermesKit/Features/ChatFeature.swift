@@ -2163,7 +2163,10 @@ public struct ChatFeature {
 
       case .stopReadAloud:
         // Cancelling the effect drops its trailing `.ttsFinished` — a Stop is not a speak edge.
-        return stopReadAloudPlayback(&state)
+        // It also consumes a reply that completed during the clip, so no later edge reads it.
+        let stop = stopReadAloudPlayback(&state)
+        arm(&state)
+        return stop
 
       case .sceneBackgrounded:
         // No background audio: stop the clip (not a barge-in — no latch) and hold auto-speak
