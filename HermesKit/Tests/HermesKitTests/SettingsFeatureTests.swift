@@ -16,6 +16,7 @@ struct SettingsFeatureTests {
     preferences.saveSeenCounts(["s1": 4])
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.saveSelectedProfileID("staging")
+    preferences.saveAutoSpeakReplies(true)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -33,6 +34,7 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSeenCounts() == [:]) // unread state cleared too
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive) // swipe pref reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
+    #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
   }
 
   @Test func clearTokenWipesChatSnapshotStore() async {

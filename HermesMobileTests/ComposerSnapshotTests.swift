@@ -143,6 +143,48 @@ final class ComposerSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  // MARK: Read replies aloud (#74)
+
+  /// The auto-speak toggle, top to bottom: ON (accent `speaker.wave.2.fill`), OFF (secondary
+  /// `speaker.slash`), and HIDDEN (`showsAutoSpeak: false` — the agent answered `speak` with
+  /// a missing-endpoint verdict), where the row falls back to paperclip + mic + send.
+  func testComposer_autoSpeakToggle() {
+    assertSnapshot(of: autoSpeakToggleStack(), as: componentImage())
+  }
+
+  /// Light rendering of the same three shapes: the accent-vs-secondary contrast of the ON
+  /// glyph is the thing under test in both appearances.
+  func testComposer_autoSpeakToggle_light() {
+    assertSnapshot(of: autoSpeakToggleStack(), as: componentImage(appearance: .light))
+  }
+
+  private func autoSpeakToggleStack() -> some View {
+    VStack(spacing: 20) {
+      ComposerView(
+        text: .constant(""),
+        isSending: false, canSend: false,
+        model: "claude-opus-4-8", reasoningEffort: "high",
+        autoSpeak: true,
+        onModelTap: {}, onSend: {}, onInterrupt: {}
+      )
+      ComposerView(
+        text: .constant(""),
+        isSending: false, canSend: false,
+        model: "claude-opus-4-8", reasoningEffort: "high",
+        autoSpeak: false,
+        onModelTap: {}, onSend: {}, onInterrupt: {}
+      )
+      ComposerView(
+        text: .constant(""),
+        isSending: false, canSend: false,
+        model: "claude-opus-4-8", reasoningEffort: "high",
+        showsAutoSpeak: false,
+        onModelTap: {}, onSend: {}, onInterrupt: {}
+      )
+    }
+    .frame(width: device.size?.width ?? 390)
+  }
+
   // MARK: ModelPickerSheet
 
   func testModelPickerSheet() {

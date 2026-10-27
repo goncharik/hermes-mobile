@@ -305,6 +305,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [ChatRow(
@@ -467,6 +468,7 @@ struct ChatBranchTests {
     await store.receive(\.activateResult.success) {
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.hasReplayedBranchSeed = false // attach landed: the replay budget resets
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
@@ -873,6 +875,7 @@ struct ChatBranchTests {
     await store.receive(\.activateResult.success) {
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.hasReplayedBranchSeed = false
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
@@ -1103,6 +1106,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [
@@ -1198,6 +1202,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "branch-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 0, contextMax: 200_000, contextPercent: 0)
       $0.transcript = [
@@ -1405,6 +1410,7 @@ struct ChatBranchTests {
       $0.isSending = false
       $0.status = .reconnecting
       $0.reconnectAttempt = 1
+      $0.spokenAssistantCount = 1 // the dropped partial is consumed, never read aloud (#74)
     }
     // The row now LOOKS like a normal completed reply, but the socket is down — must
     // not be branchable until reconnect.

@@ -118,6 +118,7 @@ struct HydrateTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       // Model + usage overwritten by the server (not merged with the cache).
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 42, contextMax: 200_000, contextPercent: 0)
@@ -1233,7 +1234,8 @@ struct HydrateTests {
   // `.reattached` / `.foreground` with a healthy socket but a STILL-UNRESOLVED session id
   // (`session.create` in flight on that same socket) is a strict no-op — the pending
   // create lands on its own; hydrating (or redialing) here would race it. Exhaustive: any
-  // effect or state change fails this.
+  // effect or state change fails this (beyond `.reattached` putting the chat back on screen,
+  // #74).
   @Test func reattachReadyWithUnresolvedSessionIsNoOp() async {
     var initial = ChatFeature.State(connection: conn)
     initial.status = .ready
@@ -1244,13 +1246,14 @@ struct HydrateTests {
       ChatFeature()
     }
 
-    await store.send(.reattached)
+    await store.send(.reattached) { $0.isOnScreen = true }
     await store.send(.foreground)
   }
 
   // The view's `.task` fires on every appearance; once the slot has started (initial
   // connect done), a re-appearance must be a strict no-op — `AppFeature`'s `.reattached`
-  // owns the re-open flow. Exhaustive: any effect or state change fails this.
+  // owns the re-open flow. Exhaustive: any effect or state change fails this (beyond putting
+  // the chat back on screen, #74).
   @Test func taskAfterInitialConnectIsNoOp() async {
     let connectCalls = LockIsolated(0)
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
@@ -1266,7 +1269,7 @@ struct HydrateTests {
       }
     }
 
-    await store.send(.task)
+    await store.send(.task) { $0.isOnScreen = true }
     #expect(connectCalls.value == 0)
   }
 

@@ -326,6 +326,83 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  // MARK: Read aloud (#74)
+
+  /// A completed assistant reply rendered through the store-driven `rowView`, with
+  /// `ttsPlayback` set so the bar's Read aloud button derives its state from the REAL
+  /// `readAloudState(for:)`.
+  private func assertReadAloudCell(
+    playback: (ChatRow.ID) -> ChatFeature.State.TTSPlayback,
+    file: StaticString = #file,
+    testName: String = #function,
+    line: UInt = #line
+  ) {
+    let row = ChatRow(id: id(1), kind: .message(
+      role: .assistant, text: "Here's the summary you asked for.", isComplete: true
+    ))
+    var state = ChatFeature.State(
+      connection: connection,
+      resumeStoredID: "snapshot-session",
+      title: "Read aloud",
+      transcript: IdentifiedArray(uniqueElements: [row]),
+      status: .ready
+    )
+    state.ttsPlayback = playback(row.id)
+    let chat = ChatView(
+      store: Store(initialState: state) {
+        ChatFeature()
+      } withDependencies: {
+        $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+        $0.continuousClock = ImmediateClock()
+      }
+    )
+    let view = chat.rowView(row)
+      .padding()
+      .frame(width: 320)
+      .background(Color(uiColor: .systemBackground))
+    assertSnapshot(of: view, as: componentImage(), file: file, testName: testName, line: line)
+  }
+
+  /// No clip: the `waveform` Read aloud button sits after Branch.
+  func testAssistantRow_readAloudIdle() {
+    assertReadAloudCell { _ in .idle }
+  }
+
+  /// This reply is synthesizing: a spinner in the same glyph slot (bar height unchanged).
+  func testAssistantRow_readAloudPreparing() {
+    assertReadAloudCell { .preparing($0) }
+  }
+
+  /// This reply is playing: the stop glyph (`speaker.slash`).
+  func testAssistantRow_readAloudSpeaking() {
+    assertReadAloudCell { .speaking($0) }
+  }
+
+  /// ANOTHER reply is playing: this row's button is dimmed + disabled (one clip at a time).
+  func testAssistantRow_readAloudDisabled() {
+    assertReadAloudCell { _ in .speaking(self.id(2)) }
+  }
+
+  /// The pill in place in the fixed region (#65): below a standing approval card and the
+  /// queued-prompt panel, above the composer — one line that leaves the card its room and the
+  /// transcript its context.
+  func testChatView_readAloudPillUnderACardAndTheQueue() {
+    let rows: [ChatRow] = [
+      ChatRow(id: id(0), kind: .message(role: .user, text: "Clean the build folder.", isComplete: true)),
+      ChatRow(id: id(1), kind: .message(
+        role: .assistant, text: "I'll remove the build directory first.", isComplete: true
+      )),
+    ]
+    assertChatView(rows: rows, title: "Read aloud", status: .ready) { state in
+      state.ttsPlayback = .speaking(self.id(1))
+      state.isSending = true
+      state.queuedPrompts = [QueuedPrompt(id: self.id(5), text: "Then run the tests")]
+      state.present(.approval(ApprovalRequest(
+        command: "rm -rf build/", detail: "Delete the build directory"
+      )))
+    }
+  }
+
   /// Copied state: the copy icon swaps to the green checkmark while the row's
   /// feedback token is live.
   func testMessageActionBar_copied() {
