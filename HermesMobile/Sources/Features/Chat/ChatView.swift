@@ -100,7 +100,7 @@ struct ChatView: View {
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.queuedPrompts.isEmpty)
     // And for the read-aloud pill (#74): keyed to idle-vs-active, so preparing → speaking
     // swaps the pill's label in place without animating the region.
-    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.ttsPlayback == .idle)
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.ttsPlayback.isActive)
     .navigationTitle(store.title ?? "Chat")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {

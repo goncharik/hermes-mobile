@@ -551,8 +551,8 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
   thinking timer. The hydrate's `running` is the only trustworthy idle edge (and the only timer
   start), and its own drain runs as usual. A replayed `message.complete` is never read aloud
   either (#74): auto-speak is inert under `isFoldingReplay`, and the fold consumes the reply
-  (arms the anchor, sets `replayConsumedReply`) so the trailing hydrate's re-base keeps it
-  consumed — `docs/features/read-aloud.md` → "Replay rule".
+  (arms the anchor), so the trailing hydrate's re-base keeps it consumed —
+  `docs/features/read-aloud.md` → "Replay rule".
 - **Then the hydrate, unchanged.** `applyActivate` stays the authority. A running turn keeps the
   tool and thinking rows the fold built or extended (#26); assistant text is the hydrate's alone
   (the fold skips `message.delta`s and materialises no `message.complete` row, so a reply never

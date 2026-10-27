@@ -9,7 +9,10 @@ import Foundation
 @DependencyClient
 public struct IdleTimerClient: Sendable {
   /// `true` keeps the screen awake (idle timer disabled); `false` restores auto-lock.
-  public var setDisabled: @Sendable (_ disabled: Bool) async -> Void
+  /// SYNCHRONOUS on purpose: reducers call it in reduction order, and the live value applies
+  /// the calls in that same order (one FIFO main-queue hop each). An `Effect.run` per edge
+  /// would not — two runs can reach the main actor in either order and leave auto-lock off.
+  public var setDisabled: @Sendable (_ disabled: Bool) -> Void
 }
 
 extension IdleTimerClient: DependencyKey {
@@ -39,8 +42,10 @@ public extension DependencyValues {
   extension IdleTimerClient {
     public static var liveValue: IdleTimerClient {
       IdleTimerClient(setDisabled: { disabled in
-        await MainActor.run {
-          UIApplication.shared.isIdleTimerDisabled = disabled
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated {
+            UIApplication.shared.isIdleTimerDisabled = disabled
+          }
         }
       })
     }

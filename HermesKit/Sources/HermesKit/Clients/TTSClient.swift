@@ -32,17 +32,15 @@ public struct TTSAudio: Equatable, Sendable {
     return TTSAudio(data: data, mimeType: mimeType)
   }
 
-  /// File extension for the playback temp file. `AVAudioPlayer(contentsOf:)` takes the
-  /// container hint from the extension, so it must match the bytes; unknown types fall back
-  /// to `mp3` (the server's default extension).
+  /// File extension for the playback temp file, from a `parse(dataURL:)` mime type.
+  /// `AVAudioPlayer(contentsOf:)` takes the container hint from the extension, so it must
+  /// match the bytes; anything else (`audio/mpeg`) is `mp3`, the server's default extension.
   public static func fileExtension(forMimeType mimeType: String) -> String {
-    let base = mimeType.split(separator: ";").first
-      .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
-    switch base {
-    case "audio/ogg", "audio/opus": return "ogg"
-    case "audio/wav", "audio/x-wav", "audio/wave": return "wav"
-    case "audio/flac", "audio/x-flac": return "flac"
-    default: return "mp3"
+    switch mimeType {
+    case "audio/ogg": "ogg"
+    case "audio/wav": "wav"
+    case "audio/flac": "flac"
+    default: "mp3"
     }
   }
 }
@@ -79,6 +77,31 @@ public struct TTSClient: Sendable {
   /// The desktop's `PLAYBACK_STALL_MS`: playback whose position has not advanced for this
   /// long (armed before `play()`) fails with `TTSPlaybackError.stalled`.
   public static let stallTimeout: Duration = .seconds(15)
+}
+
+/// The live player's stall decision (#74), kept pure and outside the UIKit guard so it is
+/// unit-tested: fed the playback position at each watchdog poll, it reports a stall once the
+/// position has not ADVANCED for `timeout` since the last advance (or since it was armed).
+struct TTSStallDetector<Instant: InstantProtocol> where Instant.Duration == Duration {
+  private var lastPosition: TimeInterval
+  private var lastProgress: Instant
+  let timeout: Duration
+
+  init(position: TimeInterval, at now: Instant, timeout: Duration = TTSClient.stallTimeout) {
+    lastPosition = position
+    lastProgress = now
+    self.timeout = timeout
+  }
+
+  /// Record one poll; `true` means the clip stalled.
+  mutating func isStalled(position: TimeInterval, at now: Instant) -> Bool {
+    if position > lastPosition {
+      lastPosition = position
+      lastProgress = now
+      return false
+    }
+    return lastProgress.duration(to: now) >= timeout
+  }
 }
 
 extension TTSClient: DependencyKey {
@@ -150,6 +173,12 @@ public extension DependencyValues {
       try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
           self.continuation = continuation
+          // Already cancelled: never activate the session — `onCancel`'s stop is a separate
+          // task that would only land after `start`.
+          guard !Task.isCancelled else {
+            finish(.success(()))
+            return
+          }
           do {
             try start(data: data, mimeType: mimeType, token: token)
           } catch {
@@ -208,23 +237,19 @@ public extension DependencyValues {
       guard player.play() else { throw TTSPlaybackError.failed }
     }
 
-    /// Polls the playback position; every advance re-arms the timeout, and a position
-    /// stuck for `TTSClient.stallTimeout` fails the clip with `.stalled`.
+    /// Polls the playback position every 500 ms through `TTSStallDetector`; a stall fails the
+    /// clip with `.stalled`.
     private func armWatchdog(token: Int, startTime: TimeInterval) {
       watchdog?.cancel()
       watchdog = Task { [weak self] in
         let clock = ContinuousClock()
-        var lastTime = startTime
-        var lastProgress = clock.now
+        var detector = TTSStallDetector(position: startTime, at: clock.now)
         while !Task.isCancelled {
           try? await clock.sleep(for: .milliseconds(500))
           guard !Task.isCancelled, let self,
                 let time = await self.currentTime(token: token)
           else { return }
-          if time > lastTime {
-            lastTime = time
-            lastProgress = clock.now
-          } else if clock.now - lastProgress >= TTSClient.stallTimeout {
+          if detector.isStalled(position: time, at: clock.now) {
             await self.stalled(token: token)
             return
           }

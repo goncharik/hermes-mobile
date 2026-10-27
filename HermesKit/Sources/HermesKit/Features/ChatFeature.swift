@@ -282,16 +282,14 @@ public struct ChatFeature {
     /// pref load, and on the slot's first hydrate; RE-BASED on every later hydrate (the
     /// rebuild can turn one live assistant row into several history rows). Unpersisted.
     var spokenAssistantCount: Int
-    /// Set when a #98 replay fold folds a `message.complete` (a past turn boundary, never
-    /// spoken); the trailing hydrate's re-base consumes the reply and clears it.
-    var replayConsumedReply: Bool
     /// Barge-in latch: when a user submit/mic tap silenced playback. The next regular
     /// `prompt.submit` within 120 s carries `interrupted: true` and clears it.
     var ttsInterruptedAt: Date?
     /// The app scene went to the background: auto-speak holds until `.foreground`.
     var isSceneBackgrounded: Bool
     /// The chat view is on screen (set on `.task`/`.reattached`, cleared on
-    /// `.viewDisappeared`): gates auto-speak and keep-awake — a detached slot stays silent.
+    /// `.viewDisappeared`): gates auto-speak and keep-awake — a detached slot stays silent,
+    /// and a reply that completed off screen is consumed when the chat comes back.
     var isOnScreen: Bool
 
     /// Read-aloud playback state for one slot.
@@ -307,11 +305,13 @@ public struct ChatFeature {
     }
 
     /// Keep-awake (#74): the screen must not auto-lock during the hands-off loop — while a
-    /// clip is preparing/playing, while a turn runs with auto-speak on (its reply is about to
-    /// be read), or while the mic is busy — and only while the chat is on screen. The reducer
-    /// reports each edge to `IdleTimerClient` via `.onChange`.
+    /// clip is preparing/playing, while a turn runs with auto-speak on against an agent that
+    /// can speak (its reply is about to be read), or while the mic is busy — and only while
+    /// the chat is on screen. The reducer reports each edge to `IdleTimerClient` via
+    /// `.onChange`; `AppFeature` releases it when it drops an awake slot.
     public var wantsScreenAwake: Bool {
-      isOnScreen && (ttsPlayback != .idle || (autoSpeakReplies && isSending) || recording.isBusy)
+      isOnScreen
+        && (ttsPlayback.isActive || (autoSpeakReplies && ttsSupported && isSending) || recording.isBusy)
     }
 
     /// Number of COMPLETED assistant message rows — what the auto-speak anchor counts. A
@@ -338,15 +338,40 @@ public struct ChatFeature {
       return false
     }
 
+    /// The turn `rowID` belongs to: how many user message rows precede it. Survives a
+    /// hydrate's rebuild, which renames rows and may split one live assistant row in several.
+    func turnOrdinal(of rowID: ChatRow.ID) -> Int? {
+      guard let index = transcript.index(id: rowID) else { return nil }
+      return transcript[..<index].reduce(into: 0) { count, row in
+        if case .message(.user, _, _) = row.kind { count += 1 }
+      }
+    }
+
+    /// The newest COMPLETED assistant message row of turn `ordinal` (see `turnOrdinal`).
+    func lastCompletedAssistantRow(inTurn ordinal: Int) -> ChatRow? {
+      var turn = 0
+      var match: ChatRow?
+      for row in transcript {
+        if case .message(.user, _, _) = row.kind {
+          turn += 1
+          if turn > ordinal { break }
+        } else if turn == ordinal, Self.isCompletedAssistantMessage(row) {
+          match = row
+        }
+      }
+      return match
+    }
+
     /// The per-message "Read aloud" button for `rowID` (desktop `ReadAloudButton` parity):
     /// hidden once the agent proved it has no TTS route; `preparing`/`speaking` when the one
     /// clip targets this row; `disabled` while any OTHER row's clip is active (one clip at a
-    /// time — `.readAloudTapped` re-guards it); otherwise `idle`. The view shows the bar only
-    /// under completed assistant replies, so row kind is not re-checked here.
+    /// time) or the mic is busy (it owns the audio session) — `.readAloudTapped` re-guards
+    /// both; otherwise `idle`. The view shows the bar only under completed assistant replies,
+    /// so row kind is not re-checked here.
     public func readAloudState(for rowID: ChatRow.ID) -> ReadAloudButtonState {
       guard ttsSupported else { return .hidden }
       switch ttsPlayback {
-      case .idle: return .idle
+      case .idle: return recording.isBusy ? .disabled : .idle
       case let .preparing(id): return id == rowID ? .preparing : .disabled
       case let .speaking(id): return id == rowID ? .speaking : .disabled
       }
@@ -770,7 +795,6 @@ public struct ChatFeature {
       self.ttsSupported = true
       self.ttsPlayback = .idle
       self.spokenAssistantCount = 0
-      self.replayConsumedReply = false
       self.ttsInterruptedAt = nil
       self.isSceneBackgrounded = false
       self.isOnScreen = false
@@ -1050,12 +1074,13 @@ public struct ChatFeature {
     case readAloudTapped(id: ChatRow.ID)
     /// The pill's / action bar's Stop: silence the clip, back to idle.
     case stopReadAloud
-    /// Synthesis landed; the clip for this row started playing.
-    case ttsSpeaking(id: ChatRow.ID)
+    /// Synthesis landed; the clip started playing (for the row `ttsPlayback` points at — a
+    /// hydrate may have re-pointed it since the request).
+    case ttsSpeaking
     /// The clip played to the end (or was empty after sanitizing) — a playback-idle edge.
     case ttsFinished
     /// Synthesis or playback failed — also a playback-idle edge.
-    case ttsFailed(id: ChatRow.ID, ReadAloudFailure)
+    case ttsFailed(ReadAloudFailure)
     /// The app scene went to the background (`AppFeature`, idle AND running slots): stop the
     /// clip — there is no background-audio entitlement, yet the ~30 s grace keeps a running
     /// turn's process alive — and hold auto-speak until `.foreground`.
@@ -1270,8 +1295,11 @@ public struct ChatFeature {
         // which must not cancel-and-redial a healthy socket.
         //
         // Every appearance puts the chat back on screen (#74: auto-speak + keep-awake gate).
+        guard !state.hasStarted else {
+          returnOnScreen(&state)
+          return .none
+        }
         state.isOnScreen = true
-        guard !state.hasStarted else { return .none }
         state.hasStarted = true
         // The read-aloud toggle is device-local (#74): one synchronous read per slot. Armed
         // when on, so the replies already painted (instant-paint snapshot) are never read.
@@ -1290,9 +1318,6 @@ public struct ChatFeature {
         state.isReplayReadPending = false
         return .merge(
           releaseVoiceResources(&state),
-          // Keep-awake (#74): the slot is about to be nilled out, so no later `.onChange`
-          // edge can restore auto-lock — release it explicitly (idempotent).
-          .run { [idleTimer] _ in await idleTimer.setDisabled(false) },
           .cancel(id: CancelID.socket),
           .cancel(id: CancelID.reconnect),
           .cancel(id: CancelID.hydrate),
@@ -1528,7 +1553,7 @@ public struct ChatFeature {
           state.isSceneBackgrounded = false
           speak = autoSpeakIfReady(&state)
         } else {
-          state.isOnScreen = true
+          returnOnScreen(&state)
           speak = .none
         }
         return .merge(speak, reattach(&state))
@@ -1557,12 +1582,12 @@ public struct ChatFeature {
           state.composerText = ""
           state.attachments = []
           // Typing barge-in (#74): the queued entry's eventual `prompt.submit` carries it.
-          return bargeInReadAloud(&state)
+          return stopReadAloudPlayback(&state, bargeIn: true)
         }
         guard state.canSend, let sessionID = state.liveSessionID else { return .none }
         // Typing barge-in (#74): a user send silences the clip and stamps the latch, which
         // this very submit consumes (`interrupted: true` on its `prompt.submit`).
-        let bargeIn = bargeInReadAloud(&state)
+        let bargeIn = stopReadAloudPlayback(&state, bargeIn: true)
         // Trim stray leading/trailing whitespace/newlines (soft-wrap, dictation, accidental
         // returns) before submitting; interior formatting is preserved (#31). `canSend`
         // already rejects whitespace-only input with no attachments, so the text can only be
@@ -1980,10 +2005,7 @@ public struct ChatFeature {
           // itself runs FIRST inside the permission effect (unconditionally — idempotent): it
           // deactivates the session with `.notifyOthersOnDeactivation`, which would otherwise
           // race and kill the recorder's freshly activated `.playAndRecord` session.
-          if state.ttsPlayback.isActive {
-            state.ttsInterruptedAt = now
-            state.ttsPlayback = .idle
-          }
+          silenceReadAloud(&state, bargeIn: true)
           return .merge(
             .cancel(id: CancelID.ttsPlayback),
             .run { [audioRecorder, tts] send in
@@ -2011,7 +2033,7 @@ public struct ChatFeature {
         guard granted else {
           state.recording = .idle
           state.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
-          return .none
+          return autoSpeakIfReady(&state) // the mic released the session: a speak edge (#74)
         }
         return .run { [audioRecorder] send in
           try await audioRecorder.startRecording()
@@ -2076,14 +2098,20 @@ public struct ChatFeature {
             state.composerText += (state.composerText.hasSuffix(" ") ? "" : " ") + transcript
           }
         }
-        return .none
+        // Read aloud (#74): the mic held the audio session, so a reply that completed while
+        // it was busy waited — the mic going idle is a speak edge.
+        return autoSpeakIfReady(&state)
 
       case let .voiceInputFailed(message):
         state.recording = .idle
         state.waveformLevels = []
         state.recordingSeconds = 0
         state.errorBanner = message
-        return .merge(.cancel(id: CancelID.voiceLevels), .cancel(id: CancelID.voiceTimer))
+        return .merge(
+          .cancel(id: CancelID.voiceLevels),
+          .cancel(id: CancelID.voiceTimer),
+          autoSpeakIfReady(&state)
+        )
 
       case .recordingCancelled:
         state.recording = .idle
@@ -2092,7 +2120,8 @@ public struct ChatFeature {
         return .merge(
           .cancel(id: CancelID.voiceLevels),
           .cancel(id: CancelID.voiceTimer),
-          .run { [audioRecorder] _ in await audioRecorder.cancel() }
+          .run { [audioRecorder] _ in await audioRecorder.cancel() },
+          autoSpeakIfReady(&state)
         )
 
       // MARK: Read replies aloud (#74)
@@ -2106,9 +2135,9 @@ public struct ChatFeature {
         return .none
 
       case let .readAloudTapped(id):
-        // One clip at a time: a tap while another row prepares/plays is a no-op (the action
-        // bar disables it). Only a COMPLETED assistant reply is readable.
-        guard state.ttsSupported, state.ttsPlayback == .idle,
+        // One clip at a time, and never while the mic holds the audio session: such a tap is
+        // a no-op (the action bar disables it). Only a COMPLETED assistant reply is readable.
+        guard state.ttsSupported, !state.ttsPlayback.isActive, !state.recording.isBusy,
               let row = state.transcript[id: id], State.isCompletedAssistantMessage(row)
         else { return .none }
         // The row counts as read: bump the anchor past it (never lower it), so a later idle
@@ -2120,7 +2149,6 @@ public struct ChatFeature {
         return speakRow(id, into: &state)
 
       case .stopReadAloud:
-        guard state.ttsPlayback.isActive else { return .none }
         // Cancelling the effect drops its trailing `.ttsFinished` — a Stop is not a speak edge.
         return stopReadAloudPlayback(&state)
 
@@ -2141,7 +2169,7 @@ public struct ChatFeature {
         state.ttsPlayback = .idle
         return autoSpeakIfReady(&state)
 
-      case let .ttsFailed(_, failure):
+      case let .ttsFailed(failure):
         state.ttsPlayback = .idle
         switch failure {
         case let .rest(error) where error.isMissingEndpointVerdict:
@@ -2558,12 +2586,13 @@ public struct ChatFeature {
         return .none
       }
     }
-    // Keep-awake (#74): report every `wantsScreenAwake` edge to the system idle timer.
-    // Attached to the `Reduce` (not the `BindingReducer`): no binding writes any of the
-    // predicate's inputs.
+    // Keep-awake (#74): report every `wantsScreenAwake` edge to the system idle timer, in
+    // reduction order (`setDisabled` is synchronous — see `IdleTimerClient`). Attached to the
+    // `Reduce` (not the `BindingReducer`): no binding writes any of the predicate's inputs.
     .onChange(of: \.wantsScreenAwake) { _, wantsAwake in
       Reduce { _, _ in
-        .run { [idleTimer] _ in await idleTimer.setDisabled(wantsAwake) }
+        idleTimer.setDisabled(wantsAwake)
+        return .none
       }
     }
   }
@@ -3254,32 +3283,41 @@ public struct ChatFeature {
     state.spokenAssistantCount = state.completedAssistantCount
   }
 
+  /// The chat view is back on screen (`.reattached`, or a later `.task`) (#74). Navigating
+  /// back never starts reading: a reply that completed while the chat was off screen is
+  /// consumed here, so no later speak edge (`.foreground`, a playback-idle edge) reads it.
+  private func returnOnScreen(_ state: inout State) {
+    guard !state.isOnScreen else { return }
+    state.isOnScreen = true
+    arm(&state)
+  }
+
   /// Re-derive the read-aloud anchor after a hydrate's wholesale rebuild (#74). The first
   /// hydrate arms. A later one cannot keep the old count — the live fold keeps ONE assistant
   /// row per turn while history may hold several — so the anchor is re-based on the rebuilt
   /// transcript: a hydrate never CREATES a pending reply, it only PRESERVES the one the user
-  /// was already waiting on (e.g. completed live while backgrounded), unless a #98 replay fold
-  /// delivered it (`replayConsumedReply` — past turn boundaries are never read).
+  /// was already waiting on (e.g. completed live while backgrounded).
   private func rebaseSpokenAnchor(
     isFirstHydrate: Bool, wasReplyPending: Bool, into state: inout State
   ) {
-    let keepsPending = !isFirstHydrate && wasReplyPending && !state.replayConsumedReply
+    let keepsPending = !isFirstHydrate && wasReplyPending
     state.spokenAssistantCount = max(0, state.completedAssistantCount - (keepsPending ? 1 : 0))
-    state.replayConsumedReply = false
   }
 
   /// A hydrate's rebuild replaced the row the clip belongs to (the live `uuid()` row became a
   /// deterministic history id): re-point `.preparing`/`.speaking` at the newest completed
-  /// assistant row so the action bar keeps showing the right state (#74 — the desktop absorbs
-  /// the same live-id rewrite). The clip itself plays on untouched.
-  private func repointPlaybackAfterRebuild(into state: inout State) {
+  /// assistant row of the SAME turn (`playbackTurn`, captured before the rebuild) — else at
+  /// the newest completed assistant row — so the action bar keeps showing the right state
+  /// (#74 — the desktop absorbs the same live-id rewrite). The clip itself plays on untouched.
+  private func repointPlaybackAfterRebuild(playbackTurn: Int?, into state: inout State) {
     let rowID: ChatRow.ID
     switch state.ttsPlayback {
     case .idle: return
     case let .preparing(id), let .speaking(id): rowID = id
     }
     guard state.transcript[id: rowID] == nil,
-          let replacement = state.lastCompletedAssistantRow?.id
+          let replacement = (playbackTurn.flatMap(state.lastCompletedAssistantRow(inTurn:))
+            ?? state.lastCompletedAssistantRow)?.id
     else { return }
     state.ttsPlayback = switch state.ttsPlayback {
     case .preparing: .preparing(replacement)
@@ -3288,15 +3326,17 @@ public struct ChatFeature {
   }
 
   /// The auto-speak check (#74), run at the speak edges: a LIVE `message.complete`, every
-  /// playback-idle edge (`.ttsFinished` / `.ttsFailed`) and `.foreground`. Reads the newest
-  /// assistant reply when the toggle is on, the endpoint is supported, nothing is playing, the
-  /// app is foreground with this chat on screen, no #98 replay fold is running, the newest
+  /// playback-idle edge (`.ttsFinished` / `.ttsFailed`), the mic going idle, and
+  /// `.foreground`. Reads the newest assistant reply when the toggle is on, the endpoint is
+  /// supported, nothing is playing, the mic is not busy (it owns the audio session), the app
+  /// is foreground with this chat on screen, no #98 replay fold is running, the newest
   /// assistant message row is COMPLETE, and it is pending (`completedAssistantCount >
   /// spokenAssistantCount`). The anchor then jumps to the full count: a backlog that piled up
   /// during a clip collapses to the newest reply.
   private func autoSpeakIfReady(_ state: inout State) -> Effect<Action> {
-    guard state.autoSpeakReplies, state.ttsSupported, state.ttsPlayback == .idle,
-          !state.isSceneBackgrounded, state.isOnScreen, !state.isFoldingReplay
+    guard state.autoSpeakReplies, state.ttsSupported, !state.ttsPlayback.isActive,
+          !state.recording.isBusy, !state.isSceneBackgrounded, state.isOnScreen,
+          !state.isFoldingReplay
     else { return .none }
     let completed = state.completedAssistantCount
     guard completed > state.spokenAssistantCount,
@@ -3325,14 +3365,17 @@ public struct ChatFeature {
       do {
         audio = try await rest.speak(connection, speech, profile)
       } catch {
-        await send(.ttsFailed(id: id, .rest(asRESTError(error))))
+        await send(.ttsFailed(.rest(asRESTError(error))))
         return
       }
-      await send(.ttsSpeaking(id: id))
+      // A Stop / barge-in / background that landed while the synthesis was decoding must not
+      // start the clip (the mic may already own the audio session).
+      guard !Task.isCancelled else { return }
+      await send(.ttsSpeaking)
       do {
         try await tts.play(audio.data, audio.mimeType)
       } catch {
-        await send(.ttsFailed(id: id, .playback(error as? TTSPlaybackError ?? .failed)))
+        await send(.ttsFailed(.playback(error as? TTSPlaybackError ?? .failed)))
         return
       }
       await send(.ttsFinished)
@@ -3340,25 +3383,29 @@ public struct ChatFeature {
     .cancellable(id: CancelID.ttsPlayback, cancelInFlight: true)
   }
 
-  /// Silence the read-aloud clip (#74): back to `.idle`, cancel the synthesis/playback effect
-  /// (which drops its trailing `.ttsFinished` — never a speak edge), and stop the player when
-  /// one was active. Safe while idle (no `tts.stop()` call then).
-  private func stopReadAloudPlayback(_ state: inout State) -> Effect<Action> {
+  /// The state half of every read-aloud stop (#74): back to `.idle`; a `bargeIn` (USER
+  /// submit or mic tap) that silenced an active clip also stamps `ttsInterruptedAt`, consumed
+  /// by the next regular `prompt.submit`. Returns whether a clip was active. The caller cancels
+  /// `CancelID.ttsPlayback` and runs `tts.stop()` (see `stopReadAloudPlayback`).
+  @discardableResult
+  private func silenceReadAloud(_ state: inout State, bargeIn: Bool = false) -> Bool {
     let wasActive = state.ttsPlayback.isActive
+    if wasActive, bargeIn { state.ttsInterruptedAt = now }
     state.ttsPlayback = .idle
+    return wasActive
+  }
+
+  /// Silence the read-aloud clip (#74): `silenceReadAloud`, cancel the synthesis/playback
+  /// effect (which drops its trailing `.ttsFinished` — never a speak edge), and stop the
+  /// player when one was active. Safe while idle (no `tts.stop()` call then). A `bargeIn` is a
+  /// USER submit only — never the queue drain, which fires on the very `message.complete` that
+  /// starts auto-speak.
+  private func stopReadAloudPlayback(_ state: inout State, bargeIn: Bool = false) -> Effect<Action> {
+    let wasActive = silenceReadAloud(&state, bargeIn: bargeIn)
     return .merge(
       .cancel(id: CancelID.ttsPlayback),
       wasActive ? .run { [tts] _ in await tts.stop() } : .none
     )
-  }
-
-  /// Typing barge-in (#74, USER submits only — never the queue drain, which fires on the very
-  /// `message.complete` that starts auto-speak): a send while a clip prepares/plays silences
-  /// it and stamps `ttsInterruptedAt`, consumed by the next regular `prompt.submit`.
-  private func bargeInReadAloud(_ state: inout State) -> Effect<Action> {
-    guard state.ttsPlayback.isActive else { return .none }
-    state.ttsInterruptedAt = now
-    return stopReadAloudPlayback(&state)
   }
 
   /// Take the barge-in latch (#74) for a regular `prompt.submit`: `true` when a user
@@ -3624,12 +3671,9 @@ public struct ChatFeature {
     state.isFoldingReplay = false
     // Read aloud (#74): a replayed completion is a past turn boundary and is never read —
     // not even when the fold completed the still-live streaming row (grace expiry). Consume
-    // it now, so no speak edge before the trailing hydrate can pick it up, and flag it so
-    // that hydrate's re-base consumes it too (it may split the turn into several rows).
-    if foldedReply {
-      state.replayConsumedReply = true
-      arm(&state)
-    }
+    // it now, so no speak edge before or after the trailing hydrate can pick it up (with
+    // nothing pending, that hydrate's re-base keeps it consumed).
+    if foldedReply { arm(&state) }
     switch lastBoundary {
     case .started: effects.append(setTurnAnchor(state))
     case .ended: effects.append(clearTurnAnchor(state))
@@ -3843,9 +3887,13 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
-    // Read-aloud anchor inputs (#74), captured BEFORE the rebuild below changes the count.
+    // Read-aloud inputs (#74), captured BEFORE the rebuild below changes the rows.
     let isFirstHydrate = !state.hasHydrated
     let wasReplyPending = state.completedAssistantCount > state.spokenAssistantCount
+    let playbackTurn: Int? = switch state.ttsPlayback {
+    case .idle: nil
+    case let .preparing(id), let .speaking(id): state.turnOrdinal(of: id)
+    }
     state.hasHydrated = true // the transcript below is now server-authoritative (#80 hero gate)
     // A successful hydrate means we're connected — clear any stale connection banner, but
     // keep this connection's standing advertisement failure up (it is not stale).
@@ -3979,7 +4027,7 @@ public struct ChatFeature {
     rebaseSpokenAnchor(
       isFirstHydrate: isFirstHydrate, wasReplyPending: wasReplyPending, into: &state
     )
-    repointPlaybackAfterRebuild(into: &state)
+    repointPlaybackAfterRebuild(playbackTurn: playbackTurn, into: &state)
 
     // Reconcile the live "Thinking" elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;

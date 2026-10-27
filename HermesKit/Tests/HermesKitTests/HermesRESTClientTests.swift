@@ -822,6 +822,27 @@ struct HermesRESTClientTests {
     #expect(error?.isMissingEndpointVerdict == true)
   }
 
+  /// FastAPI's own unmatched-route body is the same verdict.
+  @Test func speakRouteNotFoundBodyIsMissingEndpointVerdict() async throws {
+    MockURLProtocol.set(status: 404, json: #"{"detail":"Not Found"}"#)
+    let error = await #expect(throws: RESTError.self) {
+      _ = try await makeClient().speak(connection, "Hi", "work")
+    }
+    #expect(error == .notFound)
+  }
+
+  /// The handler's own 404 — an unknown `?profile=` (`_config_profile_scope`) — is NOT a
+  /// missing route: it keeps its detail for the banner.
+  @Test func speakUnknownProfileIsNotAMissingEndpointVerdict() async throws {
+    MockURLProtocol.set(status: 404, json: #"{"detail":"Profile 'gone' does not exist."}"#)
+    let error = await #expect(throws: RESTError.self) {
+      _ = try await makeClient().speak(connection, "Hi", "gone")
+    }
+    #expect(error == .server(status: 404, detail: "Profile 'gone' does not exist."))
+    #expect(error?.isMissingEndpointVerdict == false)
+    #expect(error?.message == "Profile 'gone' does not exist.")
+  }
+
   /// A pre-desktop agent's SPA catch-all is `GET /{full_path:path}`, so a POST answers 405 —
   /// the same capability verdict as a 404.
   @Test func speakMethodNotAllowedIsMissingEndpointVerdict() async throws {

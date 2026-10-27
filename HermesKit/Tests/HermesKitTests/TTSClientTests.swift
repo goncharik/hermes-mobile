@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import Testing
 
@@ -71,20 +72,54 @@ struct TTSClientTests {
     #expect(TTSAudio.fileExtension(forMimeType: "audio/ogg") == "ogg")
     #expect(TTSAudio.fileExtension(forMimeType: "audio/wav") == "wav")
     #expect(TTSAudio.fileExtension(forMimeType: "audio/flac") == "flac")
-    #expect(TTSAudio.fileExtension(forMimeType: "Audio/OGG; codecs=opus") == "ogg")
     #expect(TTSAudio.fileExtension(forMimeType: "audio/unknown") == "mp3")
   }
 
-  // MARK: Test double contract (relied on by ChatFeature tests)
-
-  @Test func testValuePlayReturnsInstantlyAndStopIsCallable() async throws {
-    let client = TTSClient.testValue
-    try await client.play(Data([0x00]), "audio/mpeg")
-    await client.stop()
-    await client.stop()
+  @Test func theParsedMimeTypePicksTheExtension() throws {
+    // `fileExtension` takes `parse(dataURL:)`'s output, which already dropped the parameters.
+    let audio = try TTSAudio.parse(dataURL: "data:audio/ogg;codecs=opus;base64,3q0=")
+    #expect(TTSAudio.fileExtension(forMimeType: audio.mimeType) == "ogg")
   }
 
-  @Test func stallTimeoutMatchesTheDesktopWatchdog() {
-    #expect(TTSClient.stallTimeout == .seconds(15))
+  // MARK: Stall watchdog decision
+
+  private typealias Detector = TTSStallDetector<TestClock<Duration>.Instant>
+
+  /// Advance `clock` by `elapsed`, then poll `position` (`#expect` can't call a mutating method).
+  private func poll(
+    _ detector: inout Detector, _ position: TimeInterval,
+    after elapsed: Duration, on clock: TestClock<Duration>
+  ) async -> Bool {
+    await clock.advance(by: elapsed)
+    return detector.isStalled(position: position, at: clock.now)
+  }
+
+  @Test func aStuckPositionStallsExactlyAtTheTimeout() async {
+    let clock = TestClock()
+    var detector = Detector(position: 0, at: clock.now)
+    let early = await poll(&detector, 0, after: TTSClient.stallTimeout - .milliseconds(500), on: clock)
+    #expect(!early)
+    let atTimeout = await poll(&detector, 0, after: .milliseconds(500), on: clock)
+    #expect(atTimeout) // a clip that never starts stalls too
+  }
+
+  @Test func everyAdvanceReArmsTheTimeout() async {
+    let clock = TestClock()
+    var detector = Detector(position: 0, at: clock.now)
+    let advanced = await poll(&detector, 1.0, after: .seconds(14), on: clock) // re-armed here
+    #expect(!advanced)
+    let fourteenSecondsLater = await poll(&detector, 1.0, after: .seconds(14), on: clock)
+    #expect(!fourteenSecondsLater)
+    let fifteenSecondsLater = await poll(&detector, 1.0, after: .seconds(1), on: clock)
+    #expect(fifteenSecondsLater)
+  }
+
+  @Test func aPositionThatMovesBackwardsIsNotProgress() async {
+    let clock = TestClock()
+    var detector = Detector(position: 5.0, at: clock.now)
+    let back = await poll(&detector, 2.0, after: .seconds(10), on: clock)
+    #expect(!back)
+    let stillBelow = await poll(&detector, 4.0, after: .seconds(5), on: clock)
+    #expect(stillBelow) // 15 s without passing 5.0
   }
 }

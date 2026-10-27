@@ -1,7 +1,18 @@
 import Clocks
+import ComposableArchitecture
 import Testing
 
 @testable import HermesKit
+
+extension IdleTimerClient {
+  /// A recording double: every `setDisabled` value is appended to `calls`, in order. Used by
+  /// the `ChatFeature` and `AppFeature` keep-awake tests.
+  static func recording(into calls: LockIsolated<[Bool]>) -> IdleTimerClient {
+    IdleTimerClient(setDisabled: { disabled in
+      calls.withValue { $0.append(disabled) }
+    })
+  }
+}
 
 /// Bounded busy-wait for cross-task spy flags (e.g. a socket stream's `onTermination`
 /// firing on a cancelled effect): yields until `condition()` holds, FAILING the test —

@@ -383,6 +383,26 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertReadAloudCell { _ in .speaking(self.id(2)) }
   }
 
+  /// The pill in place in the fixed region (#65): below a standing approval card and the
+  /// queued-prompt panel, above the composer — one line that leaves the card its room and the
+  /// transcript its context.
+  func testChatView_readAloudPillUnderACardAndTheQueue() {
+    let rows: [ChatRow] = [
+      ChatRow(id: id(0), kind: .message(role: .user, text: "Clean the build folder.", isComplete: true)),
+      ChatRow(id: id(1), kind: .message(
+        role: .assistant, text: "I'll remove the build directory first.", isComplete: true
+      )),
+    ]
+    assertChatView(rows: rows, title: "Read aloud", status: .ready) { state in
+      state.ttsPlayback = .speaking(self.id(1))
+      state.isSending = true
+      state.queuedPrompts = [QueuedPrompt(id: self.id(5), text: "Then run the tests")]
+      state.present(.approval(ApprovalRequest(
+        command: "rm -rf build/", detail: "Delete the build directory"
+      )))
+    }
+  }
+
   /// Copied state: the copy icon swaps to the green checkmark while the row's
   /// feedback token is live.
   func testMessageActionBar_copied() {

@@ -286,9 +286,9 @@ public struct AppFeature {
   @Dependency(\.push) var push
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
-  /// Only for `releaseSlotMic` — the identity teardowns that drop the slot without a
-  /// `ChatFeature.teardown` to release the mic for them.
+  /// Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
+  @Dependency(\.idleTimer) var idleTimer
   /// The `.bearer` regime's single token owner (#19). `AppFeature` owns its LIFECYCLE — seed
   /// on launch restore and on a re-auth that hands back a bearer connection, drain on every
   /// logout — while `ConnectionFeature`/`ReauthFeature` seed it for the login they just ran.
@@ -397,7 +397,7 @@ public struct AppFeature {
         // and land on a *fresh* onboarding — nothing prefilled, there is no session left to
         // repair. The tap stash and the approval badge set die with the identity too.
         let connection = state.connectionFailed?.connection
-        let releaseMic = releaseSlotMic(state)
+        let releaseSlot = releaseSlotDeviceResources(state)
         bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
         try? keychain.deleteSession()
         preferences.clearServerURL()
@@ -412,7 +412,7 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
       case let .scenePhaseChanged(phase):
         // Fan lifecycle out to the live chat slot (if any) and the session list — no
@@ -614,8 +614,9 @@ public struct AppFeature {
       case .clearLiveChat:
         // Pop-to-list teardown completed — drop the slot state. `ifLet` auto-cancels any
         // remaining child effects on the nil-out.
+        let release = releaseSlotDeviceResources(state)
         state.liveChat = nil
-        return .none
+        return release
 
       case .path(.popFrom):
         // Popped back to the session list. Nothing to do at pop-START: the teardown policy
@@ -693,14 +694,14 @@ public struct AppFeature {
 
       case .home(.delegate(.disconnect)):
         // Token cleared in Settings → tear down and return to onboarding. Nil-ing the slot
-        // auto-cancels its effects (socket included); the mic is the one thing that outlives
-        // them, so `releaseSlotMic` covers it. The tap stash is structurally nil here (home
+        // auto-cancels its effects (socket included); the mic and the idle timer outlive
+        // them, so `releaseSlotDeviceResources` covers those. The tap stash is structurally nil here (home
         // existed, so any stash was consumed at creation) — cleared defensively: the stash
         // dies with the identity. The pending-approval badge set
         // dies with it too (entries reference sessions on the server just left — they'd
         // leak a stale icon badge into the next login), so reset the badge to zero.
         let connection = state.home?.connection
-        let releaseMic = releaseSlotMic(state)
+        let releaseSlot = releaseSlotDeviceResources(state)
         state.path = .init()
         state.liveChat = nil
         state.home = nil
@@ -708,7 +709,7 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
       case .liveChat(.delegate(.sessionExpired)):
         // The live (gated) session died — attached or detached, the slot is the one chat.
@@ -748,14 +749,14 @@ public struct AppFeature {
         // The approval badge set + tap stash are identity-scoped too — the old user's
         // pending approvals must not badge (or replay into) the new user's list.
         preferences.clearIdentityScopedPrefs()
-        let releaseMic = releaseSlotMic(state)
+        let releaseSlot = releaseSlotDeviceResources(state)
         state.path = .init()
         state.liveChat = nil
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
-        let identityCleanup: Effect<Action> = .merge(releaseMic, setBadge(state))
+        let identityCleanup: Effect<Action> = .merge(releaseSlot, setBadge(state))
         // The stash was just cleared, so there is nothing to replay — but in regular the new
         // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
         // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
@@ -769,7 +770,7 @@ public struct AppFeature {
         // The tap stash and the approval badge set die with the identity (same clears
         // as `.disconnect`, through the other logout path); badge reset to zero.
         let connection = state.home?.connection ?? state.liveChat?.connection
-        let releaseMic = releaseSlotMic(state)
+        let releaseSlot = releaseSlotDeviceResources(state)
         bearerTokens.detachPersistence() // BEFORE the delete — see `detachPersistence`
         try? keychain.deleteSession()
         preferences.clearServerURL()
@@ -784,7 +785,7 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseMic, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
       case let .liveChat(.delegate(.branchCreated(creation))):
         // A branch `session.create` resolved (#34). The new session lives ONLY in server
@@ -1271,16 +1272,22 @@ public struct AppFeature {
     return .run { [bearerTokens] _ in bearerTokens.clear(claim: claim) }
   }
 
-  /// Release the slot's microphone when an identity teardown (Settings "disconnect", either
-  /// logout, a different-user re-auth) drops the chat by ASSIGNMENT instead of through
-  /// `teardownSlot`. `ifLet`'s auto-cancel on the nil-out reaches every child EFFECT — the
-  /// level stream and the tick loop included — but not the resource the client holds outside
-  /// them: `AudioRecorderClient` keeps `AVAudioRecorder` and the audio session alive until
-  /// someone calls `cancel()`, which is what `ChatFeature.teardown` would have done. The
-  /// split sidebar (#80) puts Settings on screen next to a recording composer, so this is
-  /// reachable without ever leaving the chat. No slot, or an idle one → no effect.
-  private func releaseSlotMic(_ state: State) -> Effect<Action> {
-    guard state.liveChat?.recording.isBusy == true else { return .none }
+  /// Release what the slot holds OUTSIDE its effects, right before every nil-out: the
+  /// `.clearLiveChat` that ends `teardownSlot`, and the identity teardowns (Settings
+  /// "disconnect", either logout, a different-user re-auth) that drop the chat by ASSIGNMENT.
+  /// `ifLet`'s auto-cancel on the nil-out reaches every child EFFECT — the level stream and
+  /// the tick loop included — but not:
+  /// - the microphone: `AudioRecorderClient` keeps `AVAudioRecorder` and the audio session
+  ///   alive until someone calls `cancel()`, which `ChatFeature.teardown` does but an
+  ///   assignment skips. The split sidebar (#80) puts Settings on screen next to a recording
+  ///   composer, so this is reachable without ever leaving the chat;
+  /// - the idle timer (#74): an awake slot (`wantsScreenAwake`, e.g. a running auto-speak
+  ///   turn) disabled auto-lock, and once the slot is gone no `.onChange` edge can restore it.
+  /// No slot, or an idle one → nothing.
+  private func releaseSlotDeviceResources(_ state: State) -> Effect<Action> {
+    guard let chat = state.liveChat else { return .none }
+    if chat.wantsScreenAwake { idleTimer.setDisabled(false) }
+    guard chat.recording.isBusy else { return .none }
     return .run { [audioRecorder] _ in await audioRecorder.cancel() }
   }
 

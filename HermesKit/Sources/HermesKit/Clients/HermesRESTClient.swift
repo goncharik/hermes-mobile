@@ -261,7 +261,8 @@ public struct HermesRESTClient: Sendable {
   /// `"default"` included, #114) to add `?profile=`; `nil` omits it. Errors are HTTP statuses:
   /// 400 carries the provider's reason in `detail` (`.server(400, detail)`), and an agent
   /// without the route answers 404 or 405 — both `RESTError.isMissingEndpointVerdict`, which
-  /// callers use to flip their `ttsSupported` gate silently. Blocking synthesis, so the
+  /// callers use to flip their `ttsSupported` gate silently. An unknown `?profile=` is a
+  /// handler 404 and stays `.server(404, detail)` (not a verdict). Blocking synthesis, so the
   /// request timeout scales with the text (`speakTimeout(forCharacterCount:)`).
   public var speak: @Sendable (_ connection: ServerConnection, _ text: String, _ profile: String?) async throws -> TTSAudio
   /// Register this device's APNs token with the `hermes-push` plugin —
@@ -471,7 +472,8 @@ public extension HermesRESTClient {
         let body = try JSONSerialization.data(withJSONObject: ["text": text])
         let response: SpeakResponse = try await postJSON(
           url, body: body, auth: authFor(conn), session: session,
-          timeout: HermesRESTClient.speakTimeout(forCharacterCount: text.count)
+          timeout: HermesRESTClient.speakTimeout(forCharacterCount: text.count),
+          notFoundMeansNoRoute: true
         )
         // The server reports every failure as an HTTP status, so a 2xx `{"ok": false}`
         // shouldn't happen. Treat it as a failure rather than playing nothing.
@@ -805,11 +807,25 @@ func get<T: Decodable>(_ url: URL, auth: RequestAuth, session: URLSession) async
 /// for every other (authenticated) REST call a transient 429/503 stays a generic
 /// `.server(status:)`, so it never surfaces misleading "too many login attempts" /
 /// "auth provider unreachable" copy mid-session.
-func validate(_ response: URLResponse, data: Data, loginSpecific: Bool = false) throws {
+///
+/// `notFoundMeansNoRoute` narrows `.notFound` to FastAPI's unmatched-route 404 (JSON
+/// `{"detail": "Not Found"}`, or no JSON detail at all): a handler's own 404 with another
+/// detail (`speak`'s unknown `?profile=`: "Profile 'x' does not exist.") stays
+/// `.server(404, detail)`, so it banners instead of reading as a missing-endpoint verdict.
+func validate(
+  _ response: URLResponse, data: Data, loginSpecific: Bool = false,
+  notFoundMeansNoRoute: Bool = false
+) throws {
   guard let http = response as? HTTPURLResponse else { throw RESTError.unreachable }
   switch http.statusCode {
   case 200..<300: break
   case 401: throw RESTError.unauthorized
+  case 404 where notFoundMeansNoRoute:
+    if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let detail = object["detail"] as? String, !detail.isEmpty, detail != "Not Found" {
+      throw RESTError.server(status: 404, detail: detail)
+    }
+    throw RESTError.notFound
   case 404: throw RESTError.notFound
   case 429 where loginSpecific: throw RESTError.rateLimited
   case 503 where loginSpecific: throw RESTError.serviceUnavailable
@@ -831,10 +847,10 @@ func serverDetail(from data: Data) -> String? {
 
 /// POST a JSON body and decode the response (used by `transcribe` and `speak`). `timeout`
 /// overrides the request's default 60 s interval when non-nil (`speak` scales it with the
-/// text); `nil` leaves the default untouched.
+/// text); `nil` leaves the default untouched. `notFoundMeansNoRoute`: see `validate`.
 func postJSON<T: Decodable>(
   _ url: URL, body: Data, auth: RequestAuth, session: URLSession,
-  timeout: TimeInterval? = nil
+  timeout: TimeInterval? = nil, notFoundMeansNoRoute: Bool = false
 ) async throws -> T {
   var request = URLRequest(url: url)
   if let timeout { request.timeoutInterval = timeout }
@@ -851,7 +867,7 @@ func postJSON<T: Decodable>(
     throw RESTError(transport: error)
   }
 
-  try validate(response, data: data)
+  try validate(response, data: data, notFoundMeansNoRoute: notFoundMeansNoRoute)
 
   do {
     return try JSONDecoder().decode(T.self, from: data)
@@ -991,17 +1007,14 @@ private struct TranscriptionResponse: Decodable {
 }
 
 /// `/api/audio/speak` response — `{ok, data_url, mime_type, provider}`. Only `data_url` is
-/// load-bearing (`TTSAudio.parse` reads the mime type from it); the rest decode leniently.
+/// load-bearing (`TTSAudio.parse` reads the mime type from it).
 private struct SpeakResponse: Decodable {
   let ok: Bool?
   let dataURL: String?
-  let mimeType: String?
-  let provider: String?
 
   enum CodingKeys: String, CodingKey {
-    case ok, provider
+    case ok
     case dataURL = "data_url"
-    case mimeType = "mime_type"
   }
 }
 

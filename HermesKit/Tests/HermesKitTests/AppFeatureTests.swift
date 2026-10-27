@@ -600,9 +600,10 @@ struct AppFeatureTests {
   }
 
   /// The same teardowns raise no recorder call for an IDLE slot — no audio session is touched
-  /// on an ordinary logout.
+  /// on an ordinary logout — and leave the idle timer alone.
   @Test func identityTeardownsLeaveAnIdleSlotsRecorderAlone() async {
     let cancelled = LockIsolated(0)
+    let idleCalls = LockIsolated<[Bool]>([])
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: connection),
@@ -613,12 +614,61 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.push = PushClient.inMemory().client
       $0.audioRecorder.cancel = { cancelled.withValue { $0 += 1 } }
+      $0.idleTimer = .recording(into: idleCalls)
     }
     store.exhaustivity = .off
 
     await store.send(.home(.delegate(.disconnect)))
     await store.finish()
     #expect(cancelled.value == 0)
+    #expect(idleCalls.value.isEmpty)
+  }
+
+  /// Keep-awake (#74): a slot that disabled auto-lock — here an on-screen running turn with
+  /// auto-speak on — must hand it back when it is dropped, whether by ASSIGNMENT (the identity
+  /// teardowns, where no `ChatFeature.teardown` runs) or at the end of `teardownSlot`
+  /// (`.clearLiveChat`). Once the slot is gone no `.onChange` edge can restore it.
+  @Test func droppingAnAwakeSlotRestoresAutoLock() async {
+    var awake = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    awake.isOnScreen = true
+    awake.autoSpeakReplies = true
+    awake.isSending = true
+    #expect(awake.wantsScreenAwake)
+
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: freshCookieConnection(username: "bob"), sameUser: false
+      )))),
+      .clearLiveChat,
+    ] {
+      let idleCalls = LockIsolated<[Bool]>([])
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          path: StackState([ChatScreen.State(sessionKey: "s1")]),
+          liveChat: awake,
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .password,
+            provider: "basic", previousUsername: "alice"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.idleTimer = .recording(into: idleCalls)
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(idleCalls.value == [false], "\(action) left auto-lock disabled")
+    }
   }
 
   /// Popping mid-turn KEEPS the slot untouched — no persist/teardown/clear fires (the send

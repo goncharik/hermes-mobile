@@ -95,13 +95,22 @@ struct ChatReadAloudTests {
     #expect(state.readAloudState(for: uuid(3)) == .disabled)
   }
 
+  @Test(arguments: [
+    ChatFeature.State.RecordingState.requestingPermission, .recording, .transcribing,
+  ])
+  func readAloudStateIsDisabledWhileTheMicIsBusy(_ recording: ChatFeature.State.RecordingState) {
+    var state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
+    state.recording = recording
+    #expect(state.readAloudState(for: uuid(1)) == .disabled)
+    #expect(state.readAloudState(for: uuid(3)) == .disabled)
+  }
+
   @Test func freshStateDefaults() {
     let state = ChatFeature.State(connection: conn)
     #expect(state.autoSpeakReplies == false)
     #expect(state.ttsSupported)
     #expect(state.ttsPlayback == .idle)
     #expect(state.spokenAssistantCount == 0)
-    #expect(state.replayConsumedReply == false)
     #expect(state.ttsInterruptedAt == nil)
     #expect(state.isSceneBackgrounded == false)
     #expect(state.isOnScreen == false)
@@ -360,16 +369,6 @@ struct ChatReadAloudTests {
     #expect(store.state.spokenAssistantCount == 1)
     #expect(store.state.lastCompletedAssistantRow?.kind
       == .message(role: .assistant, text: "Found 3 files.", isComplete: true))
-  }
-
-  @Test func rehydrateAfterAReplayFoldConsumesThePendingReply() async {
-    // A #98 replay fold delivered the completion (`replayConsumedReply`): a past turn
-    // boundary is never read, so the trailing hydrate consumes it and clears the flag.
-    var initial = liveFoldedToolTurn(anchor: 0)
-    initial.replayConsumedReply = true
-    let store = await foregroundRehydrate(initial)
-    #expect(store.state.spokenAssistantCount == 2)
-    #expect(store.state.replayConsumedReply == false)
   }
 
   @Test func rehydrateNeverCreatesAPendingReply() async {
@@ -678,7 +677,11 @@ struct ChatReadAloudTests {
     initial.isOnScreen = true
     let store = makeStore(initial, recorder)
     store.exhaustivity = .off(showSkippedAssertions: false)
-    store.dependencies.hermesGateway.connect = Self.idleSocket
+    let connects = LockIsolated(0)
+    store.dependencies.hermesGateway.connect = { @Sendable url, auth in
+      connects.withValue { $0 += 1 }
+      return Self.idleSocket(url, auth)
+    }
 
     await store.send(.foreground) {
       $0.spokenAssistantCount = 1
@@ -686,6 +689,9 @@ struct ChatReadAloudTests {
     }
     await store.receive(\.ttsFinished)
     #expect(recorder.spokenTexts == ["Done"])
+    // The speak did not swallow the redial of the dead socket.
+    await waitUntil { connects.value == 1 }
+    #expect(connects.value == 1)
     await store.send(.teardown)
   }
 
@@ -698,6 +704,52 @@ struct ChatReadAloudTests {
     let store = makeStore(initial, recorder)
 
     await store.send(.reattached)
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  // MARK: The mic owns the audio session
+
+  /// How a dictation ends — each puts the mic back to `.idle`, a speak edge.
+  enum MicEnd: CaseIterable, Sendable {
+    case transcript, failure, cancelled, denied
+  }
+
+  @Test(arguments: MicEnd.allCases)
+  func aReplyCompletingWhileTheMicIsBusyWaitsForTheMicToGoIdle(_ end: MicEnd) async {
+    // The hands-off loop: the user starts dictating the next prompt while the agent finishes.
+    // Reading now would switch the shared session to `.playback` under the live recorder.
+    let recorder = TTSRecorder()
+    var initial = streamingSlot()
+    initial.recording = end == .denied ? .requestingPermission : .recording
+    let store = makeStore(initial, recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil)))
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(store.state.spokenAssistantCount == 0) // held, still pending
+    // A foreground return while dictating holds it too.
+    await store.send(.foreground)
+    #expect(store.state.ttsPlayback == .idle)
+
+    switch end {
+    case .transcript: await store.send(.transcriptionSucceeded("next prompt"))
+    case .failure: await store.send(.voiceInputFailed(message: "Couldn’t transcribe the audio."))
+    case .cancelled: await store.send(.recordingCancelled)
+    case .denied: await store.send(.recordingPermission(false))
+    }
+    #expect(store.state.recording == .idle)
+    #expect(store.state.ttsPlayback == .preparing(uuid(101)))
+    await store.receive(\.ttsFinished)
+    #expect(recorder.spokenTexts == ["Hello"])
+  }
+
+  @Test func readAloudTappedWhileTheMicIsBusyIsANoOp() async {
+    let recorder = TTSRecorder()
+    var initial = twoReplies(anchor: 2)
+    initial.recording = .recording
+    let store = makeStore(initial, recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) // exhaustive: no state change
     #expect(recorder.speaks.value.isEmpty)
   }
 
@@ -839,16 +891,72 @@ struct ChatReadAloudTests {
     #expect(recorder.speaks.value.isEmpty)
   }
 
-  @Test func badRequestDetailLandsInTheBanner() async {
+  /// A 400 (no provider) and a handler 404 (unknown `?profile=`) both keep the controls.
+  @Test(arguments: [
+    RESTError.server(status: 400, detail: "No TTS provider configured"),
+    .server(status: 404, detail: "Profile 'gone' does not exist."),
+  ])
+  func serverDetailLandsInTheBanner(_ error: RESTError) async {
     let recorder = TTSRecorder()
-    recorder.speakError.setValue(.server(status: 400, detail: "No TTS provider configured"))
+    recorder.speakError.setValue(error)
     let store = makeStore(twoReplies(anchor: 2), recorder)
 
     await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
     await store.receive(\.ttsFailed) {
       $0.ttsPlayback = .idle
-      $0.errorBanner = "No TTS provider configured"
+      $0.errorBanner = error.message // `ttsSupported` stays true
     }
+  }
+
+  @Test func aTransportFailureBannersThroughAsRESTError() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+    store.dependencies.hermesREST.speak = { @Sendable _, _, _ in
+      throw URLError(.notConnectedToInternet)
+    }
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsFailed) {
+      $0.ttsPlayback = .idle
+      $0.errorBanner = RESTError.offline.message
+    }
+  }
+
+  @Test func theFailureEdgeReadsANewerPendingReply() async {
+    // A manual read of the older reply fails; its idle edge still reads the pending newest one.
+    let recorder = TTSRecorder()
+    recorder.playError.setValue(.failed)
+    var initial = twoReplies(anchor: 0)
+    initial.autoSpeakReplies = true
+    let store = makeStore(initial, recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.readAloudTapped(id: uuid(101)))
+    await store.receive(\.ttsSpeaking)
+    await store.receive(\.ttsFailed)
+    #expect(store.state.ttsPlayback == .preparing(uuid(103)))
+    #expect(store.state.spokenAssistantCount == 2)
+    await store.receive(\.ttsSpeaking)
+    await store.receive(\.ttsFailed)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.spokenTexts == ["One", "Two"])
+  }
+
+  @Test func synthesisLandingAfterAStopNeverStartsTheClip() async {
+    // `speak` finishes decoding even though the effect was cancelled meanwhile (here: it
+    // swallows the cancellation): the clip must not start — the mic may own the session.
+    let recorder = TTSRecorder()
+    let speakClock = TestClock()
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+    store.dependencies.hermesREST.speak = { @Sendable _, _, _ in
+      try? await speakClock.sleep(for: .seconds(1))
+      return TTSRecorder.clip
+    }
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.send(.stopReadAloud) { $0.ttsPlayback = .idle }
+    await store.finish()
+    #expect(recorder.plays.value.isEmpty)
   }
 
   @Test(arguments: [
@@ -918,11 +1026,53 @@ struct ChatReadAloudTests {
     #expect(rebuilt != uuid(101)) // the live id was rewritten to the history id
     #expect(store.state.ttsPlayback == (preparing ? .preparing(rebuilt) : .speaking(rebuilt)))
 
-    // The clip's own `.ttsSpeaking` (still carrying the live id) keeps the re-pointed row.
+    // The clip's own `.ttsSpeaking` keeps the re-pointed row.
     if preparing {
-      await store.send(.ttsSpeaking(id: uuid(101)))
+      await store.send(.ttsSpeaking)
       #expect(store.state.ttsPlayback == .speaking(rebuilt))
     }
+  }
+
+  @Test func hydrateMidPlaybackRepointsAnOlderReplyToItsOwnTurn() async throws {
+    // Two turns completed live since the last hydrate; the OLDER reply is being read when a
+    // re-hydrate rewrites every id (and splits that turn's reply around its progress text).
+    var initial = ChatFeature.State(
+      connection: conn, resumeStoredID: "stored1",
+      transcript: [user(100, "q1"), assistant(101, "Let me check.One"), user(102, "q2"), assistant(103, "Two")]
+    )
+    initial.liveSessionID = "live1"
+    initial.status = .ready
+    initial.hasHydrated = true
+    initial.spokenAssistantCount = 2
+    initial.ttsPlayback = .speaking(uuid(101))
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live1", storedSessionID: "stored1",
+      messages: [
+        SessionMessage(id: 1, role: "user", content: "q1"),
+        SessionMessage(id: 2, role: "assistant", content: "Let me check."),
+        SessionMessage(id: 3, role: "assistant", content: "One"),
+        SessionMessage(id: 4, role: "user", content: "q2"),
+        SessionMessage(id: 5, role: "assistant", content: "Two"),
+      ],
+      running: false
+    ))))
+    let one = try #require(store.state.transcript.first {
+      $0.kind == .message(role: .assistant, text: "One", isComplete: true)
+    })
+    let two = try #require(store.state.lastCompletedAssistantRow)
+    #expect(store.state.ttsPlayback == .speaking(one.id))
+    #expect(store.state.readAloudState(for: one.id) == .speaking)
+    #expect(store.state.readAloudState(for: two.id) == .disabled)
   }
 
   // MARK: The #98 replay rule
@@ -993,7 +1143,6 @@ struct ChatReadAloudTests {
     #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
     await store.receive(\.activateResult.success)
     #expect(store.state.ttsPlayback == .idle)
-    #expect(store.state.replayConsumedReply == false)
     #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
     #expect(recorder.speaks.value.isEmpty)
 
@@ -1043,7 +1192,6 @@ struct ChatReadAloudTests {
     recorder.install(into: &store.dependencies)
 
     await dropAndReplay(.socketClosed, store)
-    #expect(store.state.replayConsumedReply == false)
     await store.receive(\.activateResult.success)
     #expect(store.state.completedAssistantCount == 2)
     #expect(store.state.spokenAssistantCount == 1) // "Done" still pending
@@ -1167,7 +1315,7 @@ struct ChatReadAloudTests {
     #expect(recorder.stops.value == 0)
   }
 
-  @Test(arguments: [(119.0, true), (121.0, false)])
+  @Test(arguments: [(119.0, true), (120.0, false), (121.0, false)])
   func theLatchExpiresAfter120Seconds(_ age: TimeInterval, _ flagged: Bool) async {
     let recorder = TTSRecorder()
     let submits = LockIsolated<[JSONValue]>([])
@@ -1178,6 +1326,73 @@ struct ChatReadAloudTests {
     await store.send(.composerSubmitted) { $0.ttsInterruptedAt = nil } // taken either way
     await store.finish()
     #expect(submits.value == [submitParams("later", interrupted: flagged)])
+  }
+
+  @Test(arguments: [false, true], [false, true])
+  func bothBuildersAndTheHealReplayCarryTheFlag(withAttachment: Bool, heal: Bool) async {
+    // The upload+submit builder as well as the plain one; with `heal`, the first
+    // `prompt.submit` hits a stale live id (#17) and the replayed frame must carry it too.
+    let recorder = TTSRecorder()
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = idleSlotWithDraft("look")
+    initial.storedSessionID = "stored1"
+    initial.ttsPlayback = .speaking(uuid(103))
+    if heal { initial.liveSessionID = "stale-live" }
+    if withAttachment {
+      initial.attachments = [ComposerAttachment(
+        id: uuid(50), kind: .image, filename: "p.png", mimeType: "image/png", data: Data([1])
+      )]
+    }
+    let store = submitStore(initial, recorder, submits: submits)
+    store.dependencies.hermesGateway.send = { @Sendable method, params in
+      switch method {
+      case "prompt.submit":
+        submits.withValue { $0.append(params) }
+        if params["session_id"]?.stringValue == "stale-live" {
+          throw GatewayError.server("session not found")
+        }
+        return .object([:])
+      case "session.resume":
+        return .object([
+          "session_id": .string("live1"), "stored_session_id": .string("stored1"),
+          "messages": .array([]), "running": .bool(false),
+        ])
+      default:
+        return .object([:])
+      }
+    }
+
+    await store.send(.composerSubmitted)
+    await store.finish()
+    let flagged: (String) -> JSONValue = { sessionID in
+      .object(["session_id": .string(sessionID), "text": .string("look"), "interrupted": .bool(true)])
+    }
+    #expect(submits.value == (heal ? [flagged("stale-live"), flagged("live1")] : [flagged("live1")]))
+  }
+
+  @Test func aFailedSubmitDropsTheLatch() async {
+    // The latch is taken when the submit is built: a submit that then fails does not hand it
+    // back, so the user's re-send goes out unflagged.
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let submits = LockIsolated<[JSONValue]>([])
+    let store = submitStore(idleSlotWithDraft("next"), recorder, submits: submits)
+    store.dependencies.hermesGateway.send = { @Sendable method, params in
+      guard method == "prompt.submit" else { return .object([:]) }
+      submits.withValue { $0.append(params) }
+      if submits.value.count == 1 { throw GatewayError.server("boom") }
+      return .object([:])
+    }
+
+    await store.send(.readAloudTapped(id: uuid(103)))
+    await store.receive(\.ttsSpeaking)
+    await store.send(.composerSubmitted)
+    await store.receive(\.promptSubmitFailed)
+    #expect(store.state.ttsInterruptedAt == nil)
+    await store.send(.binding(.set(\.composerText, "next")))
+    await store.send(.composerSubmitted)
+    await store.finish()
+    #expect(submits.value == [submitParams("next", interrupted: true), submitParams("next")])
   }
 
   @Test func aQueuedSubmitMidPlaybackStampsAndTheDrainedPromptCarriesTheFlag() async {
@@ -1316,9 +1531,17 @@ struct ChatReadAloudTests {
     #expect(recorder.spokenTexts == ["Hello"])
   }
 
-  @Test func reattachedPutsTheChatBackOnScreenWithoutReading() async {
+  /// How a detached chat comes back on screen: `AppFeature`'s re-push, or the view's `.task`.
+  enum Return: CaseIterable, Sendable {
+    case reattached, task
+  }
+
+  @Test(arguments: Return.allCases)
+  func aReplyCompletedOffScreenIsConsumedWhenTheChatComesBack(_ comeBack: Return) async {
     let recorder = TTSRecorder()
-    let store = makeStore(streamingSlot(), recorder)
+    var initial = streamingSlot()
+    initial.hasStarted = true // a re-appearance, not the first `.task`
+    let store = makeStore(initial, recorder)
 
     await store.send(.viewDisappeared) { $0.isOnScreen = false }
     await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
@@ -1326,8 +1549,49 @@ struct ChatReadAloudTests {
       $0.streamingRowID = nil
       $0.isSending = false
     }
-    await store.send(.reattached) { $0.isOnScreen = true }
+    // Back on screen: not read, and consumed — the user is looking at it.
+    await store.send(comeBack == .reattached ? .reattached : .task) {
+      $0.isOnScreen = true
+      $0.spokenAssistantCount = 1
+    }
+    // So no later speak edge reads it either: a lock/unlock, or a clip's idle edge.
+    await store.send(.foreground)
+    await store.send(.ttsFinished)
     #expect(recorder.speaks.value.isEmpty)
+  }
+
+  enum StopWhilePreparing: CaseIterable, Sendable {
+    case submit, sceneBackgrounded, viewDisappeared, teardown
+  }
+
+  @Test(arguments: StopWhilePreparing.allCases)
+  func aSynthesisInFlightIsCancelledByEveryStop(_ stop: StopWhilePreparing) async {
+    // `.preparing`: the speak request is still out when the clip is silenced.
+    let recorder = TTSRecorder()
+    let speakClock = TestClock()
+    let submits = LockIsolated<[JSONValue]>([])
+    let store = submitStore(idleSlotWithDraft("next"), recorder, submits: submits)
+    store.dependencies.hermesREST.speak = { @Sendable _, _, _ in
+      try await speakClock.sleep(for: .seconds(1))
+      return TTSRecorder.clip
+    }
+
+    await store.send(.readAloudTapped(id: uuid(103)))
+    #expect(store.state.ttsPlayback == .preparing(uuid(103)))
+    switch stop {
+    case .submit: await store.send(.composerSubmitted)
+    case .sceneBackgrounded: await store.send(.sceneBackgrounded)
+    case .viewDisappeared: await store.send(.viewDisappeared)
+    case .teardown: await store.send(.teardown)
+    }
+    #expect(store.state.ttsPlayback == .idle)
+    await speakClock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(recorder.plays.value.isEmpty)
+    #expect(recorder.stops.value == 1)
+    if stop == .submit {
+      #expect(submits.value == [submitParams("next", interrupted: true)]) // a barge-in all the same
+    }
   }
 
   enum Leave: CaseIterable, Sendable {
@@ -1387,6 +1651,9 @@ struct ChatReadAloudTests {
     #expect(!state.wantsScreenAwake) // a running turn needs auto-speak on
     state.autoSpeakReplies = true
     #expect(state.wantsScreenAwake)
+    state.ttsSupported = false
+    #expect(!state.wantsScreenAwake) // an agent without TTS will never read that reply
+    state.ttsSupported = true
     state.isSending = false
     #expect(!state.wantsScreenAwake) // auto-speak on with nothing running
     state.autoSpeakReplies = false
@@ -1419,25 +1686,27 @@ struct ChatReadAloudTests {
   }
 
   @Test func autoSpeakOnWhileATurnRunsKeepsTheScreenAwake() async {
-    // The toggle flips the running-turn trigger both ways; the turn's terminal releases it.
+    // The toggle flips the running-turn trigger both ways; the read of the turn's reply
+    // carries it to the clip's end, which releases it.
     let recorder = TTSRecorder()
     let calls = LockIsolated<[Bool]>([])
-    var initial = streamingSlot(autoSpeak: false)
-    initial.ttsSupported = false // the reply is not read, so `messageComplete` is the edge
-    let store = keepAwakeStore(initial, recorder, idleCalls: calls)
+    let store = keepAwakeStore(streamingSlot(autoSpeak: false), recorder, idleCalls: calls)
 
     await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = true }
-    await waitUntil { calls.value == [true] }
+    #expect(calls.value == [true])
     await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = false }
-    await waitUntil { calls.value == [true, false] }
+    #expect(calls.value == [true, false])
     await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = true }
-    await waitUntil { calls.value == [true, false, true] }
+    #expect(calls.value == [true, false, true])
     await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
       $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
       $0.streamingRowID = nil
       $0.isSending = false
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
     }
-    await store.finish()
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
     #expect(calls.value == [true, false, true, false])
   }
 
@@ -1554,18 +1823,17 @@ struct ChatReadAloudTests {
     #expect(calls.value == [true, false])
   }
 
-  @Test func teardownReleasesTheScreenExplicitly() async {
-    // Nothing kept it awake: teardown still sends `false` (the slot is about to be dropped).
+  @Test func teardownOfAnIdleSlotNeverTouchesTheIdleTimer() async {
     let recorder = TTSRecorder()
     let calls = LockIsolated<[Bool]>([])
     let store = keepAwakeStore(twoReplies(anchor: 2), recorder, idleCalls: calls)
 
     await store.send(.teardown)
     await store.finish()
-    #expect(calls.value == [false])
+    #expect(calls.value.isEmpty)
   }
 
-  @Test func teardownWhilePlayingReleasesTheScreen() async {
+  @Test func teardownWhilePlayingReleasesTheScreenOnce() async {
     let playClock = TestClock()
     let recorder = TTSRecorder(holdingPlaybackOn: playClock)
     let calls = LockIsolated<[Bool]>([])
@@ -1575,7 +1843,8 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
     await store.send(.teardown) { $0.ttsPlayback = .idle }
     await store.finish()
-    // The `.onChange` edge and the explicit release — both `false`.
-    #expect(calls.value == [true, false, false])
+    // The stop's `.onChange` edge. (A slot still awake after `.teardown` — a running auto-speak
+    // turn — is released by `AppFeature` when it drops the slot.)
+    #expect(calls.value == [true, false])
   }
 }

@@ -59,10 +59,12 @@ switch keeps device UI prefs, the same as the swipe default.
 - **The playback state machine lives in `ChatFeature`**, per slot: `ttsPlayback` is `.idle`,
   `.preparing(rowID)` (synthesizing) or `.speaking(rowID)`. `speakRow` runs one effect,
   cancellable with cancel-in-flight on `CancelID.ttsPlayback`: sanitize → `rest.speak` →
-  `.ttsSpeaking` → `tts.play` → `.ttsFinished`, or `.ttsFailed` on any failure. Every stop path
-  goes through `stopReadAloudPlayback`: back to `.idle`, cancel the effect (which drops its
-  trailing `.ttsFinished`, so a stop is never a speak edge), and call `tts.stop()` only if a
-  clip was active. Because playback is slot-owned, it ends when the chat leaves the screen. On
+  `.ttsSpeaking` → `tts.play` → `.ttsFinished`, or `.ttsFailed` on any failure. A cancel that
+  lands while `speak` is still decoding never reaches `tts.play`. Every stop path goes through
+  `silenceReadAloud` (back to `.idle`) and cancels the effect (which drops its trailing
+  `.ttsFinished`, so a stop is never a speak edge); `stopReadAloudPlayback` then calls
+  `tts.stop()` only if a clip was active (the mic path runs its own ordered stop, below).
+  Because playback is slot-owned, it ends when the chat leaves the screen. On
   desktop, playback survives a chat switch; on a phone, stopping when the transcript is no
   longer visible is the expected behaviour.
 
@@ -85,7 +87,7 @@ The live fold keeps ONE assistant row per turn (`streamingRowID` survives tool e
 `reconstructTranscript` emits one row per history assistant message. A hydrate after a
 tool-using turn can therefore raise that turn's row count, which would make an already-spoken
 turn look pending. The anchor is re-derived from the rebuilt transcript instead:
-`completedCount − (wasPending && !replayConsumedReply ? 1 : 0)`. `wasPending` is captured
+`completedCount − (wasPending ? 1 : 0)`. `wasPending` is captured
 before the rebuild. A hydrate never CREATES a pending reply. It only PRESERVES the one the user
 was already waiting on, for example a reply that completed live while the app was
 backgrounded. This mirrors the desktop's `absorbSpokenReplyRewrite`, which re-keys its
@@ -101,9 +103,10 @@ Two more consumers:
   loop. The user can re-read the reply from the action bar (no automatic retries).
 
 A hydrate that rebuilds the row a clip is attached to re-points `.preparing`/`.speaking` to the
-newest completed assistant row (`repointPlaybackAfterRebuild`). The live `uuid()` row becomes a
-deterministic history id, and the action bar has to keep showing the right state. The clip
-itself keeps playing.
+newest completed assistant row of the same turn (turn = user rows before it, captured before
+the rebuild), else to the newest completed assistant row (`repointPlaybackAfterRebuild`). The
+live `uuid()` row becomes a deterministic history id, and the action bar has to keep showing
+the right state. The clip itself keeps playing.
 
 ## The speak check
 
@@ -111,12 +114,15 @@ itself keeps playing.
 
 - a LIVE `message.complete`;
 - every playback-idle edge (`.ttsFinished`, `.ttsFailed`);
+- the mic going idle (transcript, failure, cancel, permission denied);
 - `.foreground`.
 
 It does NOT run on `.reattached`: navigating back to a chat only puts it back on screen. The
 check reads the **newest** assistant row when all of these hold:
 
-- `autoSpeakReplies`, `ttsSupported`, and `ttsPlayback == .idle`;
+- `autoSpeakReplies`, `ttsSupported`, and no active clip;
+- `!recording.isBusy`: the mic owns the audio session, and `.playback` would cut the recorder's
+  input;
 - `!isSceneBackgrounded`, `isOnScreen`, and `!isFoldingReplay`;
 - the newest assistant message row is COMPLETE, and a reply is pending.
 
@@ -130,19 +136,20 @@ In `.foreground`, the check runs BEFORE the dead-socket `connect` and the `isRep
 early returns. A reply held while backgrounded is therefore read whatever the socket is doing.
 
 `isOnScreen` is set by `.task` (every appearance) and `.reattached`, and cleared by
-`.viewDisappeared`. A detached compact slot (#80) is off screen and stays silent.
+`.viewDisappeared`. A detached compact slot (#80) is off screen and stays silent. Coming back on
+screen arms the anchor (`returnOnScreen`), so a reply that completed off screen is never read
+later.
 
 ## Replay rule (#98) — past turn boundaries are never read
 
 A `message.complete` folded by `foldReplayedEvents` is a past turn boundary. The fold already
 suppresses the drain, park, `runningChanged` and timer side effects for such boundaries
 (`docs/architecture.md` → "Reconnect event replay"), and it suppresses auto-speak the same way.
-`autoSpeakIfReady` is inert under `isFoldingReplay`. The fold also arms the anchor and sets
-`replayConsumedReply`. This holds even when the fold completes the still-live streaming row:
-after `.teardownSocketOnly` nothing was finalized, so a replayed `message.complete` does mark
-that row complete. Arming right away means no speak edge before the trailing hydrate (or after
-a failed hydrate) can read the reply. The hydrate's re-base then consumes it again, since the
-rebuild may split it into several rows, and clears the flag. A plain-hydrate reconnect (no
+`autoSpeakIfReady` is inert under `isFoldingReplay`. The fold also arms the anchor. This holds
+even when the fold completes the still-live streaming row: after `.teardownSocketOnly` nothing
+was finalized, so a replayed `message.complete` does mark that row complete. Arming right away
+means no speak edge before the trailing hydrate (or after a failed hydrate) can read the reply,
+and with nothing pending the hydrate's re-base keeps it consumed. A plain-hydrate reconnect (no
 cursor, an older agent, `truncated`, an epoch change, a read failure) ends up in the same place
 through the re-base rule. A reply the client never saw complete live arrives only through the
 hydrate, and it is not pending.
@@ -160,7 +167,7 @@ drops the rule (desktop parity, since the desktop has no replay gating).
 ## Barge-in latch
 
 A USER submit while a clip is preparing or playing silences the clip and stamps
-`ttsInterruptedAt = now` (`bargeInReadAloud`). This covers both branches of
+`ttsInterruptedAt = now` (`stopReadAloudPlayback(bargeIn: true)`). This covers both branches of
 `.composerSubmitted`:
 
 - the idle send;
@@ -173,7 +180,7 @@ rejected tap never cuts the clip. A mic tap from `.idle` also stamps, if a clip 
 builders in `submitDraft` (upload+submit and plain) do this, on the composer path and the
 `fromQueue:` drain path alike. A stamp less than 120 s old (the desktop's `INTERRUPT_TTL_MS`)
 adds `"interrupted": true` to the params. The stamp is cleared either way, so a stale stamp is
-dropped, not carried forward. Without a stamp, the frame is byte-identical to the legacy one,
+dropped, not carried forward; a submit that then fails does not restore it. Without a stamp, the frame is byte-identical to the legacy one,
 including the #17 heal's replay of the same submit. The slash-exec and compress branches do not
 take the latch, so a stamp left there rides the next regular prompt or expires.
 
@@ -195,11 +202,11 @@ with `dict.get` and ignore the key. Validated agents list it in `PromptSubmitPar
 | Event | Playback | Auto-speak |
 |---|---|---|
 | `.viewDisappeared` | stopped (`releaseVoiceResources`) | `isOnScreen = false`: silent while detached |
-| `.teardown` | stopped (`releaseVoiceResources`), plus an explicit `idleTimer.setDisabled(false)` | slot gone |
+| `.teardown` | stopped (`releaseVoiceResources`) | slot gone |
 | `.teardownSocketOnly` (grace expiry) | stopped explicitly; this path skips `releaseVoiceResources`, and the clip is normally already stopped by `.sceneBackgrounded` | held (still backgrounded) |
 | `.sceneBackgrounded` (`AppFeature` `.background`, before `persistNow`, idle AND running slots) | stopped; no latch (not a barge-in) | held: `isSceneBackgrounded = true` |
 | `.foreground` | — | flag cleared, speak check runs (reads a reply held live) |
-| `.reattached` | — | `isOnScreen = true`; NOT a speak edge |
+| `.reattached` (and a later `.task`) | — | `isOnScreen = true` and the anchor armed; NOT a speak edge |
 | Audio-session interruption (call, Siri) | clip ends normally, no banner | the idle edge runs the speak check |
 | User submit / mic tap | stopped and latch stamped | — |
 
@@ -210,14 +217,15 @@ keep playing. A push tap's `.foreground` may arrive just before `.active` and cl
 
 ## Keep-awake
 
-`State.wantsScreenAwake = isOnScreen && (ttsPlayback != .idle || (autoSpeakReplies && isSending)
-|| recording.isBusy)` covers the hands-off loop: a clip is preparing or playing, a turn is
-running whose reply is about to be read, or the mic is busy (including transcription). An
-`.onChange(of: \.wantsScreenAwake)` on the main `Reduce` reports each edge to
-`IdleTimerClient.setDisabled`, which sets `UIApplication.isIdleTimerDisabled` on the main
-actor. `.teardown` sends an extra `setDisabled(false)` because the slot is nilled right after
-and no later edge would restore auto-lock. Off screen, including on the session list,
-auto-lock behaves normally.
+`State.wantsScreenAwake = isOnScreen && (ttsPlayback.isActive || (autoSpeakReplies &&
+ttsSupported && isSending) || recording.isBusy)` covers the hands-off loop: a clip is preparing
+or playing, a turn is running whose reply is about to be read, or the mic is busy (including
+transcription). An `.onChange(of: \.wantsScreenAwake)` on the main `Reduce` reports each edge to
+`IdleTimerClient.setDisabled`, a synchronous call, so the edges reach
+`UIApplication.isIdleTimerDisabled` in reduction order (one FIFO main-queue hop each). Once a
+slot is nilled out no edge can fire, so `AppFeature.releaseSlotDeviceResources` sends
+`setDisabled(false)` for a slot still awake at every nil-out (`.clearLiveChat` and the identity
+teardowns). Off screen, including on the session list, auto-lock behaves normally.
 
 ## Capability gating by failure
 
@@ -225,8 +233,9 @@ TTS is not advertised anywhere: not in `/api/status`, not in `gateway.ready`, no
 `client.capabilities`. So the gate is reactive. The first `RESTError.isMissingEndpointVerdict`
 from `speak` silently flips `ttsSupported = false`, and both controls disappear: the composer
 toggle (`showsAutoSpeak`) and the action-bar button (`ReadAloudButtonState.hidden`). That
-verdict is a 404, or the **405** an older agent returns, because its GET-only SPA catch-all
-matches the path. The flag is per slot and unpersisted, so an agent upgrade is picked up by
+verdict is FastAPI's unmatched-route 404 (`{"detail": "Not Found"}` or no detail), or the
+**405** an older agent returns, because its GET-only SPA catch-all matches the path. A 404 with
+any other detail (an unknown `?profile=`) is a `.server(404, detail)` banner. The flag is per slot and unpersisted, so an agent upgrade is picked up by
 the next chat. Other errors banner and leave the controls in place:
 
 - a 400 carries the server's `detail` verbatim (e.g. no TTS provider configured, "Text is empty
@@ -255,11 +264,12 @@ older hides both controls after the first attempt.
   `State.readAloudState(for:)`:
   - `hidden`: unsupported;
   - `idle`: `waveform`, "Read aloud";
-  - `disabled`: another row's clip is active;
+  - `disabled`: another row's clip is active, or the mic is busy;
   - `preparing`: spinner, "Preparing audio...";
   - `speaking`: `speaker.slash`, "Stop reading", and a tap sends `.stopReadAloud`.
 
-  `.readAloudTapped` re-checks the guards (supported, idle, a completed assistant row). It
+  `.readAloudTapped` re-checks the guards (supported, no active clip, mic not busy, a completed
+  assistant row). It
   raises the anchor past that row and never lowers it, so a newer pending reply stays pending.
 
 ## Deferred rungs and out of scope
