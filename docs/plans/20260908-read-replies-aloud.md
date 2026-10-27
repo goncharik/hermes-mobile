@@ -747,22 +747,33 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 - Modify: `HermesMobileTests/ChatSnapshotTests.swift`
 
-- [ ] Add `public enum ReadAloudButtonState: Equatable, Sendable { hidden, idle, disabled,
+- [x] Add `public enum ReadAloudButtonState: Equatable, Sendable { hidden, idle, disabled,
       preparing, speaking }` and pure `ChatFeature.State.readAloudState(for rowID:)`:
       `hidden` when `!ttsSupported`; `preparing`/`speaking` when `ttsPlayback` targets this
       row; `disabled` when any other playback is active; else `idle`.
-- [ ] `MessageActionBar`: add `readAloud: ReadAloudButtonState`, `onReadAloud`,
+- [x] `MessageActionBar`: add `readAloud: ReadAloudButtonState`, `onReadAloud`,
       `onStopReading`; third button after Branch — `waveform` (idle/disabled; desktop
       AudioLines; 0.4 opacity + `.disabled` when disabled), `ProgressView` (preparing,
       disabled), `speaker.slash` (speaking → `onStopReading`; desktop VolumeX); labels "Read
       aloud" / "Preparing audio..." / "Stop reading"; nothing rendered for `hidden`.
-- [ ] Wire in `ChatView`'s action-bar call site (`rowView` ~:247): `readAloud:
+      (➕ the three props default to `.hidden`/no-op so direct component call sites are
+      unchanged; the spinner and stop glyph overlay a hidden `waveform`, so the glyph slot
+      never resizes between states.)
+- [x] Wire in `ChatView`'s action-bar call site (`rowView` ~:247): `readAloud:
       store.readAloudState(for: row.id)`, `onReadAloud: { store.send(.readAloudTapped(id:
-      row.id)) }`, `onStopReading: { store.send(.stopReadAloud) }`.
-- [ ] Write `readAloudState` unit tests (all five outcomes).
-- [ ] Add snapshots of a completed assistant cell with the bar in idle, preparing, speaking,
+      row.id)) }`, `onStopReading: { store.send(.stopReadAloud) }`. (➕ as
+      `store.state.readAloudState(for:)` — the store's dynamic member lookup cannot reach a
+      State method.)
+- [x] Write `readAloudState` unit tests (all five outcomes).
+- [x] Add snapshots of a completed assistant cell with the bar in idle, preparing, speaking,
       and disabled (`rowView` component render, as the existing action-bar snapshots do).
-- [ ] run `make test` and `make snapshot` — must pass before Task 12
+      (➕ the button renders under every completed assistant reply by default, so 12 existing
+      baselines were re-recorded on purpose: 9 failed outright, and 3 more (reviewSummary,
+      slashSuggestionPanel, rehydrated_rendersStoredHistory) were stale but still passed within
+      the 0.98 device budget. Render sizes are unchanged except `copiedViaStoreToken`, 278 →
+      281 px: the waveform glyph is 1pt taller than the checkmark that used to set that bar's
+      height.)
+- [x] run `make test` and `make snapshot` — must pass before Task 12
 
 ### Task 12: Verify acceptance criteria
 

@@ -255,7 +255,11 @@ struct ChatView: View {
             isCopied: store.recentlyCopiedToken == ChatFeature.rowCopyToken(row.id),
             isBranchDisabled: !store.canBranch,
             onCopy: { store.send(.copyRow(id: row.id)) },
-            onBranch: { store.send(.branchFromMessage(id: row.id)) }
+            onBranch: { store.send(.branchFromMessage(id: row.id)) },
+            // A State METHOD: the store's dynamic member lookup reaches properties only.
+            readAloud: store.state.readAloudState(for: row.id),
+            onReadAloud: { store.send(.readAloudTapped(id: row.id)) },
+            onStopReading: { store.send(.stopReadAloud) }
           )
         }
       }

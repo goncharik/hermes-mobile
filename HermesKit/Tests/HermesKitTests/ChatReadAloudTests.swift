@@ -64,6 +64,37 @@ struct ChatReadAloudTests {
     #expect(ChatFeature.State.TTSPlayback.speaking(uuid(1)).isActive)
   }
 
+  // MARK: Action-bar button state
+
+  @Test func readAloudStateIsIdleWithNoActiveClip() {
+    let state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
+    #expect(state.readAloudState(for: uuid(1)) == .idle)
+    #expect(state.readAloudState(for: uuid(3)) == .idle)
+  }
+
+  @Test func readAloudStateIsHiddenWhenUnsupportedWhateverThePlayback() {
+    var state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
+    state.ttsSupported = false
+    #expect(state.readAloudState(for: uuid(1)) == .hidden)
+    state.ttsPlayback = .speaking(uuid(1))
+    #expect(state.readAloudState(for: uuid(1)) == .hidden)
+    #expect(state.readAloudState(for: uuid(3)) == .hidden)
+  }
+
+  @Test func readAloudStateIsPreparingForTheTargetAndDisabledForOthers() {
+    var state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
+    state.ttsPlayback = .preparing(uuid(3))
+    #expect(state.readAloudState(for: uuid(3)) == .preparing)
+    #expect(state.readAloudState(for: uuid(1)) == .disabled)
+  }
+
+  @Test func readAloudStateIsSpeakingForTheTargetAndDisabledForOthers() {
+    var state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
+    state.ttsPlayback = .speaking(uuid(1))
+    #expect(state.readAloudState(for: uuid(1)) == .speaking)
+    #expect(state.readAloudState(for: uuid(3)) == .disabled)
+  }
+
   @Test func freshStateDefaults() {
     let state = ChatFeature.State(connection: conn)
     #expect(state.autoSpeakReplies == false)

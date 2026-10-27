@@ -13,6 +13,21 @@ public enum ChatLayout {
   public static let readableMaxWidth: CGFloat = 760
 }
 
+/// What a completed assistant reply's "Read aloud" action-bar button shows (#74), derived by
+/// `ChatFeature.State.readAloudState(for:)`.
+public enum ReadAloudButtonState: Equatable, Sendable {
+  /// No TTS route on this agent (404/405 verdict): no button at all.
+  case hidden
+  /// Tappable: reads this reply.
+  case idle
+  /// Another reply's clip is preparing or playing (one clip at a time).
+  case disabled
+  /// This reply's audio is being synthesized.
+  case preparing
+  /// This reply is playing; a tap stops it.
+  case speaking
+}
+
 /// The live chat surface for one session. Owns the WebSocket lifecycle, folds the
 /// gateway event stream into a transcript, sends prompts, and reconnects with backoff.
 ///
@@ -321,6 +336,20 @@ public struct ChatFeature {
     static func isAssistantMessage(_ row: ChatRow) -> Bool {
       if case .message(.assistant, _, _) = row.kind { return true }
       return false
+    }
+
+    /// The per-message "Read aloud" button for `rowID` (desktop `ReadAloudButton` parity):
+    /// hidden once the agent proved it has no TTS route; `preparing`/`speaking` when the one
+    /// clip targets this row; `disabled` while any OTHER row's clip is active (one clip at a
+    /// time — `.readAloudTapped` re-guards it); otherwise `idle`. The view shows the bar only
+    /// under completed assistant replies, so row kind is not re-checked here.
+    public func readAloudState(for rowID: ChatRow.ID) -> ReadAloudButtonState {
+      guard ttsSupported else { return .hidden }
+      switch ttsPlayback {
+      case .idle: return .idle
+      case let .preparing(id): return id == rowID ? .preparing : .disabled
+      case let .speaking(id): return id == rowID ? .speaking : .disabled
+      }
     }
 
     /// Mid-turn counterpart to `canSend` (#66): whether `.composerSubmitted` while
