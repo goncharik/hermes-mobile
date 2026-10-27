@@ -4,7 +4,10 @@ import SwiftUI
 /// The queued-prompt panel (#66): compact rows pinned between the transcript and the
 /// composer (above the slash-suggestion panel — deliberately NOT in the transcript, so
 /// wholesale hydrates can never touch it). Each row is a frozen draft waiting for the
-/// running turn to end; the context menu offers Send Now / Edit / Delete.
+/// running turn to end; the context menu offers Steer / Send Now / Edit / Delete.
+/// Steer delivers the text into the RUNNING turn without cancelling it, so it is
+/// offered only while a turn is live and only for entries the gateway can carry
+/// (text-only, non-empty, not a slash command) — see `SteerEligibility`.
 ///
 /// Sizing: this sits in the same non-scrolling, compressible region #65 mapped out, so
 /// the panel must never grow unbounded and squeeze the transcript. Up to
@@ -23,6 +26,11 @@ struct QueuedPromptsPanel: View {
   /// composer): the menu item is disabled while a draft is mid-typing so the two can't
   /// disagree — the reducer stays authoritative.
   let composerHasDraft: Bool
+  /// Whether a turn is in flight. A steer only makes sense mid-turn: with no live turn
+  /// there is nothing to steer into, so the affordance is withheld and the entry waits for
+  /// the ordinary drain. The reducer re-checks this — the panel only mirrors it.
+  let isTurnRunning: Bool
+  let onSteer: (UUID) -> Void
   let onSendNow: (UUID) -> Void
   let onEdit: (UUID) -> Void
   let onDelete: (UUID) -> Void
@@ -90,6 +98,15 @@ struct QueuedPromptsPanel: View {
     .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
     .contentShape(.rect(cornerRadius: 14))
     .contextMenu {
+      // Steer delivers into the LIVE turn (no cancellation) — the reason to type mid-turn
+      // is usually to correct the agent while it works, which Send Now cannot do. Offered
+      // only while a turn is running AND for entries the gateway can carry; the reducer
+      // refuses the rest regardless of what is tapped here.
+      if SteerEligibility.canSteerNow(entry, isTurnRunning: isTurnRunning) {
+        Button { onSteer(entry.id) } label: {
+          Label("Steer Now", systemImage: "arrow.turn.down.right")
+        }
+      }
       Button { onSendNow(entry.id) } label: {
         Label("Send Now", systemImage: "paperplane")
       }
