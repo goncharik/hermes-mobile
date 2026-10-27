@@ -694,19 +694,23 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Modify: `HermesMobileTests/ComposerSnapshotTests.swift`
 
-- [ ] Add `var autoSpeak: Bool = false`, `var showsAutoSpeak: Bool = true`,
+- [x] Add `var autoSpeak: Bool = false`, `var showsAutoSpeak: Bool = true`,
       `var onToggleAutoSpeak: () -> Void = {}` (defaults keep existing call sites intact).
-- [ ] Insert `autoSpeakButton` before `attachButton` in the trailing `HStack` (:83-93):
+- [x] Insert `autoSpeakButton` before `attachButton` in the trailing `HStack` (:83-93):
       `speaker.wave.2.fill` on / `speaker.slash` off (desktop Volume2/VolumeX), `.font(.title3)`,
       `Color.hermesAccent` when on / `.secondary` off, accessibility label "Read replies
       aloud" / "Stop reading replies aloud", the `.isSelected` trait when on; rendered only when
       `showsAutoSpeak` (the recording bar already replaces the row while recording).
-- [ ] Wire in `ChatView`'s `ComposerView(...)` call (~:48): `autoSpeak:
+      (➕ both glyphs sit in a `ZStack`, one at opacity 0, so the button keeps the wider glyph's
+      width in either state and a tap never re-truncates the model chip beside it.)
+- [x] Wire in `ChatView`'s `ComposerView(...)` call (~:48): `autoSpeak:
       store.autoSpeakReplies`, `showsAutoSpeak: store.ttsSupported`, `onToggleAutoSpeak: {
       store.send(.autoSpeakToggled) }`.
-- [ ] Add snapshots: composer with the toggle on, off, and hidden (`showsAutoSpeak: false`)
-      in light + dark (`make snapshot` twice).
-- [ ] run `make snapshot` — must pass before Task 10
+- [x] Add snapshots: composer with the toggle on, off, and hidden (`showsAutoSpeak: false`)
+      in light + dark (`make snapshot` twice). (➕ one three-row stack per appearance; the
+      `showsAutoSpeak: true` default puts the toggle into every composer/`ChatView` baseline,
+      so those 19 were re-recorded deliberately — all at unchanged render size.)
+- [x] run `make snapshot` — must pass before Task 10
 
 ### Task 10: "Reading aloud" pill
 

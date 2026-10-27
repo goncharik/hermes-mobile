@@ -63,10 +63,13 @@ struct ChatView: View {
         // and the keyboard shrinks the very fixed region the card lives in, which is #65's own
         // root cause. Not a disable: the field stays live for a draft.
         blockingCardToken: store.pendingInteraction != nil ? store.pendingInteractionToken : nil,
+        autoSpeak: store.autoSpeakReplies,
+        showsAutoSpeak: store.ttsSupported,
         onModelTap: { store.send(.modelChipTapped) },
         onSend: { store.send(.composerSubmitted) },
         onInterrupt: { store.send(.interruptTapped) },
         onVoiceTap: { store.send(.voiceButtonTapped) },
+        onToggleAutoSpeak: { store.send(.autoSpeakToggled) },
         onCancelRecording: { store.send(.recordingCancelled) },
         onAttachPhotos: { store.send(.attachPhotosTapped) },
         onAttachCamera: { store.send(.attachCameraTapped) },
