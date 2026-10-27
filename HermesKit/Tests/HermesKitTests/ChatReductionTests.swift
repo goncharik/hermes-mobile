@@ -1012,6 +1012,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 10, contextMax: 200_000, contextPercent: 0)
       // Rows carry deterministic, content-derived ids (matching `reconstructTranscript`).
@@ -1450,6 +1451,7 @@ struct ChatReductionTests {
       $0.thinkingSeconds = 0
       $0.isSending = false
       $0.reconnectAttempt = 1
+      $0.spokenAssistantCount = 1 // the dropped partial is consumed, never read aloud (#74)
     }
     await store.send(.teardown)
   }

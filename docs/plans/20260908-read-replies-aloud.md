@@ -247,7 +247,7 @@ sources of truth).
 
 | Field | Purpose |
 |---|---|
-| `autoSpeakReplies: Bool` | ⚠️ The device-local pref (`PreferencesClient`), read on the slot's first `.task`; default `false`. |
+| `autoSpeakReplies: Bool` | The device-local pref (`PreferencesClient`, confirmed 2026-10-27), read on the slot's first `.task`; default `false`. |
 | `ttsSupported: Bool = true` | Capability gate; flips off on the first missing-endpoint verdict from `speak`. |
 | `ttsPlayback: TTSPlayback` | `.idle` / `.preparing(rowID)` / `.speaking(rowID)`. |
 | `spokenAssistantCount: Int` | Anchor = COMPLETED assistant message rows consumed (an in-flight/streaming row never counts). Not snapshot-persisted (every open re-arms). |
@@ -492,36 +492,47 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 **Files:**
 - Modify: `HermesKit/Sources/HermesKit/Clients/PreferencesClient.swift`
 - Modify: `HermesKit/Sources/HermesKit/Features/SettingsFeature.swift`
+- Modify: `HermesKit/Sources/HermesKit/AppFeature.swift` (➕ the two other logout paths)
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/PreferencesClientTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SettingsFeatureTests.swift`
+- Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
+- Modify (➕ exhaustive hydrate / `.gatewayClosed` assertions now see the anchor):
+  `ChatBranchTests.swift`, `ChatReductionTests.swift`, `HydrateTests.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 
-- [ ] ➕ `PreferencesClient`: `loadAutoSpeakReplies` (default `{ false }`),
+- [x] ➕ `PreferencesClient`: `loadAutoSpeakReplies` (default `{ false }`),
       `saveAutoSpeakReplies`, `clearAutoSpeakReplies` in live + `.inMemory()`; the logout path
       in `SettingsFeature` (~:351-355) clears it ("logout must clear every prefs entry").
-- [ ] Add state: `autoSpeakReplies`, `ttsSupported`, `ttsPlayback` (`public enum
+      ➕ Also cleared by `AppFeature`'s two other full logouts (retry-screen "Log Out" and
+      re-auth "Quit to start"), which reset the swipe-default pref the same way. Not part of
+      `clearIdentityScopedPrefs` (a re-auth user switch keeps device UI prefs, like the swipe
+      default). Live key `hermes.auto-speak-replies`.
+- [x] Add state: `autoSpeakReplies`, `ttsSupported`, `ttsPlayback` (`public enum
       TTSPlayback: Equatable, Sendable { idle, preparing(ChatRow.ID), speaking(ChatRow.ID) }`
       + `isActive`), `spokenAssistantCount`, `replayConsumedReply`, `ttsInterruptedAt`,
       `isSceneBackgrounded`, `isOnScreen`; pure `completedAssistantCount` and
       `lastCompletedAssistantRow` helpers (an incomplete assistant row never counts); a
       private `arm(&state)` that sets the anchor.
-- [ ] Action: `autoSpeakToggled`. On the slot's first `.task` (after the `hasStarted` guard,
+- [x] Action: `autoSpeakToggled`. On the slot's first `.task` (after the `hasStarted` guard,
       ~:1134) read `preferences.loadAutoSpeakReplies()` synchronously, set the flag, and arm
       when `true`. No effect is emitted, so the existing exhaustive `.task` tests stay
       untouched (the in-memory/test default is `false`).
-- [ ] `.autoSpeakToggled`: flip, `preferences.saveAutoSpeakReplies(new)`, arm if now on (a
+- [x] `.autoSpeakToggled`: flip, `preferences.saveAutoSpeakReplies(new)`, arm if now on (a
       local write cannot fail — no banner, no revert).
-- [ ] Arm on the slot's first hydrate: in `applyActivate` (~:3441) and the `session.create`
+- [x] Arm on the slot's first hydrate: in `applyActivate` (~:3441) and the `session.create`
       handshake (~:1253) where `hasHydrated` goes false → true (unconditionally; cheap and
-      correct whatever the toggle says).
-- [ ] ➕ Re-base on every later hydrate in `applyActivate` (Solution Overview): capture
+      correct whatever the toggle says). ➕ Consequence: nine existing exhaustive assertions
+      (first hydrates with a completed reply, two `.gatewayClosed` mid-stream) now also
+      assert `spokenAssistantCount = 1`.
+- [x] ➕ Re-base on every later hydrate in `applyActivate` (Solution Overview): capture
       `wasPending` BEFORE the transcript rebuild (~:3525), then `anchor = newCompletedCount −
       (wasPending && !replayConsumedReply ? 1 : 0)` after the rebuild + inflight seed; clear
-      `replayConsumedReply`.
-- [ ] ➕ In `finalizeInFlight` (~:2975): when a streaming row is closed, `anchor =
+      `replayConsumedReply`. (One private `rebaseSpokenAnchor` covers the first-hydrate arm
+      and the later re-base.)
+- [x] ➕ In `finalizeInFlight` (~:2975): when a streaming row is closed, `anchor =
       completedCount` (a dropped partial is never spoken).
-- [ ] Write tests: `.task` with the pref `true` sets the flag and arms to the current
+- [x] Write tests: `.task` with the pref `true` sets the flag and arms to the current
       completed count; pref `false` leaves the anchor; toggle on saves `true` + arms; toggle off
       saves `false` and does not touch the anchor; a second `.task` (re-appearance) does not
       re-read; first hydrate arms; ➕ a foreground re-hydrate that turns one live assistant row
@@ -529,8 +540,12 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       (no speak at the next `.foreground`); ➕ a re-hydrate with a pending live reply (completed
       while backgrounded) keeps exactly that reply pending; ➕ a `.gatewayClosed` mid-stream
       consumes the finalized partial; ➕ `PreferencesClientTests` round-trip + clear;
-      `SettingsFeatureTests` logout clears the key.
-- [ ] run `make test` — must pass before Task 6
+      `SettingsFeatureTests` logout clears the key. (The speak check lands in Task 6, so "no
+      speak at the next `.foreground`" is asserted here as `spokenAssistantCount ==
+      completedAssistantCount`; Task 6's replay tests cover the edge itself. ➕ Also: replay
+      flag consumed by the re-base, a hydrate never creates a pending reply, a later
+      `session.create` keeps a pending reply, `AppFeatureTests` for both other logouts.)
+- [x] run `make test` — must pass before Task 6
 
 ### Task 6: `ChatFeature` — playback flow, speak check, per-message read
 

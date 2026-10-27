@@ -122,6 +122,38 @@ struct PreferencesClientTests {
     #expect(prefs.loadSelectedProfileID() == nil)
   }
 
+  // MARK: Read replies aloud (#74)
+
+  @Test func inMemoryAutoSpeakRepliesRoundTripAndClear() {
+    let prefs = PreferencesClient.inMemory()
+    #expect(prefs.loadAutoSpeakReplies() == false) // default off
+
+    prefs.saveAutoSpeakReplies(true)
+    #expect(prefs.loadAutoSpeakReplies() == true)
+
+    prefs.saveAutoSpeakReplies(false)
+    #expect(prefs.loadAutoSpeakReplies() == false)
+
+    prefs.saveAutoSpeakReplies(true)
+    prefs.clearAutoSpeakReplies()
+    #expect(prefs.loadAutoSpeakReplies() == false)
+  }
+
+  @Test func liveAutoSpeakRepliesBacksOntoProvidedDefaults() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.autospeak")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.autospeak")
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    #expect(prefs.loadAutoSpeakReplies() == false) // unset → off
+    prefs.saveAutoSpeakReplies(true)
+    #expect(suite.object(forKey: "hermes.auto-speak-replies") as? Bool == true)
+    #expect(prefs.loadAutoSpeakReplies() == true)
+
+    prefs.clearAutoSpeakReplies()
+    #expect(suite.object(forKey: "hermes.auto-speak-replies") == nil) // removed, not set false
+    #expect(prefs.loadAutoSpeakReplies() == false)
+  }
+
   // MARK: Push prompt snooze
 
   @Test func inMemoryPushPromptSnoozeRoundTripAndClear() {

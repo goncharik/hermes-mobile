@@ -251,6 +251,64 @@ public struct ChatFeature {
     /// Cleared by the drain that consumes it and by a manual Stop (stop intent wins).
     var sendNowArmed: Bool
 
+    // MARK: Read replies aloud (#74)
+
+    /// The "Read replies aloud" toggle — a DEVICE-LOCAL pref (`PreferencesClient`), never the
+    /// server's `voice.auto_tts`. Read once on the slot's first `.task`; default off.
+    public var autoSpeakReplies: Bool
+    /// Capability gate: flips off on the first missing-endpoint verdict (404/405) from
+    /// `POST /api/audio/speak` and hides both read-aloud controls. Per slot, unpersisted.
+    public var ttsSupported: Bool
+    /// The one read-aloud clip this slot is preparing or playing.
+    public var ttsPlayback: TTSPlayback
+    /// The auto-speak anchor: how many COMPLETED assistant message rows are already consumed
+    /// (spoken, skipped, or pre-existing when armed). A reply is pending only while
+    /// `completedAssistantCount > spokenAssistantCount`. Armed on toggle-on, on the `.task`
+    /// pref load, and on the slot's first hydrate; RE-BASED on every later hydrate (the
+    /// rebuild can turn one live assistant row into several history rows). Unpersisted.
+    var spokenAssistantCount: Int
+    /// Set when a #98 replay fold folds a `message.complete` (a past turn boundary, never
+    /// spoken); the trailing hydrate's re-base consumes the reply and clears it.
+    var replayConsumedReply: Bool
+    /// Barge-in latch: when a user submit/mic tap silenced playback. The next regular
+    /// `prompt.submit` within 120 s carries `interrupted: true` and clears it.
+    var ttsInterruptedAt: Date?
+    /// The app scene went to the background: auto-speak holds until `.foreground`.
+    var isSceneBackgrounded: Bool
+    /// The chat view is on screen (set on `.task`/`.reattached`, cleared on
+    /// `.viewDisappeared`): gates auto-speak and keep-awake — a detached slot stays silent.
+    var isOnScreen: Bool
+
+    /// Read-aloud playback state for one slot.
+    public enum TTSPlayback: Equatable, Sendable {
+      case idle
+      /// `POST /api/audio/speak` is synthesizing this row's text.
+      case preparing(ChatRow.ID)
+      /// The clip for this row is playing.
+      case speaking(ChatRow.ID)
+
+      /// Preparing or speaking.
+      public var isActive: Bool { self != .idle }
+    }
+
+    /// Number of COMPLETED assistant message rows — what the auto-speak anchor counts. A
+    /// still-streaming assistant row never counts (only finished replies are read).
+    var completedAssistantCount: Int {
+      transcript.reduce(into: 0) { count, row in
+        if Self.isCompletedAssistantMessage(row) { count += 1 }
+      }
+    }
+
+    /// The newest COMPLETED assistant message row (the auto-speak candidate), if any.
+    var lastCompletedAssistantRow: ChatRow? {
+      transcript.last(where: Self.isCompletedAssistantMessage)
+    }
+
+    static func isCompletedAssistantMessage(_ row: ChatRow) -> Bool {
+      if case .message(.assistant, _, true) = row.kind { return true }
+      return false
+    }
+
     /// Mid-turn counterpart to `canSend` (#66): whether `.composerSubmitted` while
     /// `isSending`/`slashExecInFlight` will queue the draft. Same gates as `canSend`
     /// minus the two turn-lock flags (which are the whole point). The view's send arrow
@@ -665,6 +723,14 @@ public struct ChatFeature {
       self.drainingEntry = nil
       self.drainingRowID = nil
       self.sendNowArmed = false
+      self.autoSpeakReplies = false
+      self.ttsSupported = true
+      self.ttsPlayback = .idle
+      self.spokenAssistantCount = 0
+      self.replayConsumedReply = false
+      self.ttsInterruptedAt = nil
+      self.isSceneBackgrounded = false
+      self.isOnScreen = false
 
       // Instant paint: read the non-authoritative snapshot synchronously so the chat shows
       // its cached tail + model/usage immediately, before `session.resume` lands. The
@@ -933,6 +999,10 @@ public struct ChatFeature {
     case transcriptionSucceeded(String)
     case voiceInputFailed(message: String)
     case recordingCancelled
+    // Read replies aloud (#74)
+    /// The composer's auto-speak toggle: flip + persist the device-local pref; arms the
+    /// anchor when turned on so only replies completing from now on are read.
+    case autoSpeakToggled
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
@@ -1133,6 +1203,10 @@ public struct ChatFeature {
         // which must not cancel-and-redial a healthy socket.
         guard !state.hasStarted else { return .none }
         state.hasStarted = true
+        // The read-aloud toggle is device-local (#74): one synchronous read per slot. Armed
+        // when on, so the replies already painted (instant-paint snapshot) are never read.
+        state.autoSpeakReplies = preferences.loadAutoSpeakReplies()
+        if state.autoSpeakReplies { arm(&state) }
         return connect(state.connection)
 
       case .viewDisappeared:
@@ -1250,6 +1324,7 @@ public struct ChatFeature {
         // The create handshake IS this chat's hydrate (#80): the handle may carry a
         // `stored_session_id`, which would otherwise flip `showsEmptyHero` off for a chat
         // whose only history is the nothing the server just created.
+        if !state.hasHydrated { arm(&state) } // first handshake: nothing before it is read (#74)
         state.hasHydrated = true
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
@@ -1949,6 +2024,16 @@ public struct ChatFeature {
           .cancel(id: CancelID.voiceTimer),
           .run { [audioRecorder] _ in await audioRecorder.cancel() }
         )
+
+      // MARK: Read replies aloud (#74)
+
+      case .autoSpeakToggled:
+        // A local `UserDefaults` write cannot fail — no banner, no revert. Turning it on
+        // arms the anchor: only replies that complete from now on are read.
+        state.autoSpeakReplies.toggle()
+        preferences.saveAutoSpeakReplies(state.autoSpeakReplies)
+        if state.autoSpeakReplies { arm(&state) }
+        return .none
 
       // MARK: Attachments (#8)
 
@@ -2976,10 +3061,33 @@ public struct ChatFeature {
     if let id = state.streamingRowID,
        case let .message(role, text, _) = state.transcript[id: id]?.kind {
       state.transcript[id: id]?.kind = .message(role: role, text: text, isComplete: true)
+      // A dropped partial is never read aloud (#74): whether the turn really finished is the
+      // reconnect replay's and hydrate's business, so consume it here.
+      arm(&state)
     }
     state.streamingRowID = nil
     freezeThinking(into: &state)
     state.isSending = false
+  }
+
+  /// Point the read-aloud anchor at everything completed so far (#74): no reply that is
+  /// already in the transcript is pending afterwards.
+  private func arm(_ state: inout State) {
+    state.spokenAssistantCount = state.completedAssistantCount
+  }
+
+  /// Re-derive the read-aloud anchor after a hydrate's wholesale rebuild (#74). The first
+  /// hydrate arms. A later one cannot keep the old count — the live fold keeps ONE assistant
+  /// row per turn while history may hold several — so the anchor is re-based on the rebuilt
+  /// transcript: a hydrate never CREATES a pending reply, it only PRESERVES the one the user
+  /// was already waiting on (e.g. completed live while backgrounded), unless a #98 replay fold
+  /// delivered it (`replayConsumedReply` — past turn boundaries are never read).
+  private func rebaseSpokenAnchor(
+    isFirstHydrate: Bool, wasReplyPending: Bool, into state: inout State
+  ) {
+    let keepsPending = !isFirstHydrate && wasReplyPending && !state.replayConsumedReply
+    state.spokenAssistantCount = max(0, state.completedAssistantCount - (keepsPending ? 1 : 0))
+    state.replayConsumedReply = false
   }
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
@@ -3438,6 +3546,9 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
+    // Read-aloud anchor inputs (#74), captured BEFORE the rebuild below changes the count.
+    let isFirstHydrate = !state.hasHydrated
+    let wasReplyPending = state.completedAssistantCount > state.spokenAssistantCount
     state.hasHydrated = true // the transcript below is now server-authoritative (#80 hero gate)
     // A successful hydrate means we're connected — clear any stale connection banner, but
     // keep this connection's standing advertisement failure up (it is not stale).
@@ -3567,6 +3678,10 @@ public struct ChatFeature {
       state.transcript.append(row)
       state.toolRowIDs[toolKey] = row.id
     }
+
+    rebaseSpokenAnchor(
+      isFirstHydrate: isFirstHydrate, wasReplyPending: wasReplyPending, into: &state
+    )
 
     // Reconcile the live "Thinking" elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;
