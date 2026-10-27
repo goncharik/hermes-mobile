@@ -553,44 +553,51 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 
-- [ ] Add `CancelID.ttsPlayback` (in the enum ~:1079) and `@Dependency(\.tts)`. Actions:
+- [x] Add `CancelID.ttsPlayback` (in the enum ~:1079) and `@Dependency(\.tts)`. Actions:
       `readAloudTapped(id)`, `stopReadAloud`, `ttsSpeaking(id)`, `ttsFinished`,
       `ttsFailed(id, RESTOrPlaybackError)`. Private `speakRow(id, &state) -> Effect`:
       `ttsPlayback = .preparing(id)`; effect (`cancellable(id: .ttsPlayback, cancelInFlight:
       true)`): `SpeechText.sanitize` → empty ⇒ `.ttsFinished`; `rest.speak(connection, text,
       state.profileName)` → `send(.ttsSpeaking(id))` → `tts.play` → `send(.ttsFinished)`;
-      catch ⇒ `.ttsFailed`.
-- [ ] `.ttsFailed`: `isMissingEndpointVerdict` ⇒ `ttsSupported = false` silently (and turn
+      catch ⇒ `.ttsFailed`. (➕ the error type is `ChatFeature.ReadAloudFailure { rest(RESTError),
+      playback(TTSPlaybackError) }`; `.ttsSpeaking` keeps the row the state points at, which a
+      hydrate may have re-pointed.)
+- [x] `.ttsFailed`: `isMissingEndpointVerdict` ⇒ `ttsSupported = false` silently (and turn
       `autoSpeakReplies` handling into a no-op while unsupported); other REST errors ⇒
       `errorBanner = message`; `.stalled` ⇒ "Playback stalled."; `.failed` ⇒ "Couldn’t play
       the audio."; all ⇒ `.idle` then run the speak check (the failed reply stays consumed —
       unlike desktop's `releaseUnplayedSpokenReply`, so the failure edge cannot loop).
-- [ ] `.stopReadAloud`: `.idle` + `.cancel(id: .ttsPlayback)` + `tts.stop()`.
-- [ ] Private `autoSpeakIfReady(&state) -> Effect` per the Solution Overview conditions
+- [x] `.stopReadAloud`: `.idle` + `.cancel(id: .ttsPlayback)` + `tts.stop()`. (➕ a no-op
+      while idle; not a speak edge.)
+- [x] Private `autoSpeakIfReady(&state) -> Effect` per the Solution Overview conditions
       (incl. `isOnScreen` and `!isFoldingReplay`); call it from `.messageComplete` (in
       `reduce(event:)` ~:2450, after the existing merge — inert during a replay fold),
       `.ttsFinished`, `.ttsFailed`, and the `.foreground` action only (split the shared
       `.foreground, .reattached` case ~:1365 by `if case .foreground = action`, and merge the
       speak effect BEFORE the dead-socket `connect` / `isReplayReadPending` early returns so a
-      reply held while backgrounded is spoken whatever the socket is doing).
-- [ ] ➕ Replay rule: in `foldReplayedEvents` (~:3202) set `state.replayConsumedReply = true`
+      reply held while backgrounded is spoken whatever the socket is doing). (➕ the shared
+      re-attach body moved to a private `reattach(&state)`; "the row is complete" is read as
+      "the NEWEST assistant message row is complete" — a reply that finished during a clip
+      waits while the next turn streams, then the newest is read.)
+- [x] ➕ Replay rule: in `foldReplayedEvents` (~:3202) set `state.replayConsumedReply = true`
       when the batch folds a `.messageComplete` (the `.ended` boundary branch already
       identifies it; an `.error` boundary is never spoken anyway). The trailing hydrate's
-      re-base (Task 5) consumes it.
-- [ ] ➕ When a hydrate rebuild removes the row `ttsPlayback` targets (the live `uuid()` row
+      re-base (Task 5) consumes it. (➕ the fold also arms the anchor right away, so a speak
+      edge landing before that hydrate — or after a failed one — cannot read the reply.)
+- [x] ➕ When a hydrate rebuild removes the row `ttsPlayback` targets (the live `uuid()` row
       becomes a deterministic history id), re-point `.preparing`/`.speaking` to the last
       completed assistant row so the action bar keeps showing the right state (desktop absorbs
       the same live-id rewrite); the clip itself is untouched.
-- [ ] `.readAloudTapped(id)`: guard `ttsSupported`, `ttsPlayback == .idle`, row is a complete
+- [x] `.readAloudTapped(id)`: guard `ttsSupported`, `ttsPlayback == .idle`, row is a complete
       assistant message; `speakRow` and bump `spokenAssistantCount` to that row's
       completed-ordinal+1 (never lower it).
-- [ ] Write tests (`TestStore`, recording `tts`/`rest` overrides; live events via
+- [x] Write tests (`TestStore`, recording `tts`/`rest` overrides; live events via
       `.gatewayEvent`): armed + idle + on-screen `messageComplete` ⇒ preparing → speaking →
       finished with the sanitized text sent and `profileName` passed through; unarmed ⇒
       nothing; toggle off ⇒ nothing; off screen (detached slot) ⇒ nothing; a completion during
       playback waits and the idle edge speaks only the newest row; empty-after-sanitize reply
       is skipped and consumes the anchor; `.error` terminal never speaks.
-- [ ] ➕ Write replay tests (in `ChatReadAloudTests`, reusing the `ReplayTests` harness shape:
+- [x] ➕ Write replay tests (in `ChatReadAloudTests`, reusing the `ReplayTests` harness shape:
       `droppedState()`, `.gatewayClosed` → `.gatewayFrame(ready)` → `\.eventReplayResult` →
       `\.activateResult`): with auto-speak armed, idle and on screen, a replayed
       `message.complete` ⇒ no `rest.speak` call and `ttsPlayback` never leaves `.idle` (no
@@ -599,12 +606,12 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       the NEXT live `message.complete` is spoken; the `.teardownSocketOnly` variant (the fold
       completes the still-live streaming row) behaves the same; a replay whose gap holds no
       `message.complete` leaves a live-pending reply pending.
-- [ ] Write tests: `readAloudTapped` speaks that row and bumps the anchor so the next
+- [x] Write tests: `readAloudTapped` speaks that row and bumps the anchor so the next
       `messageComplete`-less idle edge does not re-speak; tap while another row plays is a
       no-op; `stopReadAloud` cancels and calls `tts.stop`; 404 and 405 flip `ttsSupported` and
       hide without a banner; 400 detail lands in `errorBanner`; stalled/failed banners; a
       hydrate mid-playback re-points `ttsPlayback` to the rebuilt row.
-- [ ] run `make test` — must pass before Task 7
+- [x] run `make test` — must pass before Task 7
 
 ### Task 7: Interruption latch and lifecycle (background, disappear, teardown)
 

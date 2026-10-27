@@ -309,6 +309,12 @@ public struct ChatFeature {
       return false
     }
 
+    /// Any assistant message row, streaming or complete.
+    static func isAssistantMessage(_ row: ChatRow) -> Bool {
+      if case .message(.assistant, _, _) = row.kind { return true }
+      return false
+    }
+
     /// Mid-turn counterpart to `canSend` (#66): whether `.composerSubmitted` while
     /// `isSending`/`slashExecInFlight` will queue the draft. Same gates as `canSend`
     /// minus the two turn-lock flags (which are the whole point). The view's send arrow
@@ -1003,6 +1009,16 @@ public struct ChatFeature {
     /// The composer's auto-speak toggle: flip + persist the device-local pref; arms the
     /// anchor when turned on so only replies completing from now on are read.
     case autoSpeakToggled
+    /// The per-message "Read aloud" action on a completed assistant reply.
+    case readAloudTapped(id: ChatRow.ID)
+    /// The pill's / action bar's Stop: silence the clip, back to idle.
+    case stopReadAloud
+    /// Synthesis landed; the clip for this row started playing.
+    case ttsSpeaking(id: ChatRow.ID)
+    /// The clip played to the end (or was empty after sanitizing) — a playback-idle edge.
+    case ttsFinished
+    /// Synthesis or playback failed — also a playback-idle edge.
+    case ttsFailed(id: ChatRow.ID, ReadAloudFailure)
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
@@ -1156,6 +1172,14 @@ public struct ChatFeature {
     /// one: a cancelled effect never emits `.configSetFailed`, so a stale rejection can't
     /// roll the newer value back. The two keys never cancel each other.
     case configSet(String)
+    /// The one read-aloud clip (#74): synthesis + playback. A new read supersedes it.
+    case ttsPlayback
+  }
+
+  /// Why a read-aloud clip failed (#74): the `speak` REST call, or the player.
+  public enum ReadAloudFailure: Error, Equatable, Sendable {
+    case rest(RESTError)
+    case playback(TTSPlaybackError)
   }
 
   /// Debounce window for write-back so heavy streaming doesn't thrash SQLite.
@@ -1174,6 +1198,7 @@ public struct ChatFeature {
   @Dependency(\.uuid) var uuid
   @Dependency(\.pasteboard) var pasteboard
   @Dependency(\.audioRecorder) var audioRecorder
+  @Dependency(\.tts) var tts
   @Dependency(\.attachmentPicker) var attachmentPicker
   @Dependency(\.debugLog) var debugLog
 
@@ -1438,46 +1463,16 @@ public struct ChatFeature {
         )
 
       case .foreground, .reattached:
-        // Two re-attach entry points, one policy: the app returned to the foreground, or
-        // the slot's marker was re-pushed over live, surviving chat state. Always
-        // re-hydrate (server authority), but NEVER cancel-and-redial a HEALTHY socket —
-        // the dial gap drops streamed events, and within the background grace window the
-        // socket kept streaming precisely so foreground would not have to redial it.
-        guard state.status == .ready else {
-          // Dead/dialing socket (including after a grace-expiry `.teardownSocketOnly`):
-          // reconnect — the fresh `.ready` re-hydrates. Reset `hasRequestedSession` so
-          // that ready actually hydrates: on a fast background→foreground the prior
-          // socket is cancelled mid-`for await`, and TCA drops the cancelled task's
-          // trailing `await send(.gatewayClosed)` — the only other place that resets
-          // the flag.
-          state.hasRequestedSession = false
-          return connect(state.connection)
+        // Read aloud (#74): returning to the app is a speak edge — a reply that completed
+        // LIVE while backgrounded was held, and is read now whatever the socket is doing
+        // (so the check runs before the redial / pending-read early returns). A re-push of
+        // the chat (`.reattached`) is not: navigating back never starts reading.
+        let speak: Effect<Action> = if case .foreground = action {
+          autoSpeakIfReady(&state)
+        } else {
+          .none
         }
-        // A reconnect replay read is in flight (#98): its trailing hydrate is this re-hydrate.
-        // Hydrating now would attach the socket mid-read and land under the fold.
-        guard !state.isReplayReadPending else { return .none }
-        // Socket healthy: hydrate directly against it — no reconnect, so the live socket
-        // keeps streaming throughout (no event gap). A socket that silently died while
-        // suspended still self-heals: the hydrate RPC fails, the receive loop finishes →
-        // `.gatewayClosed` → backoff reconnect. `applyActivate` is the same
-        // server-authoritative path as `.ready`, with the #26 preservation of a
-        // still-running turn's live thinking/tool rows.
-        // An unpersisted branch (#34) re-attaches by LIVE id (`session.activate`) — its
-        // stored id has no DB row until the first prompt, so `session.resume` would 4007.
-        if let live = state.attachLiveSessionID {
-          state.hasRequestedSession = true
-          state.hydrateRetriedAfterTimeout = false
-          return attachLive(sessionID: live)
-        }
-        guard let sessionID = state.sessionKey else {
-          // Connected but the session id hasn't resolved yet (`session.create` still in
-          // flight on this same socket) — nothing to hydrate; the pending result lands
-          // on its own.
-          return .none
-        }
-        state.hasRequestedSession = true
-        state.hydrateRetriedAfterTimeout = false // fresh hydrate: the retry budget resets
-        return hydrate(sessionID: sessionID, profile: state.profileName)
+        return .merge(speak, reattach(&state))
 
       case .composerSubmitted:
         // Mid-turn the draft QUEUES instead of submitting (#66): the send arrow returns as
@@ -2035,6 +2030,58 @@ public struct ChatFeature {
         if state.autoSpeakReplies { arm(&state) }
         return .none
 
+      case let .readAloudTapped(id):
+        // One clip at a time: a tap while another row prepares/plays is a no-op (the action
+        // bar disables it). Only a COMPLETED assistant reply is readable.
+        guard state.ttsSupported, state.ttsPlayback == .idle,
+              let row = state.transcript[id: id], State.isCompletedAssistantMessage(row)
+        else { return .none }
+        // The row counts as read: bump the anchor past it (never lower it), so a later idle
+        // edge does not read it again — while a NEWER pending reply stays pending.
+        if let ordinal = state.transcript
+          .filter(State.isCompletedAssistantMessage).index(id: id) {
+          state.spokenAssistantCount = max(state.spokenAssistantCount, ordinal + 1)
+        }
+        return speakRow(id, into: &state)
+
+      case .stopReadAloud:
+        guard state.ttsPlayback.isActive else { return .none }
+        state.ttsPlayback = .idle
+        // Cancelling the effect drops its trailing `.ttsFinished` — a Stop is not a speak edge.
+        return .merge(
+          .cancel(id: CancelID.ttsPlayback),
+          .run { [tts] _ in await tts.stop() }
+        )
+
+      case .ttsSpeaking:
+        // `.preparing` → `.speaking`, keeping the row the state points at: a hydrate between
+        // the request and the clip may have re-pointed it to the rebuilt row's id.
+        guard case let .preparing(rowID) = state.ttsPlayback else { return .none }
+        state.ttsPlayback = .speaking(rowID)
+        return .none
+
+      case .ttsFinished:
+        state.ttsPlayback = .idle
+        return autoSpeakIfReady(&state)
+
+      case let .ttsFailed(_, failure):
+        state.ttsPlayback = .idle
+        switch failure {
+        case let .rest(error) where error.isMissingEndpointVerdict:
+          // This agent has no `POST /api/audio/speak` (404, or an older agent's GET-only
+          // catch-all 405): hide both controls silently, like every capability gate.
+          state.ttsSupported = false
+        case let .rest(error):
+          state.errorBanner = error.message // a 400 carries the server's detail verbatim
+        case .playback(.stalled):
+          state.errorBanner = "Playback stalled."
+        case .playback(.failed):
+          state.errorBanner = "Couldn’t play the audio."
+        }
+        // A playback-idle edge. The failed reply stays consumed (unlike the desktop's
+        // `releaseUnplayedSpokenReply`), so this edge can never retry it in a loop.
+        return autoSpeakIfReady(&state)
+
       // MARK: Attachments (#8)
 
       case .attachPhotosTapped:
@@ -2567,9 +2614,12 @@ public struct ChatFeature {
       // the primary DRAIN edge (#66): the queue's head fires as the next turn. (The drain's
       // own `setTurnAnchor` can race `clearTurnAnchor` across the merged effects, but
       // `message.start` reaffirms the anchor moments later, so the race is harmless.)
+      // A LIVE completion is also the primary read-aloud edge (#74); inert inside a #98
+      // replay fold — a replayed completion is a past turn boundary, never read.
+      let speak = autoSpeakIfReady(&state)
       return .merge(
         .cancel(id: CancelID.thinkingTimer), clearTurnAnchor(state), runningChanged(false, state),
-        drainQueueIfReady(into: &state)
+        drainQueueIfReady(into: &state), speak
       )
 
     case let .thinkingDelta(text):
@@ -3053,6 +3103,49 @@ public struct ChatFeature {
     return request.questions.map { "\($0.question): \(display($0))" }.joined(separator: "\n")
   }
 
+  /// The shared `.foreground` / `.reattached` re-attach policy: the app returned to the
+  /// foreground, or the slot's marker was re-pushed over live, surviving chat state. Always
+  /// re-hydrate (server authority), but NEVER cancel-and-redial a HEALTHY socket — the dial
+  /// gap drops streamed events, and within the background grace window the socket kept
+  /// streaming precisely so foreground would not have to redial it.
+  private func reattach(_ state: inout State) -> Effect<Action> {
+    guard state.status == .ready else {
+      // Dead/dialing socket (including after a grace-expiry `.teardownSocketOnly`):
+      // reconnect — the fresh `.ready` re-hydrates. Reset `hasRequestedSession` so
+      // that ready actually hydrates: on a fast background→foreground the prior
+      // socket is cancelled mid-`for await`, and TCA drops the cancelled task's
+      // trailing `await send(.gatewayClosed)` — the only other place that resets
+      // the flag.
+      state.hasRequestedSession = false
+      return connect(state.connection)
+    }
+    // A reconnect replay read is in flight (#98): its trailing hydrate is this re-hydrate.
+    // Hydrating now would attach the socket mid-read and land under the fold.
+    guard !state.isReplayReadPending else { return .none }
+    // Socket healthy: hydrate directly against it — no reconnect, so the live socket
+    // keeps streaming throughout (no event gap). A socket that silently died while
+    // suspended still self-heals: the hydrate RPC fails, the receive loop finishes →
+    // `.gatewayClosed` → backoff reconnect. `applyActivate` is the same
+    // server-authoritative path as `.ready`, with the #26 preservation of a
+    // still-running turn's live thinking/tool rows.
+    // An unpersisted branch (#34) re-attaches by LIVE id (`session.activate`) — its
+    // stored id has no DB row until the first prompt, so `session.resume` would 4007.
+    if let live = state.attachLiveSessionID {
+      state.hasRequestedSession = true
+      state.hydrateRetriedAfterTimeout = false
+      return attachLive(sessionID: live)
+    }
+    guard let sessionID = state.sessionKey else {
+      // Connected but the session id hasn't resolved yet (`session.create` still in
+      // flight on this same socket) — nothing to hydrate; the pending result lands
+      // on its own.
+      return .none
+    }
+    state.hasRequestedSession = true
+    state.hydrateRetriedAfterTimeout = false // fresh hydrate: the retry budget resets
+    return hydrate(sessionID: sessionID, profile: state.profileName)
+  }
+
   /// Close out any row that was still streaming when the socket dropped: mark the
   /// in-flight assistant message complete and freeze the in-flight thinking row so a
   /// dropped socket leaves a static `Thinking · <elapsed>` rather than a live one.
@@ -3088,6 +3181,78 @@ public struct ChatFeature {
     let keepsPending = !isFirstHydrate && wasReplyPending && !state.replayConsumedReply
     state.spokenAssistantCount = max(0, state.completedAssistantCount - (keepsPending ? 1 : 0))
     state.replayConsumedReply = false
+  }
+
+  /// A hydrate's rebuild replaced the row the clip belongs to (the live `uuid()` row became a
+  /// deterministic history id): re-point `.preparing`/`.speaking` at the newest completed
+  /// assistant row so the action bar keeps showing the right state (#74 — the desktop absorbs
+  /// the same live-id rewrite). The clip itself plays on untouched.
+  private func repointPlaybackAfterRebuild(into state: inout State) {
+    let rowID: ChatRow.ID
+    switch state.ttsPlayback {
+    case .idle: return
+    case let .preparing(id), let .speaking(id): rowID = id
+    }
+    guard state.transcript[id: rowID] == nil,
+          let replacement = state.lastCompletedAssistantRow?.id
+    else { return }
+    state.ttsPlayback = switch state.ttsPlayback {
+    case .preparing: .preparing(replacement)
+    default: .speaking(replacement)
+    }
+  }
+
+  /// The auto-speak check (#74), run at the speak edges: a LIVE `message.complete`, every
+  /// playback-idle edge (`.ttsFinished` / `.ttsFailed`) and `.foreground`. Reads the newest
+  /// assistant reply when the toggle is on, the endpoint is supported, nothing is playing, the
+  /// app is foreground with this chat on screen, no #98 replay fold is running, the newest
+  /// assistant message row is COMPLETE, and it is pending (`completedAssistantCount >
+  /// spokenAssistantCount`). The anchor then jumps to the full count: a backlog that piled up
+  /// during a clip collapses to the newest reply.
+  private func autoSpeakIfReady(_ state: inout State) -> Effect<Action> {
+    guard state.autoSpeakReplies, state.ttsSupported, state.ttsPlayback == .idle,
+          !state.isSceneBackgrounded, state.isOnScreen, !state.isFoldingReplay
+    else { return .none }
+    let completed = state.completedAssistantCount
+    guard completed > state.spokenAssistantCount,
+          let newest = state.transcript.last(where: State.isAssistantMessage),
+          State.isCompletedAssistantMessage(newest)
+    else { return .none }
+    state.spokenAssistantCount = completed
+    return speakRow(newest.id, into: &state)
+  }
+
+  /// Start reading one assistant row aloud (#74): `.preparing` now; the effect sanitizes the
+  /// text (`SpeechText.sanitize`; empty ⇒ nothing to say, straight to `.ttsFinished`),
+  /// synthesizes it via `POST /api/audio/speak` (the slot's profile verbatim, #114), reports
+  /// `.ttsSpeaking`, plays the clip to the end and reports `.ttsFinished` — or `.ttsFailed`.
+  /// Cancel-in-flight on `CancelID.ttsPlayback`: one clip per slot.
+  private func speakRow(_ id: ChatRow.ID, into state: inout State) -> Effect<Action> {
+    guard case let .message(.assistant, text, _) = state.transcript[id: id]?.kind else { return .none }
+    state.ttsPlayback = .preparing(id)
+    return .run { [rest, tts, connection = state.connection, profile = state.profileName] send in
+      let speech = SpeechText.sanitize(text)
+      guard !speech.isEmpty else {
+        await send(.ttsFinished)
+        return
+      }
+      let audio: TTSAudio
+      do {
+        audio = try await rest.speak(connection, speech, profile)
+      } catch {
+        await send(.ttsFailed(id: id, .rest(asRESTError(error))))
+        return
+      }
+      await send(.ttsSpeaking(id: id))
+      do {
+        try await tts.play(audio.data, audio.mimeType)
+      } catch {
+        await send(.ttsFailed(id: id, .playback(error as? TTSPlaybackError ?? .failed)))
+        return
+      }
+      await send(.ttsFinished)
+    }
+    .cancellable(id: CancelID.ttsPlayback, cancelInFlight: true)
   }
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
@@ -3312,6 +3477,7 @@ public struct ChatFeature {
   ) -> Effect<Action> {
     enum TurnBoundary { case started, ended }
     var lastBoundary: TurnBoundary?
+    var foldedReply = false
     var effects: [Effect<Action>] = []
     state.isFoldingReplay = true
     for frame in events {
@@ -3325,7 +3491,10 @@ public struct ChatFeature {
         continue
       case .messageStart:
         lastBoundary = .started
-      case .messageComplete, .error:
+      case .messageComplete:
+        lastBoundary = .ended
+        foldedReply = true
+      case .error:
         lastBoundary = .ended
       default:
         break
@@ -3333,6 +3502,14 @@ public struct ChatFeature {
       effects.append(reduceGatewayEvent(frame.event, into: &state))
     }
     state.isFoldingReplay = false
+    // Read aloud (#74): a replayed completion is a past turn boundary and is never read —
+    // not even when the fold completed the still-live streaming row (grace expiry). Consume
+    // it now, so no speak edge before the trailing hydrate can pick it up, and flag it so
+    // that hydrate's re-base consumes it too (it may split the turn into several rows).
+    if foldedReply {
+      state.replayConsumedReply = true
+      arm(&state)
+    }
     switch lastBoundary {
     case .started: effects.append(setTurnAnchor(state))
     case .ended: effects.append(clearTurnAnchor(state))
@@ -3682,6 +3859,7 @@ public struct ChatFeature {
     rebaseSpokenAnchor(
       isFirstHydrate: isFirstHydrate, wasReplyPending: wasReplyPending, into: &state
     )
+    repointPlaybackAfterRebuild(into: &state)
 
     // Reconcile the live "Thinking" elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;

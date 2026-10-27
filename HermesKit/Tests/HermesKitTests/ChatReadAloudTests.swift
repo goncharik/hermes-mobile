@@ -367,4 +367,602 @@ struct ChatReadAloudTests {
     }
     await store.send(.teardown)
   }
+
+  // MARK: - Playback flow (Task 6)
+
+  /// Records the read-aloud I/O: every `speak` request and every clip played/stopped.
+  final class TTSRecorder: Sendable {
+    struct Speak: Equatable, Sendable {
+      var text: String
+      var profile: String?
+    }
+
+    static let clip = TTSAudio(data: Data([0x49, 0x44, 0x33]), mimeType: "audio/mpeg")
+    static let clipLength: Duration = .seconds(10)
+
+    let speaks = LockIsolated<[Speak]>([])
+    let plays = LockIsolated<[Data]>([])
+    let stops = LockIsolated(0)
+    /// When set, `speak` fails with it.
+    let speakError = LockIsolated<RESTError?>(nil)
+    /// When set, `play` fails with it.
+    let playError = LockIsolated<TTSPlaybackError?>(nil)
+    /// When set, each clip plays until this clock advances `clipLength` (a cancelled effect
+    /// returns normally, like the live player); otherwise it finishes instantly.
+    let playClock: TestClock<Duration>?
+
+    init(holdingPlaybackOn clock: TestClock<Duration>? = nil) {
+      playClock = clock
+    }
+
+    var spokenTexts: [String] { speaks.value.map(\.text) }
+
+    func install(into deps: inout DependencyValues) {
+      deps.hermesREST.speak = { @Sendable [self] _, text, profile in
+        speaks.withValue { $0.append(Speak(text: text, profile: profile)) }
+        if let error = speakError.value { throw error }
+        return Self.clip
+      }
+      deps.tts.play = { @Sendable [self] data, _ in
+        plays.withValue { $0.append(data) }
+        if let error = playError.value { throw error }
+        if let playClock { try? await playClock.sleep(for: Self.clipLength) }
+      }
+      deps.tts.stop = { @Sendable [self] in stops.withValue { $0 += 1 } }
+    }
+  }
+
+  /// A ready, on-screen slot with auto-speak on, streaming its first reply (row 101).
+  private func streamingSlot(autoSpeak: Bool = true, onScreen: Bool = true) -> ChatFeature.State {
+    var state = ChatFeature.State(
+      connection: conn, transcript: [user(100, "q"), assistant(101, "Hel", complete: false)]
+    )
+    state.streamingRowID = uuid(101)
+    state.isSending = true
+    state.status = .ready
+    state.autoSpeakReplies = autoSpeak
+    state.isOnScreen = onScreen
+    return state
+  }
+
+  private func makeStore(
+    _ initial: ChatFeature.State, _ recorder: TTSRecorder
+  ) -> TestStoreOf<ChatFeature> {
+    TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.preferences = .inMemory()
+      recorder.install(into: &$0)
+    }
+  }
+
+  @Test func liveCompletionIsReadPreparingSpeakingFinished() async {
+    let recorder = TTSRecorder()
+    var initial = streamingSlot()
+    initial.profileName = "work"
+    let store = makeStore(initial, recorder)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "**Hello** there", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind =
+        .message(role: .assistant, text: "**Hello** there", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+
+    // The SANITIZED text is synthesized, under the slot's profile verbatim (#114).
+    #expect(recorder.speaks.value == [.init(text: "Hello there", profile: "work")])
+    #expect(recorder.plays.value == [TTSRecorder.clip.data])
+  }
+
+  @Test func autoSpeakOffNeverReads() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(autoSpeak: false), recorder)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func toggledOffNeverReads() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(autoSpeak: false), recorder)
+
+    await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = true }
+    await store.send(.autoSpeakToggled) { $0.autoSpeakReplies = false }
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func offScreenSlotNeverReads() async {
+    // A detached compact slot keeps its socket and folds the turn — silently.
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(onScreen: false), recorder)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false // the anchor stays 0: the reply is still pending
+    }
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func completionsDuringPlaybackWaitAndTheIdleEdgeReadsOnlyTheNewest() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let store = makeStore(streamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "First", usage: nil)))
+    await store.receive(\.ttsSpeaking)
+    // Two more turns complete while "First" is still playing: neither starts a clip.
+    for reply in ["Second", "Third"] {
+      await store.send(.gatewayEvent(.messageStart))
+      await store.send(.gatewayEvent(.messageDelta(text: reply)))
+      await store.send(.gatewayEvent(.messageComplete(text: reply, usage: nil)))
+      #expect(store.state.ttsPlayback == .speaking(uuid(101)))
+    }
+    #expect(recorder.spokenTexts == ["First"])
+    #expect(store.state.spokenAssistantCount == 1)
+
+    // "First" ends — the idle edge reads the newest reply only; the backlog collapses.
+    await playClock.advance(by: TTSRecorder.clipLength)
+    await store.receive(\.ttsFinished)
+    await store.receive(\.ttsSpeaking)
+    #expect(recorder.spokenTexts == ["First", "Third"])
+    #expect(store.state.spokenAssistantCount == 3)
+    await playClock.advance(by: TTSRecorder.clipLength)
+    await store.receive(\.ttsFinished)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.spokenTexts == ["First", "Third"]) // "Second" is never read
+  }
+
+  @Test func emptyAfterSanitizingIsSkippedAndConsumed() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(), recorder)
+    let codeOnly = "```\nls -la\n```"
+
+    await store.send(.gatewayEvent(.messageComplete(text: codeOnly, usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: codeOnly, isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    // Nothing to say: no synthesis, straight back to idle — and the reply stays consumed.
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    #expect(recorder.speaks.value.isEmpty)
+    #expect(recorder.plays.value.isEmpty)
+  }
+
+  @Test func aTurnEndingInErrorIsNeverRead() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.error(message: "boom")))
+    #expect(store.state.ttsPlayback == .idle)
+    // A later idle edge does not pick the half-written row up either (it is not complete).
+    await store.send(.ttsFinished)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func aStreamingNewestReplyHoldsTheIdleEdge() async {
+    // A reply completed during playback, then the next turn started streaming: the idle edge
+    // waits for the newest reply instead of reading the stale one under it.
+    let recorder = TTSRecorder()
+    var initial = ChatFeature.State(connection: conn, transcript: [
+      user(100, "q1"), assistant(101, "One"), user(102, "q2"), assistant(103, "Two…", complete: false),
+    ])
+    initial.streamingRowID = uuid(103)
+    initial.isSending = true
+    initial.autoSpeakReplies = true
+    initial.isOnScreen = true
+    initial.ttsPlayback = .speaking(uuid(42))
+    let store = makeStore(initial, recorder)
+
+    await store.send(.ttsFinished) { $0.ttsPlayback = .idle } // anchor 0 < 1, but row 103 streams
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func foregroundReadsAHeldReplyBeforeRedialing() async {
+    // Dead socket on return: the pending reply is read whatever the socket is doing.
+    let recorder = TTSRecorder()
+    var initial = ChatFeature.State(connection: conn, transcript: [user(100, "q"), assistant(101, "Done")])
+    initial.status = .reconnecting
+    initial.autoSpeakReplies = true
+    initial.isOnScreen = true
+    let store = makeStore(initial, recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    store.dependencies.hermesGateway.connect = Self.idleSocket
+
+    await store.send(.foreground) {
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    await store.receive(\.ttsFinished)
+    #expect(recorder.spokenTexts == ["Done"])
+    await store.send(.teardown)
+  }
+
+  @Test func reattachedNeverReads() async {
+    let recorder = TTSRecorder()
+    var initial = ChatFeature.State(connection: conn, transcript: [user(100, "q"), assistant(101, "Done")])
+    initial.status = .ready // no session key yet: the re-attach itself is a no-op
+    initial.autoSpeakReplies = true
+    initial.isOnScreen = true
+    let store = makeStore(initial, recorder)
+
+    await store.send(.reattached)
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  // MARK: Per-message "Read aloud"
+
+  /// Two completed replies, nothing streaming, auto-speak off.
+  private func twoReplies(anchor: Int) -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, transcript: [
+      user(100, "q1"), assistant(101, "One"), user(102, "q2"), assistant(103, "Two"),
+    ])
+    state.status = .ready
+    state.isOnScreen = true
+    state.spokenAssistantCount = anchor
+    return state
+  }
+
+  @Test func readAloudTappedReadsThatRowAndBumpsTheAnchor() async {
+    // Auto-speak on with the newest reply pending: reading it by hand consumes it, so the
+    // playback-idle edge does not read it a second time.
+    let recorder = TTSRecorder()
+    var initial = twoReplies(anchor: 1)
+    initial.autoSpeakReplies = true
+    let store = makeStore(initial, recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) {
+      $0.spokenAssistantCount = 2
+      $0.ttsPlayback = .preparing(self.uuid(103))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    #expect(recorder.spokenTexts == ["Two"])
+  }
+
+  @Test func readingAnOlderRowNeverLowersTheAnchorAndKeepsANewerReplyPending() async {
+    let recorder = TTSRecorder()
+    var initial = twoReplies(anchor: 0)
+    initial.autoSpeakReplies = true
+    let store = makeStore(initial, recorder)
+
+    await store.send(.readAloudTapped(id: uuid(101))) {
+      $0.spokenAssistantCount = 1 // "One" is read; "Two" stays pending
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    // The idle edge reads the pending newest reply.
+    await store.receive(\.ttsFinished) {
+      $0.spokenAssistantCount = 2
+      $0.ttsPlayback = .preparing(self.uuid(103))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    #expect(recorder.spokenTexts == ["One", "Two"])
+
+    // With everything consumed, re-reading the older row leaves the anchor where it is.
+    await store.send(.readAloudTapped(id: uuid(101))) { $0.ttsPlayback = .preparing(self.uuid(101)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+  }
+
+  @Test func readAloudWorksWithAutoSpeakOff() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(twoReplies(anchor: 0), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(101))) {
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle } // auto-speak off: nothing more
+    #expect(recorder.spokenTexts == ["One"])
+  }
+
+  @Test func readAloudTappedIgnoresNonRepliesAndAnActiveClip() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    var initial = twoReplies(anchor: 2)
+    initial.transcript.append(assistant(104, "streaming", complete: false))
+    let store = makeStore(initial, recorder)
+
+    await store.send(.readAloudTapped(id: uuid(100))) // a user row
+    await store.send(.readAloudTapped(id: uuid(104))) // still streaming
+    await store.send(.readAloudTapped(id: uuid(999))) // unknown row
+    #expect(recorder.speaks.value.isEmpty)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    // Another row's tap while this one plays is a no-op.
+    await store.send(.readAloudTapped(id: uuid(101)))
+    #expect(recorder.spokenTexts == ["Two"])
+    await playClock.advance(by: TTSRecorder.clipLength)
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+  }
+
+  @Test func stopReadAloudCancelsTheClipAndStopsThePlayer() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.send(.stopReadAloud) { $0.ttsPlayback = .idle }
+    await store.finish() // the cancelled clip never reports `.ttsFinished`
+    #expect(recorder.stops.value == 1)
+
+    // Stop while idle is a no-op (no player call).
+    await store.send(.stopReadAloud)
+    #expect(recorder.stops.value == 1)
+  }
+
+  // MARK: Failures
+
+  @Test(arguments: [RESTError.notFound, .server(status: 405, detail: nil)])
+  func missingEndpointHidesReadAloudSilently(_ error: RESTError) async {
+    let recorder = TTSRecorder()
+    recorder.speakError.setValue(error)
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsFailed) {
+      $0.ttsPlayback = .idle
+      $0.ttsSupported = false // no banner
+    }
+    // Hidden from now on: a tap (e.g. a stale button) does nothing.
+    await store.send(.readAloudTapped(id: uuid(101)))
+    #expect(recorder.speaks.value.count == 1)
+  }
+
+  @Test func unsupportedSlotNeverAutoSpeaks() async {
+    let recorder = TTSRecorder()
+    var initial = streamingSlot()
+    initial.ttsSupported = false
+    let store = makeStore(initial, recorder)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func badRequestDetailLandsInTheBanner() async {
+    let recorder = TTSRecorder()
+    recorder.speakError.setValue(.server(status: 400, detail: "No TTS provider configured"))
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsFailed) {
+      $0.ttsPlayback = .idle
+      $0.errorBanner = "No TTS provider configured"
+    }
+  }
+
+  @Test(arguments: [
+    (TTSPlaybackError.stalled, "Playback stalled."),
+    (.failed, "Couldn’t play the audio."),
+  ])
+  func playbackFailureBanners(_ error: TTSPlaybackError, _ banner: String) async {
+    let recorder = TTSRecorder()
+    recorder.playError.setValue(error)
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.receive(\.ttsFailed) {
+      $0.ttsPlayback = .idle
+      $0.errorBanner = banner
+    }
+  }
+
+  @Test func aFailedAutoReadStaysConsumed() async {
+    // The failure edge is itself a speak edge: the failed reply must not be retried.
+    let recorder = TTSRecorder()
+    recorder.speakError.setValue(.server(status: 500, detail: "Synthesis failed"))
+    let store = makeStore(streamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil)))
+    await store.receive(\.ttsFailed)
+    await store.skipReceivedActions(strict: false) // no retry of the failed reply
+    #expect(recorder.speaks.value.count == 1)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(store.state.spokenAssistantCount == 1)
+    #expect(store.state.errorBanner == "Synthesis failed")
+  }
+
+  // MARK: Hydrate mid-playback
+
+  @Test(arguments: [false, true])
+  func hydrateMidPlaybackRepointsToTheRebuiltRow(_ preparing: Bool) async throws {
+    var initial = ChatFeature.State(
+      connection: conn, resumeStoredID: "stored1", transcript: [user(100, "q"), assistant(101, "Hello")]
+    )
+    initial.liveSessionID = "live1"
+    initial.status = .ready
+    initial.hasHydrated = true
+    initial.spokenAssistantCount = 1
+    initial.ttsPlayback = preparing ? .preparing(uuid(101)) : .speaking(uuid(101))
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live1", storedSessionID: "stored1",
+      messages: [
+        SessionMessage(id: 1, role: "user", content: "q"),
+        SessionMessage(id: 2, role: "assistant", content: "Hello"),
+      ],
+      running: false
+    ))))
+    let rebuilt = try #require(store.state.lastCompletedAssistantRow?.id)
+    #expect(rebuilt != uuid(101)) // the live id was rewritten to the history id
+    #expect(store.state.ttsPlayback == (preparing ? .preparing(rebuilt) : .speaking(rebuilt)))
+
+    // The clip's own `.ttsSpeaking` (still carrying the live id) keeps the re-pointed row.
+    if preparing {
+      await store.send(.ttsSpeaking(id: uuid(101)))
+      #expect(store.state.ttsPlayback == .speaking(rebuilt))
+    }
+  }
+
+  // MARK: The #98 replay rule
+
+  enum Drop: CaseIterable, Sendable {
+    /// `.gatewayClosed`: the drop finalizes (and consumes) the streaming partial.
+    case socketClosed
+    /// `.teardownSocketOnly`: nothing is finalized — the fold completes the live row.
+    case graceExpired
+  }
+
+  /// A ready, on-screen, auto-speak slot of the replay harness: "Old" (spoken) and a reply
+  /// streaming as row 903 when the socket goes away; replay watermark at 41.
+  private func replaySlot() -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, resumeStoredID: "stored1")
+    state.liveSessionID = "live1"
+    state.status = .ready
+    state.hasStarted = true
+    state.hasHydrated = true
+    state.hasRequestedSession = true
+    state.replayEpoch = "e1"
+    state.replayCursor = .init(sessionID: "live1", seq: 41)
+    state.autoSpeakReplies = true
+    state.isOnScreen = true
+    state.transcript = [user(900, "q1"), assistant(901, "Old"), user(902, "q2"), assistant(903, "Hel", complete: false)]
+    state.streamingRowID = uuid(903)
+    state.isSending = true
+    state.spokenAssistantCount = 1
+    return state
+  }
+
+  private nonisolated static let replayHistory: [JSONValue] = [
+    ReplayTests.message(1, "user", "q1"), ReplayTests.message(2, "assistant", "Old"),
+    ReplayTests.message(3, "user", "q2"), ReplayTests.message(4, "assistant", "Hello"),
+  ]
+
+  /// Drop the socket, then reconnect: `.ready` → replay read → fold → trailing hydrate.
+  private func dropAndReplay(
+    _ drop: Drop, _ store: TestStoreOf<ChatFeature>
+  ) async {
+    switch drop {
+    case .socketClosed: await store.send(.gatewayClosed)
+    case .graceExpired: await store.send(.teardownSocketOnly)
+    }
+    await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
+    await store.receive(\.eventReplayResult.success)
+  }
+
+  @Test(arguments: Drop.allCases)
+  func aReplayedCompletionIsNeverRead(_ drop: Drop) async throws {
+    let gateway = ReplayTests.ReplayHarness()
+    gateway.since.setValue(.success(ReplayTests.since([
+      ReplayTests.event("message.delta", 42, ["text": .string("lo")]),
+      ReplayTests.event("message.complete", 43, ["text": .string("Hello")]),
+    ])))
+    gateway.resume.setValue(ReplayTests.resume(running: false, messages: Self.replayHistory))
+    let recorder = TTSRecorder()
+    let store = gateway.makeStore(replaySlot())
+    recorder.install(into: &store.dependencies)
+
+    await dropAndReplay(drop, store)
+    if drop == .graceExpired {
+      // The fold itself completed the still-live row — and consumed it.
+      #expect(store.state.transcript[id: uuid(903)]?.kind
+        == .message(role: .assistant, text: "Hello", isComplete: true))
+    }
+    #expect(store.state.ttsPlayback == .idle) // never `.preparing`
+    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    await store.receive(\.activateResult.success)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(store.state.replayConsumedReply == false)
+    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(recorder.speaks.value.isEmpty)
+
+    // Later speak edges do not pick the replayed reply up: returning to the app (healthy
+    // socket → a plain re-hydrate) …
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(recorder.speaks.value.isEmpty)
+    // … nor the idle edge after a manual read of the OLDER reply.
+    let old = try #require(store.state.transcript.first(where: {
+      $0.kind == .message(role: .assistant, text: "Old", isComplete: true)
+    }))
+    await store.send(.readAloudTapped(id: old.id))
+    await store.receive(\.ttsFinished)
+    await store.skipReceivedActions(strict: false) // the idle edge starts no second clip
+    #expect(recorder.spokenTexts == ["Old"])
+    #expect(store.state.ttsPlayback == .idle)
+
+    // The NEXT live completion is read.
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Next")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Next", usage: nil)))
+    await store.receive(\.ttsFinished)
+    #expect(recorder.spokenTexts == ["Old", "Next"])
+    await store.send(.teardown)
+  }
+
+  @Test func aReplayWithoutACompletionKeepsALivePendingReplyPending() async {
+    // "Done" completed LIVE while "Old" was being read by hand, so it waits for the clip's
+    // idle edge. The socket drops; the gap holds no `message.complete` — the reply is still
+    // the one the user is waiting on, and the idle edge reads it after the reconnect.
+    let gateway = ReplayTests.ReplayHarness()
+    gateway.since.setValue(.success(ReplayTests.since([
+      ReplayTests.event("status.update", 42, ["kind": .string("compress"), "text": .string("Compressing")]),
+    ])))
+    gateway.resume.setValue(ReplayTests.resume(running: false, messages: [
+      ReplayTests.message(1, "user", "q1"), ReplayTests.message(2, "assistant", "Old"),
+      ReplayTests.message(3, "user", "q2"), ReplayTests.message(4, "assistant", "Done"),
+    ]))
+    var initial = replaySlot()
+    initial.transcript[id: uuid(903)]?.kind = .message(role: .assistant, text: "Done", isComplete: true)
+    initial.streamingRowID = nil
+    initial.isSending = false
+    initial.ttsPlayback = .speaking(uuid(901))
+    let recorder = TTSRecorder()
+    let store = gateway.makeStore(initial)
+    recorder.install(into: &store.dependencies)
+
+    await dropAndReplay(.socketClosed, store)
+    #expect(store.state.replayConsumedReply == false)
+    await store.receive(\.activateResult.success)
+    #expect(store.state.completedAssistantCount == 2)
+    #expect(store.state.spokenAssistantCount == 1) // "Done" still pending
+    #expect(recorder.speaks.value.isEmpty)
+
+    // The manual clip ends: the idle edge reads the pending reply.
+    await store.send(.ttsFinished)
+    await store.receive(\.ttsFinished)
+    #expect(recorder.spokenTexts == ["Done"])
+    #expect(store.state.spokenAssistantCount == 2)
+    await store.send(.teardown)
+  }
 }
