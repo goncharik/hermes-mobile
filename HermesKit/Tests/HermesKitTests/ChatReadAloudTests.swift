@@ -975,6 +975,22 @@ struct ChatReadAloudTests {
     }
   }
 
+  @Test func anInterruptionIsSilentAndNotASpeakEdge() async {
+    // A call/Siri ends the clip while a newer reply is pending: no banner, and the pending
+    // reply is NOT synthesized into the ongoing interruption — it stays pending.
+    let recorder = TTSRecorder()
+    recorder.playError.setValue(.interrupted)
+    var initial = twoReplies(anchor: 1)
+    initial.autoSpeakReplies = true
+    let store = makeStore(initial, recorder)
+
+    await store.send(.readAloudTapped(id: uuid(101))) { $0.ttsPlayback = .preparing(self.uuid(101)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFailed) { $0.ttsPlayback = .idle }
+    #expect(recorder.spokenTexts == ["One"])
+    #expect(store.state.completedAssistantCount > store.state.spokenAssistantCount)
+  }
+
   @Test func aFailedAutoReadStaysConsumed() async {
     // The failure edge is itself a speak edge: the failed reply must not be retried.
     let recorder = TTSRecorder()

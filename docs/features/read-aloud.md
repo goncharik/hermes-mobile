@@ -48,13 +48,14 @@ switch keeps device UI prefs, the same as the swipe default.
 - **`TTSClient` is a dumb player**: one `AVAudioPlayer` clip at a time, on an `.playback`
   session (mode `.default`, no options). It plays through the silent switch because the user
   explicitly asked to hear the reply. `play` writes a temp file (extension chosen by mime type),
-  suspends until the clip ends, and returns normally on finish, on `stop()`, on task
-  cancellation, or on an `AVAudioSession` interruption (a call or Siri ends the clip, which is
-  not an error). It throws `.failed` if decoding or starting fails, and `.stalled` from a 15 s
-  watchdog (the desktop's `PLAYBACK_STALL_MS`). The watchdog is armed before `play()` and
+  suspends until the clip ends, and returns normally on finish, on `stop()` or on task
+  cancellation (checked again inside the synchronous start, so a cancelled clip never sounds).
+  It throws `.interrupted` on an `AVAudioSession` interruption (a call or Siri), `.failed` if
+  decoding or starting fails, and `.stalled` from a 15 s watchdog (the desktop's
+  `PLAYBACK_STALL_MS`). The watchdog is armed before `play()` and
   re-armed whenever `currentTime` advances. Every exit stops the player, deletes the file and
   deactivates the session with `.notifyOthersOnDeactivation`. `stop()` is idempotent and
-  returns only after that deactivation. The live actor is behind `#if canImport(UIKit)`, and
+  returns only after that deactivation attempt (a failed one is retried by the next exit). The live actor is behind `#if canImport(UIKit)`, and
   the `testValue` returns immediately.
 - **The playback state machine lives in `ChatFeature`**, per slot: `ttsPlayback` is `.idle`,
   `.preparing(rowID)` (synthesizing) or `.speaking(rowID)`. `speakRow` runs one effect,
@@ -113,7 +114,7 @@ the right state. The clip itself keeps playing.
 `autoSpeakIfReady` runs at three edges:
 
 - a LIVE `message.complete`;
-- every playback-idle edge (`.ttsFinished`, `.ttsFailed`);
+- every playback-idle edge (`.ttsFinished`, `.ttsFailed` except `.interrupted`);
 - the mic going idle (transcript, failure, cancel, permission denied);
 - `.foreground`.
 
@@ -207,7 +208,7 @@ with `dict.get` and ignore the key. Validated agents list it in `PromptSubmitPar
 | `.sceneBackgrounded` (`AppFeature` `.background`, before `persistNow`, idle AND running slots) | stopped; no latch (not a barge-in) | held: `isSceneBackgrounded = true` |
 | `.foreground` | — | flag cleared, speak check runs (reads a reply held live) |
 | `.reattached` (and a later `.task`) | — | `isOnScreen = true` and the anchor armed; NOT a speak edge |
-| Audio-session interruption (call, Siri) | clip ends normally, no banner | the idle edge runs the speak check |
+| Audio-session interruption (call, Siri) | clip ends (`.interrupted`), no banner | NOT a speak edge: a pending reply waits for `.foreground` |
 | User submit / mic tap | stopped and latch stamped | — |
 
 There is no background audio and no lock-screen control. The background grace keeps the

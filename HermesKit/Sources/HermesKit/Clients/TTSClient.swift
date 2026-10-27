@@ -57,6 +57,8 @@ public enum TTSPlaybackError: Error, Equatable, Sendable {
   case failed
   /// Playback stopped advancing for `TTSClient.stallTimeout` (the desktop's watchdog).
   case stalled
+  /// An audio-session interruption (a call, Siri, another app's audio) ended the clip.
+  case interrupted
 }
 
 /// Plays one synthesized clip at a time for "Read replies aloud" (#74). A dumb player: the
@@ -66,12 +68,12 @@ public enum TTSPlaybackError: Error, Equatable, Sendable {
 @DependencyClient
 public struct TTSClient: Sendable {
   /// Play `data` (of `mimeType`) to the end. Returns normally when the clip finishes, when
-  /// `stop()` is called, on an audio-session interruption, or when the calling task is
-  /// cancelled; throws `TTSPlaybackError` on a decode/start failure or a stall. A new `play`
+  /// `stop()` is called, or when the calling task is cancelled; throws `TTSPlaybackError` on
+  /// a decode/start failure, a stall or an audio-session interruption. A new `play`
   /// supersedes (stops) any clip already playing.
   public var play: @Sendable (_ data: Data, _ mimeType: String) async throws -> Void
-  /// Stop playback. Idempotent; returns only after the audio session is deactivated, so a
-  /// caller can start recording right after it (the mic path relies on that ordering).
+  /// Stop playback. Idempotent; returns only after the audio-session deactivation attempt, so
+  /// a caller can start recording right after it (the mic path relies on that ordering).
   public var stop: @Sendable () async -> Void
 
   /// The desktop's `PLAYBACK_STALL_MS`: playback whose position has not advanced for this
@@ -173,14 +175,10 @@ public extension DependencyValues {
       try await withTaskCancellationHandler {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
           self.continuation = continuation
-          // Already cancelled: never activate the session — `onCancel`'s stop is a separate
-          // task that would only land after `start`.
-          guard !Task.isCancelled else {
-            finish(.success(()))
-            return
-          }
           do {
             try start(data: data, mimeType: mimeType, token: token)
+          } catch is CancellationError {
+            finish(.success(()))
           } catch {
             finish(.failure(TTSPlaybackError.failed))
           }
@@ -200,7 +198,11 @@ public extension DependencyValues {
       finish(.success(()))
     }
 
+    /// Synchronous on the actor, so `onCancel`'s stop only lands after it returns: it checks
+    /// cancellation itself — before activating the session and again before `play()` — and
+    /// throws `CancellationError` so a cancelled clip never makes a sound.
     private func start(data: Data, mimeType: String, token: Int) throws {
+      try Task.checkCancellation()
       let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("hermes-tts-\(UUID().uuidString).\(TTSAudio.fileExtension(forMimeType: mimeType))")
       try data.write(to: url)
@@ -219,8 +221,7 @@ public extension DependencyValues {
       ) { [weak self] notification in
         let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
         guard raw == AVAudioSession.InterruptionType.began.rawValue else { return }
-        // An interruption (call, Siri, another app's audio) ends the clip — not an error.
-        Task { await self?.stop(token: token) }
+        Task { await self?.fail(.interrupted, token: token) }
       }
 
       let player = try AVAudioPlayer(contentsOf: url)
@@ -232,6 +233,7 @@ public extension DependencyValues {
       self.delegate = delegate
       guard player.prepareToPlay() else { throw TTSPlaybackError.failed }
 
+      try Task.checkCancellation()
       // Armed before `play()`, like the desktop: a clip that never starts also stalls.
       armWatchdog(token: token, startTime: player.currentTime)
       guard player.play() else { throw TTSPlaybackError.failed }
@@ -250,7 +252,7 @@ public extension DependencyValues {
                 let time = await self.currentTime(token: token)
           else { return }
           if detector.isStalled(position: time, at: clock.now) {
-            await self.stalled(token: token)
+            await self.fail(.stalled, token: token)
             return
           }
         }
@@ -262,9 +264,9 @@ public extension DependencyValues {
       return player.currentTime
     }
 
-    private func stalled(token: Int) {
+    private func fail(_ error: TTSPlaybackError, token: Int) {
       guard token == generation else { return }
-      finish(.failure(TTSPlaybackError.stalled))
+      finish(.failure(error))
     }
 
     private func playerFinished(token: Int, successfully: Bool) {
@@ -273,9 +275,9 @@ public extension DependencyValues {
     }
 
     /// The one teardown: stop the player, drop the watchdog and observer, delete the temp
-    /// file, deactivate the session (once — `sessionActive` guards a second stop), then
-    /// resume the suspended `play` (once). Synchronous on the actor, so `stop()` returns
-    /// only after the deactivation.
+    /// file, deactivate the session (`sessionActive` guards a second stop; it stays set when
+    /// the deactivation fails, so the next `finish` retries it), then resume the suspended
+    /// `play` (once). Synchronous on the actor, so `stop()` returns only after the attempt.
     private func finish(_ result: Result<Void, any Error>) {
       watchdog?.cancel()
       watchdog = nil
@@ -290,8 +292,10 @@ public extension DependencyValues {
       if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
       fileURL = nil
       if sessionActive {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        sessionActive = false
+        do {
+          try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+          sessionActive = false
+        } catch {}
       }
       let continuation = continuation
       self.continuation = nil

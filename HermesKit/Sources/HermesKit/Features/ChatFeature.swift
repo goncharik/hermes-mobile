@@ -1092,7 +1092,7 @@ public struct ChatFeature {
     case ttsSpeaking
     /// The clip played to the end (or was empty after sanitizing) — a playback-idle edge.
     case ttsFinished
-    /// Synthesis or playback failed — also a playback-idle edge.
+    /// Synthesis or playback failed — also a playback-idle edge (not an interruption).
     case ttsFailed(ReadAloudFailure)
     /// The app scene went to the background (`AppFeature`, idle AND running slots): stop the
     /// clip — there is no background-audio entitlement, yet the ~30 s grace keeps a running
@@ -2195,6 +2195,10 @@ public struct ChatFeature {
           state.errorBanner = "Playback stalled."
         case .playback(.failed):
           state.errorBanner = "Couldn’t play the audio."
+        case .playback(.interrupted):
+          // A call/Siri owns the audio session: no banner, and NOT a speak edge — a pending
+          // reply could not activate the session now. `.foreground` reads it.
+          return .none
         }
         // A playback-idle edge. The failed reply stays consumed (unlike the desktop's
         // `releaseUnplayedSpokenReply`), so this edge can never retry it in a loop.
@@ -3339,13 +3343,13 @@ public struct ChatFeature {
   }
 
   /// The auto-speak check (#74), run at the speak edges: a LIVE `message.complete`, every
-  /// playback-idle edge (`.ttsFinished` / `.ttsFailed`), the mic going idle, and
-  /// `.foreground`. Reads the newest assistant reply when the toggle is on, the endpoint is
-  /// supported, nothing is playing, the mic is not busy (it owns the audio session), the app
-  /// is foreground with this chat on screen, no #98 replay fold is running, the newest
-  /// assistant message row is COMPLETE, and it is pending (`completedAssistantCount >
-  /// spokenAssistantCount`). The anchor then jumps to the full count: a backlog that piled up
-  /// during a clip collapses to the newest reply.
+  /// playback-idle edge (`.ttsFinished` / `.ttsFailed`, except an interruption), the mic
+  /// going idle, and `.foreground`. Reads the newest assistant reply when the toggle is on,
+  /// the endpoint is supported, nothing is playing, the mic is not busy (it owns the audio
+  /// session), the app is foreground with this chat on screen, no #98 replay fold is running,
+  /// the newest assistant message row is COMPLETE, and it is pending
+  /// (`completedAssistantCount > spokenAssistantCount`). The anchor then jumps to the full
+  /// count: a backlog that piled up during a clip collapses to the newest reply.
   private func autoSpeakIfReady(_ state: inout State) -> Effect<Action> {
     guard state.autoSpeakReplies, state.ttsSupported, !state.ttsPlayback.isActive,
           !state.recording.isBusy, !state.isSceneBackgrounded, state.isOnScreen,
