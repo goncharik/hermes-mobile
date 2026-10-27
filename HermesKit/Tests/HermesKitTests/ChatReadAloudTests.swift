@@ -1107,6 +1107,41 @@ struct ChatReadAloudTests {
     #expect(store.state.readAloudState(for: two.id) == .disabled)
   }
 
+  @Test func hydrateMidPlaybackKeepsAnUnmappableTargetOffEveryRow() async throws {
+    // The rebuilt history has no completed reply in the clip's turn: no row may claim the
+    // clip (no "Stop reading" on an unrelated reply) — the pill still shows it, and it plays on.
+    var initial = ChatFeature.State(
+      connection: conn, resumeStoredID: "stored1",
+      transcript: [user(100, "q1"), assistant(101, "One"), user(102, "q2"), assistant(103, "Two")]
+    )
+    initial.liveSessionID = "live1"
+    initial.status = .ready
+    initial.hasHydrated = true
+    initial.spokenAssistantCount = 2
+    initial.ttsPlayback = .speaking(uuid(103))
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live1", storedSessionID: "stored1",
+      messages: [
+        SessionMessage(id: 1, role: "user", content: "q1"),
+        SessionMessage(id: 2, role: "assistant", content: "One"),
+      ],
+      running: false
+    ))))
+    let one = try #require(store.state.lastCompletedAssistantRow)
+    #expect(store.state.ttsPlayback == .speaking(uuid(103)))
+    #expect(store.state.readAloudState(for: one.id) == .disabled)
+  }
+
   // MARK: The #98 replay rule
 
   enum Drop: CaseIterable, Sendable {

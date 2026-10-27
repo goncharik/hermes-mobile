@@ -55,8 +55,10 @@ switch keeps device UI prefs, the same as the swipe default.
   `PLAYBACK_STALL_MS`). The watchdog is armed before `play()` and
   re-armed whenever `currentTime` advances. Every exit stops the player, deletes the file and
   deactivates the session with `.notifyOthersOnDeactivation`. `stop()` is idempotent and
-  returns only after that deactivation attempt (a failed one is retried once a second later,
-  and by the next exit). The live actor is behind `#if canImport(UIKit)`, and
+  returns only after that deactivation attempt. A failed one is retried only by the next exit,
+  so the session can stay active until the next play, stop or mic tap (accepted: rare, and a
+  timed retry could deactivate the session under a recording started meanwhile). The live
+  actor is behind `#if canImport(UIKit)`, and
   the `testValue` returns immediately.
 - **The playback state machine lives in `ChatFeature`**, per slot: `ttsPlayback` is `.idle`,
   `.preparing(rowID)` (synthesizing) or `.speaking(rowID)`. `speakRow` runs one effect,
@@ -106,9 +108,9 @@ Two more consumers:
 
 A hydrate that rebuilds the row a clip is attached to re-points `.preparing`/`.speaking` to the
 newest completed assistant row of the same turn (turn = user rows before it, captured before
-the rebuild), else to the newest completed assistant row (`repointPlaybackAfterRebuild`). The
-live `uuid()` row becomes a deterministic history id, and the action bar has to keep showing
-the right state. The clip itself keeps playing.
+the rebuild) (`repointPlaybackAfterRebuild`). The live `uuid()` row becomes a deterministic
+history id, and the action bar has to keep showing the right state. An unmappable turn keeps
+the vanished id, so no row shows Stop (the pill still does). The clip itself keeps playing.
 
 ## The speak check
 
@@ -209,7 +211,7 @@ with `dict.get` and ignore the key. Validated agents list it in `PromptSubmitPar
 | `.sceneBackgrounded` (`AppFeature` `.background`, before `persistNow`, idle AND running slots) | stopped; no latch (not a barge-in) | held: `isSceneBackgrounded = true` |
 | `.foreground` | — | flag cleared, speak check runs (reads a reply held live) |
 | `.reattached` (and a later `.task`) | — | `isOnScreen = true` and the anchor armed; NOT a speak edge |
-| Audio-session interruption (call, Siri) | clip ends (`.interrupted`), no banner | NOT a speak edge: a pending reply waits for `.foreground` |
+| Audio-session interruption (call, Siri) | clip ends (`.interrupted`), no banner | NOT a speak edge: a pending reply waits for `.foreground`. Not held: a reply completing live during the call still tries, banners "Couldn’t play the audio." and is consumed (accepted; a banner call keeps the scene `.active`, so there is no reliable release edge) |
 | User submit / mic tap | stopped and latch stamped | — |
 
 There is no background audio and no lock-screen control. The background grace keeps the

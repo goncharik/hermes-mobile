@@ -284,7 +284,7 @@ public extension DependencyValues {
 
     /// The one teardown: stop the player, drop the watchdog and observer, delete the temp
     /// file, deactivate the session (`sessionActive` guards a second stop; a failed
-    /// deactivation keeps it set and is retried once a second later, and by the next `finish`),
+    /// deactivation keeps it set and is retried by the next `finish`),
     /// then resume the suspended `play` (once). Synchronous on the actor, so `stop()` returns
     /// only after the first attempt.
     private func finish(_ result: Result<Void, any Error>) {
@@ -300,33 +300,18 @@ public extension DependencyValues {
       delegate = nil
       if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
       fileURL = nil
-      if sessionActive, !deactivateSession() {
-        let token = generation
-        Task { [weak self] in
-          try? await Task.sleep(for: .seconds(1))
-          await self?.retryDeactivation(token: token)
-        }
-      }
+      if sessionActive { deactivateSession() }
       let continuation = continuation
       self.continuation = nil
       continuation?.resume(with: result)
     }
 
-    /// `false` (and `sessionActive` still set) when the session refused to deactivate.
-    private func deactivateSession() -> Bool {
+    /// Leaves `sessionActive` set when the session refuses to deactivate.
+    private func deactivateSession() {
       do {
         try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         sessionActive = false
-        return true
-      } catch {
-        return false
-      }
-    }
-
-    /// The deferred retry: skipped when a newer clip has since taken the session.
-    private func retryDeactivation(token: Int) {
-      guard token == generation, sessionActive else { return }
-      _ = deactivateSession()
+      } catch {}
     }
   }
 

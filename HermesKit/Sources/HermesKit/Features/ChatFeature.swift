@@ -3325,9 +3325,10 @@ public struct ChatFeature {
 
   /// A hydrate's rebuild replaced the row the clip belongs to (the live `uuid()` row became a
   /// deterministic history id): re-point `.preparing`/`.speaking` at the newest completed
-  /// assistant row of the SAME turn (`playbackTurn`, captured before the rebuild) — else at
-  /// the newest completed assistant row — so the action bar keeps showing the right state
-  /// (#74 — the desktop absorbs the same live-id rewrite). The clip itself plays on untouched.
+  /// assistant row of the SAME turn (`playbackTurn`, captured before the rebuild) so the action
+  /// bar keeps showing the right state (#74 — the desktop absorbs the same live-id rewrite).
+  /// An unmappable turn keeps the vanished id: no row shows Stop, the pill still does. The
+  /// clip itself plays on untouched.
   private func repointPlaybackAfterRebuild(playbackTurn: Int?, into state: inout State) {
     let rowID: ChatRow.ID
     switch state.ttsPlayback {
@@ -3335,8 +3336,7 @@ public struct ChatFeature {
     case let .preparing(id), let .speaking(id): rowID = id
     }
     guard state.transcript[id: rowID] == nil,
-          let replacement = (playbackTurn.flatMap(state.newestCompletedAssistantRow(inTurn:))
-            ?? state.lastCompletedAssistantRow)?.id
+          let replacement = playbackTurn.flatMap(state.newestCompletedAssistantRow(inTurn:))?.id
     else { return }
     state.ttsPlayback = switch state.ttsPlayback {
     case .preparing: .preparing(replacement)
