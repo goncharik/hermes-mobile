@@ -751,6 +751,134 @@ struct HermesRESTClientTests {
     }
   }
 
+  // MARK: Speech synthesis (#74)
+
+  /// Three raw bytes wrapped in a server-shaped `/api/audio/speak` success body.
+  private static let speakPayload = Data([0x49, 0x44, 0x33])
+  private static var speakJSON: String {
+    let b64 = speakPayload.base64EncodedString()
+    return #"{"ok":true,"data_url":"data:audio/mpeg;base64,"# + b64
+      + #"","mime_type":"audio/mpeg","provider":"edge"}"#
+  }
+
+  @Test func speakDecodesDataURLAndPostsTextBody() async throws {
+    MockURLProtocol.set(json: Self.speakJSON)
+    let audio = try await makeClient().speak(connection, "Hello there.", nil)
+    #expect(audio == TTSAudio(data: Self.speakPayload, mimeType: "audio/mpeg"))
+
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "POST")
+    #expect(req.url?.path == "/api/audio/speak")
+    #expect(req.url?.query == nil)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+    #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json")
+    let json = try #require(
+      JSONSerialization.jsonObject(with: bodyData(req)) as? [String: Any]
+    )
+    // `text` is the ONLY field `TTSSpeakRequest` accepts.
+    #expect(json.count == 1)
+    #expect(json["text"] as? String == "Hello there.")
+  }
+
+  @Test(arguments: ["work", "default"])
+  func speakWithProfileAddsProfileQueryOnly(profile: String) async throws {
+    // #114: the literal name rides in the query, `"default"` included; the body stays `{text}`.
+    MockURLProtocol.set(json: Self.speakJSON)
+    _ = try await makeClient().speak(connection, "Hi", profile)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.url?.path == "/api/audio/speak")
+    let query = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    #expect(query == [URLQueryItem(name: "profile", value: profile)])
+    let json = try #require(
+      JSONSerialization.jsonObject(with: bodyData(req)) as? [String: Any]
+    )
+    #expect(json.keys.sorted() == ["text"])
+  }
+
+  @Test func speakNotFoundIsMissingEndpointVerdict() async throws {
+    MockURLProtocol.set(status: 404)
+    let error = await #expect(throws: RESTError.self) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+    #expect(error == .notFound)
+    #expect(error?.isMissingEndpointVerdict == true)
+  }
+
+  /// A pre-desktop agent's SPA catch-all is `GET /{full_path:path}`, so a POST answers 405 —
+  /// the same capability verdict as a 404.
+  @Test func speakMethodNotAllowedIsMissingEndpointVerdict() async throws {
+    MockURLProtocol.set(status: 405, json: #"{"detail":"Method Not Allowed"}"#)
+    let error = await #expect(throws: RESTError.self) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+    #expect(error == .server(status: 405, detail: "Method Not Allowed"))
+    #expect(error?.isMissingEndpointVerdict == true)
+  }
+
+  @Test func speakBadRequestCarriesServerDetail() async throws {
+    MockURLProtocol.set(status: 400, json: #"{"detail":"Text is empty after TTS cleanup"}"#)
+    let error = await #expect(throws: RESTError.self) {
+      _ = try await makeClient().speak(connection, "```code```", nil)
+    }
+    #expect(error == .server(status: 400, detail: "Text is empty after TTS cleanup"))
+    #expect(error?.isMissingEndpointVerdict == false)
+    #expect(error?.message == "Text is empty after TTS cleanup")
+  }
+
+  @Test func speakServerErrorCarriesDetail() async throws {
+    MockURLProtocol.set(status: 500, json: #"{"detail":"Audio file missing"}"#)
+    await #expect(throws: RESTError.server(status: 500, detail: "Audio file missing")) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+  }
+
+  @Test func speakMalformedDataURLMapsToDecoding() async throws {
+    MockURLProtocol.set(json: #"{"ok":true,"data_url":"not-a-data-url","mime_type":"audio/mpeg"}"#)
+    await #expect(throws: RESTError.decoding) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+  }
+
+  @Test func speakMissingDataURLMapsToDecoding() async throws {
+    MockURLProtocol.set(json: #"{"ok":true}"#)
+    await #expect(throws: RESTError.decoding) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+  }
+
+  /// Defensive: the server never answers a 2xx `ok:false`, but if one arrives it must fail
+  /// rather than play nothing.
+  @Test func speakOkFalseMapsToServerError() async throws {
+    MockURLProtocol.set(json: #"{"ok":false}"#)
+    await #expect(throws: RESTError.server(status: 200, detail: nil)) {
+      _ = try await makeClient().speak(connection, "Hi", nil)
+    }
+  }
+
+  @Test func speakRequestCarriesScaledTimeout() async throws {
+    MockURLProtocol.set(json: Self.speakJSON)
+    let text = String(repeating: "a", count: 10_000)
+    _ = try await makeClient().speak(connection, text, nil)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.timeoutInterval == HermesRESTClient.speakTimeout(forCharacterCount: 10_000))
+    #expect(req.timeoutInterval == 350)
+  }
+
+  @Test(arguments: [
+    (0, 180.0), (12, 180.0), (5_142, 180.0), (10_000, 350.0), (17_142, 599.97), (20_000, 600.0),
+    (1_000_000, 600.0),
+  ])
+  func speakTimeoutScalesWithText(count: Int, expected: TimeInterval) {
+    #expect(abs(HermesRESTClient.speakTimeout(forCharacterCount: count) - expected) < 0.000_1)
+  }
+
+  @Test func transcribeKeepsDefaultTimeout() async throws {
+    // `postJSON`'s new `timeout:` is opt-in — the transcribe request keeps URLRequest's 60 s.
+    MockURLProtocol.set(json: #"{"ok":true,"transcript":"hi"}"#)
+    _ = try await makeClient().transcribe(connection, "data:audio/m4a;base64,AAA=", nil)
+    #expect(MockURLProtocol.lastRequest?.timeoutInterval == 60)
+  }
+
   // MARK: Push registration (C3 — hermes-push plugin)
 
   @Test func registerPushPostsSnakeCaseBody() async throws {

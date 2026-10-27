@@ -467,7 +467,7 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
 alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updateConfig` (`PUT
 /api/config {config: <patch>}` via `send`) with the original tests.
 
-- [ ] Add `speak: (ServerConnection, String, String?) async throws -> TTSAudio`:
+- [x] Add `speak: (ServerConnection, String, String?) async throws -> TTSAudio`:
       `POST /api/audio/speak` (+ `?profile=` only when non-nil, `deleteSession`'s query
       pattern), body `{text}`, private `SpeakResponse {ok, data_url, mime_type, provider}`;
       `ok == false` (defensive — the server never sends it) ⇒ `RESTError.server(status: 200,
@@ -475,17 +475,17 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       `RESTError.decoding`). Per-request timeout from a pure `static func
       speakTimeout(forCharacterCount:) -> TimeInterval` = `min(600, max(180, 0.035 × n))` —
       extend `postJSON` with an optional `timeout:` (default unchanged for `transcribe`).
-- [ ] Leave `speak` unimplemented in `testValue` (the `setUnread`-style no-op default is only
+- [x] Leave `speak` unimplemented in `testValue` (the `setUnread`-style no-op default is only
       for calls issued on every open; `speak` is issued only by an explicit edge, so tests
       stub it and an unexpected call fails loudly).
-- [ ] Write tests (stubbed `URLProtocol`, existing pattern): `speak` success decodes the
+- [x] Write tests (stubbed `URLProtocol`, existing pattern): `speak` success decodes the
       data URL and sends `{text}` with/without `?profile=` (incl. the literal `"default"`);
       404 → `.notFound` and 405 → `.server(405, …)`, both `isMissingEndpointVerdict`; 400
       with `detail` → `.server(400, detail)` (e.g. "Text is empty after TTS cleanup"); 500 →
       `.server(500, detail)`; malformed data URL → `.decoding`; the request carries the
       `speakTimeout` interval; `speakTimeout` table (short text → 180, 10 000 chars → 350,
       20 000 chars → 600).
-- [ ] run `make test` — must pass before Task 5
+- [x] run `make test` — must pass before Task 5
 
 ### Task 5: `ChatFeature` — setting load, toggle, arming
 

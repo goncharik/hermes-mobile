@@ -256,6 +256,14 @@ public struct HermesRESTClient: Sendable {
   /// Transcribe recorded audio — `POST /api/audio/transcribe` `{data_url, mime_type?}` →
   /// `{ok, transcript}`. Returns the transcript text; throws `.transcriptionFailed` on `ok:false`.
   public var transcribe: @Sendable (_ connection: ServerConnection, _ dataURL: String, _ mimeType: String?) async throws -> String
+  /// Synthesize speech — `POST /api/audio/speak` `{text}` → `{ok, data_url, mime_type,
+  /// provider}`, parsed into playable `TTSAudio`. Pass `profile` (the literal name,
+  /// `"default"` included, #114) to add `?profile=`; `nil` omits it. Errors are HTTP statuses:
+  /// 400 carries the provider's reason in `detail` (`.server(400, detail)`), and an agent
+  /// without the route answers 404 or 405 — both `RESTError.isMissingEndpointVerdict`, which
+  /// callers use to flip their `ttsSupported` gate silently. Blocking synthesis, so the
+  /// request timeout scales with the text (`speakTimeout(forCharacterCount:)`).
+  public var speak: @Sendable (_ connection: ServerConnection, _ text: String, _ profile: String?) async throws -> TTSAudio
   /// Register this device's APNs token with the `hermes-push` plugin —
   /// `POST /api/plugins/hermes-push/register` `{device_token, apns_env, app_version}`. The app
   /// never signs pushes (the plugin signs with a single shared secret), so registration returns
@@ -457,6 +465,26 @@ public extension HermesRESTClient {
         }
         return transcript
       },
+      speak: { conn, text, profile in
+        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+        let url = try makeURL(conn.baseURL, "/api/audio/speak", query: query)
+        let body = try JSONSerialization.data(withJSONObject: ["text": text])
+        let response: SpeakResponse = try await postJSON(
+          url, body: body, auth: authFor(conn), session: session,
+          timeout: HermesRESTClient.speakTimeout(forCharacterCount: text.count)
+        )
+        // The server reports every failure as an HTTP status, so a 2xx `{"ok": false}`
+        // shouldn't happen. Treat it as a failure rather than playing nothing.
+        guard response.ok != false else {
+          throw RESTError.server(status: 200, detail: nil)
+        }
+        guard let dataURL = response.dataURL else { throw RESTError.decoding }
+        do {
+          return try TTSAudio.parse(dataURL: dataURL)
+        } catch {
+          throw RESTError.decoding
+        }
+      },
       registerPush: { conn, deviceToken, apnsEnv, appVersion in
         let url = try makeURL(conn.baseURL, "/api/plugins/hermes-push/register")
         let body = try JSONSerialization.data(withJSONObject: [
@@ -538,10 +566,22 @@ extension HermesRESTClient: DependencyKey {
   // REST calls in tests are unimplemented unless explicitly stubbed. `setUnread` alone is a
   // no-op default because reducers deliberately issue it as a best-effort compatibility write
   // on every open; tests that verify shared-read behavior override it and assert the payload.
+  // `speak` deliberately stays unimplemented: only an explicit edge (a completed reply with
+  // auto-speak on, or a Read aloud tap) issues it, so an unexpected call must fail loudly.
   public static var testValue: HermesRESTClient {
     var client = HermesRESTClient()
     client.setUnread = { _, _, _, _ in }
     return client
+  }
+}
+
+public extension HermesRESTClient {
+  /// Per-request timeout for `speak`: synthesis is blocking and the server chunks long text,
+  /// so the wait scales at 35 ms per character with a 180 s floor and a 600 s cap — the
+  /// desktop's `speakText` budget (`apps/desktop/src/api/system.ts`).
+  static func speakTimeout(forCharacterCount count: Int) -> TimeInterval {
+    // Milliseconds first (integer math), then seconds — `0.035 * n` drifts off whole values.
+    min(600, max(180, Double(count * 35) / 1000))
   }
 }
 
@@ -789,11 +829,15 @@ func serverDetail(from data: Data) -> String? {
   return text.isEmpty ? nil : text
 }
 
-/// POST a JSON body and decode the response (used by `transcribe`).
+/// POST a JSON body and decode the response (used by `transcribe` and `speak`). `timeout`
+/// overrides the request's default 60 s interval when non-nil (`speak` scales it with the
+/// text); `nil` leaves the default untouched.
 func postJSON<T: Decodable>(
-  _ url: URL, body: Data, auth: RequestAuth, session: URLSession
+  _ url: URL, body: Data, auth: RequestAuth, session: URLSession,
+  timeout: TimeInterval? = nil
 ) async throws -> T {
   var request = URLRequest(url: url)
+  if let timeout { request.timeoutInterval = timeout }
   request.httpMethod = "POST"
   request.httpBody = body
   request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -944,6 +988,21 @@ private struct TranscriptionResponse: Decodable {
   let transcript: String?
   let provider: String?
   let error: String?
+}
+
+/// `/api/audio/speak` response — `{ok, data_url, mime_type, provider}`. Only `data_url` is
+/// load-bearing (`TTSAudio.parse` reads the mime type from it); the rest decode leniently.
+private struct SpeakResponse: Decodable {
+  let ok: Bool?
+  let dataURL: String?
+  let mimeType: String?
+  let provider: String?
+
+  enum CodingKeys: String, CodingKey {
+    case ok, provider
+    case dataURL = "data_url"
+    case mimeType = "mime_type"
+  }
 }
 
 /// `/api/dashboard/plugins/hub` response — `{plugins: [{name, runtime_status, version,
