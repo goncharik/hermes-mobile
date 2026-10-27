@@ -9,8 +9,8 @@ This is also the backbone for the later voice-conversation ticket.
 
 This plan ships the desktop feature with parity wherever the phone allows it:
 
-- ⚠️ **The toggle is a device-local preference (`PreferencesClient`), default off — NOT the
-  server's `voice.auto_tts`** (refreshed 2026-10-27; needs user confirmation). The plan was
+- **The toggle is a device-local preference (`PreferencesClient`), default off — NOT the
+  server's `voice.auto_tts`** (refreshed 2026-10-27; confirmed by the user 2026-10-27). The plan was
   written when the desktop mirrored `voice.auto_tts` over `GET`/`PUT /api/config`; upstream
   `938a3dc8f9` ("keep read-aloud independent of gateway auto-TTS", Fixes #99076, first release
   v0.21.6) moved the desktop toggle to localStorage because `voice.auto_tts` is the messaging
@@ -293,8 +293,8 @@ plain-hydrate reconnect (no cursor, older agent, `truncated`, epoch change, read
 treated the same way by the re-basing rule: a reply the client never saw complete live arrives
 only through the hydrate and is not pending.
 
-⚠️ **Replay rule vs. "returning speaks a reply that completed while away" (needs user
-decision).** They conflict partially. Still true: a reply that completes while the socket is
+**Replay rule vs. "returning speaks a reply that completed while away" (decided: option 1,
+confirmed by the user 2026-10-27).** They conflict partially. Still true: a reply that completes while the socket is
 alive (a running turn keeps it ~30 s via the background grace) arrives as a LIVE
 `message.complete`, is held by `isSceneBackgrounded`, and is spoken on `.foreground`. No longer
 true: a reply that completes after the grace expired (`.teardownSocketOnly` → the foreground
@@ -727,9 +727,9 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       Stop silences; auto-speak does not re-read that row.
 - [ ] Typing a new message mid-playback silences it and the frame carries `interrupted`.
 - [ ] Backgrounding stops audio; returning speaks a reply that completed LIVE while away
-      (within the ~30 s grace of a running turn). ⚠️ A reply that completed after the grace
+      (within the ~30 s grace of a running turn). A reply that completed after the grace
       expired, or during a socket drop (delivered by the #98 replay or a plain reconnect
-      hydrate), is NOT read — per the replay rule (Solution Overview, pending user decision).
+      hydrate), is NOT read — per the replay rule (Solution Overview, user-confirmed).
 - [ ] A foreground re-hydrate after a tool-using turn does not re-read its reply.
 - [ ] Screen does not autolock while a turn runs with the toggle on or while speaking; does
       autolock on the session list.
