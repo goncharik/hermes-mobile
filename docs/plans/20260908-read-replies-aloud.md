@@ -416,13 +416,15 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
 - Create: `HermesKit/Sources/HermesKit/Clients/TTSClient.swift`
 - Create: `HermesKit/Tests/HermesKitTests/TTSClientTests.swift`
 
-- [ ] Add `public struct TTSAudio: Equatable, Sendable { data, mimeType }` with pure
+- [x] Add `public struct TTSAudio: Equatable, Sendable { data, mimeType }` with pure
       `static func parse(dataURL:) throws -> TTSAudio` (outside the UIKit guard) and
-      `enum TTSAudioError { malformedDataURL, invalidBase64 }`.
-- [ ] Add `public enum TTSPlaybackError: Error, Equatable, Sendable { failed, stalled }` and
+      `enum TTSAudioError { malformedDataURL, invalidBase64 }`. (➕ an empty mime or empty
+      payload is `malformedDataURL`; media-type params before `;base64` are dropped; pure
+      `TTSAudio.fileExtension(forMimeType:)` picks the temp-file extension, `mp3` fallback.)
+- [x] Add `public enum TTSPlaybackError: Error, Equatable, Sendable { failed, stalled }` and
       the `@DependencyClient struct TTSClient { play: (Data, String) async throws -> Void;
       stop: () async -> Void }` + `DependencyValues.tts` + `testValue` (returns instantly).
-- [ ] Implement the live actor behind `#if canImport(UIKit)` mirroring `AudioRecorderEngine`:
+- [x] Implement the live actor behind `#if canImport(UIKit)` mirroring `AudioRecorderEngine`:
       temp file (`hermes-tts-<uuid>.<ext>` by mime), `.playback` session, `AVAudioPlayer`
       + delegate bridged to a `CheckedContinuation`, 15 s stall watchdog armed before `play()`
       and re-armed while `currentTime` advances (`TTSPlaybackError.stalled`),
@@ -430,13 +432,16 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
       `withTaskCancellationHandler` ⇒ `stop()`; every exit stops, deactivates with
       `.notifyOthersOnDeactivation`, and deletes the file. `stop()` is idempotent (resumes the
       continuation once; a second call does not deactivate again) and returns after the
-      deactivation.
-- [ ] Write `TTSClientTests` for `TTSAudio.parse`: the four server mime types
+      deactivation. (⚠️ `swift test` runs on macOS where the live code is compiled out —
+      verified with `xcodebuild build -scheme HermesKit -destination 'generic/platform=iOS
+      Simulator'` in `HermesKit/`, warning-free; the delegate is `nonisolated` because the
+      SDK's `AVAudioPlayerDelegate` is main-actor.)
+- [x] Write `TTSClientTests` for `TTSAudio.parse`: the four server mime types
       (`audio/mpeg`, `audio/ogg`, `audio/wav`, `audio/flac`), a payload round-trip, missing
       `data:` prefix, missing `;base64,` marker, invalid base64.
-- [ ] Write a test that `TTSClient.testValue.play` returns without throwing and `stop` is
+- [x] Write a test that `TTSClient.testValue.play` returns without throwing and `stop` is
       callable (guards the double's contract used by `ChatFeature` tests).
-- [ ] run `make test` — must pass before Task 3
+- [x] run `make test` — must pass before Task 3
 
 ### Task 3: `IdleTimerClient`
 
