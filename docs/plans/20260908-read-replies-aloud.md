@@ -777,28 +777,84 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] Toggle on → reply completes → pill "Preparing audio" → "Reading aloud" → audio plays
+No real agent or device was available, so each item cites the automated tests that cover its
+logic (`ChatReadAloudTests` unless named otherwise); ➕ marks a test this task added.
+
+- [x] Toggle on → reply completes → pill "Preparing audio" → "Reading aloud" → audio plays
       through the silent switch → pill hides; the reply on screen at toggle time was not read.
-- [ ] Second reply completing mid-playback waits, then only the newest is read.
-- [ ] Per-message Read aloud reads that row; other rows' buttons are disabled meanwhile;
-      Stop silences; auto-speak does not re-read that row.
-- [ ] Typing a new message mid-playback silences it and the frame carries `interrupted`.
-- [ ] Backgrounding stops audio; returning speaks a reply that completed LIVE while away
+      (Logic covered by ➕ `toggleOnLeavesTheReplyOnScreenUnreadAndReadsTheNextOne`,
+      `toggleOnSavesTrueAndArms`, `liveCompletionIsReadPreparingSpeakingFinished`; pill states
+      by `ReadAloudPillSnapshotTests`, toggle by `ComposerSnapshotTests.testComposer_autoSpeakToggle*`.
+      Device check deferred to Post-Completion: real audio through the silent switch.)
+- [x] Second reply completing mid-playback waits, then only the newest is read.
+      (`completionsDuringPlaybackWaitAndTheIdleEdgeReadsOnlyTheNewest`,
+      `aStreamingNewestReplyHoldsTheIdleEdge`.)
+- [x] Per-message Read aloud reads that row; other rows' buttons are disabled meanwhile;
+      Stop silences; auto-speak does not re-read that row. (`readAloudTappedReadsThatRowAndBumpsTheAnchor`,
+      `readingAnOlderRowNeverLowersTheAnchorAndKeepsANewerReplyPending`,
+      `readAloudTappedIgnoresNonRepliesAndAnActiveClip`, the four `readAloudState*` tests,
+      `stopReadAloudCancelsTheClipAndStopsThePlayer`; bar by
+      `ChatSnapshotTests.testAssistantRow_readAloud{Idle,Preparing,Speaking,Disabled}`.)
+- [x] Typing a new message mid-playback silences it and the frame carries `interrupted`.
+      (`submitMidPlaybackStopsTheClipAndFlagsThePrompt`,
+      `aQueuedSubmitMidPlaybackStampsAndTheDrainedPromptCarriesTheFlag`,
+      `theLatchExpiresAfter120Seconds`, `aSubmitWithoutAStampSendsTheLegacyFrame`,
+      `micTapMidPlaybackStopsBeforeThePermissionPromptAndStamps`,
+      `aQueueDrainAtMessageCompleteDoesNotStopTheAutoSpeakItTriggers`.)
+- [x] Backgrounding stops audio; returning speaks a reply that completed LIVE while away
       (within the ~30 s grace of a running turn). A reply that completed after the grace
       expired, or during a socket drop (delivered by the #98 replay or a plain reconnect
       hydrate), is NOT read — per the replay rule (Solution Overview, user-confirmed).
-- [ ] A foreground re-hydrate after a tool-using turn does not re-read its reply.
-- [ ] Screen does not autolock while a turn runs with the toggle on or while speaking; does
-      autolock on the session list.
-- [ ] The toggle survives an app relaunch and is off after logout; it does not change the
+      (`sceneBackgroundedStopsPlaybackWithoutALatch`,
+      `aReplyCompletingWhileBackgroundedIsReadOnForeground`,
+      `foregroundReadsAHeldReplyBeforeRedialing`, `aReplayedCompletionIsNeverRead` (socket drop
+      + grace expiry), ➕ `aReplyDeliveredOnlyByAPlainReconnectHydrateIsNeverRead` (read failure
+      / truncated × both drops), `aReplayWithoutACompletionKeepsALivePendingReplyPending`;
+      `AppFeatureTests.backgroundRoutesPersistNowToOpenChat`,
+      `backgroundWhileRunningBeginsGraceAndKeepsSocketStreaming`,
+      `backgroundWhileIdleStartsNoGraceTask` forward `sceneBackgrounded`. Device check
+      deferred to Post-Completion: real background grace timing.)
+- [x] A foreground re-hydrate after a tool-using turn does not re-read its reply.
+      (➕ `foregroundRehydrateAfterASpokenToolTurnNeverRereadsItsReply`,
+      `rehydrateSplittingASpokenTurnIntoTwoRowsLeavesNothingPending`,
+      `rehydrateKeepsExactlyThePendingReplyPending`, `hydrateMidPlaybackRepointsToTheRebuiltRow`.)
+- [x] Screen does not autolock while a turn runs with the toggle on or while speaking; does
+      autolock on the session list. (Logic covered by `wantsScreenAwakeNeedsAnOnScreenChatAndOneTrigger`,
+      `playbackStartAndFinishToggleTheIdleTimer`, `autoSpeakOnWhileATurnRunsKeepsTheScreenAwake`,
+      `aTurnWithAutoSpeakOnStaysAwakeThroughTheReadOfItsReply`,
+      `viewDisappearedWhilePlayingReleasesTheScreen`,
+      `viewDisappearedReleasesARunningAutoSpeakTurnAndReappearingWakesItAgain`,
+      `teardownReleasesTheScreenExplicitly`, `teardownWhilePlayingReleasesTheScreen`. Device
+      check deferred to Post-Completion: real autolock.)
+- [x] The toggle survives an app relaunch and is off after logout; it does not change the
       agent's `voice.auto_tts` (messaging voice replies unaffected).
-- [ ] Against an agent with no TTS provider: banner with the server's detail, controls stay.
+      (`PreferencesClientTests.liveAutoSpeakRepliesBacksOntoProvidedDefaults` +
+      `inMemoryAutoSpeakRepliesRoundTripAndClear`, `taskWithPrefOnSetsTheFlagAndArmsToTheCompletedCount`,
+      `reappearanceDoesNotRereadThePref`; logout: `SettingsFeatureTests.clearTokenDeletesAndEmitsDisconnect`,
+      `AppFeatureTests.quitFromReauthFullyLogsOutToOnboarding`,
+      `logoutFromRetryScreenClearsEverythingAndShowsFreshOnboarding`; no server write: the
+      exhaustive `toggleOnSavesTrueAndArms` / `toggleOffSavesFalseAndKeepsTheAnchor` emit no
+      effect, and `HermesRESTClient` has no `/api/config` call.)
+- [x] Against an agent with no TTS provider: banner with the server's detail, controls stay.
       Against an older agent without the route (< v2026.6.5, answers 405): controls disappear
-      silently.
-- [ ] Token, cookie, and bearer auth regimes all reach `/api/audio/speak`; a non-default
-      profile synthesizes with that profile's TTS provider.
-- [ ] run full test suite: `make test` and `make snapshot`
-- [ ] `git checkout -- HermesKit/Package.resolved` if it drifted
+      silently. (`badRequestDetailLandsInTheBanner` — exhaustive, `ttsSupported` stays true;
+      `missingEndpointHidesReadAloudSilently` (404 + 405), `unsupportedSlotNeverAutoSpeaks`,
+      `readAloudStateIsHiddenWhenUnsupportedWhateverThePlayback`;
+      `HermesRESTClientTests.speakBadRequestCarriesServerDetail`,
+      `speakMethodNotAllowedIsMissingEndpointVerdict`, `speakNotFoundIsMissingEndpointVerdict`.
+      Device check against real agents deferred to Post-Completion.)
+- [x] Token, cookie, and bearer auth regimes all reach `/api/audio/speak`; a non-default
+      profile synthesizes with that profile's TTS provider. (`speak` builds its request via
+      `postJSON` → `authFor(conn)` → `resolveAuth` → `RequestAuth.apply`, the same path as every
+      REST call. Token: `HermesRESTClientTests.speakDecodesDataURLAndPostsTextBody` (now also
+      asserts no `Authorization`); cookie: ➕ `speakInCookieModeSendsNeitherAuthHeader`; bearer:
+      ➕ `NativeOAuthClientTests.speakRefreshesFirstAndSendsTheStoreBearer` (refresh hop, then
+      `Bearer AT2`). Profile: `speakWithProfileAddsProfileQueryOnly` ("work" + "default"),
+      `liveCompletionIsReadPreparingSpeakingFinished` passes `profileName` through. Live-agent
+      check of each regime deferred to Post-Completion.)
+- [x] run full test suite: `make test` and `make snapshot` (1911 tests passed; snapshots
+      250/250)
+- [x] `git checkout -- HermesKit/Package.resolved` if it drifted (it did; reverted)
 
 ### Task 13: [Final] Update documentation
 

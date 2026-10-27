@@ -62,6 +62,28 @@ struct NativeOAuthClientTests {
     #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
   }
 
+  /// Read aloud (#74): `speak` resolves auth through the same store-backed path as every
+  /// other REST call — a near-expiry token is rotated first, then the synthesis POST carries
+  /// the ROTATED bearer and no session-token header.
+  @Test func speakRefreshesFirstAndSendsTheStoreBearer() async throws {
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let store = BearerTokenStore(now: { now }, refreshLeeway: 120)
+    store.seed(stored(expiresAt: 1_000_010), baseURL: baseURL, persist: { _ in })
+
+    let speakJSON = #"{"ok":true,"data_url":"data:audio/mpeg;base64,SUQz","mime_type":"audio/mpeg"}"#
+    MockURLProtocol.setSequence([
+      .init(statusCode: 200, body: Data(rotatedJSON.utf8)),
+      .init(statusCode: 200, body: Data(speakJSON.utf8)),
+    ])
+    let audio = try await makeClient(tokenStore: store).speak(bearerConnection(), "Hi", "work")
+    #expect(audio == TTSAudio(data: Data([0x49, 0x44, 0x33]), mimeType: "audio/mpeg"))
+
+    #expect(MockURLProtocol.requests.map { $0.url?.path } == ["/auth/native/refresh", "/api/audio/speak"])
+    let speak = try #require(MockURLProtocol.requests.last)
+    #expect(speak.value(forHTTPHeaderField: "Authorization") == "Bearer AT2")
+    #expect(speak.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+  }
+
   // MARK: - Refresh before use
 
   @Test func nearExpiryRefreshesOnceBeforeTheAPICall() async throws {

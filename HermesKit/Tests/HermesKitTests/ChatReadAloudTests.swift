@@ -306,7 +306,9 @@ struct ChatReadAloudTests {
     ]),
   ])
 
-  private func foregroundRehydrate(_ initial: ChatFeature.State) async -> TestStoreOf<ChatFeature> {
+  private func foregroundRehydrate(
+    _ initial: ChatFeature.State, recorder: TTSRecorder? = nil
+  ) async -> TestStoreOf<ChatFeature> {
     let store = TestStore(initialState: initial) {
       ChatFeature()
     } withDependencies: {
@@ -316,6 +318,7 @@ struct ChatReadAloudTests {
       $0.hermesGateway.send = { @Sendable method, _ in
         method == "session.resume" ? Self.toolTurnHistory : .object([:])
       }
+      recorder?.install(into: &$0)
     }
     store.exhaustivity = .off
     await store.send(.foreground)
@@ -330,6 +333,23 @@ struct ChatReadAloudTests {
     let store = await foregroundRehydrate(liveFoldedToolTurn(anchor: 1))
     #expect(store.state.completedAssistantCount == 2)
     #expect(store.state.spokenAssistantCount == 2)
+  }
+
+  @Test func foregroundRehydrateAfterASpokenToolTurnNeverRereadsItsReply() async {
+    // Acceptance (#74): the same split, driven through the speak edges themselves with the
+    // chat on screen and auto-speak on. Neither the playback-idle edge nor the next return to
+    // the app (which re-hydrates again) reads the turn's final answer a second time.
+    let recorder = TTSRecorder()
+    var initial = liveFoldedToolTurn(anchor: 1)
+    initial.isOnScreen = true
+    let store = await foregroundRehydrate(initial, recorder: recorder)
+    #expect(store.state.completedAssistantCount == 2)
+
+    await store.send(.ttsFinished)
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.speaks.value.isEmpty)
   }
 
   @Test func rehydrateKeepsExactlyThePendingReplyPending() async {
@@ -496,6 +516,39 @@ struct ChatReadAloudTests {
     // The SANITIZED text is synthesized, under the slot's profile verbatim (#114).
     #expect(recorder.speaks.value == [.init(text: "Hello there", profile: "work")])
     #expect(recorder.plays.value == [TTSRecorder.clip.data])
+  }
+
+  @Test func toggleOnLeavesTheReplyOnScreenUnreadAndReadsTheNextOne() async {
+    // Acceptance (#74): the reply already on screen when the toggle flips on is never read;
+    // the next completed reply goes preparing → speaking → idle (the pill's whole lifetime).
+    let recorder = TTSRecorder()
+    var initial = ChatFeature.State(
+      connection: conn, transcript: [user(100, "q1"), assistant(101, "Already here")]
+    )
+    initial.status = .ready
+    initial.isOnScreen = true
+    let store = makeStore(initial, recorder)
+
+    await store.send(.autoSpeakToggled) {
+      $0.autoSpeakReplies = true
+      $0.spokenAssistantCount = 1
+    }
+    // A speak edge right after the toggle finds nothing pending.
+    await store.send(.ttsFinished)
+    #expect(recorder.speaks.value.isEmpty)
+
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Next")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Next", usage: nil)))
+    let next = store.state.lastCompletedAssistantRow?.id
+    #expect(next != nil && next != uuid(101))
+    #expect(store.state.ttsPlayback == next.map(ChatFeature.State.TTSPlayback.preparing))
+    await store.receive(\.ttsSpeaking)
+    #expect(store.state.ttsPlayback == next.map(ChatFeature.State.TTSPlayback.speaking))
+    await store.receive(\.ttsFinished)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.spokenTexts == ["Next"])
   }
 
   @Test func autoSpeakOffNeverReads() async {
@@ -1001,6 +1054,52 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsFinished)
     #expect(recorder.spokenTexts == ["Done"])
     #expect(store.state.spokenAssistantCount == 2)
+    await store.send(.teardown)
+  }
+
+  /// How a reconnect falls back to the plain hydrate instead of folding the gap.
+  enum PlainHydrate: CaseIterable, Sendable {
+    /// The replay read fails (timeout) → hydrate.
+    case readFailed
+    /// The gap fell out of the server's ring (`truncated`) → fold nothing, hydrate.
+    case truncated
+  }
+
+  @Test(arguments: Drop.allCases, PlainHydrate.allCases)
+  func aReplyDeliveredOnlyByAPlainReconnectHydrateIsNeverRead(
+    _ drop: Drop, _ fallback: PlainHydrate
+  ) async {
+    // Acceptance (#74): the reply completed during the drop / after the grace, but the
+    // reconnect could not replay the gap — the hydrate alone brings it in, and it arrives
+    // consumed (a hydrate never creates a pending reply), at the hydrate and at the next return.
+    let gateway = ReplayTests.ReplayHarness()
+    switch fallback {
+    case .readFailed:
+      gateway.since.setValue(.failure(.timedOut(method: "session.events.since")))
+    case .truncated:
+      gateway.since.setValue(.success(ReplayTests.since([], latest: 90, truncated: true)))
+    }
+    gateway.resume.setValue(ReplayTests.resume(running: false, messages: Self.replayHistory))
+    let recorder = TTSRecorder()
+    let store = gateway.makeStore(replaySlot())
+    recorder.install(into: &store.dependencies)
+
+    switch drop {
+    case .socketClosed: await store.send(.gatewayClosed)
+    case .graceExpired: await store.send(.teardownSocketOnly)
+    }
+    await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
+    await store.receive(\.eventReplayResult)
+    await store.receive(\.activateResult.success)
+    #expect(store.state.lastCompletedAssistantRow?.kind
+      == .message(role: .assistant, text: "Hello", isComplete: true))
+    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(store.state.ttsPlayback == .idle)
+
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(store.state.ttsPlayback == .idle)
+    #expect(recorder.speaks.value.isEmpty)
     await store.send(.teardown)
   }
 

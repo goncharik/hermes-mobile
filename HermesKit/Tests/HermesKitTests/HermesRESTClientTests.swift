@@ -770,7 +770,9 @@ struct HermesRESTClientTests {
     #expect(req.httpMethod == "POST")
     #expect(req.url?.path == "/api/audio/speak")
     #expect(req.url?.query == nil)
+    // Token regime: the legacy header verbatim and no `Authorization` (`RequestAuth`).
     #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
     #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json")
     let json = try #require(
       JSONSerialization.jsonObject(with: bodyData(req)) as? [String: Any]
@@ -778,6 +780,22 @@ struct HermesRESTClientTests {
     // `text` is the ONLY field `TTSSpeakRequest` accepts.
     #expect(json.count == 1)
     #expect(json["text"] as? String == "Hello there.")
+  }
+
+  /// Cookie regime: `speak` resolves auth through the same `RequestAuth` path as every other
+  /// REST call, so a `.cookie` connection carries neither auth header — the URLSession cookie
+  /// jar authenticates it (the bearer regime is pinned in `NativeOAuthClientTests`).
+  @Test func speakInCookieModeSendsNeitherAuthHeader() async throws {
+    let cookieConnection = ServerConnection(
+      baseURL: baseURL,
+      auth: .cookie(CookieSession(cookies: [], username: "ada", provider: "basic"))
+    )
+    MockURLProtocol.set(json: Self.speakJSON)
+    _ = try await makeClient().speak(cookieConnection, "Hi", "work")
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.url?.path == "/api/audio/speak")
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
   }
 
   @Test(arguments: ["work", "default"])
