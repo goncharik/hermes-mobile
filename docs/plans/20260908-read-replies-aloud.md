@@ -449,13 +449,13 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
 - Create: `HermesKit/Sources/HermesKit/Clients/IdleTimerClient.swift`
 - Create: `HermesKit/Tests/HermesKitTests/IdleTimerClientTests.swift`
 
-- [ ] Add `@DependencyClient struct IdleTimerClient { setDisabled: @Sendable (Bool) async
+- [x] Add `@DependencyClient struct IdleTimerClient { setDisabled: @Sendable (Bool) async
       -> Void }` + `DependencyValues.idleTimer`; `testValue` no-op; live value behind
       `#if canImport(UIKit)` hops to `MainActor` and sets
       `UIApplication.shared.isIdleTimerDisabled` (non-UIKit `liveValue = testValue`).
-- [ ] Write a test using a recording override (`LockIsolated<[Bool]>`) that the closure
+- [x] Write a test using a recording override (`LockIsolated<[Bool]>`) that the closure
       receives the values it is called with — the same recorder `ChatFeature` tests reuse.
-- [ ] run `make test` — must pass before Task 4
+- [x] run `make test` — must pass before Task 4
 
 ### Task 4: REST — `speak`
 
