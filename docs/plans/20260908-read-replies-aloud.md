@@ -362,14 +362,17 @@ desktop has no replay gating).
 - Create: `HermesKit/Sources/HermesKit/Models/SpeechText.swift`
 - Create: `HermesKit/Tests/HermesKitTests/SpeechTextTests.swift`
 
-Port `apps/desktop/src/lib/speech-text.ts` @ `69f73ec5f1` step for step (Swift `Regex`
-literals; the emoji class uses the same code-point ranges `\u{1F000}-\u{1FAFF}`,
+Port `apps/desktop/src/lib/speech-text.ts` @ `69f73ec5f1` step for step (⚠️ implemented on
+`NSRegularExpression`/ICU instead of Swift `Regex` literals: `Regex` matches grapheme
+clusters by default, where `"\r\n"` and ZWJ emoji are single `Character`s, while ICU matches
+code points like the JS engine and takes `$1` templates; JS's ASCII `\w`/`\b` are spelled out,
+JS's non-multiline `$` is `\z`; the emoji class uses the same code-point ranges `\u{1F000}-\u{1FAFF}`,
 `\u{2600}-\u{27BF}`, `\u{FE0F}`, `\u{200D}`, `\u{E0020}-\u{E007F}`). Do **not** reuse
 `MarkdownSegment` — its table detection is looser than the desktop's and the two clients must
 say the same thing. `cutSentences` / `IncrementalSpeechSentenceBuffer` are streaming-only — not
 ported. ⚠️ The pipeline changed materially since the plan was written (items marked ➕).
 
-- [ ] ➕ `summarizeMarkdownTables` (was `stripMarkdownTables`): a table starts where line *i*
+- [x] ➕ `summarizeMarkdownTables` (was `stripMarkdownTables`): a table starts where line *i*
       is a delimiter row (every cell `^:?-{3,}:?$`) and line *i-1* a header row with the same
       cell count and blockquote depth; header + delimiter + every following row at that depth
       are replaced by ONE line, the header cells (`\|` → space, trimmed, empties dropped)
@@ -377,35 +380,35 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
       header leaves nothing. Port `parseMarkdownTableRow` exactly (≤3-space indent, no tabs,
       `>`-depth counting, unescaped-pipe splitting, ≥2 cells unless fully piped). Runs first
       (a right-align marker is a trailing colon).
-- [ ] ➕ Line-final colons → `.` BEFORE line breaks are flattened (`/:\s*$/gm`).
-- [ ] `normalizeLineBreaks`: CRLF→LF; `(\p{L})-\n(\p{L})` → `$1$2`; punctuated paragraph
+- [x] ➕ Line-final colons → `.` BEFORE line breaks are flattened (`/:\s*$/gm`).
+- [x] `normalizeLineBreaks`: CRLF→LF; `(\p{L})-\n(\p{L})` → `$1$2`; punctuated paragraph
       break `([.!?])([*_~\`>"'’”)}\]]*)[ \t]*\n{2,}[ \t]*` → `$1$2 `; remaining `\n{2,}` →
       `. `; single `\n` → ` `.
-- [ ] Then, in order: fenced code (incl. unterminated) → `""` (➕ silence, was ` code block
+- [x] Then, in order: fenced code (incl. unterminated) → `""` (➕ silence, was ` code block
       omitted `); leading `THINKING_PREFIX_RE` → ` `; `[label](url)` → label; inline code →
       contents; bare `\bhttps?://\S+` → `""` (➕ silence, was ` link `); ➕ `MEDIA:` tokens
       (`[ \t]*MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))`) → `""`; emoji runs → ` `.
-- [ ] ➕ `pruneIdentifierTokens`: hash-prefixed hex (`sha256:…`, `md5 …`, …) → ` `, then every
+- [x] ➕ `pruneIdentifierTokens`: hash-prefixed hex (`sha256:…`, `md5 …`, …) → ` `, then every
       `[A-Za-z0-9_./~@-]+` token that `isDenseIdentifier` (port verbatim: emails and dates
       stay; paths; `/`-tokens with an extension or digit; the extension list; UUIDs; hex runs
       ≥7 containing a digit; digit tokens with ≥2 separators or ≥2 hyphens, or a `/`, or a
       hyphen plus a separator) → ` `.
-- [ ] Tail: `^#{1,6}\s+` per line; every `[*_~>#]`; `^\s*[-+*]\s+` per line (ordered-list
+- [x] Tail: `^#{1,6}\s+` per line; every `[*_~>#]`; `^\s*[-+*]\s+` per line (ordered-list
       numbers stay); ➕ a trailing orphaned colon → `.`; collapse `\s+` → ` `, trim.
-- [ ] Write `SpeechTextTests`: one case per rule using the desktop's own fixture shapes
+- [x] Write `SpeechTextTests`: one case per rule using the desktop's own fixture shapes
       (`speech-text.test.ts`: table inside a blockquote → its header sentence, empty-header
       table → silence, escaped pipe, hyphen across a line break, punctuated vs plain paragraph
       break, "the list:" before a code block → "the list.", unterminated fence, "(pause)
       Thinking..." prefix, link + bare URL, `MEDIA:/x.py.` keeps the period, emoji with
       VS16/ZWJ, nested bullets, ordered list untouched).
-- [ ] ➕ Write identifier tests from the shared corpus
+- [x] ➕ Write identifier tests from the shared corpus
       (`hermes-agent/tests/fixtures/identifier_speech_corpus.json`, copied as a parameterized
       `@Test(arguments:)` table — `mustNotContain` / `mustContain` per row, plus the
       pass-through rows), so the phone, desktop and server normalizer agree.
-- [ ] Write edge-case tests: empty/whitespace-only input → `""`, text that sanitizes to
+- [x] Write edge-case tests: empty/whitespace-only input → `""`, text that sanitizes to
       empty (only a code block, only a URL), a mixed real reply asserting the full expected
       string.
-- [ ] run `make test` — must pass before Task 2
+- [x] run `make test` — must pass before Task 2
 
 ### Task 2: `TTSAudio` data-URL parsing and `TTSClient`
 
