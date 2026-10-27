@@ -866,7 +866,7 @@ logic (`ChatReadAloudTests` unless named otherwise); ➕ marks a test this task 
   "Past turn boundaries stay past" bullet gains auto-speak)
 - Modify: `docs/features/prompt-queue.md` (the drain never barges in on auto-speak)
 
-- [ ] Write `docs/features/read-aloud.md`: the setting's device-local home and why not
+- [x] Write `docs/features/read-aloud.md`: the setting's device-local home and why not
       `voice.auto_tts` (upstream #99076), the arming rule (three arm points) and the
       every-hydrate re-base, the speak-check conditions and edges, the completed-row anchor
       rationale (live one row per turn vs history rows), the replay rule and its conflict
@@ -874,9 +874,14 @@ logic (`ChatReadAloudTests` unless named otherwise); ➕ marks a test this task 
       consumes), the lifecycle table (disappear / teardown / socket-only / background /
       foreground / interruption), keep-awake predicate, capability gating by failure (404/405),
       server floor (v2026.6.5), and the deferred rungs (speak-stream, client-direct, lease).
-- [ ] Add a 5–8 line CLAUDE.md bullet under "Composer & input" (rule + pointer only).
-- [ ] Add a README feature line under the existing feature list.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] Add a 5–8 line CLAUDE.md bullet under "Composer & input" (rule + pointer only).
+      (➕ also the snapshot count 242 → 250 in `CLAUDE.md` and `docs/development.md`, confirmed
+      by `make snapshot`; `docs/architecture.md` lists `TTSClient`/`IdleTimerClient`, the
+      `/api/audio/*` routes and the pref key. No pointer in `approvals.md` /
+      `attachments-and-paste.md`: neither covers voice input; the mic-first ordering lives in
+      `read-aloud.md` → "Barge-in latch".)
+- [x] Add a README feature line under the existing feature list.
+- [x] Move this plan to `docs/plans/completed/` (done by the exec completion step after reviews)
 
 ## Post-Completion
 

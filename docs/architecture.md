@@ -75,8 +75,9 @@ All side effects go through `@DependencyClient` structs (each with a `liveValue`
 a `testValue`/`.inMemory()` variant):
 
 - **`HermesRESTClient`** — status, sessions, archived sessions (`?archived=only`), search,
-  archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), plus the
-  auth endpoints: `passwordLogin`, `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`),
+  archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), voice
+  (`POST /api/audio/transcribe`; `POST /api/audio/speak`, the read-aloud synthesis, with a
+  per-request timeout scaled by text length, #74), plus the auth endpoints: `passwordLogin`, `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`),
   and a best-effort `logout` — this client's one deliberate exception to "surface RPC failures",
   since it fires after the app has already discarded its credentials (the logout's push
   unregister swallows on the same reasoning). Session-scoped
@@ -129,8 +130,17 @@ a `testValue`/`.inMemory()` variant):
   server: on hydrate the server wins, cached rows are replaced wholesale (no merge/dedup), and
   the whole store is wiped on logout. `.inMemory()` test variant.
 - **`PreferencesClient`** — non-secret prefs: server URL (for auto-login), per-session
-  seen counts, client-side pinned session ids, the default swipe action, and the selected
-  profile name (`hermes.selected-profile-id`). All cleared/reset on logout.
+  seen counts, client-side pinned session ids, the default swipe action, the read-aloud
+  toggle (`hermes.auto-speak-replies`, #74), and the selected profile name
+  (`hermes.selected-profile-id`). All cleared/reset on logout.
+- **`TTSClient`** — read-aloud playback (#74): `play(data, mimeType)` plays one
+  `AVAudioPlayer` clip on a `.playback` session (15 s stall watchdog; an audio-session
+  interruption ends the clip normally), `stop()` is idempotent and returns after the session
+  is deactivated. A dumb player — the state machine lives in `ChatFeature`. Pure
+  `TTSAudio.parse(dataURL:)` sits outside the `#if canImport(UIKit)` guard. Details:
+  `docs/features/read-aloud.md`.
+- **`IdleTimerClient`** — `setDisabled(Bool)` over `UIApplication.isIdleTimerDisabled`; the
+  reducer's `wantsScreenAwake` predicate owns the keep-awake policy (#74).
 - **`PushClient`** — push notifications: `requestAuthorization`/`authorizationStatus`,
   device-token registration as an `AsyncStream<String>` (lowercase-hex, re-emits on OS token
   rotation), an `incomingTaps()` stream of `PushTap` values (carrying `session_id` + optional
@@ -539,7 +549,10 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
   be running. A replayed `.error` does not park the queue, the fold emits no `runningChanged`,
   and the turn anchor gets one write for the last boundary folded; the fold never starts the
   thinking timer. The hydrate's `running` is the only trustworthy idle edge (and the only timer
-  start), and its own drain runs as usual.
+  start), and its own drain runs as usual. A replayed `message.complete` is never read aloud
+  either (#74): auto-speak is inert under `isFoldingReplay`, and the fold consumes the reply
+  (arms the anchor, sets `replayConsumedReply`) so the trailing hydrate's re-base keeps it
+  consumed — `docs/features/read-aloud.md` → "Replay rule".
 - **Then the hydrate, unchanged.** `applyActivate` stays the authority. A running turn keeps the
   tool and thinking rows the fold built or extended (#26); assistant text is the hydrate's alone
   (the fold skips `message.delta`s and materialises no `message.complete` row, so a reply never

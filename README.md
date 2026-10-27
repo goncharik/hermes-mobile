@@ -55,6 +55,10 @@ away from your desk and still keep your agent moving.
   waveform while recording; transcribed by your agent), and attach photos, camera
   captures, PDFs, or any file straight from the composer — or just paste a copied
   screenshot into the message field.
+- **Hear the replies.** Turn on "Read replies aloud" from the composer and every finished
+  reply is spoken by your agent's TTS provider, with a "Reading aloud" pill to stop it and the
+  screen kept awake while you listen. You can also read any single reply from its action bar.
+  Sending a message or tapping the mic cuts playback off.
 - **Queue the next prompt while it works.** Mid-turn, the send button comes back the
   moment you type: your draft (text and attachments) queues above the composer and
   fires automatically as the next turn when the current one finishes. Queued messages

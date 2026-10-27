@@ -211,6 +211,12 @@ bullets below are the compressed rules.
   server clamps per provider and publishes no per-model list); a failure rolls back BOTH keys
   + banners, and only the 4002 `unknown reasoning value` verdict latches the per-slot,
   unpersisted `extendedReasoningSupported`. Details: `docs/features/model-picker.md`.
+- **Read replies aloud (#74)**: the toggle is a device-local pref, never `voice.auto_tts`.
+  Synthesis is `POST /api/audio/speak` only; `TTSClient` is a dumb player and the state
+  machine is per-slot in `ChatFeature`. A completed-row anchor (armed, re-based on every
+  hydrate) decides what is pending; a #98 replayed completion is never read. Only USER
+  submits and the mic barge in; every regular `prompt.submit` takes the 120 s
+  `interrupted` latch. A 404/405 hides both controls. Details: `docs/features/read-aloud.md`.
 
 ## Session list
 
@@ -314,7 +320,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (242/242), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (250/250), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.
