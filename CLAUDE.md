@@ -29,10 +29,11 @@ bullets below are the compressed rules.
   `UIKit`/`Security`/`URLSession` directly from a reducer — go through a client.
 - **Decode leniently; never crash on unknown events** — unknown `type` → `.unknown`.
 - **Gate UI by server capability, not assumptions** — the shared pattern: a JSON-RPC
-  `-32601` (`GatewayError.isUnknownMethod`) or REST 404 flips a `*Supported` flag off
-  (attach, profiles, cron jobs, push, slash commands); `?? true` on unknown capability
-  fields. Mirror the desktop's behaviour where one exists; check the Hermes source. (#19's
-  OAuth segment deliberately inverts `?? true` — see the OAuth bullet below.)
+  `-32601` (`GatewayError.isUnknownMethod`) or REST 404 (405 where an older agent's catch-all
+  matches) flips a `*Supported` flag off (attach, profiles, cron jobs, push, slash commands,
+  TTS); `?? true` on unknown capability fields. Mirror the desktop's behaviour where one
+  exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
+  the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
   swallow them with `try?` (the logout hops, below, and the #98 replay read — debug log
   only — are the carved-out exceptions).
@@ -93,7 +94,8 @@ bullets below are the compressed rules.
 - **Backgrounding gets ~30s grace** via `BackgroundTaskClient`: running slot →
   `persistNow` + begin; expiry while backgrounded → final persist +
   `.teardownSocketOnly` (state + replay cursor stay in memory for the #98 replay / #26
-  catch-up); a stale expiry racing `.active` is a guarded no-op. Idle slot persists only,
+  catch-up); a stale expiry racing `.active` is a guarded no-op. Every slot first gets
+  `.sceneBackgrounded` (stop read-aloud, hold auto-speak); an idle slot then persists only,
   no slot is a no-op — either way no task, no battery burn.
 - **Auth has three regimes** (`AuthSession`: `.token` | `.cookie` | `.bearer`). Token mode must
   stay byte-identical to the legacy single-token path (backward-compat guard). Gated modes:
@@ -215,8 +217,9 @@ bullets below are the compressed rules.
   Synthesis is `POST /api/audio/speak` only; `TTSClient` is a dumb player and the state
   machine is per-slot in `ChatFeature`. A completed-row anchor (armed, re-based on every
   hydrate) decides what is pending; a #98 replayed completion is never read. Only USER
-  submits and the mic barge in; every regular `prompt.submit` takes the 120 s
-  `interrupted` latch. A 404/405 hides both controls. Details: `docs/features/read-aloud.md`.
+  submits and the mic barge in (the mic `await`s `tts.stop()` BEFORE `requestPermission`);
+  every regular `prompt.submit` takes the 120 s `interrupted` latch. A 404/405 hides both
+  controls. Details: `docs/features/read-aloud.md`.
 
 ## Session list
 
@@ -226,8 +229,8 @@ bullets below are the compressed rules.
   anchor only; server wins on hydrate, persistence debounced (flushed on
   `.background`), wiped on logout; behind the client boundary (no reactive `@FetchAll`).
 - **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts,
-  pins, swipe default, profile) → `PreferencesClient`. Clients over `@Shared` for test
-  isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
+  pins, swipe default, read-aloud toggle, profile) → `PreferencesClient`. Clients over
+  `@Shared` for test isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
 - **Pins are device-local; archive, rename, and delete are server-side**, optimistic
   with rollback (list → REST `PATCH`/`DELETE`; chat rename → `session.title`).
 - **Delete (#73) mirrors archive** (`deletingIDs` guard, rollback) with a

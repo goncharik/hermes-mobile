@@ -4,7 +4,8 @@ The short rules live in `CLAUDE.md` → "Composer & input"; this doc is the full
 Design history: `docs/plans/completed/`.
 
 Desktop parity for **"Read replies aloud"**: an auto-speak toggle in the composer that reads
-every completed assistant reply, plus a per-message **Read aloud** button in the action bar.
+each newly completed assistant reply (see "The speak check"), plus a per-message **Read
+aloud** button in the action bar.
 Voice was input-only before (mic → `POST /api/audio/transcribe`). This is also the base for the
 later voice-conversation ticket.
 
@@ -79,12 +80,15 @@ spoken, skipped, or already present when the toggle was armed. A reply is pendin
 `completedAssistantCount > spokenAssistantCount`. A streaming row never counts. The anchor is
 not snapshot-persisted, so every open re-arms.
 
-**Arming** (`arm`: anchor = current completed count) happens at three points:
+**Arming** (`arm`: anchor = current completed count) happens at four points:
 
 - toggle-on;
 - the first `.task` when the pref is on, so the instant-paint snapshot's replies are never read;
 - the slot's first hydrate (`hasHydrated` false → true): in `applyActivate` AND in the
-  `session.create` handshake. This runs unconditionally, whatever the toggle says.
+  `session.create` handshake. This runs unconditionally, whatever the toggle says;
+- a user Stop (`.stopReadAloud`, from the pill or the action bar), so a reply that completed
+  during the clip is not read at a later edge. `.sceneBackgrounded` does not arm: a held reply
+  is read on `.foreground`.
 
 **Every later hydrate re-bases** (`rebaseSpokenAnchor`). Keeping the old count would be wrong.
 The live fold keeps ONE assistant row per turn (`streamingRowID` survives tool events), while
@@ -114,7 +118,7 @@ the vanished id, so no row shows Stop (the pill still does). The clip itself kee
 
 ## The speak check
 
-`autoSpeakIfReady` runs at three edges:
+`autoSpeakIfReady` runs at four edges:
 
 - a LIVE `message.complete`;
 - every playback-idle edge (`.ttsFinished`, `.ttsFailed` except `.interrupted`);

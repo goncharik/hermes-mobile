@@ -233,9 +233,9 @@ written against `22c5684b98`, 2026-09-07) — read via
 ## Solution Overview
 
 **Option A from the brainstorm: playback state lives per-slot in `ChatFeature`; `TTSClient`
-is a dumb player.** Every existing lifecycle hook (`viewDisappeared`, `teardown`,
-`teardownSocketOnly`) then stops audio through the same `releaseVoiceResources` path that
-releases the mic, the pill/action-bar/composer all read one store, and the whole state
+is a dumb player.** Every existing lifecycle hook then stops audio: `viewDisappeared` and
+`teardown` through the same `releaseVoiceResources` path that releases the mic,
+`teardownSocketOnly` explicitly (it skips that path). The pill/action-bar/composer all read one store, and the whole state
 machine is `TestStore`-testable. The cost — playback dies when the chat leaves the screen —
 is the natural phone behaviour (the transcript being read is no longer visible).
 
@@ -251,43 +251,42 @@ sources of truth).
 | `ttsSupported: Bool = true` | Capability gate; flips off on the first missing-endpoint verdict from `speak`. |
 | `ttsPlayback: TTSPlayback` | `.idle` / `.preparing(rowID)` / `.speaking(rowID)`. |
 | `spokenAssistantCount: Int` | Anchor = COMPLETED assistant message rows consumed (an in-flight/streaming row never counts). Not snapshot-persisted (every open re-arms). |
-| `replayConsumedReply: Bool` | ➕ Set when a #98 replay fold folds a `message.complete`; the next hydrate consumes everything and clears it. |
-| `ttsInterruptedAt: Date?` | Barge-in latch; consumed by the next regular `prompt.submit` if < 120 s old. |
+| `readAloudInterruptedAt: Date?` | Barge-in latch; consumed by the next regular `prompt.submit` if < 120 s old. |
 | `isSceneBackgrounded: Bool` | Set by the new `.sceneBackgrounded`, cleared by `.foreground`; the speak check refuses to start while set. |
 | `isOnScreen: Bool` | Set on `.task` / `.reattached`, cleared on `.viewDisappeared`; gates keep-awake AND the speak check (a detached compact slot is off screen). |
 
 **Arming** (`spokenAssistantCount = completedAssistantCount`): on toggle-on, on the `.task`
-pref load returning `true`, and on the slot's **first** hydrate (`hasHydrated` false → true,
-both the `applyActivate` and the `session.create` handshake sites).
+pref load returning `true`, on the slot's **first** hydrate (`hasHydrated` false → true,
+both the `applyActivate` and the `session.create` handshake sites), and ➕ on a user Stop.
 
 ➕ **Re-basing on every later hydrate** (`applyActivate` with `hasHydrated` already true —
 foreground, reattach, reconnect, post-slash refresh, branch probe). The rebuild changes the
 count under the anchor (a live turn is one row, history may be several), so the anchor is
 re-derived from the rebuilt transcript instead of kept: `anchor = newCompletedCount − (wasPending
-&& !replayConsumedReply ? 1 : 0)`, where `wasPending` = before the rebuild the last completed
+? 1 : 0)`, where `wasPending` = before the rebuild the last completed
 assistant row was unspoken (`completedCount > anchor`). A hydrate therefore never *creates* a
 pending reply, it only *preserves* one the user was already waiting on (e.g. a reply that
 completed live while backgrounded) — the original "a reply the user was waiting on is never
-silently consumed" intent, without re-reading a turn whose row count moved. Clears
-`replayConsumedReply`.
+silently consumed" intent, without re-reading a turn whose row count moved.
 
 ➕ **A dropped partial is never spoken**: when `finalizeInFlight` (`.gatewayClosed`,
 `.authExpired`) closes a streaming row, it consumes it (`anchor = completedCount`); whether that
 turn really finished is the reconnect replay's and hydrate's business.
 
-**Speak check** (`autoSpeakIfReady`) runs at three edges — a LIVE `.messageComplete`, playback →
-idle (`.ttsFinished` / `.ttsFailed`), and `.foreground` (not `.reattached`). It speaks the
+**Speak check** (`autoSpeakIfReady`) runs at four edges — a LIVE `.messageComplete`, playback →
+idle (`.ttsFinished` / `.ttsFailed`, except `.interrupted`), the mic going idle, and
+`.foreground` (not `.reattached`). It speaks the
 **last** assistant row iff `autoSpeakReplies && ttsSupported && ttsPlayback == .idle &&
-!isSceneBackgrounded && isOnScreen && !isFoldingReplay` and the row is complete with non-empty
-sanitized text and `completedCount > anchor`; then sets `anchor = completedCount` (backlog
+!recording.isBusy && !isSceneBackgrounded && isOnScreen && !isFoldingReplay` and the row is
+complete with non-empty sanitized text and `completedCount > anchor`; then sets `anchor = completedCount` (backlog
 collapse). A turn ending in `.error` is not a `.messageComplete` → never spoken.
 
 ➕ **Replay rule (#98).** A `message.complete` folded by `foldReplayedEvents` is a past turn
 boundary, exactly like the drain/park/`runningChanged`/anchor side effects the fold already
 suppresses through `isFoldingReplay`: it must NOT auto-speak — not even when the fold completes
 the still-live streaming row (after `.teardownSocketOnly` nothing was finalized, so a replayed
-`message.complete` does mark that row complete). The fold sets `replayConsumedReply`, and the
-trailing hydrate (every replay result ends in one) re-bases with the reply consumed, so no later
+`message.complete` does mark that row complete). The fold arms the anchor right away, and the
+trailing hydrate (every replay result ends in one) re-bases with nothing pending, so no later
 edge (`.foreground`, `.ttsFinished` after a manual read, …) picks the replayed reply up. A
 plain-hydrate reconnect (no cursor, older agent, `truncated`, epoch change, read failure) is
 treated the same way by the re-basing rule: a reply the client never saw complete live arrives
@@ -309,7 +308,7 @@ whatever completed while backgrounded, replayed or not (drops the rule; desktop 
 desktop has no replay gating).
 
 **Keep-awake**: `wantsScreenAwake = isOnScreen && (ttsPlayback != .idle ||
-(autoSpeakReplies && isSending) || recording.isBusy)`; a reducer `onChange` drives
+(autoSpeakReplies && ttsSupported && isSending) || recording.isBusy)`; a reducer `onChange` drives
 `idleTimer.setDisabled`.
 
 ## Technical Details
@@ -318,12 +317,12 @@ desktop has no replay gating).
   `AVAudioSession` `.playback` (mode `.default`, no options), activates, plays via
   `AVAudioPlayer`, suspends until the delegate's `didFinishPlaying`, a stall (15 s with
   `currentTime` not advancing, armed before `play()` like the desktop →
-  `TTSPlaybackError.stalled`), or an `AVAudioSession` interruption notification (treated as clip
-  end, not an error); throws `.failed` on decode/`prepareToPlay`/`play()` failure. On every
+  `TTSPlaybackError.stalled`), or an `AVAudioSession` interruption notification (throws
+  `TTSPlaybackError.interrupted`); throws `.failed` on decode/`prepareToPlay`/`play()` failure. On every
   exit — including task cancellation via `withTaskCancellationHandler` — stops the player,
   deactivates with `.notifyOthersOnDeactivation`, deletes the temp file. `stop() async` is
-  idempotent, makes a suspended `play` return normally, and returns only after the session is
-  deactivated (the mic path relies on that ordering — Task 7). Live value in a private actor
+  idempotent, makes a suspended `play` return normally, and returns only after the session
+  deactivation attempt (the mic path relies on that ordering — Task 7). Live value in a private actor
   behind `#if canImport(UIKit)`; `testValue` returns immediately.
 - **`TTSAudio.parse(dataURL:)`** — pure: `data:<mime>;base64,<payload>` → `TTSAudio(data,
   mimeType)`; throws on a missing prefix / non-base64 payload. Outside the UIKit guard.
@@ -339,7 +338,7 @@ desktop has no replay gating).
   `saveAutoSpeakReplies(Bool)` + `clearAutoSpeakReplies()`; cleared on logout like every pref.
 - **`prompt.submit`** — the two regular builders in `submitDraft` gain `"interrupted":
   .bool(true)` when the reducer hands the effect `interrupted == true` (computed from
-  `ttsInterruptedAt` with the existing `@Dependency(\.date.now) var now`, then cleared). Both the
+  `readAloudInterruptedAt` with the existing `@Dependency(\.date.now) var now`, then cleared). Both the
   composer and the queue-drain paths consume the latch (desktop takes it on every submit); only a
   USER submit stamps it. The slash-directive path is untouched.
 - **Row → text** for speech: `ChatRow.Kind.message(role: .assistant, text, isComplete:
@@ -428,7 +427,9 @@ ported. ⚠️ The pipeline changed materially since the plan was written (items
       temp file (`hermes-tts-<uuid>.<ext>` by mime), `.playback` session, `AVAudioPlayer`
       + delegate bridged to a `CheckedContinuation`, 15 s stall watchdog armed before `play()`
       and re-armed while `currentTime` advances (`TTSPlaybackError.stalled`),
-      `AVAudioSession.interruptionNotification` `.began` ⇒ finish normally,
+      `AVAudioSession.interruptionNotification` `.began` ⇒ finish normally (⚠️ superseded:
+      throws `TTSPlaybackError.interrupted`, which `ChatFeature` treats as silent and not a
+      speak edge),
       `withTaskCancellationHandler` ⇒ `stop()`; every exit stops, deactivates with
       `.notifyOthersOnDeactivation`, and deletes the file. `stop()` is idempotent (resumes the
       continuation once; a second call does not deactivate again) and returns after the
@@ -511,7 +512,8 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - [x] Add state: `autoSpeakReplies`, `ttsSupported`, `ttsPlayback` (`public enum
       TTSPlayback: Equatable, Sendable { idle, preparing(ChatRow.ID), speaking(ChatRow.ID) }`
       + `isActive`), `spokenAssistantCount`, `replayConsumedReply`, `ttsInterruptedAt`,
-      `isSceneBackgrounded`, `isOnScreen`; pure `completedAssistantCount` and
+      `isSceneBackgrounded`, `isOnScreen` (⚠️ superseded: `replayConsumedReply` was removed
+      and `ttsInterruptedAt` renamed `readAloudInterruptedAt` in review); pure `completedAssistantCount` and
       `lastCompletedAssistantRow` helpers (an incomplete assistant row never counts); a
       private `arm(&state)` that sets the anchor.
 - [x] Action: `autoSpeakToggled`. On the slot's first `.task` (after the `hasStarted` guard,
@@ -529,7 +531,8 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       `wasPending` BEFORE the transcript rebuild (~:3525), then `anchor = newCompletedCount −
       (wasPending && !replayConsumedReply ? 1 : 0)` after the rebuild + inflight seed; clear
       `replayConsumedReply`. (One private `rebaseSpokenAnchor` covers the first-hydrate arm
-      and the later re-base.)
+      and the later re-base. ⚠️ superseded: the flag is gone, the formula is `(wasPending ? 1 :
+      0)`; the replay fold's immediate arm does its job.)
 - [x] ➕ In `finalizeInFlight` (~:2975): when a streaming row is closed, `anchor =
       completedCount` (a dropped partial is never spoken).
 - [x] Write tests: `.task` with the pref `true` sets the flag and arms to the current
@@ -568,7 +571,8 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       the audio."; all ⇒ `.idle` then run the speak check (the failed reply stays consumed —
       unlike desktop's `releaseUnplayedSpokenReply`, so the failure edge cannot loop).
 - [x] `.stopReadAloud`: `.idle` + `.cancel(id: .ttsPlayback)` + `tts.stop()`. (➕ a no-op
-      while idle; not a speak edge.)
+      while idle; not a speak edge. ➕ review 4: it also arms the anchor, so a reply that
+      completed during the clip is not read at a later edge.)
 - [x] Private `autoSpeakIfReady(&state) -> Effect` per the Solution Overview conditions
       (incl. `isOnScreen` and `!isFoldingReplay`); call it from `.messageComplete` (in
       `reduce(event:)` ~:2450, after the existing merge — inert during a replay fold),
@@ -583,11 +587,14 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       when the batch folds a `.messageComplete` (the `.ended` boundary branch already
       identifies it; an `.error` boundary is never spoken anyway). The trailing hydrate's
       re-base (Task 5) consumes it. (➕ the fold also arms the anchor right away, so a speak
-      edge landing before that hydrate — or after a failed one — cannot read the reply.)
+      edge landing before that hydrate — or after a failed one — cannot read the reply.
+      ⚠️ superseded: that arm is now the whole rule; `replayConsumedReply` was removed.)
 - [x] ➕ When a hydrate rebuild removes the row `ttsPlayback` targets (the live `uuid()` row
       becomes a deterministic history id), re-point `.preparing`/`.speaking` to the last
       completed assistant row so the action bar keeps showing the right state (desktop absorbs
-      the same live-id rewrite); the clip itself is untouched.
+      the same live-id rewrite); the clip itself is untouched. (⚠️ superseded: the newest
+      completed assistant row of the SAME turn, `newestCompletedAssistantRow(inTurn:)`; an
+      unmappable turn keeps the vanished id.)
 - [x] `.readAloudTapped(id)`: guard `ttsSupported`, `ttsPlayback == .idle`, row is a complete
       assistant message; `speakRow` and bump `spokenAssistantCount` to that row's
       completed-ordinal+1 (never lower it).
@@ -625,7 +632,7 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 
 - [x] Barge-in (USER submits only): in `.composerSubmitted` (~:1407 — both the idle path and
       the mid-turn queue branch) and `.voiceButtonTapped` (~:1842, from `.idle`), if
-      `ttsPlayback.isActive` ⇒ stop (cancel + `tts.stop`) and stamp `ttsInterruptedAt = now`.
+      `ttsPlayback.isActive` ⇒ stop (cancel + `tts.stop`) and stamp `readAloudInterruptedAt = now`.
       NOT in `drainQueueIfReady`: the drain fires on the same `message.complete` that starts
       auto-speak, and must not cut the reply it just triggered. (➕ stamped only once the
       submit passes its `canSend` / `canQueue` guards; private `bargeInReadAloud` +
@@ -637,7 +644,7 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
       idempotent, and it also serializes behind a Stop tapped just before the mic.)
 - [x] Consume: in `submitDraft` (~:3910, both regular builders ~:3948 upload+submit and ~:4108
       plain; composer and `fromQueue` paths alike; not the slash-directive path ~:4596),
-      compute `interrupted = ttsInterruptedAt.map { now.timeIntervalSince($0) < 120 } ??
+      compute `interrupted = readAloudInterruptedAt.map { now.timeIntervalSince($0) < 120 } ??
       false`, clear the stamp, and add `"interrupted": .bool(true)` to the params only when true
       (byte-identical frames otherwise, incl. the #17 heal replay of the same submit).
       (➕ `takeReadAloudInterruption` + a static `promptSubmitParams`; the slash/compress
@@ -677,10 +684,11 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 
 - [x] Add `public var wantsScreenAwake: Bool` on `State` (`isOnScreen && (ttsPlayback
-      != .idle || (autoSpeakReplies && isSending) || recording.isBusy)`).
+      != .idle || (autoSpeakReplies && ttsSupported && isSending) || recording.isBusy)`).
 - [x] Add `@Dependency(\.idleTimer)` and a `Reduce` `.onChange(of: \.wantsScreenAwake)`
       effect calling `idleTimer.setDisabled(new)`; `.teardown` additionally sends an explicit
-      `setDisabled(false)`. (➕ the `.onChange` wraps the main `Reduce` only, not the
+      `setDisabled(false)`. (⚠️ superseded: the release moved to `AppFeature`'s
+      `releaseSlotDeviceResources` at every slot nil-out.) (➕ the `.onChange` wraps the main `Reduce` only, not the
       `BindingReducer` — no binding writes a predicate input.)
 - [x] Write tests with the recording `IdleTimerClient`: on/off transitions for each of the
       four triggers (playback start/finish; auto-speak on + turn start/`messageComplete`;
@@ -748,7 +756,7 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesMobileTests/ChatSnapshotTests.swift`
 
 - [x] Add `public enum ReadAloudButtonState: Equatable, Sendable { hidden, idle, disabled,
-      preparing, speaking }` and pure `ChatFeature.State.readAloudState(for rowID:)`:
+      preparing, speaking }` (➕ nested in `ChatFeature.State`) and pure `ChatFeature.State.readAloudState(for rowID:)`:
       `hidden` when `!ttsSupported`; `preparing`/`speaking` when `ttsPlayback` targets this
       row; `disabled` when any other playback is active; else `idle`.
 - [x] `MessageActionBar`: add `readAloud: ReadAloudButtonState`, `onReadAloud`,
@@ -892,7 +900,8 @@ logic (`ChatReadAloudTests` unless named otherwise); ➕ marks a test this task 
   with ElevenLabs/OpenAI configured, plus one with no provider (400 detail path).
 - ⚠️ A provider whose web output is `.ogg`/`.opus` (`audio/ogg`): confirm `AVAudioPlayer`
   plays the Ogg container on the deployment target, else it lands on the "Couldn’t play the
-  audio." banner.
+  audio." banner. (⚠️ superseded: it cannot; an Ogg clip is refused before play — known
+  limitation in `docs/features/read-aloud.md`.)
 - A long reply (> 5 000 chars) to confirm the timeout formula and the watchdog do not fire.
 
 **Follow-ups (separate tickets):**

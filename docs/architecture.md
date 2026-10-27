@@ -77,10 +77,11 @@ a `testValue`/`.inMemory()` variant):
 - **`HermesRESTClient`** — status, sessions, archived sessions (`?archived=only`), search,
   archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), voice
   (`POST /api/audio/transcribe`; `POST /api/audio/speak`, the read-aloud synthesis, with a
-  per-request timeout scaled by text length, #74), plus the auth endpoints: `passwordLogin`, `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`),
-  and a best-effort `logout` — this client's one deliberate exception to "surface RPC failures",
-  since it fires after the app has already discarded its credentials (the logout's push
-  unregister swallows on the same reasoning). Session-scoped
+  per-request timeout scaled by text length, #74), plus the auth endpoints: `passwordLogin`,
+  `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`), and a best-effort `logout` —
+  this client's one deliberate exception to "surface RPC failures", since it fires after the
+  app has already discarded its credentials (the logout's push unregister swallows on the
+  same reasoning). Session-scoped
   reads/mutations take an optional `profile`: the literal selected name (incl. `"default"`)
   when the agent has the profiles API, omitted only without it (#114).
 - **`HermesProfileClient`** — profile CRUD + SOUL.md (`PUT /api/profiles/{name}/soul`) +
@@ -135,8 +136,8 @@ a `testValue`/`.inMemory()` variant):
   (`hermes.selected-profile-id`). All cleared/reset on logout.
 - **`TTSClient`** — read-aloud playback (#74): `play(data, mimeType)` plays one
   `AVAudioPlayer` clip on a `.playback` session (15 s stall watchdog; an audio-session
-  interruption ends the clip normally), `stop()` is idempotent and returns after the session
-  is deactivated. A dumb player — the state machine lives in `ChatFeature`. Pure
+  interruption throws `.interrupted`), `stop()` is idempotent and returns after the session
+  deactivation attempt. A dumb player — the state machine lives in `ChatFeature`. Pure
   `TTSAudio.parse(dataURL:)` sits outside the `#if canImport(UIKit)` guard. Details:
   `docs/features/read-aloud.md`.
 - **`IdleTimerClient`** — `setDisabled(Bool)` over `UIApplication.isIdleTimerDisabled`; the
@@ -598,8 +599,10 @@ App lifecycle (`scenePhase`, observed in the SwiftUI shell and dispatched as
 chat's `.foreground` (re-hydrate via `session.resume`; the socket reconnects **only if it isn't
 `.ready`** — a healthy one is never cancel-and-redialed) plus an immediate session-list refresh.
 `.inactive` (transient occlusion) is an immediate snapshot/anchor flush only. `.background`
-flushes too, and — when a turn is RUNNING — additionally begins a finite ~30s
-`BackgroundTaskClient` window so the socket simply keeps streaming past suspension. If iOS
+first sends the live chat `.sceneBackgrounded` (stops read-aloud, holds auto-speak — #74,
+`docs/features/read-aloud.md`), then flushes too, and — when a turn is RUNNING — additionally
+begins a finite ~30s `BackgroundTaskClient` window so the socket simply keeps streaming past
+suspension. If iOS
 expires that window while still backgrounded: one final flush, then a clean socket-only
 disconnect (`.teardownSocketOnly`) that keeps the chat state and the replay cursor in memory, so
 the foreground redial first replays the gap (#98, above) and the hydrate then re-attaches with
