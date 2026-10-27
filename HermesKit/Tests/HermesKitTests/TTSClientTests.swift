@@ -81,6 +81,13 @@ struct TTSClientTests {
     #expect(TTSAudio.fileExtension(forMimeType: audio.mimeType) == "ogg")
   }
 
+  @Test func onlyOggIsUnplayable() {
+    #expect(!TTSAudio(data: Data(), mimeType: "audio/ogg").isPlayable)
+    for mime in ["audio/mpeg", "audio/wav", "audio/flac"] {
+      #expect(TTSAudio(data: Data(), mimeType: mime).isPlayable)
+    }
+  }
+
   // MARK: Stall watchdog decision
 
   private typealias Detector = TTSStallDetector<TestClock<Duration>.Instant>

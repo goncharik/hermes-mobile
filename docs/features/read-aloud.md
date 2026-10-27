@@ -55,7 +55,8 @@ switch keeps device UI prefs, the same as the swipe default.
   `PLAYBACK_STALL_MS`). The watchdog is armed before `play()` and
   re-armed whenever `currentTime` advances. Every exit stops the player, deletes the file and
   deactivates the session with `.notifyOthersOnDeactivation`. `stop()` is idempotent and
-  returns only after that deactivation attempt (a failed one is retried by the next exit). The live actor is behind `#if canImport(UIKit)`, and
+  returns only after that deactivation attempt (a failed one is retried once a second later,
+  and by the next exit). The live actor is behind `#if canImport(UIKit)`, and
   the `testValue` returns immediately.
 - **The playback state machine lives in `ChatFeature`**, per slot: `ttsPlayback` is `.idle`,
   `.preparing(rowID)` (synthesizing) or `.speaking(rowID)`. `speakRow` runs one effect,
@@ -243,7 +244,11 @@ the next chat. Other errors banner and leave the controls in place:
   after TTS cleanup");
 - other statuses use `RESTError.message`;
 - `.stalled` → "Playback stalled.";
-- `.failed` → "Couldn’t play the audio.".
+- `.failed` → "Couldn’t play the audio.";
+- `.unsupportedFormat` → "This agent’s voice format (Ogg) isn’t supported on this device.", for
+  an `audio/ogg` clip, refused before `tts.play` (known limitation: `AVAudioPlayer` cannot play
+  Ogg, and `speak` has no format parameter). Upstream returns Ogg only from a command/plugin
+  provider that is `voice_compatible` or set to `ogg`/`opus` output.
 
 **Server floor: v2026.6.5** (`POST /api/audio/speak`, shipped with the desktop app). Anything
 older hides both controls after the first attempt.
@@ -295,5 +300,4 @@ Device checks still open:
 
 - audio routes (speaker, wired and Bluetooth headphones);
 - a call interrupting a clip;
-- Ogg/Opus playback from a provider whose output is `audio/ogg`;
 - the timeout on a reply longer than 5 000 characters.

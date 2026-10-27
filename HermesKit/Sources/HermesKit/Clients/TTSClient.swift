@@ -32,6 +32,12 @@ public struct TTSAudio: Equatable, Sendable {
     return TTSAudio(data: data, mimeType: mimeType)
   }
 
+  /// Whether `AVAudioPlayer` can play this clip. Ogg (Opus or Vorbis) cannot: on iOS the
+  /// player either fails to prepare (Opus) or to open (Vorbis) it.
+  public var isPlayable: Bool {
+    mimeType != "audio/ogg"
+  }
+
   /// File extension for the playback temp file, from a `parse(dataURL:)` mime type.
   /// `AVAudioPlayer(contentsOf:)` takes the container hint from the extension, so it must
   /// match the bytes; anything else (`audio/mpeg`) is `mp3`, the server's default extension.
@@ -59,6 +65,8 @@ public enum TTSPlaybackError: Error, Equatable, Sendable {
   case stalled
   /// An audio-session interruption (a call, Siri, another app's audio) ended the clip.
   case interrupted
+  /// The clip's format cannot be played on this device (`TTSAudio.isPlayable` is false).
+  case unsupportedFormat
 }
 
 /// Plays one synthesized clip at a time for "Read replies aloud" (#74). A dumb player: the
@@ -202,12 +210,12 @@ public extension DependencyValues {
     /// cancellation itself — before activating the session and again before `play()` — and
     /// throws `CancellationError` so a cancelled clip never makes a sound.
     private func start(data: Data, mimeType: String, token: Int) throws {
-      try Task.checkCancellation()
       let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("hermes-tts-\(UUID().uuidString).\(TTSAudio.fileExtension(forMimeType: mimeType))")
       try data.write(to: url)
       fileURL = url
 
+      try Task.checkCancellation()
       let session = AVAudioSession.sharedInstance()
       // `.playback` plays through the silent switch — the user explicitly asked to hear it.
       try session.setCategory(.playback, mode: .default, options: [])
@@ -275,9 +283,10 @@ public extension DependencyValues {
     }
 
     /// The one teardown: stop the player, drop the watchdog and observer, delete the temp
-    /// file, deactivate the session (`sessionActive` guards a second stop; it stays set when
-    /// the deactivation fails, so the next `finish` retries it), then resume the suspended
-    /// `play` (once). Synchronous on the actor, so `stop()` returns only after the attempt.
+    /// file, deactivate the session (`sessionActive` guards a second stop; a failed
+    /// deactivation keeps it set and is retried once a second later, and by the next `finish`),
+    /// then resume the suspended `play` (once). Synchronous on the actor, so `stop()` returns
+    /// only after the first attempt.
     private func finish(_ result: Result<Void, any Error>) {
       watchdog?.cancel()
       watchdog = nil
@@ -291,15 +300,33 @@ public extension DependencyValues {
       delegate = nil
       if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
       fileURL = nil
-      if sessionActive {
-        do {
-          try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-          sessionActive = false
-        } catch {}
+      if sessionActive, !deactivateSession() {
+        let token = generation
+        Task { [weak self] in
+          try? await Task.sleep(for: .seconds(1))
+          await self?.retryDeactivation(token: token)
+        }
       }
       let continuation = continuation
       self.continuation = nil
       continuation?.resume(with: result)
+    }
+
+    /// `false` (and `sessionActive` still set) when the session refused to deactivate.
+    private func deactivateSession() -> Bool {
+      do {
+        try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        sessionActive = false
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    /// The deferred retry: skipped when a newer clip has since taken the session.
+    private func retryDeactivation(token: Int) {
+      guard token == generation, sessionActive else { return }
+      _ = deactivateSession()
     }
   }
 

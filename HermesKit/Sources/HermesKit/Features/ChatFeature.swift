@@ -2195,6 +2195,8 @@ public struct ChatFeature {
           state.errorBanner = "Playback stalled."
         case .playback(.failed):
           state.errorBanner = "Couldn’t play the audio."
+        case .playback(.unsupportedFormat):
+          state.errorBanner = "This agent’s voice format (Ogg) isn’t supported on this device."
         case .playback(.interrupted):
           // A call/Siri owns the audio session: no banner, and NOT a speak edge — a pending
           // reply could not activate the session now. `.foreground` reads it.
@@ -3388,6 +3390,10 @@ public struct ChatFeature {
       // A Stop / barge-in / background that landed while the synthesis was decoding must not
       // start the clip (the mic may already own the audio session).
       guard !Task.isCancelled else { return }
+      guard audio.isPlayable else {
+        await send(.ttsFailed(.playback(.unsupportedFormat)))
+        return
+      }
       await send(.ttsSpeaking)
       do {
         try await tts.play(audio.data, audio.mimeType)

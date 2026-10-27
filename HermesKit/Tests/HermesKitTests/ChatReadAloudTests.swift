@@ -991,6 +991,23 @@ struct ChatReadAloudTests {
     #expect(store.state.completedAssistantCount > store.state.spokenAssistantCount)
   }
 
+  @Test func anOggClipBannersWithoutReachingThePlayer() async {
+    // `AVAudioPlayer` cannot play Ogg: a provider returning `audio/ogg` gets its own banner,
+    // and the player (which would activate the audio session) is never started.
+    let recorder = TTSRecorder()
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+    store.dependencies.hermesREST.speak = { @Sendable _, _, _ in
+      TTSAudio(data: Data([0x4F, 0x67, 0x67, 0x53]), mimeType: "audio/ogg")
+    }
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsFailed) {
+      $0.ttsPlayback = .idle
+      $0.errorBanner = "This agent’s voice format (Ogg) isn’t supported on this device."
+    }
+    #expect(recorder.plays.value.isEmpty)
+  }
+
   @Test func aFailedAutoReadStaysConsumed() async {
     // The failure edge is itself a speak edge: the failed reply must not be retried.
     let recorder = TTSRecorder()
