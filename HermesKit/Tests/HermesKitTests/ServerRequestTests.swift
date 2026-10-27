@@ -325,7 +325,10 @@ struct ServerRequestTests {
       $0.debugLog.append = { _ in }
     }
     let message = "Couldn’t enable approvals and other prompts: busy"
-    await store.send(.task) { $0.hasStarted = true }
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+    }
     transport.inject(#"{"method":"event","params":{"type":"gateway.ready"}}"#)
     await store.receive(\.gatewayFrame) { $0.status = .ready }
     await store.receive(\.gatewayFrame) {

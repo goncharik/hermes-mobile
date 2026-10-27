@@ -91,6 +91,7 @@ struct ChatReadAloudTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
       $0.autoSpeakReplies = true
       $0.spokenAssistantCount = 2 // the painted replies are never read
@@ -108,7 +109,10 @@ struct ChatReadAloudTests {
       $0.hermesGateway.connect = Self.idleSocket
     }
 
-    await store.send(.task) { $0.hasStarted = true }
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+    }
     await store.send(.teardown)
   }
 
@@ -123,7 +127,10 @@ struct ChatReadAloudTests {
       $0.hermesGateway.connect = Self.idleSocket
     }
 
-    await store.send(.task) { $0.hasStarted = true }
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+    }
     // Flipped elsewhere (another slot) — a re-appearance of THIS slot does not pick it up.
     preferences.saveAutoSpeakReplies(true)
     await store.send(.task)
@@ -964,5 +971,263 @@ struct ChatReadAloudTests {
     #expect(recorder.spokenTexts == ["Done"])
     #expect(store.state.spokenAssistantCount == 2)
     await store.send(.teardown)
+  }
+
+  // MARK: - Barge-in latch (Task 7)
+
+  private static let now = Date(timeIntervalSince1970: 1_000_000)
+
+  /// `makeStore` plus what a submit needs: a pinned clock for the latch, the snapshot cache
+  /// for the turn anchor, and a gateway that records every `prompt.submit` params payload.
+  private func submitStore(
+    _ initial: ChatFeature.State, _ recorder: TTSRecorder, submits: LockIsolated<[JSONValue]>
+  ) -> TestStoreOf<ChatFeature> {
+    let store = makeStore(initial, recorder)
+    store.dependencies.date = .constant(Self.now)
+    store.dependencies.chatSnapshot = .inMemory()
+    store.dependencies.hermesGateway.send = { @Sendable method, params in
+      if method == "prompt.submit" { submits.withValue { $0.append(params) } }
+      return .object([:])
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    return store
+  }
+
+  /// `twoReplies` on a live session with a typed draft.
+  private func idleSlotWithDraft(_ draft: String) -> ChatFeature.State {
+    var state = twoReplies(anchor: 2)
+    state.liveSessionID = "live1"
+    state.composerText = draft
+    return state
+  }
+
+  private func submitParams(_ text: String, interrupted: Bool = false) -> JSONValue {
+    var params: [String: JSONValue] = ["session_id": .string("live1"), "text": .string(text)]
+    if interrupted { params["interrupted"] = .bool(true) }
+    return .object(params)
+  }
+
+  @Test func submitMidPlaybackStopsTheClipAndFlagsThePrompt() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let submits = LockIsolated<[JSONValue]>([])
+    let store = submitStore(idleSlotWithDraft("next"), recorder, submits: submits)
+
+    await store.send(.readAloudTapped(id: uuid(103)))
+    await store.receive(\.ttsSpeaking)
+    await store.send(.composerSubmitted) {
+      $0.ttsPlayback = .idle
+      $0.ttsInterruptedAt = nil // stamped, then taken by this very submit
+      $0.isSending = true
+    }
+    await store.finish() // the cancelled clip never reports `.ttsFinished`
+    #expect(recorder.stops.value == 1)
+    #expect(submits.value == [submitParams("next", interrupted: true)])
+  }
+
+  @Test func aSubmitWithoutAStampSendsTheLegacyFrame() async {
+    let recorder = TTSRecorder()
+    let submits = LockIsolated<[JSONValue]>([])
+    let store = submitStore(idleSlotWithDraft("hello"), recorder, submits: submits)
+
+    await store.send(.composerSubmitted)
+    await store.finish()
+    // Byte-identical to the pre-#74 frame: no `interrupted` key at all, and no player call.
+    #expect(submits.value == [.object(["session_id": .string("live1"), "text": .string("hello")])])
+    #expect(recorder.stops.value == 0)
+  }
+
+  @Test(arguments: [(119.0, true), (121.0, false)])
+  func theLatchExpiresAfter120Seconds(_ age: TimeInterval, _ flagged: Bool) async {
+    let recorder = TTSRecorder()
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = idleSlotWithDraft("later")
+    initial.ttsInterruptedAt = Self.now.addingTimeInterval(-age)
+    let store = submitStore(initial, recorder, submits: submits)
+
+    await store.send(.composerSubmitted) { $0.ttsInterruptedAt = nil } // taken either way
+    await store.finish()
+    #expect(submits.value == [submitParams("later", interrupted: flagged)])
+  }
+
+  @Test func aQueuedSubmitMidPlaybackStampsAndTheDrainedPromptCarriesTheFlag() async {
+    // A turn runs while an older reply is read by hand: the typed draft queues (#66), the
+    // clip stops, and the drain at the turn's `message.complete` carries the flag.
+    let recorder = TTSRecorder()
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = streamingSlot(autoSpeak: false)
+    initial.transcript.insert(contentsOf: [user(98, "q0"), assistant(99, "Old")], at: 0)
+    initial.liveSessionID = "live1"
+    initial.composerText = "queued"
+    initial.ttsPlayback = .speaking(uuid(99))
+    let store = submitStore(initial, recorder, submits: submits)
+
+    await store.send(.composerSubmitted) {
+      $0.queuedPrompts = [QueuedPrompt(id: self.uuid(0), text: "queued", attachments: [])]
+      $0.composerText = ""
+      $0.ttsPlayback = .idle
+      $0.ttsInterruptedAt = Self.now
+    }
+    #expect(recorder.stops.value == 1)
+    #expect(submits.value.isEmpty) // never submitted against the running turn
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.queuedPrompts = []
+      $0.ttsInterruptedAt = nil
+    }
+    await store.finish()
+    #expect(submits.value == [submitParams("queued", interrupted: true)])
+  }
+
+  @Test func aQueueDrainAtMessageCompleteDoesNotStopTheAutoSpeakItTriggers() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = streamingSlot()
+    initial.liveSessionID = "live1"
+    initial.queuedPrompts = [QueuedPrompt(id: uuid(7), text: "queued", attachments: [])]
+    let store = submitStore(initial, recorder, submits: submits)
+
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.ttsPlayback = .preparing(self.uuid(101))
+      $0.queuedPrompts = []
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    // The drained prompt went out unflagged, and the reply it raced keeps playing.
+    await waitUntil { submits.value.count == 1 }
+    #expect(submits.value == [submitParams("queued")])
+    #expect(recorder.stops.value == 0)
+    #expect(store.state.ttsInterruptedAt == nil)
+    await playClock.advance(by: TTSRecorder.clipLength)
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+  }
+
+  @Test func micTapMidPlaybackStopsBeforeThePermissionPromptAndStamps() async {
+    let recorder = TTSRecorder()
+    let submits = LockIsolated<[JSONValue]>([])
+    let order = LockIsolated<[String]>([])
+    var initial = idleSlotWithDraft("")
+    initial.ttsPlayback = .speaking(uuid(103))
+    let store = submitStore(initial, recorder, submits: submits)
+    store.dependencies.tts.stop = { @Sendable in order.withValue { $0.append("tts.stop") } }
+    store.dependencies.audioRecorder.requestPermission = { @Sendable in
+      order.withValue { $0.append("requestPermission") }
+      return false
+    }
+
+    await store.send(.voiceButtonTapped) {
+      $0.recording = .requestingPermission
+      $0.ttsPlayback = .idle
+      $0.ttsInterruptedAt = Self.now
+    }
+    await store.receive(\.recordingPermission) { $0.recording = .idle }
+    // The player released the session BEFORE the recorder's `.playAndRecord` could start.
+    #expect(order.value == ["tts.stop", "requestPermission"])
+
+    // The dictated (here: typed) follow-up carries the flag.
+    await store.send(.binding(.set(\.composerText, "follow-up")))
+    await store.send(.composerSubmitted) { $0.ttsInterruptedAt = nil }
+    await store.finish()
+    #expect(submits.value == [submitParams("follow-up", interrupted: true)])
+  }
+
+  @Test func micTapWhileIdleStampsNothing() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+    store.dependencies.audioRecorder.requestPermission = { @Sendable in false }
+
+    // Exhaustive: no latch when nothing was playing (the idempotent `tts.stop()` still runs).
+    await store.send(.voiceButtonTapped) { $0.recording = .requestingPermission }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    #expect(recorder.stops.value == 1)
+  }
+
+  // MARK: - Lifecycle (Task 7)
+
+  @Test func sceneBackgroundedStopsPlaybackWithoutALatch() async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    await store.send(.sceneBackgrounded) {
+      $0.isSceneBackgrounded = true
+      $0.ttsPlayback = .idle // not a barge-in: `ttsInterruptedAt` stays nil
+    }
+    await store.finish()
+    #expect(recorder.stops.value == 1)
+  }
+
+  @Test func aReplyCompletingWhileBackgroundedIsReadOnForeground() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(), recorder)
+
+    await store.send(.sceneBackgrounded) { $0.isSceneBackgrounded = true }
+    // The grace socket keeps streaming: the reply completes LIVE, but is held.
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false // anchor stays 0: pending
+    }
+    #expect(recorder.speaks.value.isEmpty)
+    #expect(recorder.stops.value == 0) // nothing was playing
+
+    await store.send(.foreground) {
+      $0.isSceneBackgrounded = false
+      $0.spokenAssistantCount = 1
+      $0.ttsPlayback = .preparing(self.uuid(101))
+    }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
+    await store.receive(\.ttsFinished) { $0.ttsPlayback = .idle }
+    #expect(recorder.spokenTexts == ["Hello"])
+  }
+
+  @Test func reattachedPutsTheChatBackOnScreenWithoutReading() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(streamingSlot(), recorder)
+
+    await store.send(.viewDisappeared) { $0.isOnScreen = false }
+    await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
+      $0.transcript[id: self.uuid(101)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isSending = false
+    }
+    await store.send(.reattached) { $0.isOnScreen = true }
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  enum Leave: CaseIterable, Sendable {
+    case viewDisappeared, teardown, teardownSocketOnly
+  }
+
+  @Test(arguments: Leave.allCases)
+  func leavingStopsAnActiveClip(_ leave: Leave) async {
+    let playClock = TestClock()
+    let recorder = TTSRecorder(holdingPlaybackOn: playClock)
+    let store = makeStore(twoReplies(anchor: 2), recorder)
+
+    await store.send(.readAloudTapped(id: uuid(103))) { $0.ttsPlayback = .preparing(self.uuid(103)) }
+    await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(103)) }
+    switch leave {
+    case .viewDisappeared:
+      await store.send(.viewDisappeared) {
+        $0.isOnScreen = false
+        $0.ttsPlayback = .idle
+      }
+    case .teardown:
+      await store.send(.teardown) { $0.ttsPlayback = .idle }
+    case .teardownSocketOnly:
+      await store.send(.teardownSocketOnly) {
+        $0.status = .reconnecting
+        $0.ttsPlayback = .idle
+      }
+    }
+    await store.finish() // the clip effect was cancelled — no `.ttsFinished`
+    #expect(recorder.stops.value == 1)
+    #expect(recorder.plays.value.count == 1)
   }
 }

@@ -447,7 +447,13 @@ public struct AppFeature {
           // the 1s debounce) so a process kill can't lose the latest paint or the timer anchor.
           state.isSceneBackgrounded = true
           guard let chat = state.liveChat else { return .none }
-          let flush: Effect<Action> = .send(.liveChat(.persistNow))
+          // Read aloud (#74): no background audio — stop the clip first, idle AND running
+          // slots alike (the grace below keeps a running turn's process, and so the player,
+          // alive), and hold auto-speak until `.foreground`.
+          let flush: Effect<Action> = .concatenate(
+            .send(.liveChat(.sceneBackgrounded)),
+            .send(.liveChat(.persistNow))
+          )
           // A RUNNING turn buys itself a finite background window (~30s): the socket simply
           // keeps streaming, no `ChatFeature` changes. If iOS expires the window while still
           // backgrounded, the listener fires `.backgroundGraceExpired` → final flush + clean

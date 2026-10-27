@@ -259,7 +259,10 @@ struct ChatReductionTests {
       }
     }
 
-    await store.send(.task) { $0.hasStarted = true }
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+    }
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
@@ -680,6 +683,7 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
     await store.receive(\.gatewayFrame) {
@@ -724,6 +728,7 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
     await store.receive(\.gatewayFrame) {
@@ -769,6 +774,7 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
     await store.receive(\.gatewayFrame) {

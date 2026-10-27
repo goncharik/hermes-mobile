@@ -620,48 +620,55 @@ alternative A1 add back `config` (GET, lenient `JSONValue`); under B also `updat
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
+- Modify (➕ exhaustive `.task` / `.reattached` assertions now see `isOnScreen = true`):
+  `ChatReductionTests.swift`, `HydrateTests.swift`, `ServerRequestTests.swift`
 
-- [ ] Barge-in (USER submits only): in `.composerSubmitted` (~:1407 — both the idle path and
+- [x] Barge-in (USER submits only): in `.composerSubmitted` (~:1407 — both the idle path and
       the mid-turn queue branch) and `.voiceButtonTapped` (~:1842, from `.idle`), if
       `ttsPlayback.isActive` ⇒ stop (cancel + `tts.stop`) and stamp `ttsInterruptedAt = now`.
       NOT in `drainQueueIfReady`: the drain fires on the same `message.complete` that starts
-      auto-speak, and must not cut the reply it just triggered.
-- [ ] ⚠️ Mic ordering: in `.voiceButtonTapped` run `await tts.stop()` at the top of the
+      auto-speak, and must not cut the reply it just triggered. (➕ stamped only once the
+      submit passes its `canSend` / `canQueue` guards; private `bargeInReadAloud` +
+      `stopReadAloudPlayback`, which `.stopReadAloud` now shares.)
+- [x] ⚠️ Mic ordering: in `.voiceButtonTapped` run `await tts.stop()` at the top of the
       permission `.run`, before `requestPermission`/recording starts — `stop()` deactivates the
       session with `.notifyOthersOnDeactivation`, which would otherwise race and kill the
-      recorder's freshly activated `.playAndRecord` session.
-- [ ] Consume: in `submitDraft` (~:3910, both regular builders ~:3948 upload+submit and ~:4108
+      recorder's freshly activated `.playAndRecord` session. (➕ called unconditionally — it is
+      idempotent, and it also serializes behind a Stop tapped just before the mic.)
+- [x] Consume: in `submitDraft` (~:3910, both regular builders ~:3948 upload+submit and ~:4108
       plain; composer and `fromQueue` paths alike; not the slash-directive path ~:4596),
       compute `interrupted = ttsInterruptedAt.map { now.timeIntervalSince($0) < 120 } ??
       false`, clear the stamp, and add `"interrupted": .bool(true)` to the params only when true
       (byte-identical frames otherwise, incl. the #17 heal replay of the same submit).
-- [ ] Extend `releaseVoiceResources` (~:2988) to cancel `.ttsPlayback`, reset `ttsPlayback =
+      (➕ `takeReadAloudInterruption` + a static `promptSubmitParams`; the slash/compress
+      branches of `submitDraft` leave a stamp for the next regular submit within the TTL.)
+- [x] Extend `releaseVoiceResources` (~:2988) to cancel `.ttsPlayback`, reset `ttsPlayback =
       .idle`, and call `tts.stop()` when it was active — covers `viewDisappeared`, `teardown`.
       ➕ `.teardownSocketOnly` (~:1155) does NOT call `releaseVoiceResources` today; add the TTS
       half there explicitly (it is reached only while backgrounded, so playback is normally
       already stopped by `.sceneBackgrounded`). `viewDisappeared` also clears `isOnScreen`;
       `.task` (every appearance) and `.reattached` set it.
-- [ ] Add `ChatFeature.Action.sceneBackgrounded` (stop playback, `isSceneBackgrounded =
+- [x] Add `ChatFeature.Action.sceneBackgrounded` (stop playback, `isSceneBackgrounded =
       true`); `.foreground` clears it before the speak check. In `AppFeature`'s
       `.scenePhaseChanged(.background)` branch (~:444) forward `.liveChat(.sceneBackgrounded)`
       alongside the existing `persistNow`, for idle AND running slots (the grace keeps a
       running turn's process alive, so the clip would otherwise keep playing; the `.inactive`
       branch stays untouched). Accepted: a push tap's `.foreground` (~:1012) may arrive just
-      before `.active` and clear the flag a beat early.
-- [ ] Write tests: submit mid-playback stops and the next `prompt.submit` frame carries
+      before `.active` and clear the flag a beat early. (➕ concatenated BEFORE `persistNow`.)
+- [x] Write tests: submit mid-playback stops and the next `prompt.submit` frame carries
       `interrupted: true` (assert the exact `JSONValue` params); a queued submit mid-playback
       (turn running) stops + stamps and the drained `prompt.submit` carries the flag; a
       121 s-old stamp is dropped; a submit with no stamp sends the byte-identical legacy frame;
       a queue drain at `message.complete` does not stop the auto-speak it triggers; mic tap
       mid-playback stops + stamps (with `tts.stop` recorded before `requestPermission`), and
       the later composer send carries the flag.
-- [ ] Write tests: `sceneBackgrounded` stops playback; a live `messageComplete` while
+- [x] Write tests: `sceneBackgrounded` stops playback; a live `messageComplete` while
       backgrounded (grace socket) does not start playback; `.foreground` clears the flag and
       speaks the pending newest row; `.reattached` does not speak; `viewDisappeared` /
       `teardown` / `teardownSocketOnly` each stop an active clip; `AppFeature` `.background`
       forwards `sceneBackgrounded` only when a slot exists, for both an idle and a running slot
       (update the existing exhaustive `.background` tests ~:1771-1914 to receive it).
-- [ ] run `make test` — must pass before Task 8
+- [x] run `make test` — must pass before Task 8
 
 ### Task 8: Keep-awake predicate
 

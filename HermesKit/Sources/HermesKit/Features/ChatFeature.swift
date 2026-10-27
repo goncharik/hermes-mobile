@@ -1019,6 +1019,10 @@ public struct ChatFeature {
     case ttsFinished
     /// Synthesis or playback failed — also a playback-idle edge.
     case ttsFailed(id: ChatRow.ID, ReadAloudFailure)
+    /// The app scene went to the background (`AppFeature`, idle AND running slots): stop the
+    /// clip — there is no background-audio entitlement, yet the ~30 s grace keeps a running
+    /// turn's process alive — and hold auto-speak until `.foreground`.
+    case sceneBackgrounded
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
@@ -1226,6 +1230,9 @@ public struct ChatFeature {
         // live slot after a nav pop. Only the slot's FIRST appearance performs the
         // initial connect; re-opens are routed by `AppFeature` through `.reattached`,
         // which must not cancel-and-redial a healthy socket.
+        //
+        // Every appearance puts the chat back on screen (#74: auto-speak + keep-awake gate).
+        state.isOnScreen = true
         guard !state.hasStarted else { return .none }
         state.hasStarted = true
         // The read-aloud toggle is device-local (#74): one synchronous read per slot. Armed
@@ -1236,7 +1243,9 @@ public struct ChatFeature {
 
       case .viewDisappeared:
         // View-only cleanup: the screen left, but the slot (socket, streaming fold,
-        // thinking ticker, persist debounce) lives on — `AppFeature` decides teardown.
+        // thinking ticker, persist debounce) lives on — `AppFeature` decides teardown. Off
+        // screen, a detached slot never starts reading (#74).
+        state.isOnScreen = false
         return releaseVoiceResources(&state)
 
       case .teardown:
@@ -1265,10 +1274,15 @@ public struct ChatFeature {
         // while backgrounded after grace expiry, wasting a single-use ws-ticket). The same
         // goes for a pending replay read (#98): the foreground `.ready` re-runs it from the
         // untouched cursor.
+        //
+        // Read aloud (#74): reached only while backgrounded, so `.sceneBackgrounded` has
+        // normally stopped the clip already — stop it explicitly anyway (this path does not
+        // run `releaseVoiceResources`).
         state.status = .reconnecting
         state.hasRequestedSession = false
         state.isReplayReadPending = false
         return .merge(
+          stopReadAloudPlayback(&state),
           .cancel(id: CancelID.socket),
           .cancel(id: CancelID.reconnect),
           .cancel(id: CancelID.hydrate),
@@ -1466,11 +1480,15 @@ public struct ChatFeature {
         // Read aloud (#74): returning to the app is a speak edge — a reply that completed
         // LIVE while backgrounded was held, and is read now whatever the socket is doing
         // (so the check runs before the redial / pending-read early returns). A re-push of
-        // the chat (`.reattached`) is not: navigating back never starts reading.
-        let speak: Effect<Action> = if case .foreground = action {
-          autoSpeakIfReady(&state)
+        // the chat (`.reattached`) is not: navigating back never starts reading — it only
+        // puts the chat back on screen.
+        let speak: Effect<Action>
+        if case .foreground = action {
+          state.isSceneBackgrounded = false
+          speak = autoSpeakIfReady(&state)
         } else {
-          .none
+          state.isOnScreen = true
+          speak = .none
         }
         return .merge(speak, reattach(&state))
 
@@ -1497,18 +1515,22 @@ public struct ChatFeature {
           )
           state.composerText = ""
           state.attachments = []
-          return .none
+          // Typing barge-in (#74): the queued entry's eventual `prompt.submit` carries it.
+          return bargeInReadAloud(&state)
         }
         guard state.canSend, let sessionID = state.liveSessionID else { return .none }
+        // Typing barge-in (#74): a user send silences the clip and stamps the latch, which
+        // this very submit consumes (`interrupted: true` on its `prompt.submit`).
+        let bargeIn = bargeInReadAloud(&state)
         // Trim stray leading/trailing whitespace/newlines (soft-wrap, dictation, accidental
         // returns) before submitting; interior formatting is preserved (#31). `canSend`
         // already rejects whitespace-only input with no attachments, so the text can only be
         // empty here when attachments carry the send.
         let text = state.composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return submitDraft(
+        return .merge(bargeIn, submitDraft(
           text: text, attachments: state.attachments, fromQueue: false,
           sessionID: sessionID, state: &state
-        )
+        ))
 
       case let .promptSubmitFailed(message):
         state.errorBanner = "Prompt failed: \(message)"
@@ -1913,9 +1935,21 @@ public struct ChatFeature {
         switch state.recording {
         case .idle:
           state.recording = .requestingPermission
-          return .run { [audioRecorder] send in
-            await send(.recordingPermission(audioRecorder.requestPermission()))
+          // Voice barge-in (#74): silence the clip and stamp the latch. The `tts.stop()`
+          // itself runs FIRST inside the permission effect (unconditionally — idempotent): it
+          // deactivates the session with `.notifyOthersOnDeactivation`, which would otherwise
+          // race and kill the recorder's freshly activated `.playAndRecord` session.
+          if state.ttsPlayback.isActive {
+            state.ttsInterruptedAt = now
+            state.ttsPlayback = .idle
           }
+          return .merge(
+            .cancel(id: CancelID.ttsPlayback),
+            .run { [audioRecorder, tts] send in
+              await tts.stop()
+              await send(.recordingPermission(audioRecorder.requestPermission()))
+            }
+          )
         case .recording:
           // Stop and hand the audio off to transcription.
           state.recording = .transcribing
@@ -2046,12 +2080,14 @@ public struct ChatFeature {
 
       case .stopReadAloud:
         guard state.ttsPlayback.isActive else { return .none }
-        state.ttsPlayback = .idle
         // Cancelling the effect drops its trailing `.ttsFinished` — a Stop is not a speak edge.
-        return .merge(
-          .cancel(id: CancelID.ttsPlayback),
-          .run { [tts] _ in await tts.stop() }
-        )
+        return stopReadAloudPlayback(&state)
+
+      case .sceneBackgrounded:
+        // No background audio: stop the clip (not a barge-in — no latch) and hold auto-speak
+        // until `.foreground`. A reply completing LIVE meanwhile (grace socket) stays pending.
+        state.isSceneBackgrounded = true
+        return stopReadAloudPlayback(&state)
 
       case .ttsSpeaking:
         // `.preparing` → `.speaking`, keeping the row the state points at: a hydrate between
@@ -3255,9 +3291,43 @@ public struct ChatFeature {
     .cancellable(id: CancelID.ttsPlayback, cancelInFlight: true)
   }
 
+  /// Silence the read-aloud clip (#74): back to `.idle`, cancel the synthesis/playback effect
+  /// (which drops its trailing `.ttsFinished` — never a speak edge), and stop the player when
+  /// one was active. Safe while idle (no `tts.stop()` call then).
+  private func stopReadAloudPlayback(_ state: inout State) -> Effect<Action> {
+    let wasActive = state.ttsPlayback.isActive
+    state.ttsPlayback = .idle
+    return .merge(
+      .cancel(id: CancelID.ttsPlayback),
+      wasActive ? .run { [tts] _ in await tts.stop() } : .none
+    )
+  }
+
+  /// Typing barge-in (#74, USER submits only — never the queue drain, which fires on the very
+  /// `message.complete` that starts auto-speak): a send while a clip prepares/plays silences
+  /// it and stamps `ttsInterruptedAt`, consumed by the next regular `prompt.submit`.
+  private func bargeInReadAloud(_ state: inout State) -> Effect<Action> {
+    guard state.ttsPlayback.isActive else { return .none }
+    state.ttsInterruptedAt = now
+    return stopReadAloudPlayback(&state)
+  }
+
+  /// Take the barge-in latch (#74) for a regular `prompt.submit`: `true` when a user
+  /// submit/mic tap silenced playback less than 120 s ago (the desktop's interrupt TTL).
+  /// Always clears the stamp — a stale one is dropped, not carried forward.
+  private func takeReadAloudInterruption(_ state: inout State) -> Bool {
+    defer { state.ttsInterruptedAt = nil }
+    guard let stamp = state.ttsInterruptedAt else { return false }
+    return now.timeIntervalSince(stamp) < Self.readAloudInterruptTTL
+  }
+
+  /// How long a barge-in stamp stays valid (desktop `INTERRUPT_TTL_MS`).
+  static let readAloudInterruptTTL: TimeInterval = 120
+
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
   /// state, cancel the level/tick effects, and release the mic/session if we leave
-  /// mid-recording.
+  /// mid-recording. Also silences a read-aloud clip (#74) — playback never outlives the
+  /// chat leaving the screen.
   private func releaseVoiceResources(_ state: inout State) -> Effect<Action> {
     let wasRecording = state.recording.isBusy
     state.recording = .idle
@@ -3266,7 +3336,8 @@ public struct ChatFeature {
     return .merge(
       .cancel(id: CancelID.voiceLevels),
       .cancel(id: CancelID.voiceTimer),
-      wasRecording ? .run { [audioRecorder] _ in await audioRecorder.cancel() } : .none
+      wasRecording ? .run { [audioRecorder] _ in await audioRecorder.cancel() } : .none,
+      stopReadAloudPlayback(&state)
     )
   }
 
@@ -4223,6 +4294,8 @@ public struct ChatFeature {
       let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
       let seed = state.branchSeed
       let profile = state.profileName
+      // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
+      let interrupted = takeReadAloudInterruption(&state)
       return .merge(anchor, .run { [gateway, uuid] send in
         // The uploads + submit target the live id, which can be stale after a
         // background→foreground; self-heal the whole upload→submit sequence once on a
@@ -4238,9 +4311,10 @@ public struct ChatFeature {
           // `@file:` refs (from file.attach) go on their own lines above the text;
           // image/pdf are picked up from session state by prompt.submit.
           let body = (refs + (text.isEmpty ? [] : [text])).joined(separator: "\n")
-          _ = try await gateway.send("prompt.submit", .object([
-            "session_id": .string(targetID), "text": .string(body),
-          ]))
+          _ = try await gateway.send(
+            "prompt.submit",
+            Self.promptSubmitParams(sessionID: targetID, text: body, interrupted: interrupted)
+          )
         }
         do {
           // Stale live id: re-resume/recreate for a fresh one, apply it, replay the whole
@@ -4393,16 +4467,30 @@ public struct ChatFeature {
     let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
     let seed = state.branchSeed
     let profile = state.profileName
+    // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
+    let interrupted = takeReadAloudInterruption(&state)
     return .merge(anchor, .run { [gateway] send in
       await submitPrompt(
         sessionID: sessionID, storedSessionID: stored, branchSeed: seed,
         profile: profile, gateway: gateway, send: send
       ) { healedID in
-        _ = try await gateway.send("prompt.submit", .object([
-          "session_id": .string(healedID), "text": .string(text),
-        ]))
+        _ = try await gateway.send(
+          "prompt.submit",
+          Self.promptSubmitParams(sessionID: healedID, text: text, interrupted: interrupted)
+        )
       }
     })
+  }
+
+  /// The params of a regular `prompt.submit` (both `submitDraft` builders, incl. the #17 heal
+  /// replay). `interrupted: true` (#74 barge-in, v2026.7.30+; older agents ignore unknown
+  /// keys) is added ONLY when set, so every other frame stays byte-identical to the legacy one.
+  private static func promptSubmitParams(sessionID: String, text: String, interrupted: Bool) -> JSONValue {
+    var params: [String: JSONValue] = [
+      "session_id": .string(sessionID), "text": .string(text),
+    ]
+    if interrupted { params["interrupted"] = .bool(true) }
+    return .object(params)
   }
 
   // MARK: - Queue drain (#66)
