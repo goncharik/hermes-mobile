@@ -179,7 +179,8 @@ public struct ArchivedSessionsFeature {
         return .none
 
       case let .deleteButtonTapped(id):
-        guard state.deleteSupported, let index = state.sessions.index(id: id) else { return .none }
+        guard state.deleteSupported else { return .none }
+        guard let index = state.sessions.index(id: id) else { return .none }
         // Immediate — no confirmation dialog (planning decision; see the action doc).
         // Optimistic removal + in-flight guard; the DELETE itself is the PARENT's (see
         // the delegate case doc — a presented child's effect dies with the sheet), handed

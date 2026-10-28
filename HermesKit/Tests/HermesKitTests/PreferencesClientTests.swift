@@ -4,6 +4,24 @@ import Testing
 @testable import HermesKit
 
 struct PreferencesClientTests {
+  @Test(arguments: [false, true])
+  func pinMigrationCheckpointsAreServerScopedAndIdentityResettable(live: Bool) {
+    let suiteName = "hermes.prefs.pin-migration.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let prefs = live ? PreferencesClient.live(defaults: defaults) : .inMemory()
+    let pending = PinMigration(pendingIDs: ["b", "a"])
+    let completed = PinMigration(pendingIDs: [])
+    #expect(prefs.loadPinMigration("http://first:9119") == nil)
+    prefs.savePinMigration("http://first:9119", pending)
+    prefs.savePinMigration("http://second:9119", completed)
+    let reloaded = live ? PreferencesClient.live(defaults: defaults) : prefs
+    #expect(reloaded.loadPinMigration("http://first:9119") == pending)
+    #expect(reloaded.loadPinMigration("http://second:9119") == completed)
+    prefs.clearIdentityScopedPrefs()
+    #expect(reloaded.loadPinMigration("http://first:9119") == nil)
+    #expect(reloaded.loadPinMigration("http://second:9119") == nil)
+  }
   @Test func inMemoryRoundTripAndClear() {
     let prefs = PreferencesClient.inMemory()
     #expect(prefs.loadServerURL() == nil)

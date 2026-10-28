@@ -2,6 +2,15 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
+/// Legacy pins not yet reconciled with server membership.
+/// Server-keyed pending IDs survive incomplete lists, profile switches, and failed
+/// writes. Retire them only on explicit server true or an acknowledged upload.
+public struct PinMigration: Codable, Equatable, Sendable {
+  public var pendingIDs: [String]
+
+  public init(pendingIDs: [String]) { self.pendingIDs = pendingIDs }
+}
+
 /// Non-secret, persisted app preferences. Currently just the last server URL, kept so
 /// the app can auto-reconnect on launch without re-running onboarding (the token lives
 /// in `KeychainClient`). Live implementation backs onto `UserDefaults`; an in-memory
@@ -17,6 +26,10 @@ public struct PreferencesClient: Sendable {
   /// Pinned session ids, ordered = display order in the top "Pinned" section.
   public var loadPinnedIDs: @Sendable () -> [String] = { [] }
   public var savePinnedIDs: @Sendable (_ ids: [String]) -> Void
+  /// Legacy pin migration snapshots keyed by stable server URL, never by bearer token.
+  public var loadPinMigration: @Sendable (_ server: String) -> PinMigration? = { _ in nil }
+  public var savePinMigration: @Sendable (_ server: String, _ migration: PinMigration) -> Void
+  public var clearPinMigrations: @Sendable () -> Void
   /// Which destructive action the session list's trailing swipe defaults to
   /// (archive vs permanent delete). Device-local UI pref; reset on logout.
   public var loadDefaultSessionSwipeAction: @Sendable () -> SessionSwipeAction = { .default }
@@ -54,6 +67,7 @@ public extension PreferencesClient {
   /// The server URL (and the list's UI prefs) survive — the user stays on the same server.
   func clearIdentityScopedPrefs() {
     savePinnedIDs([])
+    clearPinMigrations()
     saveSeenCounts([:])
     clearSelectedProfileID()
   }
@@ -65,6 +79,7 @@ public extension PreferencesClient {
     let key = "hermes.server-url"
     let seenKey = "hermes.seen-message-counts"
     let pinnedKey = "hermes.pinned-session-ids"
+    let migrationKey = "hermes.pin-migrations-v1"
     let swipeActionKey = "hermes.default-session-swipe-action"
     let selectedProfileKey = "hermes.selected-profile-id"
     let pushTokenKey = "hermes.push-device-token"
@@ -90,6 +105,17 @@ public extension PreferencesClient {
       saveSeenCounts: { store.set($0, forKey: seenKey) },
       loadPinnedIDs: { (store.array(forKey: pinnedKey) as? [String]) ?? [] },
       savePinnedIDs: { store.set($0, forKey: pinnedKey) },
+      loadPinMigration: { server in
+        guard let data = store.dictionary(forKey: migrationKey)?[server] as? Data else { return nil }
+        return try? JSONDecoder().decode(PinMigration.self, from: data)
+      },
+      savePinMigration: { server, migration in
+        guard let data = try? JSONEncoder().encode(migration) else { return }
+        var migrations = store.dictionary(forKey: migrationKey) ?? [:]
+        migrations[server] = data
+        store.set(migrations, forKey: migrationKey)
+      },
+      clearPinMigrations: { store.removeObject(forKey: migrationKey) },
       loadDefaultSessionSwipeAction: {
         store.string(forKey: swipeActionKey).flatMap(SessionSwipeAction.init(rawValue:)) ?? .default
       },
@@ -125,6 +151,7 @@ public extension PreferencesClient {
     let box = LockIsolated<String?>(nil)
     let seen = LockIsolated<[String: Int]>([:])
     let pinned = LockIsolated<[String]>([])
+    let migrations = LockIsolated<[String: PinMigration]>([:])
     let swipeAction = LockIsolated<SessionSwipeAction>(.default)
     let selectedProfile = LockIsolated<String?>(nil)
     let pushToken = LockIsolated<String?>(nil)
@@ -138,6 +165,9 @@ public extension PreferencesClient {
       saveSeenCounts: { seen.setValue($0) },
       loadPinnedIDs: { pinned.value },
       savePinnedIDs: { pinned.setValue($0) },
+      loadPinMigration: { migrations.value[$0] },
+      savePinMigration: { server, migration in migrations.withValue { $0[server] = migration } },
+      clearPinMigrations: { migrations.setValue([:]) },
       loadDefaultSessionSwipeAction: { swipeAction.value },
       saveDefaultSessionSwipeAction: { swipeAction.setValue($0) },
       loadSelectedProfileID: { selectedProfile.value },

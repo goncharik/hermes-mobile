@@ -170,6 +170,37 @@ previous jobs (no flapping). Jobs are fetched with the LITERAL selected profile 
 `profilesSupported` (matching the scoped session list, so a job's runs are actually present),
 unscoped otherwise.
 
+## Shared pin membership, local order
+
+`Session.pinned` is an optional server membership flag shared with Desktop; pin order remains
+**device-local** in `PreferencesClient.pinnedIDs`. A capable profile-list response establishes
+server-level pin support through a checkpoint keyed by normalized server URL. After discovery,
+Pin/Unpin also PATCHes search rows whose `pinned` field is absent or null. Requests carry the
+selected literal profile, including `"default"`. Before discovery, search pins stay local.
+Search responses never reconcile membership or create migration checkpoints.
+
+The first capable list snapshots legacy local pins into the checkpoint's pending IDs. These
+survive later pages, profile switches, absent/null rows, failed uploads, and normal relaunches.
+An explicit server `true` retires a pending ID; an explicit `false` uploads it, even on a later
+page or profile. IDs remain pending until success, so silent failures retry on the next capable
+list. The per-ID in-flight mutation prevents duplicate concurrent writes. Once retired, a later
+server `false` removes membership normally. Successful explicit user writes also retire their
+pending migration ID. Logout clears every migration checkpoint.
+
+Persistence uses the existing `PreferencesClient` storage contract; crash-durable flushing
+and atomic persistence with network dispatch are not guaranteed. Nil and absent list rows
+preserve cached membership. Server reconciliation skips IDs with a pending pin write.
+
+Fetches use the existing cancellable `CancelID.fetch` effect. Starting a pin does not cancel an
+in-flight fetch. Completion uses `cancelOrRestartFetch` to invalidate pre-write results and
+restart a pending list/search; user failures restore only that ID at its bounded previous index
+and surface the error. Switching profiles clears old rows before loading the new scope.
+
+Archive/Delete remain available while a pin is pending, including in the archived sheet.
+Pending pins retain their own rollback until removal succeeds; confirmed removal clears their
+prior pin index so a late failed pin cannot restore removed membership. A pending removal still
+guards new pin actions for that ID. Search and list share the same Pin/Unpin affordances.
+
 ## Shared unread state
 
 On agents that return the optional `unread` field, the backend owns read state: its
