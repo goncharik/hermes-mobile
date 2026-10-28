@@ -52,6 +52,12 @@ public struct PreferencesClient: Sendable {
   public var loadPushPromptSnooze: @Sendable () -> (count: Int, until: Date)? = { nil }
   public var savePushPromptSnooze: @Sendable (_ count: Int, _ until: Date) -> Void
   public var clearPushPromptSnooze: @Sendable () -> Void
+  /// "Read replies aloud" (#74). Device-local, default off — deliberately NOT the server's
+  /// `voice.auto_tts` (the messaging gateway's voice-reply default; desktop decoupled the two
+  /// upstream). Never touches `/api/config`. Cleared on logout.
+  public var loadAutoSpeakReplies: @Sendable () -> Bool = { false }
+  public var saveAutoSpeakReplies: @Sendable (_ enabled: Bool) -> Void
+  public var clearAutoSpeakReplies: @Sendable () -> Void
 }
 
 public extension PreferencesClient {
@@ -79,6 +85,7 @@ public extension PreferencesClient {
     let pushTokenKey = "hermes.push-device-token"
     let pushSnoozeCountKey = "hermes.push-prompt-snooze-count"
     let pushSnoozeUntilKey = "hermes.push-prompt-snooze-until"
+    let autoSpeakKey = "hermes.auto-speak-replies"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
 
@@ -132,7 +139,10 @@ public extension PreferencesClient {
       clearPushPromptSnooze: {
         store.removeObject(forKey: pushSnoozeCountKey)
         store.removeObject(forKey: pushSnoozeUntilKey)
-      }
+      },
+      loadAutoSpeakReplies: { store.bool(forKey: autoSpeakKey) }, // unset → false
+      saveAutoSpeakReplies: { store.set($0, forKey: autoSpeakKey) },
+      clearAutoSpeakReplies: { store.removeObject(forKey: autoSpeakKey) }
     )
   }
 
@@ -146,6 +156,7 @@ public extension PreferencesClient {
     let selectedProfile = LockIsolated<String?>(nil)
     let pushToken = LockIsolated<String?>(nil)
     let pushSnooze = LockIsolated<(count: Int, until: Date)?>(nil)
+    let autoSpeak = LockIsolated(false)
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -167,7 +178,10 @@ public extension PreferencesClient {
       clearPushDeviceToken: { pushToken.setValue(nil) },
       loadPushPromptSnooze: { pushSnooze.value },
       savePushPromptSnooze: { count, until in pushSnooze.setValue((count: count, until: until)) },
-      clearPushPromptSnooze: { pushSnooze.setValue(nil) }
+      clearPushPromptSnooze: { pushSnooze.setValue(nil) },
+      loadAutoSpeakReplies: { autoSpeak.value },
+      saveAutoSpeakReplies: { autoSpeak.setValue($0) },
+      clearAutoSpeakReplies: { autoSpeak.setValue(false) }
     )
   }
 }

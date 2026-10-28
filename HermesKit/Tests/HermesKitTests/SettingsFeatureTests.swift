@@ -18,6 +18,7 @@ struct SettingsFeatureTests {
     preferences.saveSelectedProfileID("staging")
     preferences.savePinMigration("https://first", PinMigration(pendingIDs: ["legacy"]))
     preferences.savePinMigration("https://second", PinMigration(pendingIDs: []))
+    preferences.saveAutoSpeakReplies(true)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -37,6 +38,7 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
     #expect(preferences.loadPinMigration("https://first") == nil)
     #expect(preferences.loadPinMigration("https://second") == nil)
+    #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
   }
 
   @Test func clearTokenWipesChatSnapshotStore() async {

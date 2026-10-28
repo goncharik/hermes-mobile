@@ -32,10 +32,17 @@ struct ComposerView: View {
   /// `ComposerTextView.blockingCardToken`. The composer is **not** disabled: only Send is
   /// (`canSend` is false while a card stands), so the field stays available for a draft.
   var blockingCardToken: Int? = nil
+  /// Read replies aloud (#74): the device-local auto-speak toggle's current value, and
+  /// whether to offer it at all (`ChatFeature.State.ttsSupported` — hidden once the agent
+  /// answers `speak` with a missing-endpoint verdict). Desktop keeps the toggle in its voice
+  /// menu; the phone's mic is a direct button, so it is a standalone composer control.
+  var autoSpeak: Bool = false
+  var showsAutoSpeak: Bool = true
   let onModelTap: () -> Void
   let onSend: () -> Void
   let onInterrupt: () -> Void
   var onVoiceTap: () -> Void = {}
+  var onToggleAutoSpeak: () -> Void = {}
   var onCancelRecording: () -> Void = {}
   var onAttachPhotos: () -> Void = {}
   var onAttachCamera: () -> Void = {}
@@ -87,6 +94,7 @@ struct ComposerView: View {
           .layoutPriority(1)
         if let usage { ContextUsageRing(usage: usage) }
         Spacer()
+        if showsAutoSpeak { autoSpeakButton }
         if attachmentsSupported { attachButton }
         voiceButton
         sendButton
@@ -118,6 +126,23 @@ struct ComposerView: View {
     // Menu tints its label with the accent by default; pin it to match the mic button.
     .tint(.secondary)
     .accessibilityLabel("Add attachment")
+  }
+
+  /// The "Read replies aloud" toggle (#74) — desktop's Volume2 / VolumeX pair, lit in the
+  /// accent while on. The label names the action a tap performs, as desktop's does.
+  private var autoSpeakButton: some View {
+    Button(action: onToggleAutoSpeak) {
+      // Both glyphs are laid out and only one is visible: the button keeps the wider glyph's
+      // width in either state, so a tap never reflows (re-truncates) the model chip beside it.
+      ZStack {
+        Image(systemName: "speaker.wave.2.fill").opacity(autoSpeak ? 1 : 0)
+        Image(systemName: "speaker.slash").opacity(autoSpeak ? 0 : 1)
+      }
+      .font(.title3)
+    }
+    .foregroundStyle(autoSpeak ? AnyShapeStyle(Color.hermesAccent) : AnyShapeStyle(.secondary))
+    .accessibilityLabel(autoSpeak ? "Stop reading replies aloud" : "Read replies aloud")
+    .accessibilityAddTraits(autoSpeak ? .isSelected : [])
   }
 
   @ViewBuilder

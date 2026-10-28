@@ -9,6 +9,9 @@ import Foundation
 @DependencyClient
 public struct DebugLogClient: Sendable {
   public var append: @Sendable (_ event: GatewayEvent) -> Void
+  /// A free-text client note (not a wire event), e.g. a swallowed `session.events.since`
+  /// failure (#98). Shares the ring buffer, ids, and summary digest with `append`.
+  public var note: @Sendable (_ type: String, _ summary: String) -> Void
   public var snapshot: @Sendable () -> [GatewayLogEntry] = { [] }
   /// A live feed: yields the current snapshot immediately, then a new snapshot on each
   /// append. Finishes when the buffer is torn down.
@@ -20,14 +23,15 @@ extension DebugLogClient: DependencyKey {
   /// Tests get a no-op by default so `ChatFeature`'s connect loop stays inert; override
   /// per-test to capture or feed entries.
   public static var testValue: DebugLogClient {
-    DebugLogClient(append: { _ in }, snapshot: { [] }, stream: { .finished })
+    DebugLogClient(append: { _ in }, note: { _, _ in }, snapshot: { [] }, stream: { .finished })
   }
 
   /// A self-contained in-memory buffer (used live and overridable in tests).
   public static func ringBuffer(capacity: Int = 200) -> DebugLogClient {
     let buffer = Buffer(capacity: capacity)
     return DebugLogClient(
-      append: { buffer.append($0) },
+      append: { buffer.append(type: $0.debugType, summary: $0.debugSummary) },
+      note: { buffer.append(type: $0, summary: GatewayEvent.truncate($1)) },
       snapshot: { buffer.snapshot() },
       stream: { buffer.stream() }
     )
@@ -51,9 +55,9 @@ private final class Buffer: @unchecked Sendable {
 
   init(capacity: Int) { self.capacity = capacity }
 
-  func append(_ event: GatewayEvent) {
+  func append(type: String, summary: String) {
     let broadcast: [GatewayLogEntry] = lock.withLock {
-      entries.append(GatewayLogEntry(id: nextID, event: event))
+      entries.append(GatewayLogEntry(id: nextID, type: type, summary: summary))
       nextID += 1
       if entries.count > capacity { entries.removeFirst(entries.count - capacity) }
       let snapshot = entries

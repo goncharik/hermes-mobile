@@ -100,6 +100,16 @@ public struct JSONRPCRequest: Encodable, Equatable, Sendable {
     self.params = params
   }
 
+  /// The WebSocket frame ceiling, in both directions: the outbound upload budget
+  /// (`PickedImageLoader.maxAttachmentBytes`) is sized under it and the live transport accepts
+  /// inbound messages up to it.
+  ///
+  /// The agent serves the socket from `uvicorn.Config(...)` in `hermes_cli/web_server.py`
+  /// **without** passing `ws_max_size`, so uvicorn's 16 MiB default applies and a larger frame
+  /// is killed at the protocol layer (close 1009) before any handler runs. Not something a
+  /// client can negotiate; it is simply the ceiling.
+  static let maxWebSocketFrameBytes = 16 * 1024 * 1024
+
   /// The encoder every outbound request goes through — **`.withoutEscapingSlashes` is
   /// load-bearing, not cosmetic.**
   ///
@@ -110,7 +120,7 @@ public struct JSONRPCRequest: Encodable, Equatable, Sendable {
   /// the one field where an *adversarial* (or merely unlucky) payload is mostly slashes —
   /// `0xFF 0xFF 0xFF` encodes to `////`, i.e. 100 %. With escaping on, an 11 MiB attachment
   /// whose base64 is more than ~9 % slashes exceeds uvicorn's 16 MiB frame ceiling
-  /// (`PickedImageLoader.maxWebSocketFrameBytes`) and the socket is closed mid-upload, so the
+  /// (`maxWebSocketFrameBytes`) and the socket is closed mid-upload, so the
   /// client-side byte budget could not actually guarantee what it promised. Off, the encoded
   /// size is a function of the bytes' *length* alone and the budget is exact.
   static let wireEncoder: JSONEncoder = {
@@ -134,8 +144,10 @@ public struct JSONRPCRequest: Encodable, Equatable, Sendable {
 /// (Task 5). This decodes exactly one frame and never throws on an unknown event
 /// `type` — unknown events surface as `GatewayEvent.unknown`.
 public enum InboundFrame: Equatable, Sendable {
-  /// A server-pushed event notification: `{method:"event", params:{type, session_id, payload}}`.
-  case event(sessionID: String?, GatewayEvent)
+  /// A server-pushed event notification:
+  /// `{method:"event", params:{type, session_id?, seq?, payload}}`. The frame carries
+  /// `session_id`, `seq`, and (on `gateway.ready`) `replay_epoch` / `session_authority`.
+  case event(GatewayFrame)
   /// A server→client request. Server request ids are strings (`srq-…`); rendered prompts are
   /// answered through `request.answer {id, result}` (see `PendingServerRequest`).
   case serverRequest(id: String, method: String, params: JSONValue)
@@ -150,9 +162,7 @@ public enum InboundFrame: Equatable, Sendable {
     let frame = try JSONDecoder().decode(JSONValue.self, from: data)
 
     if frame["method"]?.stringValue == "event", let params = frame["params"] {
-      let type = params["type"]?.stringValue ?? ""
-      let sessionID = params["session_id"]?.stringValue
-      self = .event(sessionID: sessionID, GatewayEvent(type: type, payload: params["payload"]))
+      self = .event(GatewayFrame(liveEventObject: params))
       return
     }
 

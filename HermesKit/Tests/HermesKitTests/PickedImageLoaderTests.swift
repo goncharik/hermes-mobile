@@ -332,9 +332,9 @@ struct PickedImageLoaderTests {
   }
 
   /// …and it is *bounded*. The name shares its WebSocket frame with the base64 payload, whose
-  /// budget (`maxAttachmentBytes`) leaves only ~1.33 MiB under `maxWebSocketFrameBytes` — an
-  /// unbounded, app-chosen name could spend that headroom and put the frame back over uvicorn's
-  /// ceiling, closing the socket mid-upload. The extension survives the cut.
+  /// budget (`maxAttachmentBytes`) leaves only ~1.33 MiB under
+  /// `JSONRPCRequest.maxWebSocketFrameBytes` — an unbounded, app-chosen name could spend that
+  /// headroom and put the frame back over uvicorn's ceiling, closing the socket mid-upload. The extension survives the cut.
   @Test func filenameTruncatesAnOverlongSuggestedName() {
     let limit = PickedImageLoader.maxFilenameBaseCharacters
     let produced = PickedImageLoader.filename(
@@ -813,9 +813,9 @@ struct PickedImageLoaderTests {
     )
     let frame = try request.wireText().utf8.count
 
-    #expect(frame < PickedImageLoader.maxWebSocketFrameBytes)
+    #expect(frame < JSONRPCRequest.maxWebSocketFrameBytes)
     #expect(
-      PickedImageLoader.maxWebSocketFrameBytes - frame > 1024 * 1024,
+      JSONRPCRequest.maxWebSocketFrameBytes - frame > 1024 * 1024,
       "leave the envelope real headroom rather than sitting on the edge"
     )
     // Still generous enough for an ordinary photo, or the guard is its own bug report.

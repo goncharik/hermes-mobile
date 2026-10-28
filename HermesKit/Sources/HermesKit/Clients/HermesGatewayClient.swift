@@ -5,12 +5,15 @@ import Foundation
 // MARK: - Client
 
 /// The live wire to the Hermes gateway: a single WebSocket carrying newline-delimited
-/// JSON-RPC 2.0. `connect` opens the socket and yields decoded server events; `send`
+/// JSON-RPC 2.0. `connect` opens the socket and yields decoded server event frames; `send`
 /// issues a request and awaits its `{id,result}` via an internal pending-request map.
 @DependencyClient
 public struct HermesGatewayClient: Sendable {
-  /// Open a connection to the server (base URL + auth regime) and stream decoded events.
-  /// The stream finishes when the socket closes or the consumer stops iterating.
+  /// Open a connection to the server (base URL + auth regime) and stream decoded event
+  /// frames: each `GatewayFrame` carries the event plus its `session_id` / `seq` and, on
+  /// `gateway.ready`, the replay epoch (#98). Client-synthesized events are wrapped with no
+  /// envelope data. The stream finishes when the socket closes or the consumer stops
+  /// iterating.
   ///
   /// The transport branches on `AuthSession`:
   /// - `.token` → `…/api/ws?token=<token>` (byte-identical to the legacy path).
@@ -22,7 +25,7 @@ public struct HermesGatewayClient: Sendable {
   ///   `Authorization: Bearer` from `BearerTokenStore` (which refreshes first when the
   ///   access token is inside its leeway). The WS URL is then identical to the cookie
   ///   regime's — the gateway accepts a ticket regardless of how it was minted.
-  public var connect: @Sendable (_ baseURL: URL, _ auth: AuthSession) -> AsyncStream<GatewayEvent> = { _, _ in
+  public var connect: @Sendable (_ baseURL: URL, _ auth: AuthSession) -> AsyncStream<GatewayFrame> = { _, _ in
     AsyncStream { $0.finish() }
   }
   /// Send a JSON-RPC request on the current connection and await its result.
@@ -196,7 +199,7 @@ public extension HermesGatewayClient {
     let store = ConnectionStore()
     return HermesGatewayClient(
       connect: { baseURL, auth in
-        let (stream, continuation) = AsyncStream<GatewayEvent>.makeStream()
+        let (stream, continuation) = AsyncStream<GatewayFrame>.makeStream()
         // The connection opened by this `connect` (set once the transport is built). Held in
         // a box so the single `onTermination` handler can shut it down — `onTermination` is
         // last-writer-wins, so we must NOT overwrite it per-open (that clobbers cleanup).
@@ -250,7 +253,7 @@ public extension HermesGatewayClient {
               continuation.finish()
             } catch GatewayError.authExpired {
               // Session fully dead → non-retryable. Signal re-auth and finish.
-              continuation.yield(.authExpired)
+              continuation.yield(GatewayFrame(.authExpired))
               continuation.finish()
             } catch {
               // Transient mint failure → finish like a dropped socket; the reducer's
@@ -299,7 +302,7 @@ public extension DependencyValues {
 /// the receive loop that routes frames to either the event stream or a waiting `send`.
 actor GatewayConnection {
   private let transport: any WebSocketTransport
-  private let events: AsyncStream<GatewayEvent>.Continuation
+  private let events: AsyncStream<GatewayFrame>.Continuation
   private let requestTimeout: Duration
   private let longRequestTimeout: Duration
   private let clock: any Clock<Duration>
@@ -317,9 +320,11 @@ actor GatewayConnection {
   /// fires, so the reducer's first `session.resume` / `session.create` goes out after the
   /// server knows the phone answers prompts. Once open, the gate stays open.
   private var readyGateOpen = false
-  /// A `gateway.ready` arrived while the gate was closed. One `.ready` is released when it
-  /// opens — the reducer's `.ready` handling is idempotent, so a duplicate frame needs no count.
-  private var readyHeld = false
+  /// The `gateway.ready` frame that arrived while the gate was closed (the latest one, if
+  /// several). It is released as-is when the gate opens, so its `replay_epoch` /
+  /// `session_authority` survive the advertisement wait (#98) — the reducer's `.ready`
+  /// handling is idempotent, so a duplicate frame needs no count.
+  private var heldReady: GatewayFrame?
   private var readyCapTask: Task<Void, Never>?
 
   /// How long `.ready` waits on the advertisement. A hung `client.capabilities` keeps
@@ -328,7 +333,7 @@ actor GatewayConnection {
 
   init(
     transport: any WebSocketTransport,
-    events: AsyncStream<GatewayEvent>.Continuation,
+    events: AsyncStream<GatewayFrame>.Continuation,
     requestTimeout: Duration = .seconds(30),
     longRequestTimeout: Duration = .seconds(120),
     clock: any Clock<Duration> = ContinuousClock()
@@ -436,12 +441,12 @@ actor GatewayConnection {
   /// acknowledgement arrives through this same loop.
   private func handleServerRequest(id: String, method: String, params: JSONValue) {
     if let request = PendingServerRequest(id: id, method: method, params: params) {
-      events.yield(.serverRequest(request))
+      events.yield(GatewayFrame(.serverRequest(request)))
     } else if let prompt = PromptMethod(rawValue: method) {
       if let skip = PendingServerRequest.malformedSkip(for: method, params: params) {
         Task { await answerMalformed(id: id, prompt: prompt, result: skip) }
       } else {
-        events.yield(.serverRequestFailed(message: prompt.unreadableMessage))
+        events.yield(GatewayFrame(.serverRequestFailed(message: prompt.unreadableMessage)))
       }
     } else if declinesNotShown, PendingServerRequest.windowOwnedMethods.contains(method) {
       Task { await declineNotShown(id: id) }
@@ -497,7 +502,9 @@ actor GatewayConnection {
     openReadyGate()
     if let failure, !isFinished, !(failure is CancellationError) {
       let message = (failure as? GatewayError)?.message ?? "Connection lost."
-      events.yield(.serverRequestsUnavailable(message: "Couldn’t enable approvals and other prompts: \(message)"))
+      events.yield(GatewayFrame(.serverRequestsUnavailable(
+        message: "Couldn’t enable approvals and other prompts: \(message)"
+      )))
     }
   }
 
@@ -505,12 +512,12 @@ actor GatewayConnection {
   /// it and (first time only) start the advertisement plus the cap that bounds the wait.
   /// The advertisement runs in a `Task` — awaiting it here would deadlock the receive loop
   /// its acknowledgement arrives through. Frames arriving meanwhile are yielded as usual.
-  private func receivedReady() {
+  private func receivedReady(_ frame: GatewayFrame) {
     if readyGateOpen {
-      events.yield(.ready)
+      events.yield(frame)
       return
     }
-    readyHeld = true
+    heldReady = frame
     guard advertisementTask == nil else { return }
     advertisementTask = Task { [weak self] in await self?.advertiseServerRequests() }
     readyCapTask = Task { [weak self, clock] in
@@ -524,22 +531,22 @@ actor GatewayConnection {
     readyGateOpen = true
     readyCapTask?.cancel()
     readyCapTask = nil
-    if readyHeld { events.yield(.ready) }
-    readyHeld = false
+    if let heldReady { events.yield(heldReady) }
+    heldReady = nil
   }
 
   private func reportFailure(_ context: String, error: any Error) {
     guard !isFinished, !(error is CancellationError) else { return }
     let message = (error as? GatewayError)?.message ?? "Connection lost."
-    events.yield(.serverRequestFailed(message: "\(context): \(message)"))
+    events.yield(GatewayFrame(.serverRequestFailed(message: "\(context): \(message)")))
   }
 
   private func handle(frame: String) {
     guard let parsed = try? InboundFrame(data: Data(frame.utf8)) else { return }
     switch parsed {
-    case let .event(_, event):
-      if case .ready = event { return receivedReady() }
-      events.yield(event)
+    case let .event(gatewayFrame):
+      if case .ready = gatewayFrame.event { return receivedReady(gatewayFrame) }
+      events.yield(gatewayFrame)
     case let .serverRequest(id, method, params):
       handleServerRequest(id: id, method: method, params: params)
     case let .response(id, result):
@@ -593,8 +600,19 @@ final class URLSessionWebSocketTransport: WebSocketTransport, @unchecked Sendabl
   private let task: URLSessionWebSocketTask
 
   init(url: URL, session: URLSession) {
-    task = session.webSocketTask(with: url)
+    task = Self.makeTask(url: url, session: session)
     task.resume()
+  }
+
+  /// The configured, not-yet-resumed socket task. Inbound messages are accepted up to the
+  /// server's frame ceiling (`JSONRPCRequest.maxWebSocketFrameBytes`): the
+  /// `URLSessionWebSocketTask` default (1 MiB) fails `receive()` on a bigger message and kills
+  /// the socket, e.g. a large `session.resume` history or a `session.events.since` reply (the
+  /// replay ring holds up to 4 MiB per session).
+  static func makeTask(url: URL, session: URLSession) -> URLSessionWebSocketTask {
+    let task = session.webSocketTask(with: url)
+    task.maximumMessageSize = JSONRPCRequest.maxWebSocketFrameBytes
+    return task
   }
 
   func send(_ text: String) async throws {

@@ -55,6 +55,11 @@ away from your desk and still keep your agent moving.
   waveform while recording; transcribed by your agent), and attach photos, camera
   captures, PDFs, or any file straight from the composer — or just paste a copied
   screenshot into the message field.
+- **Hear the replies.** Turn on "Read replies aloud" from the composer and the newest finished
+  reply is spoken by your agent's TTS provider, with a "Reading aloud" pill to stop it and the
+  screen kept awake while you listen. You can also read any single reply from its action bar.
+  Sending a message or tapping the mic cuts playback off. On agents without text-to-speech
+  the controls simply don't appear.
 - **Queue the next prompt while it works.** Mid-turn, the send button comes back the
   moment you type: your draft (text and attachments) queues above the composer and
   fires automatically as the next turn when the current one finishes. Queued messages
@@ -90,9 +95,12 @@ away from your desk and still keep your agent moving.
   that still use the event-based prompts (there, a push tap brings back a generic
   approve/deny card, and the newer clarify forms are not available).
 - **Stays connected.** Automatic reconnect with backoff and a clear connection banner
-  when the link drops. Reopening a session — after navigating away, backgrounding the app,
-  or a cold relaunch — restores its live state: the right model, context usage, full
-  tool/thinking history, and an in-progress turn that keeps streaming with its timer ticking.
+  when the link drops. On current Hermes releases a reconnect also catches up on what a
+  running turn did while you were offline: the tool calls and thinking from the gap show up
+  right away instead of when the turn ends. Reopening a session — after navigating away,
+  backgrounding the app, or a cold relaunch — restores its live state: the right model,
+  context usage, full tool/thinking history, and an in-progress turn that keeps streaming
+  with its timer ticking.
   A running turn even keeps its live connection while you browse the session list, and for a
   short grace window after backgrounding — falling back to reconnect-and-restore beyond that.
 - **Native on iPad.** In a wide window the session list sits in a sidebar next to the

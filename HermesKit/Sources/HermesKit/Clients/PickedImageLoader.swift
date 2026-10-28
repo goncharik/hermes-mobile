@@ -47,18 +47,11 @@ public enum PickedImageLoader {
   /// territory on an older device to be its own denial of service.
   static let maxSourcePixels = 50_000_000
 
-  /// The **transport** frame budget, and the reason the byte budget below is what it is.
-  ///
-  /// An upload is one JSON-RPC WebSocket *text* frame carrying the whole base64 payload, and
-  /// the agent serves that socket from `uvicorn.Config(...)` in `hermes_cli/web_server.py`
-  /// **without** passing `ws_max_size` — so uvicorn's 16 MiB default applies and a larger frame
-  /// is killed at the protocol layer (close 1009) before `image.attach_bytes` ever runs. Not
-  /// something a client can negotiate; it is simply the ceiling.
-  static let maxWebSocketFrameBytes = 16 * 1024 * 1024
-
   /// The byte budget for one attachment — both the trigger for a re-encode (`pickedItem`,
   /// `rescuedImageItem`) and the target `transcodedImage` steps down towards.
   ///
+  /// An upload is one JSON-RPC WebSocket *text* frame carrying the whole base64 payload, so
+  /// it is bounded by the transport's frame ceiling (`JSONRPCRequest.maxWebSocketFrameBytes`).
   /// **The transport binds long before the handler does.** The agent's own
   /// `_ATTACH_BYTES_MAX_BYTES` is 25 MiB of *decoded* bytes, but base64 inflates by 4/3, so a
   /// 16 MiB frame is reached at ~12 MiB decoded — well under the handler's cap, which is
@@ -224,9 +217,9 @@ public enum PickedImageLoader {
   /// `NSItemProvider.suggestedName` is chosen by whatever app filled the pasteboard and rides
   /// verbatim into `image.attach_bytes`'s `filename` — i.e. straight into the same frame the
   /// byte budget is sized against. `maxAttachmentBytes` leaves ~1.33 MiB of headroom under
-  /// `maxWebSocketFrameBytes`, so an unbounded name is one more way to put the frame back over
-  /// uvicorn's ceiling and have the socket closed mid-upload, which is exactly the failure that
-  /// budget exists to prevent. 128 characters is longer than any real filename (and well short
+  /// `JSONRPCRequest.maxWebSocketFrameBytes`, so an unbounded name is one more way to put the
+  /// frame back over uvicorn's ceiling and have the socket closed mid-upload, which is exactly
+  /// the failure that budget exists to prevent. 128 characters is longer than any real filename (and well short
   /// of the 255 bytes every filesystem in the path allows anyway) while capping the name's
   /// contribution at under a kilobyte even for 4-byte scalars.
   static let maxFilenameBaseCharacters = 128
@@ -309,7 +302,7 @@ public enum PickedImageLoader {
       // `public.tiff` is routinely the **sole** identifier a Mac pasteboard bridges over
       // (`NSPasteboardTypeTIFF`), at ~36 MB for a 12 MP screenshot. Either way the chip looks
       // fine, base64s into a 50-80 MB string, and dies without ever reaching the handler (the
-      // frame exceeds `maxWebSocketFrameBytes`, so the socket closes); re-encoding is a
+      // frame exceeds `JSONRPCRequest.maxWebSocketFrameBytes`, so the socket closes); re-encoding is a
       // fidelity cost paid only where the alternative is certain failure (an oversize animated
       // GIF does lose its animation — it could not have been sent at all). Off the main actor:
       // a 12MP decode is not a frame's work.

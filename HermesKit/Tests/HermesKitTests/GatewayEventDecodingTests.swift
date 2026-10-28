@@ -11,6 +11,10 @@ import Testing
     try InboundFrame(data: Data(json.utf8))
   }
 
+  // The sequencing fields (`seq`, `replay_epoch`, `session_authority`) are pinned in
+  // `JSONRPCTests`; the fixtures here carry none (except `requestCancelDecodes`), so these
+  // tests compare only `session_id` + event through the two helpers at the bottom of the file.
+
   // MARK: Events
 
   @Test func gatewayReady() throws {
@@ -20,7 +24,7 @@ import Testing
 
   @Test func sessionInfoCarriesFrameSessionIDAndModel() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"session.info","session_id":"8680ce37","payload":{"model":"gpt-5.5","running":true,"version":"0.16.0","cwd":"/Users/x","profile_name":"default"}}}"#)
-    guard case let .event(sessionID, .sessionInfo(info)) = f else {
+    guard case let (sessionID, .sessionInfo(info))? = f.eventParts else {
       Issue.record("expected sessionInfo event, got \(f)"); return
     }
     #expect(sessionID == "8680ce37")
@@ -33,7 +37,7 @@ import Testing
   @Test(arguments: [(#"7"#, 7), (#""8""#, 8), (#""x""#, nil)] as [(String, Int?)])
   func sessionInfoEventCarriesDesktopContract(raw: String, expected: Int?) throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"session.info","session_id":"s","payload":{"model":"gpt-5.5","desktop_contract":\#(raw)}}}"#)
-    guard case let .event(_, .sessionInfo(info)) = f else {
+    guard case let (_, .sessionInfo(info))? = f.eventParts else {
       Issue.record("expected sessionInfo event, got \(f)"); return
     }
     #expect(info.desktopContract == expected)
@@ -53,7 +57,7 @@ import Testing
 
   @Test func messageCompleteDecodesUsage() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"8680ce37","payload":{"text":"pong","status":"complete","usage":{"model":"gpt-5.5","input":6303,"output":31,"total":18622,"context_used":18591,"context_max":272000,"context_percent":7,"cost_usd":0.0}}}}"#)
-    guard case let .event(_, .messageComplete(text, usage)) = f else {
+    guard case let (_, .messageComplete(text, usage))? = f.eventParts else {
       Issue.record("expected messageComplete, got \(f)"); return
     }
     #expect(text == "pong")
@@ -98,7 +102,7 @@ import Testing
   @Test func toolCompleteStringifiesObjectResultWhenNoResultText() throws {
     // No result_text (non-verbose) → result object is rendered for the detail sheet.
     let done = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"grep","result":{"matches":2}}}}"#)
-    guard case let .event(_, .toolComplete(_, _, _, _, resultText, _, _)) = done else {
+    guard case let (_, .toolComplete(_, _, _, _, resultText, _, _))? = done.eventParts else {
       Issue.record("expected tool.complete event"); return
     }
     #expect(resultText?.contains("\"matches\" : 2") == true)
@@ -131,16 +135,16 @@ import Testing
 
   @Test func requestCancelDecodes() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","session_id":"live","seq":123,"payload":{"id":"srq-1a2b3c4d5e6f","method":"approval","reason":"timeout"}}}"#)
-    #expect(f == .event(sessionID: "live", .requestCancel(RequestCancel(
+    #expect(f == .event(GatewayFrame(.requestCancel(RequestCancel(
       id: "srq-1a2b3c4d5e6f", method: "approval", reason: "timeout"
-    ))))
+    )), sessionID: "live", seq: 123)))
     let bare = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","payload":{"id":"srq-x"}}}"#)
     #expect(bare == .event(sessionID: nil, .requestCancel(RequestCancel(id: "srq-x"))))
   }
 
   @Test func requestCancelWithoutIDIsUnknown() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","payload":{"reason":"timeout"}}}"#)
-    guard case .event(_, .unknown(type: "request.cancel", _)) = f else {
+    guard case (_, .unknown(type: "request.cancel", _))? = f.eventParts else {
       Issue.record("expected .unknown, got \(f)"); return
     }
   }
@@ -202,7 +206,7 @@ import Testing
 
   @Test func approvalRequestWithoutRequestIDStillDecodes() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"s","payload":{"command":"rm foo"}}}"#)
-    guard case .event(_, .approvalRequest) = f else {
+    guard case (_, .approvalRequest)? = f.eventParts else {
       Issue.record("expected .approvalRequest, got \(f)")
       return
     }
@@ -220,7 +224,7 @@ import Testing
 
   @Test func legacyClarifyEventKeepsItsSingleRespondShape() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"clarify.request","session_id":"s","payload":{"request_id":"r2","question":"Which file?","choices":["a.txt","b.txt"]}}}"#)
-    guard case let .event(_, .clarifyRequest(request)) = f else {
+    guard case let (_, .clarifyRequest(request))? = f.eventParts else {
       Issue.record("expected .clarifyRequest, got \(f)"); return
     }
     #expect(request.answerShape == .legacyRespond)
@@ -273,7 +277,7 @@ import Testing
     // Only the `request_id` form is the legacy wire; a server-request shape on the legacy
     // event name is not presented (it has no answer path there).
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"clarify.request","session_id":"s","payload":{"question":"Which file?"}}}"#)
-    guard case .event(_, .unknown(type: "clarify.request", _)) = f else {
+    guard case (_, .unknown(type: "clarify.request", _))? = f.eventParts else {
       Issue.record("expected .unknown, got \(f)"); return
     }
   }
@@ -405,7 +409,7 @@ import Testing
   @Test(arguments: ["sudo.request", "secret.request"])
   func legacySecretEventWithoutRequestIDIsUnknown(type: String) throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"\#(type)","session_id":"s","payload":{"prompt":"Password"}}}"#)
-    guard case .event(_, .unknown(type: type, _)) = f else {
+    guard case (_, .unknown(type: type, _))? = f.eventParts else {
       Issue.record("expected .unknown, got \(f)"); return
     }
   }
@@ -534,7 +538,7 @@ import Testing
 
   @Test func unknownEventTypeDecodesToUnknownAndNeverThrows() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.progress","session_id":"s","payload":{"pct":42}}}"#)
-    guard case let .event(sessionID, .unknown(type, raw)) = f else {
+    guard case let (sessionID, .unknown(type, raw))? = f.eventParts else {
       Issue.record("expected unknown event, got \(f)"); return
     }
     #expect(sessionID == "s")
@@ -574,5 +578,18 @@ import Testing
   @Test func nonEventNotificationIsIgnored() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"something.else","params":{}}"#)
     #expect(f == .ignored)
+  }
+}
+
+fileprivate extension InboundFrame {
+  /// An unsequenced event frame (no `seq`, no ready fields), for `==` against the fixtures.
+  static func event(sessionID: String?, _ event: GatewayEvent) -> InboundFrame {
+    .event(GatewayFrame(event, sessionID: sessionID))
+  }
+
+  /// `(session_id, event)` of an event frame, for `case let (sid, .x)? = f.eventParts`.
+  var eventParts: (String?, GatewayEvent)? {
+    guard case let .event(frame) = self else { return nil }
+    return (frame.sessionID, frame.event)
   }
 }

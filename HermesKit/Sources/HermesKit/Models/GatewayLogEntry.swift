@@ -87,7 +87,8 @@ public extension GatewayEvent {
     }
   }
 
-  private static func truncate(_ text: String, max: Int = 80) -> String {
+  /// Collapse newlines and cap at `max` characters (shared with `DebugLogClient.note`).
+  internal static func truncate(_ text: String, max: Int = 80) -> String {
     let collapsed = text.replacingOccurrences(of: "\n", with: "⏎")
     return collapsed.count <= max ? collapsed : String(collapsed.prefix(max)) + "…"
   }

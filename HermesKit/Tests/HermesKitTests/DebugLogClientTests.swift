@@ -15,6 +15,20 @@ struct DebugLogClientTests {
     #expect(entries[1].summary == "Hello")
   }
 
+  @Test func noteSharesTheRingAndDigestWithEvents() {
+    // A free-text client note (#98's swallowed replay failure) takes the next id in the same
+    // buffer and the same collapsed, truncated summary as an event entry.
+    let log = DebugLogClient.ringBuffer()
+    log.append(.ready)
+    log.note("session.events.since", "unknown method\n" + String(repeating: "x", count: 100))
+
+    let entries = log.snapshot()
+    #expect(entries.map(\.id) == [0, 1])
+    #expect(entries.map(\.type) == ["gateway.ready", "session.events.since"])
+    #expect(entries[1].summary.hasPrefix("unknown method⏎xxx"))
+    #expect(entries[1].summary.count == 81) // 80-char preview + ellipsis
+  }
+
   @Test func ringBufferCapsToCapacity() {
     let log = DebugLogClient.ringBuffer(capacity: 3)
     for _ in 0..<5 { log.append(.ready) }

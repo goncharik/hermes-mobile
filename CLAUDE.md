@@ -29,20 +29,25 @@ bullets below are the compressed rules.
   `UIKit`/`Security`/`URLSession` directly from a reducer — go through a client.
 - **Decode leniently; never crash on unknown events** — unknown `type` → `.unknown`.
 - **Gate UI by server capability, not assumptions** — the shared pattern: a JSON-RPC
-  `-32601` (`GatewayError.isUnknownMethod`) or REST 404 flips a `*Supported` flag off
-  (attach, profiles, cron jobs, push, slash commands); `?? true` on unknown capability
-  fields. Mirror the desktop's behaviour where one exists; check the Hermes source. (#19's
-  OAuth segment deliberately inverts `?? true` — see the OAuth bullet below.)
+  `-32601` (`GatewayError.isUnknownMethod`) or REST 404 (405 where an older agent's catch-all
+  matches) flips a `*Supported` flag off (attach, profiles, cron jobs, push, slash commands,
+  TTS); `?? true` on unknown capability fields. Mirror the desktop's behaviour where one
+  exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
+  the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
-  swallow them with `try?` (the logout hops are the carved-out exception, below).
+  swallow them with `try?` (the logout hops, below, and the #98 replay read — debug log
+  only — are the carved-out exceptions).
 - **Commit messages**: capitalized verb, no conventional-commit prefixes, concise.
 
 ## Gateway & session lifecycle
 
-- **Gateway socket**: one long-running cancellable effect funnels every event through
-  `.gatewayEvent`; outbound RPCs are discrete one-shot effects. Reconnect/backoff lives
+- **Gateway socket**: one long-running cancellable effect funnels every frame through
+  `.gatewayFrame`; outbound RPCs are discrete one-shot effects. Reconnect/backoff lives
   in the reducer, not the client. Per-request timeout 30s (`GatewayError.timedOut`);
-  the slash pipeline uses `HermesGatewayClient.longRunningMethods` → 120s.
+  the slash pipeline uses `HermesGatewayClient.longRunningMethods` → 120s. Reconnect (#98):
+  the gated `.ready` replays the gap from the `seq` cursor (`session.events.since`) BEFORE
+  the hydrate, no drain/turn-end side effects mid-fold, failure = plain hydrate
+  (`docs/architecture.md`).
 - **Session-not-found self-heal (#17)**: outbound RPCs re-resume (or `session.create`
   when there's no stored id) then replay the RPC **once** — single retry, no loop; the
   banner shows only if the heal also fails. The foreground `session.resume` likewise
@@ -88,9 +93,10 @@ bullets below are the compressed rules.
   `List(selection:)`. Details: `docs/features/ipad-layout.md`.
 - **Backgrounding gets ~30s grace** via `BackgroundTaskClient`: running slot →
   `persistNow` + begin; expiry while backgrounded → final persist +
-  `.teardownSocketOnly` (state stays in memory for the #26 catch-up); a stale expiry
-  racing `.active` is a guarded no-op. Idle slot persists only, no slot is a no-op —
-  either way no task, no battery burn.
+  `.teardownSocketOnly` (state + replay cursor stay in memory for the #98 replay / #26
+  catch-up); a stale expiry racing `.active` is a guarded no-op. Every slot first gets
+  `.sceneBackgrounded` (stop read-aloud, hold auto-speak); an idle slot then persists only,
+  no slot is a no-op — either way no task, no battery burn.
 - **Auth has three regimes** (`AuthSession`: `.token` | `.cookie` | `.bearer`). Token mode must
   stay byte-identical to the legacy single-token path (backward-compat guard). Gated modes:
   password-login cookies (refresh is transparent server-side — persist + resend the jar,
@@ -207,6 +213,13 @@ bullets below are the compressed rules.
   server clamps per provider and publishes no per-model list); a failure rolls back BOTH keys
   + banners, and only the 4002 `unknown reasoning value` verdict latches the per-slot,
   unpersisted `extendedReasoningSupported`. Details: `docs/features/model-picker.md`.
+- **Read replies aloud (#74)**: the toggle is a device-local pref, never `voice.auto_tts`.
+  Synthesis is `POST /api/audio/speak` only; `TTSClient` is a dumb player and the state
+  machine is per-slot in `ChatFeature`. A completed-row anchor (armed, re-based on every
+  hydrate) decides what is pending; a #98 replayed completion is never read. Only USER
+  submits and the mic barge in (the mic `await`s `tts.stop()` BEFORE `requestPermission`);
+  every regular `prompt.submit` takes the 120 s `interrupted` latch. A 404/405 hides both
+  controls. Details: `docs/features/read-aloud.md`.
 
 ## Session list
 
@@ -216,8 +229,8 @@ bullets below are the compressed rules.
   anchor only; server wins on hydrate, persistence debounced (flushed on
   `.background`), wiped on logout; behind the client boundary (no reactive `@FetchAll`).
 - **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts,
-  pins, swipe default, profile) → `PreferencesClient`. Clients over `@Shared` for test
-  isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
+  pins, swipe default, read-aloud toggle, profile) → `PreferencesClient`. Clients over
+  `@Shared` for test isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
 - **Pin membership is shared; pin order stays device-local.** Rows with an explicit server
   `pinned` value may synchronize pins, including search rows; rows from older servers that omit
   `pinned` remain device-local. Preserve local pins through the one-time checkpointed migration.
@@ -315,7 +328,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (242/242), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (251/251), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

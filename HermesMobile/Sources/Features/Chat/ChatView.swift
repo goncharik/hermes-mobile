@@ -43,6 +43,7 @@ struct ChatView: View {
         .id(store.pendingInteractionToken)
         .layoutPriority(store.isCompressibleCardPending ? 1 : 0)
       queuedPromptsPanel
+      readAloudPill
       suggestionPanel
       Divider()
       ComposerView(
@@ -63,10 +64,13 @@ struct ChatView: View {
         // and the keyboard shrinks the very fixed region the card lives in, which is #65's own
         // root cause. Not a disable: the field stays live for a draft.
         blockingCardToken: store.pendingInteraction != nil ? store.pendingInteractionToken : nil,
+        autoSpeak: store.autoSpeakReplies,
+        showsAutoSpeak: store.ttsSupported,
         onModelTap: { store.send(.modelChipTapped) },
         onSend: { store.send(.composerSubmitted) },
         onInterrupt: { store.send(.interruptTapped) },
         onVoiceTap: { store.send(.voiceButtonTapped) },
+        onToggleAutoSpeak: { store.send(.autoSpeakToggled) },
         onCancelRecording: { store.send(.recordingCancelled) },
         onAttachPhotos: { store.send(.attachPhotosTapped) },
         onAttachCamera: { store.send(.attachCameraTapped) },
@@ -94,6 +98,9 @@ struct ChatView: View {
     // Same treatment for the queued-prompt panel (#66): animate appear/disappear (keyed
     // to emptiness, so edits/reorders within the queue never animate the whole region).
     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.queuedPrompts.isEmpty)
+    // And for the read-aloud pill (#74): keyed to idle-vs-active, so preparing → speaking
+    // swaps the pill's label in place without animating the region.
+    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: store.ttsPlayback.isActive)
     .navigationTitle(store.title ?? "Chat")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -248,7 +255,11 @@ struct ChatView: View {
             isCopied: store.recentlyCopiedToken == ChatFeature.rowCopyToken(row.id),
             isBranchDisabled: !store.canBranch,
             onCopy: { store.send(.copyRow(id: row.id)) },
-            onBranch: { store.send(.branchFromMessage(id: row.id)) }
+            onBranch: { store.send(.branchFromMessage(id: row.id)) },
+            // A State METHOD: the store's dynamic member lookup reaches properties only.
+            readAloud: store.state.readAloudState(for: row.id),
+            onReadAloud: { store.send(.readAloudTapped(id: row.id)) },
+            onStopReading: { store.send(.stopReadAloud) }
           )
         }
       }
@@ -326,6 +337,17 @@ struct ChatView: View {
         onDelete: { store.send(.queuedPromptDeleted(id: $0)) }
       )
       .transition(.opacity)
+    }
+  }
+
+  /// The "Reading aloud" pill (#74), shown while a read-aloud clip is preparing or playing.
+  /// Below `pendingCard` on purpose: the pill is one fixed line, and the card's
+  /// `layoutPriority` keeps winning the region's height (#65).
+  @ViewBuilder
+  private var readAloudPill: some View {
+    if store.ttsPlayback.isActive {
+      ReadAloudPill(state: store.ttsPlayback) { store.send(.stopReadAloud) }
+        .transition(.opacity)
     }
   }
 

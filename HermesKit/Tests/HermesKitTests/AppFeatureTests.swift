@@ -600,9 +600,10 @@ struct AppFeatureTests {
   }
 
   /// The same teardowns raise no recorder call for an IDLE slot — no audio session is touched
-  /// on an ordinary logout.
+  /// on an ordinary logout — and leave the idle timer alone.
   @Test func identityTeardownsLeaveAnIdleSlotsRecorderAlone() async {
     let cancelled = LockIsolated(0)
+    let idleCalls = LockIsolated<[Bool]>([])
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: connection),
@@ -613,12 +614,61 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.push = PushClient.inMemory().client
       $0.audioRecorder.cancel = { cancelled.withValue { $0 += 1 } }
+      $0.idleTimer = .recording(into: idleCalls)
     }
     store.exhaustivity = .off
 
     await store.send(.home(.delegate(.disconnect)))
     await store.finish()
     #expect(cancelled.value == 0)
+    #expect(idleCalls.value.isEmpty)
+  }
+
+  /// Keep-awake (#74): a slot that disabled auto-lock — here an on-screen running turn with
+  /// auto-speak on — must hand it back when it is dropped, whether by ASSIGNMENT (the identity
+  /// teardowns, where no `ChatFeature.teardown` runs) or at the end of `teardownSlot`
+  /// (`.clearLiveChat`). Once the slot is gone no `.onChange` edge can restore it.
+  @Test func droppingAnAwakeSlotRestoresAutoLock() async {
+    var awake = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    awake.isOnScreen = true
+    awake.autoSpeakReplies = true
+    awake.isSending = true
+    #expect(awake.wantsScreenAwake)
+
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: freshCookieConnection(username: "bob"), sameUser: false
+      )))),
+      .clearLiveChat,
+    ] {
+      let idleCalls = LockIsolated<[Bool]>([])
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          path: StackState([ChatScreen.State(sessionKey: "s1")]),
+          liveChat: awake,
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .password,
+            provider: "basic", previousUsername: "alice"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.idleTimer = .recording(into: idleCalls)
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(idleCalls.value == [false], "\(action) left auto-lock disabled")
+    }
   }
 
   /// Popping mid-turn KEEPS the slot untouched — no persist/teardown/clear fires (the send
@@ -1506,6 +1556,7 @@ struct AppFeatureTests {
     let sessionDeleted = LockIsolated(false)
     let urlCleared = LockIsolated(false)
     let swipeActionReset = LockIsolated(false)
+    let autoSpeakCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1524,6 +1575,7 @@ struct AppFeatureTests {
       $0.preferences.saveDefaultSessionSwipeAction = { @Sendable action in
         if action == .default { swipeActionReset.setValue(true) }
       }
+      $0.preferences.clearAutoSpeakReplies = { @Sendable in autoSpeakCleared.setValue(true) }
     }
     store.exhaustivity = .off
 
@@ -1537,6 +1589,7 @@ struct AppFeatureTests {
     #expect(sessionDeleted.value)
     #expect(urlCleared.value)
     #expect(swipeActionReset.value) // swipe-action pref reset on the quit logout too
+    #expect(autoSpeakCleared.value) // read-aloud toggle cleared on the quit logout (#74)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -1792,6 +1845,7 @@ struct AppFeatureTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.scenePhaseChanged(.background))
+    await store.receive(\.liveChat.sceneBackgrounded)
     await store.receive(\.liveChat.persistNow)
 
     // Snapshot was written synchronously (not waiting for the debounce).
@@ -1826,6 +1880,7 @@ struct AppFeatureTests {
     #expect(snapshotClient.turnAnchor("s1") == nil)
 
     await store.send(.scenePhaseChanged(.background))
+    await store.receive(\.liveChat.sceneBackgrounded)
     await store.receive(\.liveChat.persistNow)
 
     // Anchor written at the current date.
@@ -1907,6 +1962,10 @@ struct AppFeatureTests {
     await store.send(.liveChat(.task))
 
     await store.send(.scenePhaseChanged(.background))
+    // A running slot is told too (#74): the grace keeps its process — and a clip — alive.
+    await store.receive(\.liveChat.sceneBackgrounded) {
+      $0.liveChat?.isSceneBackgrounded = true
+    }
     await store.receive(\.liveChat.persistNow)
 
     // The grace task was begun...
@@ -2045,8 +2104,9 @@ struct AppFeatureTests {
   }
 
   /// `.background` with an IDLE chat flushes only — no background task is begun (nothing to
-  /// keep alive, no battery burn). Exhaustive: the flush is the ONLY follow-up, and a
-  /// leaked grace listener (a long-running effect) would fail the store's effect check.
+  /// keep alive, no battery burn). Exhaustive: the read-aloud stop (#74) and the flush are the
+  /// ONLY follow-ups, and a leaked grace listener (a long-running effect) would fail the
+  /// store's effect check.
   @Test func backgroundWhileIdleStartsNoGraceTask() async {
     let background = BackgroundTaskClient.inMemory()
     var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
@@ -2068,6 +2128,9 @@ struct AppFeatureTests {
 
     await store.send(.scenePhaseChanged(.background)) {
       $0.isSceneBackgrounded = true
+    }
+    await store.receive(\.liveChat.sceneBackgrounded) {
+      $0.liveChat?.isSceneBackgrounded = true
     }
     await store.receive(\.liveChat.persistNow)
     #expect(background.beginCount == 0)
@@ -3548,6 +3611,7 @@ struct AppFeatureTests {
     preferences.saveSelectedProfileID("work")
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.savePushDeviceToken("cafef00d")
+    preferences.saveAutoSpeakReplies(true)
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -3582,6 +3646,7 @@ struct AppFeatureTests {
     #expect(preferences.loadSeenCounts().isEmpty)
     #expect(preferences.loadSelectedProfileID() == nil)
     #expect(preferences.loadDefaultSessionSwipeAction() == .default) // swipe pref reset too
+    #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off (#74)
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)
@@ -4450,6 +4515,7 @@ struct AppFeatureTests {
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -4510,6 +4576,7 @@ struct AppFeatureTests {
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.liveChat?.pendingPasteCount == 0, "the pending paste can no longer land")
@@ -4550,6 +4617,7 @@ struct AppFeatureTests {
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.liveChat?.recording == .idle)
@@ -4589,6 +4657,7 @@ struct AppFeatureTests {
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.liveChat?.errorBanner == nil, "the failure is gone with the dead seat")
@@ -4625,6 +4694,7 @@ struct AppFeatureTests {
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -4662,6 +4732,7 @@ struct AppFeatureTests {
     }
     // Regular: the parent dials the replacement.
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -4709,6 +4780,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.fillLiveChat)
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     await waitUntil { connectCount.value == 2 }
@@ -4761,6 +4833,7 @@ struct AppFeatureTests {
     }
     // Regular: the parent starts the seated chat; cancel its socket before finishing.
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     await store.send(.liveChat(.teardown))
@@ -4792,7 +4865,7 @@ struct AppFeatureTests {
       $0.hermesREST.archive = { @Sendable _, _, _, _ in }
       $0.chatSnapshot = .inMemory()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
-      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(GatewayFrame(.ready)) } }
       $0.hermesGateway.send = { @Sendable method, _ in
         methods.withValue { $0.append(method) }
         return .object([
@@ -4810,7 +4883,7 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat)
     // The reducer dials the replacement seat; nothing but the archive was ever tapped.
     await store.receive(\.liveChat.task)
-    await store.receive(\.liveChat.gatewayEvent)
+    await store.receive(\.liveChat.gatewayFrame)
     await store.receive(\.liveChat.sessionResult.success)
     #expect(methods.value.contains("session.create"))
     #expect(store.state.liveChat?.liveSessionID == "seat-live")
@@ -4884,6 +4957,7 @@ struct AppFeatureTests {
     }
     // Regular: the parent starts the seated chat; cancel its socket before finishing.
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     await store.send(.liveChat(.teardown))
@@ -4935,6 +5009,7 @@ struct AppFeatureTests {
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -5060,6 +5135,7 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat)
     // Regular: the parent starts the replacement (no marker, so no fresh view `.task`).
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -5094,6 +5170,7 @@ struct AppFeatureTests {
     await store.receive(\.fillLiveChat)
     // Regular: the parent starts the replacement (no marker, so no fresh view `.task`).
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -5200,6 +5277,7 @@ struct AppFeatureTests {
 
     // The pushed chat dialled its one socket on first appearance (a silent stream).
     await store.send(.liveChat(.task)) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     await waitUntil { connectCount.value == 1 }
@@ -5383,6 +5461,7 @@ struct AppFeatureTests {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.path.isEmpty)
@@ -5438,6 +5517,7 @@ struct AppFeatureTests {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: "work", composerText: "")
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     #expect(store.state.liveChat?.profileName == "work")
@@ -5601,6 +5681,7 @@ struct AppFeatureTests {
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
     }
     await store.receive(\.liveChat.task) {
+      $0.liveChat?.isOnScreen = true
       $0.liveChat?.hasStarted = true
     }
     await store.receive(\.home.sessionsResponse)

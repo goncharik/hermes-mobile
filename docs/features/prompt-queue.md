@@ -23,8 +23,19 @@ send arrow back and a blocking card (which suppresses queuing) brings Stop back.
 upload, slash routing, #17 heal — shared by the idle composer path, byte-identical, and the
 drain via `fromQueue:` which must never touch the live composer) and `drainQueueIfReady`
 (head-only, one turn per entry, re-checks every precondition; drain edges = `message.complete`,
-an idle-confirming hydrate in `applyActivate` — which covers `.gatewayClosed` finalization and
-the post-slash refresh — and Send-now's post-interrupt `.maybeDrainQueue` re-check).
+a card leaving on an idle turn (`request.cancel`), an idle-confirming hydrate in
+`applyActivate` — which covers `.gatewayClosed` finalization and the post-slash refresh — and
+Send-now's post-interrupt `.maybeDrainQueue` re-check). A reconnect event replay fold (#98) is
+never a drain or park edge: its `message.complete` / `request.cancel` / `.error` describe the
+past, so `isFoldingReplay` makes them no-ops until the hydrate's `running` says the turn is idle
+(`docs/architecture.md` → "Reconnect event replay").
+
+**The drain never barges in on read-aloud (#74).** It fires on the same live `message.complete`
+that starts auto-speak, so it must not cut the reply it just triggered: only USER submits (the
+idle send, the mid-turn queue append) and the mic silence a clip and stamp the `interrupted`
+latch. But **every regular `prompt.submit` built by `submitDraft` consumes the latch**,
+`fromQueue:` included, so a prompt queued while a clip played carries `interrupted: true` when it
+drains (within the 120 s TTL). Details: `docs/features/read-aloud.md` → "Barge-in latch".
 
 ## Parking
 

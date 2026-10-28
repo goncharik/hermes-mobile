@@ -106,6 +106,8 @@ struct ChatReductionTests {
       $0.streamingRowID = nil
       $0.thinkingRowID = nil
       $0.isSending = false
+      // The finished turn's tool rows are history: a later running hydrate must not re-append them.
+      $0.toolRowIDs = [:]
     }
     #expect(store.state.transcript.last?.id == uuid(0))
   }
@@ -257,7 +259,10 @@ struct ChatReductionTests {
       }
     }
 
-    await store.send(.task) { $0.hasStarted = true }
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+    }
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
@@ -662,7 +667,7 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = ImmediateClock()
-      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(GatewayFrame(.ready)) } }
       $0.hermesGateway.send = { @Sendable method, params in
         // The async slash-catalog fetch (#36) fires after create resolves — don't let it
         // clobber the recorded `session.create` call this test asserts on.
@@ -678,9 +683,10 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
-    await store.receive(\.gatewayEvent) {
+    await store.receive(\.gatewayFrame) {
       $0.status = .ready
       $0.hasRequestedSession = true
     }
@@ -706,7 +712,7 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = ImmediateClock()
-      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(GatewayFrame(.ready)) } }
       $0.hermesGateway.send = { @Sendable method, params in
         // Ignore the async slash-catalog fetch (#36) — it must not clobber the recorded
         // `session.create` call these assertions read.
@@ -722,9 +728,10 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
-    await store.receive(\.gatewayEvent) {
+    await store.receive(\.gatewayFrame) {
       $0.status = .ready
       $0.hasRequestedSession = true
     }
@@ -751,7 +758,7 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = ImmediateClock()
-      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(GatewayFrame(.ready)) } }
       $0.hermesGateway.send = { @Sendable method, params in
         // Ignore the async slash-catalog fetch (#36) — it must not clobber the recorded
         // `session.create` call these assertions read.
@@ -767,9 +774,10 @@ struct ChatReductionTests {
     }
 
     await store.send(.task) {
+      $0.isOnScreen = true
       $0.hasStarted = true
     }
-    await store.receive(\.gatewayEvent) {
+    await store.receive(\.gatewayFrame) {
       $0.status = .ready
       $0.hasRequestedSession = true
     }
@@ -1010,6 +1018,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 10, contextMax: 200_000, contextPercent: 0)
       // Rows carry deterministic, content-derived ids (matching `reconstructTranscript`).
@@ -1448,6 +1457,7 @@ struct ChatReductionTests {
       $0.thinkingSeconds = 0
       $0.isSending = false
       $0.reconnectAttempt = 1
+      $0.spokenAssistantCount = 1 // the dropped partial is consumed, never read aloud (#74)
     }
     await store.send(.teardown)
   }

@@ -354,6 +354,7 @@ public struct SettingsFeature {
         preferences.saveDefaultSessionSwipeAction(.default) // reset the swipe-action pref on logout
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
         preferences.clearPinMigrations()
+        preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         return .merge(
           .send(.delegate(.disconnect)),

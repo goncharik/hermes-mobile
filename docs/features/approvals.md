@@ -155,6 +155,23 @@ have a bridge parked on an open request.
 Accepted gap: a request raised between the server building the snapshot and the app applying it
 is dropped by the reconcile and comes back on the next hydrate.
 
+**Event replay (#98) never carries a prompt.** Request frames are not stamped into the server's
+event ring, so this reconcile stays the only way a prompt comes back. What the ring can hold is
+`request.cancel`, and after a drop the reconnect event replay folds the gap's events BEFORE this
+hydrate (`docs/architecture.md` → "Reconnect event replay"):
+
+- A replayed `request.cancel` runs through the ordinary rules in "How a card ends": an unknown
+  id is a no-op, a queued non-head id is removed silently, and the presented head is removed and
+  the next head presented (a `timeout` adds a "Timed out" row, which the hydrate then wipes).
+  The reconcile that follows reaches the same queue the hydrate alone would, refreshing a
+  still-open next head in place (same token).
+- The fold never drains the prompt queue (#66); only the hydrate's idle edge does.
+- The `open_requests` copy in the `session.events.since` reply is ignored, so a card is never
+  presented twice; the hydrate's list raises it.
+- Legacy `*.request` events ride the ring on v2026.8.27 – v2026.9.11, but replay skips them: the
+  app decodes no `*.expire`, so a prompt that expired in the gap would stand forever. Legacy
+  recovery stays the push-tap card.
+
 ## Legacy wire
 
 Agents up to v2026.9.11 get today's wire byte for byte (pinned by whole-frame tests in

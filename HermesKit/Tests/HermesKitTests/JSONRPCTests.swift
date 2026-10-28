@@ -114,4 +114,123 @@ import Testing
       try InboundFrame(data: Data("not json".utf8))
     }
   }
+
+  // MARK: Event sequencing (#98)
+
+  private func inbound(_ json: String) throws -> InboundFrame {
+    try InboundFrame(data: Data(json.utf8))
+  }
+
+  @Test func liveFrameCarriesSessionIDAndSeq() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":"live1","seq":42,"payload":{"name":"terminal"}}}"#)
+    #expect(f == .event(GatewayFrame(
+      .toolStart(toolID: nil, name: "terminal", title: nil, argsText: nil),
+      sessionID: "live1", seq: 42
+    )))
+  }
+
+  @Test func frameWithoutSeqFromAnOlderAgentHasNilSeq() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"live1","payload":{"text":"hi"}}}"#)
+    #expect(f == .event(GatewayFrame(.messageDelta(text: "hi"), sessionID: "live1")))
+  }
+
+  @Test(arguments: [#""42""#, "4.5", "-1", "true", "null", "1e300"])
+  func nonIntegerOrNegativeSeqIsAbsent(_ raw: String) throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"live1","seq":\#(raw)}}"#)
+    #expect(f == .event(GatewayFrame(.messageStart, sessionID: "live1", seq: nil)))
+  }
+
+  @Test func gatewayReadyCarriesReplayEpoch() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"heartbeat":true,"replay_epoch":"e1"}}}"#)
+    #expect(f == .event(GatewayFrame(.ready, replayEpoch: "e1")))
+  }
+
+  @Test func gatewayReadyWithoutReplayEpochFromAnOlderAgent() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{"name":"default"}}}}"#)
+    #expect(f == .event(GatewayFrame(.ready)))
+  }
+
+  @Test func gatewayReadyOnASessionAuthorityHost() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"replay_epoch":"e1","session_authority":true}}}"#)
+    #expect(f == .event(GatewayFrame(.ready, replayEpoch: "e1", sessionAuthority: true)))
+  }
+
+  @Test func replayFieldsOnANonReadyFrameAreIgnored() throws {
+    // A canonical host's per-session `replay_epoch` is not the process epoch.
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.start","session_id":"s","seq":3,"replay_epoch":"x","payload":{"replay_epoch":"y","session_authority":true}}}"#)
+    #expect(f == .event(GatewayFrame(.messageStart, sessionID: "s", seq: 3)))
+  }
+
+  @Test func sessionlessGlobalEventHasNoSessionOrSeq() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"skin.changed","payload":{}}}"#)
+    #expect(f == .event(GatewayFrame(.unknown(type: "skin.changed", raw: .object([:])))))
+  }
+
+  @Test func stampedRequestCancelDecodesWithItsSeq() throws {
+    let f = try inbound(#"{"jsonrpc":"2.0","method":"event","params":{"type":"request.cancel","session_id":"live1","seq":45,"payload":{"id":"srq-0123456789ab","method":"approval","reason":"timeout"}}}"#)
+    #expect(f == .event(GatewayFrame(
+      .requestCancel(RequestCancel(id: "srq-0123456789ab", method: "approval", reason: "timeout")),
+      sessionID: "live1", seq: 45
+    )))
+  }
+
+  @Test func eventObjectRequiresAType() throws {
+    let missing = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"session_id":"s","seq":1}"#.utf8))
+    let empty = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"type":"","seq":1}"#.utf8))
+    let numeric = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"type":7,"seq":1}"#.utf8))
+    #expect(GatewayFrame(eventObject: missing) == nil)
+    #expect(GatewayFrame(eventObject: empty) == nil)
+    #expect(GatewayFrame(eventObject: numeric) == nil)
+    #expect(GatewayFrame(eventObject: .string("tool.start")) == nil)
+    #expect(GatewayFrame(eventObject: .object(["type": .string("message.start")])) == GatewayFrame(.messageStart))
+  }
+
+  @Test func eventsSinceReplyDecodesLeniently() throws {
+    let json = #"""
+    {"events":[
+      {"type":"tool.start","session_id":"live1","seq":43,"payload":{"name":"terminal"}},
+      {"session_id":"live1","seq":44},
+      {"type":"tool.complete","session_id":"live1","seq":45,"payload":{"name":"terminal","result_text":"ok"}}
+    ],"latest_seq":45,"truncated":false,"count":3,"epoch":"e1",
+    "open_requests":[{"id":"srq-0123456789ab","method":"approval","params":{"command":"rm"}}]}
+    """#
+    let batch = try JSONDecoder().decode(ReplayBatch.self, from: Data(json.utf8))
+    #expect(batch == ReplayBatch(
+      events: [
+        GatewayFrame(.toolStart(toolID: nil, name: "terminal", title: nil, argsText: nil), sessionID: "live1", seq: 43),
+        GatewayFrame(.toolComplete(
+          toolID: nil, name: "terminal", title: nil, args: nil, resultText: "ok", inlineDiff: nil, durationS: nil
+        ), sessionID: "live1", seq: 45),
+      ],
+      latestSeq: 45, truncated: false, epoch: "e1"
+    ))
+  }
+
+  @Test func eventsSinceReplyDefaultsTruncatedAndOptionalFields() throws {
+    let batch = try JSONDecoder().decode(ReplayBatch.self, from: Data(#"{"events":[]}"#.utf8))
+    #expect(batch == ReplayBatch(events: [], latestSeq: nil, truncated: false, epoch: nil))
+    let truncated = try JSONDecoder().decode(
+      ReplayBatch.self, from: Data(#"{"events":[],"latest_seq":90,"truncated":true,"epoch":"e1"}"#.utf8)
+    )
+    #expect(truncated == ReplayBatch(events: [], latestSeq: 90, truncated: true, epoch: "e1"))
+  }
+
+  @Test func eventsSinceReplyWithoutEventsIsMalformed() {
+    #expect(throws: (any Error).self) {
+      try JSONDecoder().decode(ReplayBatch.self, from: Data(#"{"latest_seq":3}"#.utf8))
+    }
+    #expect(throws: (any Error).self) {
+      try JSONDecoder().decode(ReplayBatch.self, from: Data(#"{"events":"nope"}"#.utf8))
+    }
+  }
+
+  @Test func legacyPromptEventsAreFlagged() {
+    #expect(GatewayEvent.approvalRequest(ApprovalRequest(command: "rm")).isLegacyPrompt)
+    #expect(GatewayEvent.clarifyRequest(ClarifyRequest(requestID: "r", question: "Q?")).isLegacyPrompt)
+    #expect(GatewayEvent.sudoRequest(SecretPrompt(requestID: "r")).isLegacyPrompt)
+    #expect(GatewayEvent.secretRequest(SecretPrompt(requestID: "r")).isLegacyPrompt)
+    #expect(!GatewayEvent.requestCancel(RequestCancel(id: "srq-x")).isLegacyPrompt)
+    #expect(!GatewayEvent.messageStart.isLegacyPrompt)
+    #expect(!GatewayEvent.ready.isLegacyPrompt)
+  }
 }

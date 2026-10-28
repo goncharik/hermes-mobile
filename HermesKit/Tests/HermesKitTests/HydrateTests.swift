@@ -118,6 +118,7 @@ struct HydrateTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.spokenAssistantCount = 1 // the first hydrate arms the read-aloud anchor (#74)
       // Model + usage overwritten by the server (not merged with the cache).
       $0.model = "claude-opus-4-8"
       $0.usage = Usage(contextUsed: 42, contextMax: 200_000, contextPercent: 0)
@@ -822,7 +823,7 @@ struct HydrateTests {
       // Reconnect yields a single `.ready`, then idles.
       $0.hermesGateway.connect = { @Sendable _, _ in
         AsyncStream { continuation in
-          continuation.yield(.ready)
+          continuation.yield(GatewayFrame(.ready))
           // keep the stream open so the socket effect doesn't send `.gatewayClosed`
         }
       }
@@ -846,7 +847,7 @@ struct HydrateTests {
       $0.hasRequestedSession = false
     }
     // Reconnect fires `.ready` → hydrate runs (flag was reset).
-    await store.receive(\.gatewayEvent)
+    await store.receive(\.gatewayFrame)
     await store.receive(\.activateResult.success)
 
     // Foreground genuinely re-hydrated: server runtime info + inflight streaming row applied,
@@ -950,7 +951,7 @@ struct HydrateTests {
       $0.chatSnapshot = .inMemory()
       $0.hermesGateway.connect = { @Sendable _, _ in
         connectCalls.withValue { $0 += 1 }
-        return AsyncStream { continuation in continuation.yield(.ready) }
+        return AsyncStream { continuation in continuation.yield(GatewayFrame(.ready)) }
       }
       $0.hermesGateway.send = { @Sendable _, _ in
         .object([
@@ -967,7 +968,7 @@ struct HydrateTests {
     await store.send(.reattached) {
       $0.hasRequestedSession = false
     }
-    await store.receive(\.gatewayEvent) {
+    await store.receive(\.gatewayFrame) {
       $0.status = .ready
       $0.hasRequestedSession = true
     }
@@ -1233,7 +1234,8 @@ struct HydrateTests {
   // `.reattached` / `.foreground` with a healthy socket but a STILL-UNRESOLVED session id
   // (`session.create` in flight on that same socket) is a strict no-op — the pending
   // create lands on its own; hydrating (or redialing) here would race it. Exhaustive: any
-  // effect or state change fails this.
+  // effect or state change fails this (beyond `.reattached` putting the chat back on screen,
+  // #74).
   @Test func reattachReadyWithUnresolvedSessionIsNoOp() async {
     var initial = ChatFeature.State(connection: conn)
     initial.status = .ready
@@ -1244,13 +1246,14 @@ struct HydrateTests {
       ChatFeature()
     }
 
-    await store.send(.reattached)
+    await store.send(.reattached) { $0.isOnScreen = true }
     await store.send(.foreground)
   }
 
   // The view's `.task` fires on every appearance; once the slot has started (initial
   // connect done), a re-appearance must be a strict no-op — `AppFeature`'s `.reattached`
-  // owns the re-open flow. Exhaustive: any effect or state change fails this.
+  // owns the re-open flow. Exhaustive: any effect or state change fails this (beyond putting
+  // the chat back on screen, #74).
   @Test func taskAfterInitialConnectIsNoOp() async {
     let connectCalls = LockIsolated(0)
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
@@ -1266,7 +1269,7 @@ struct HydrateTests {
       }
     }
 
-    await store.send(.task)
+    await store.send(.task) { $0.isOnScreen = true }
     #expect(connectCalls.value == 0)
   }
 
@@ -1291,7 +1294,7 @@ struct HydrateTests {
       $0.chatSnapshot = snapshotClient
       // Reconnect yields a single `.ready` then idles, so `.foreground` drives a second hydrate.
       $0.hermesGateway.connect = { @Sendable _, _ in
-        AsyncStream { continuation in continuation.yield(.ready) }
+        AsyncStream { continuation in continuation.yield(GatewayFrame(.ready)) }
       }
       $0.hermesGateway.send = { @Sendable _, _ in
         .object([
@@ -1797,6 +1800,161 @@ struct HydrateTests {
     #expect(store.state.pendingInteraction == nil)
     #expect(store.state.queuedPrompts.isEmpty)
     #expect(store.state.drainingEntry?.text == "next")
+
+    await store.send(.teardown)
+  }
+
+  // MARK: Replay cursor lifetime (#98)
+
+  // The watermark is in-memory slot state that only `.teardown` (the slot itself dying)
+  // ends: it rides out the background grace expiry, the re-auth pause, and every re-hydrate.
+  // These pin the reconnect entry points that are NOT the plain `.gatewayClosed` backoff
+  // (covered in `ReplayTests`).
+
+  /// A slot on a healthy socket mid-turn with a watermark at (live1, 41), epoch e1.
+  private func liveCursorState() -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, resumeStoredID: "stored1")
+    state.liveSessionID = "live1"
+    state.status = .ready
+    state.hasRequestedSession = true
+    state.hasHydrated = true
+    state.hasStarted = true
+    state.isSending = true
+    state.replayEpoch = "e1"
+    state.replayCursor = .init(sessionID: "live1", seq: 41)
+    return state
+  }
+
+  private let sinceLive1At41 = ReplayTests.RPC(method: "session.events.since", params: .object([
+    "session_id": .string("live1"), "last_seen": .number(41),
+  ]))
+
+  /// Background grace expiry tears the socket down but keeps every bit of slot state; the
+  /// foreground (or a re-push of the slot's marker) redials and reads the gap from the
+  /// PRE-expiry watermark before the resume — the exact case the replay pays for.
+  @Test(arguments: [false, true])
+  func graceExpiryRedialReplaysFromThePreExpiryCursor(viaReattach: Bool) async {
+    let gateway = ReplayTests.ReplayHarness()
+    gateway.since.setValue(.success(ReplayTests.since([
+      ReplayTests.event("tool.start", 42, ["tool_id": .string("t1"), "name": .string("terminal")]),
+    ], latest: 42)))
+    let store = gateway.makeStore(liveCursorState(), readyOnConnect: true)
+
+    await store.send(.teardownSocketOnly) {
+      $0.status = .reconnecting
+      $0.hasRequestedSession = false
+    }
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 41))
+    #expect(store.state.replayEpoch == "e1")
+
+    await store.send(viaReattach ? .reattached : .foreground)
+    await store.receive(\.gatewayFrame)
+    await store.receive(\.eventReplayResult.success) {
+      $0.replayCursor = .init(sessionID: "live1", seq: 42)
+    }
+    await store.receive(\.activateResult.success)
+
+    #expect(gateway.connects.value == 1)
+    #expect(gateway.methods == ["session.events.since", "session.resume"])
+    #expect(gateway.rpcs.first == sinceLive1At41)
+    // The gap's tool row survived the running hydrate (#26).
+    #expect(store.state.toolRowIDs["t1"] != nil)
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 42))
+
+    await store.send(.teardown)
+  }
+
+  /// A re-auth pause (`.authExpired` → the suppressed `.gatewayClosed`) keeps the watermark;
+  /// `.resumeAfterReauth` reconnects the SAME session with fresh credentials, so its ready
+  /// replays the gap from where the dead socket left off.
+  @Test func resumeAfterReauthReplaysTheSameSession() async {
+    let gateway = ReplayTests.ReplayHarness()
+    let store = gateway.makeStore(liveCursorState(), readyOnConnect: true)
+
+    await store.send(.gatewayEvent(.authExpired)) {
+      $0.awaitingReauth = true
+      $0.status = .reconnecting
+    }
+    await store.send(.gatewayClosed) {
+      $0.hasRequestedSession = false
+    }
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 41))
+    #expect(gateway.rpcs.isEmpty)
+
+    await store.send(.resumeAfterReauth(conn)) {
+      $0.awaitingReauth = false
+    }
+    await store.receive(\.gatewayFrame)
+    await store.receive(\.eventReplayResult.success)
+    await store.receive(\.activateResult.success)
+
+    #expect(gateway.methods == ["session.events.since", "session.resume"])
+    #expect(gateway.rpcs.first == sinceLive1At41)
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 41))
+
+    await store.send(.teardown)
+  }
+
+  /// `.foreground` over a HEALTHY socket hydrates directly: no drop happened, so no gap to
+  /// read — the `.ready` branch (the only replay entry point) never runs, and the watermark
+  /// is left exactly as the live stream set it.
+  @Test(arguments: [false, true])
+  func healthySocketReHydrateNeverReadsTheGap(viaReattach: Bool) async {
+    let gateway = ReplayTests.ReplayHarness()
+    let store = gateway.makeStore(liveCursorState(), readyOnConnect: true)
+
+    await store.send(viaReattach ? .reattached : .foreground)
+    await store.receive(\.activateResult.success)
+
+    #expect(gateway.connects.value == 0)
+    #expect(gateway.methods == ["session.resume"])
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 41))
+    #expect(store.state.replayEpoch == "e1")
+
+    await store.send(.teardown)
+  }
+
+  /// An idle session reaped in the gap resumes under a fresh live id. The hydrate does not
+  /// touch the watermark: the stale (live1) cursor simply stops matching, so a drop before
+  /// any new frame resumes without a gap read, and the first stamped frame for live2 starts
+  /// a fresh cursor that the next drop replays from.
+  @Test func reMintedLiveIDStartsAFreshCursorOnItsFirstStampedFrame() async {
+    let gateway = ReplayTests.ReplayHarness()
+    gateway.since.setValue(.success(ReplayTests.since([], latest: 41)))
+    gateway.resume.setValue(ReplayTests.resume(live: "live2", running: false))
+    var initial = liveCursorState()
+    initial.status = .reconnecting
+    initial.hasRequestedSession = false
+    initial.isSending = false
+    let store = gateway.makeStore(initial, readyOnConnect: true)
+
+    // Reconnect: the cursor still matches live1, so the gap is read, then the resume
+    // answers with live2.
+    await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
+    await store.receive(\.eventReplayResult.success)
+    await store.receive(\.activateResult.success) {
+      $0.liveSessionID = "live2"
+    }
+    #expect(store.state.replayCursor == .init(sessionID: "live1", seq: 41))
+
+    // A drop before any live2 frame: the stale cursor does not match, so no gap read.
+    await store.send(.gatewayClosed)
+    await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
+    await store.receive(\.activateResult.success)
+    #expect(gateway.methods == ["session.events.since", "session.resume", "session.resume"])
+
+    // live2's first stamped frame replaces the stale cursor; the next drop replays from it.
+    await store.send(.gatewayFrame(GatewayFrame(.messageStart, sessionID: "live2", seq: 1))) {
+      $0.replayCursor = .init(sessionID: "live2", seq: 1)
+    }
+    await store.send(.gatewayClosed)
+    await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
+    await store.receive(\.eventReplayResult.success)
+    await store.receive(\.activateResult.success)
+    #expect(gateway.rpcs.suffix(2).map(\.method) == ["session.events.since", "session.resume"])
+    #expect(gateway.rpcs.suffix(2).first?.params == .object([
+      "session_id": .string("live2"), "last_seen": .number(1),
+    ]))
 
     await store.send(.teardown)
   }

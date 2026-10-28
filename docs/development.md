@@ -60,7 +60,7 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
   calendar via `SessionListFeature.State(calendar:)` (UTC, `en_US`, Monday-first), or the
   date-section headers would follow the simulator's time zone and week start;
   `deviceImage(height:)` renders a list taller than one screen. The suite passes clean
-  (242 of 242) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
+  (251 of 251) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
   changes a view re-records that view's baselines itself. If a future runtime drifts
   again, judge by render size first (a size mismatch is a real regression; equal size with
   a small pixel residual is drift), and land the re-record as its own commit.

@@ -781,10 +781,11 @@ struct ChatInteractionTests {
     let frame = try InboundFrame(data: Data(
       #"{"jsonrpc":"2.0","method":"event","params":{"type":"\#(type)","session_id":"live","payload":\#(payload)}}"#.utf8
     ))
-    guard case let .event(_, event) = frame else {
+    guard case let .event(gatewayFrame) = frame else {
       Issue.record("expected a \(type) event, got \(frame)")
       return []
     }
+    let event = gatewayFrame.event
     let sent = LockIsolated<[JSONValue]>([])
     let store = TestStore(initialState: readyState()) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
