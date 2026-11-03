@@ -140,11 +140,11 @@
 **Files:**
 - Modify: `HermesMobile/Sources/Features/Chat/Transcript/CollectionTranscriptView.swift`
 
-- [ ] before `dataSource.apply`, when the diff is `.slide` and not pinned, capture the topmost visible surviving row id and its `frame.minY`
-- [ ] in the completion: pinned slide ⇒ `scrollToBottom(animated:)`; unpinned with anchor ⇒ `preserveAnchorAfterSlide` (layout, measure, `offsetAfterAnchorShift`, `isAdjustingOffset` guard like `preserveOffsetAfterPrepend`); no anchor ⇒ reset-jump fallback
-- [ ] update the `apply(rows:)` and Coordinator doc comments (follow / preserve / slide-preserve / jump)
-- [ ] `make build` compiles cleanly
-- [ ] tests for this task land in task 4 (renderer glue lives in the app target)
+- [x] before `dataSource.apply`, when the diff is `.slide` and not pinned, capture the topmost visible surviving row id and its `frame.minY`
+- [x] in the completion: pinned slide ⇒ `scrollToBottom(animated:)`; unpinned with anchor ⇒ `preserveAnchorAfterSlide` (layout, measure, `offsetAfterAnchorShift`, `isAdjustingOffset` guard like `preserveOffsetAfterPrepend`); no anchor ⇒ reset-jump fallback
+- [x] update the `apply(rows:)` and Coordinator doc comments (follow / preserve / slide-preserve / jump)
+- [x] `make build` compiles cleanly
+- [x] tests for this task land in task 4 (renderer glue lives in the app target)
 
 ### Task 4: Measured layout test for slide preservation
 

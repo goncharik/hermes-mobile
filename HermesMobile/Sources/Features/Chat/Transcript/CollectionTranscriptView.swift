@@ -187,7 +187,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   // MARK: - Coordinator
 
   /// Owns the diffable data source, cell hosting, and all imperative scroll behaviour: pin
-  /// detection, follow-on-delta, prepend offset-preservation, and the open/hydrate jump.
+  /// detection, follow-on-delta, prepend offset-preservation, slide anchor-preservation for a
+  /// scrolled-up reader (#125), and the open/hydrate jump.
   final class Coordinator: NSObject, UICollectionViewDelegate {
     enum Section { case main }
 
@@ -349,7 +350,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     // MARK: Diff application
 
     /// Apply a new `rows` slice: classify the structural change, refresh the payload, snapshot
-    /// the diff, then honour the stick-to-bottom contract (jump / follow / preserve / nothing).
+    /// the diff, then honour the stick-to-bottom contract:
+    /// - **jump** — first population, or a `.reset` (hydrate / wholesale replace): to the bottom,
+    ///   regardless of pin state.
+    /// - **preserve** — a `.prepend` armed by the top sentinel keeps the on-screen anchor.
+    /// - **follow** — any other change (append, delta, `.slide`) while pinned.
+    /// - **slide-preserve** — a `.slide` (#125: the reducer's fixed bottom window dropped its head
+    ///   on a live append) while scrolled up keeps the reader's topmost visible surviving row at
+    ///   the same on-screen y; with no surviving visible row it falls back to the jump.
+    /// - **nothing** — a plain append/mutate while scrolled up (no yank; the jump button stays).
     func apply(rows: [ChatRow]) {
       let newOrder = rows.map(\.id)
       let oldOrder = currentOrder
@@ -373,6 +382,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       let capturedOffsetY = collectionView?.contentOffset.y ?? 0
       let capturedContentHeight = collectionView?.contentSize.height ?? 0
       let wasPinned = isPinnedToBottom
+
+      // A window slide while scrolled up (#125): pin the reader's topmost visible row that
+      // survives the slide, measured against the PRE-apply layout, so the completion can shift
+      // the offset by exactly how far that row moved. A pinned slide simply follows.
+      let isSlide: Bool = {
+        if case .slide = diff { return true } else { return false }
+      }()
+      let slideAnchor = isSlide && !wasPinned
+        ? captureSlideAnchor(oldOrder: oldOrder, survivors: Set(newOrder))
+        : nil
 
       var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
       snapshot.appendSections([.main])
@@ -401,23 +420,100 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
           // Open / hydrate / wholesale-reset: jump to bottom (no animation) — always, regardless
           // of pin state (honours the open/hydrate→bottom contract on a re-hydrate while the
-          // user had scrolled up). Begin a "settle" so self-sizing cell growth keeps re-pinning
-          // until the real bottom is reached.
-          self.didInitialJump = true
-          self.isPinnedToBottom = true
-          self.setJumpButtonVisible(false)
-          self.beginInitialBottomSettle()
+          // user had scrolled up).
+          self.jumpToBottomAndSettle()
         } else if preservePrepend {
           self.preserveOffsetAfterPrepend(
             previousOffsetY: capturedOffsetY,
             previousContentHeight: capturedContentHeight
           )
         } else if wasPinned {
-          // Appended row or streaming delta grew the last cell: follow only if pinned.
+          // Appended row, streaming delta grew the last cell, or the window slid: follow only
+          // if pinned.
           self.scrollToBottom(animated: !self.reduceMotion)
+        } else if isSlide {
+          // Scrolled-up reader and the live window slid: keep their anchor row where it was on
+          // screen. Without a surviving visible anchor there is nothing to hold — fall back to
+          // the reset jump.
+          if let slideAnchor,
+            self.preserveAnchorAfterSlide(slideAnchor, previousOffsetY: capturedOffsetY)
+          {
+            // Anchor held; the jump button stays.
+          } else if !newOrder.isEmpty {
+            self.jumpToBottomAndSettle()
+          }
         }
-        // Scrolled-up reader: do nothing (no yank), the jump button stays.
+        // Scrolled-up reader on a plain append/mutate: do nothing (no yank), the jump button stays.
       }
+    }
+
+    /// The reader's on-screen reference row for a `.slide`: its id and its content-space
+    /// `frame.minY` before the apply.
+    private struct SlideAnchor {
+      let id: ChatRow.ID
+      let minY: CGFloat
+    }
+
+    /// The topmost row actually visible below the top inset whose id survives into the new
+    /// order, measured against the current (pre-apply) layout. `nil` when no visible row
+    /// survives — the caller then falls back to the reset jump.
+    private func captureSlideAnchor(
+      oldOrder: [ChatRow.ID],
+      survivors: Set<ChatRow.ID>
+    ) -> SlideAnchor? {
+      guard let collectionView else { return nil }
+      let visibleTop = collectionView.bounds.minY + collectionView.adjustedContentInset.top
+      let candidates: [SlideAnchor] = collectionView.indexPathsForVisibleItems.compactMap {
+        indexPath in
+        guard indexPath.item < oldOrder.count else { return nil }
+        let id = oldOrder[indexPath.item]
+        guard
+          survivors.contains(id),
+          let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame,
+          frame.maxY > visibleTop
+        else { return nil }
+        return SlideAnchor(id: id, minY: frame.minY)
+      }
+      return candidates.min { $0.minY < $1.minY }
+    }
+
+    /// Hold the slide anchor on screen: lay out the post-apply snapshot, measure how far the
+    /// anchor row moved in content space (negative — the dropped head rows were above it), and
+    /// shift the offset by that delta under the `isAdjustingOffset` guard, mirroring
+    /// `preserveOffsetAfterPrepend`. Returns `false` when the anchor can't be measured.
+    private func preserveAnchorAfterSlide(
+      _ anchor: SlideAnchor,
+      previousOffsetY: CGFloat
+    ) -> Bool {
+      guard
+        let collectionView,
+        let indexPath = dataSource.indexPath(for: anchor.id)
+      else { return false }
+      collectionView.layoutIfNeeded()
+      guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else {
+        return false
+      }
+      let newOffsetY = TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: previousOffsetY,
+        anchorShift: frame.minY - anchor.minY,
+        contentHeight: collectionView.contentSize.height,
+        viewportHeight: collectionView.bounds.height,
+        topInset: collectionView.adjustedContentInset.top,
+        bottomInset: collectionView.adjustedContentInset.bottom
+      )
+      isAdjustingOffset = true
+      collectionView.setContentOffset(CGPoint(x: 0, y: newOffsetY), animated: false)
+      DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
+      return true
+    }
+
+    /// The open / hydrate / reset jump: re-pin, hide the jump button, and begin a "settle" so
+    /// self-sizing cell growth keeps re-pinning until the real bottom is reached.
+    private func jumpToBottomAndSettle() {
+      didInitialJump = true
+      isPinnedToBottom = true
+      setJumpButtonVisible(false)
+      beginInitialBottomSettle()
     }
 
     // MARK: Scroll behaviour
