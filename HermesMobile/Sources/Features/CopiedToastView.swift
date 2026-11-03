@@ -1,30 +1,29 @@
 import SwiftUI
 
-/// A small transient confirmation toast ("Session ID copied"), shown as a bottom-aligned
-/// overlay after a copy action. Presentation is driven purely by the feature's
-/// `copiedIDToastToken` — the reducer owns the 1.5s dwell timer, this view only renders
+/// A small transient confirmation toast ("Session ID copied", "Path copied"), shown as a
+/// bottom-aligned overlay after a copy action. Presentation is driven purely by the
+/// feature's copy token — the reducer owns the 1.5s dwell timer, this view only renders
 /// (and animates) the state.
 ///
 /// Non-interactive by design (`allowsHitTesting(false)`) so it never eats a tap on the
 /// list row or composer beneath it.
 struct CopiedToastView: View {
-  /// The feature's `copiedIDToastToken`: `nil` while hidden, otherwise a per-copy counter.
-  /// Owning the conditional here keeps the three call sites to a single
-  /// `.overlay(alignment: .bottom) { CopiedToastView(token:) }`.
+  /// The feature's copy token (`copiedIDToastToken`, `FilePreviewFeature.copiedToken`):
+  /// `nil` while hidden, otherwise a per-copy counter. Owning the conditional here keeps
+  /// every call site to a single `.overlay(alignment: .bottom) { CopiedToastView(token:) }`.
   var token: Int?
+  /// What the toast says — also what VoiceOver announces. Defaults to the session-list /
+  /// chat copy; the file preview sheet passes its own.
+  var message: String = "Session ID copied"
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var isPresented: Bool { token != nil }
 
-  /// The only thing this toast has to say — inlined rather than parameterized until a
-  /// second message actually exists.
-  private static let message = "Session ID copied"
-
   var body: some View {
     ZStack {
       if isPresented {
-        Label(Self.message, systemImage: "checkmark.circle.fill")
+        Label(message, systemImage: "checkmark.circle.fill")
           .font(.subheadline.weight(.medium))
           .foregroundStyle(.primary)
           .padding(.horizontal, 16)
@@ -53,7 +52,7 @@ struct CopiedToastView: View {
     // a VoiceOver user has — every copy has to speak, so every copy bumps the token.
     .onChange(of: token) { _, token in
       guard token != nil else { return }
-      AccessibilityNotification.Announcement(Self.message).post()
+      AccessibilityNotification.Announcement(message).post()
     }
   }
 }

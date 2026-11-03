@@ -519,18 +519,31 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Create: `HermesMobileTests/FilePreviewTextLayoutTests.swift`
 - Modify: `HermesMobileTests/FilePreviewSnapshotTests.swift`
 
-- [ ] implement `MonospacedFileTextView` (`UITextView` representable: scrollable, selectable,
+- [x] implement `MonospacedFileTextView` (`UITextView` representable: scrollable, selectable,
       monospaced body with Dynamic Type, no data detectors) with a caption row (`language`) and
       the "Showing first 512 KB" banner when `truncated`
-- [ ] wire `.text` in `FilePreviewSheet`; add the copy toast overlay off `copiedToken` using the
+- [x] wire `.text` in `FilePreviewSheet`; add the copy toast overlay off `copiedToken` using the
       existing overlay idiom (placed before the bottom toolbar inset so nothing swallows it) with
       the VoiceOver announcement
-- [ ] write the measured `UIWindow` test: a 400-line fixture hosted at 390×600,
+- [x] write the measured `UIWindow` test: a 400-line fixture hosted at 390×600,
       `.dynamicTypeSize(.large)` → `contentSize.height > bounds.height`; and a short fixture →
       no scroll
-- [ ] write snapshots: text preview (short, with language caption), truncated banner variant,
+- [x] write snapshots: text preview (short, with language caption), truncated banner variant,
       copied-toast visible — pinned width **and** height
-- [ ] run `make snapshot` twice — must pass before task 8
+- [x] run `make snapshot` twice — must pass before task 8
+- ➕ the toast IS the shared `CopiedToastView`, which gained a `message` parameter (default
+  unchanged: "Session ID copied"; the sheet passes "Path copied") so the VoiceOver announcement
+  stays keyed on the token in one place. It is overlaid on the sheet's `content` region (inside
+  the `NavigationStack`, whose safe area already ends at the bottom bar), so the snapshot of
+  `content` carries it — but the copied-toast baseline is a whole-sheet `deviceImage()`
+  capture like every other toast baseline: the glass capsule and the label it composites do
+  not draw in a `componentImage()` layer render (measured — only the SF Symbol survived). The
+  text view's font is the UNSCALED body size (17pt) in `monospacedSystemFont` run through
+  `UIFontMetrics(forTextStyle: .body)`, not `preferredFont(forTextStyle:)` re-scaled — the
+  latter compounds the Dynamic Type scale; `adjustsFontForContentSizeCategory` rescales it
+  live. The layout suite (4 tests) also pins that the text view FILLS the region for a short
+  file and that the caption + banner only take a strip off the top. `make snapshot` is now
+  267/267 (5 new baselines; the Task 11 count update stands).
 
 ### Task 8: Image and PDF previews
 

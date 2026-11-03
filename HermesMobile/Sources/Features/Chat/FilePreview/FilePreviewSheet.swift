@@ -9,8 +9,13 @@ import SwiftUI
 /// through the presentation binding (SwiftUI's `dismiss` nils the `.sheet(item:)` binding,
 /// which TCA turns into `.filePreview(.dismiss)` — the reducer's cleanup hook), and the
 /// bottom bar carries the two actions every kind offers, Copy path and Share. The body
-/// switches on `content`; text, image and PDF renderers arrive in Tasks 7–8 and replace the
-/// placeholders here.
+/// switches on `content`; text renders in `MonospacedFileTextView`, image and PDF renderers
+/// arrive in Task 8 and replace the placeholders here.
+///
+/// The "Path copied" toast is the shared `CopiedToastView` off `copiedToken`, overlaid on the
+/// content region INSIDE the navigation stack: the region's safe area already excludes the
+/// bottom bar, so the toast floats just above Copy path / Share instead of under them, and
+/// nothing between it and the sheet can swallow it.
 struct FilePreviewSheet: View {
   let store: StoreOf<FilePreviewFeature>
 
@@ -51,10 +56,22 @@ struct FilePreviewSheet: View {
     return false
   }
 
-  /// The region under the navigation bar. Internal (not `private`) so the snapshot suite can
-  /// render it at a pinned size without the navigation chrome.
-  @ViewBuilder
+  /// What the toast says here (and announces to VoiceOver) — one constant for the view and
+  /// its snapshot.
+  static let copiedMessage = "Path copied"
+
+  /// The region under the navigation bar, with the copy toast overlaid. Internal (not
+  /// `private`) so the snapshot suite can render it at a pinned size without the navigation
+  /// chrome — toast included.
   var content: some View {
+    contentBody
+      .overlay(alignment: .bottom) {
+        CopiedToastView(token: store.copiedToken, message: Self.copiedMessage)
+      }
+  }
+
+  @ViewBuilder
+  private var contentBody: some View {
     switch store.content {
     case .loading:
       ProgressView("Loading…")
@@ -73,9 +90,10 @@ struct FilePreviewSheet: View {
           .buttonStyle(.borderedProminent)
       }
 
-    // Placeholders until the real renderers land (Task 7: text, Task 8: image + PDF).
-    case .text:
-      placeholder("Text preview")
+    case let .text(read):
+      MonospacedFileTextView(read: read)
+
+    // Placeholders until the real renderers land (Task 8: image + PDF).
     case .image:
       placeholder("Image preview")
     case .pdf:

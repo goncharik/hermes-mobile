@@ -6,15 +6,17 @@ import XCTest
 
 @testable import HermesMobile
 
-/// Snapshots for the file preview sheet (file preview in chat) in the states the skeleton
-/// renders today: the generic card for each `Reason`, the failure state with Retry, and the
-/// loading spinner. Text / image / PDF renderers get their own cases in Tasks 7–8.
+/// Snapshots for the file preview sheet (file preview in chat): the generic card for each
+/// `Reason`, the failure state with Retry, the loading spinner, the monospaced text preview
+/// (with its language caption, its truncation banner, and the "Path copied" toast). Image /
+/// PDF renderers get their own cases in Task 8.
 ///
 /// The content region is rendered on its own (`FilePreviewSheet.content`) at a pinned width
-/// AND height: every state fills the greedy region the sheet gives it, and `componentImage()`
-/// offers a greedy view nothing along either axis. Two whole-sheet `deviceImage()` captures
-/// pin the chrome around it — the file-name title, `Done`, and the Copy path / Share bottom
-/// bar. `.dynamicTypeSize(.large)` is pinned so renders don't follow the simulator's text size.
+/// AND height: every state fills the greedy region the sheet gives it, the text preview is a
+/// scrolling `UITextView`, and `componentImage()` offers a greedy view nothing along either
+/// axis. Two whole-sheet `deviceImage()` captures pin the chrome around it — the file-name
+/// title, `Done`, and the Copy path / Share bottom bar. `.dynamicTypeSize(.large)` is pinned
+/// so renders don't follow the simulator's text size.
 ///
 /// Every store swallows `.task`: the sheet's `.task` would otherwise hit the unimplemented
 /// `filePreview` test dependency during a key-window render (see `Reducer.ignoring`).
@@ -23,11 +25,12 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
   private var phoneWidth: CGFloat { device.size?.width ?? 390 }
 
   private func store(
-    path: String, content: FilePreviewFeature.Content
+    path: String, content: FilePreviewFeature.Content, copiedToken: Int? = nil
   ) -> StoreOf<FilePreviewFeature> {
     Store(
       initialState: FilePreviewFeature.State(
-        path: path, sessionID: "snapshot-session", connection: connection, content: content
+        path: path, sessionID: "snapshot-session", connection: connection, content: content,
+        copiedToken: copiedToken
       )
     ) {
       FilePreviewFeature().ignoring(\.task)
@@ -35,16 +38,20 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
   }
 
   /// The sheet's content region alone, pinned to a phone-wide 600pt slot.
-  private func content(path: String, _ content: FilePreviewFeature.Content) -> some View {
-    FilePreviewSheet(store: store(path: path, content: content)).content
+  private func content(
+    path: String, _ content: FilePreviewFeature.Content, copiedToken: Int? = nil
+  ) -> some View {
+    FilePreviewSheet(store: store(path: path, content: content, copiedToken: copiedToken)).content
       .frame(width: phoneWidth, height: regionHeight)
       .background(Color(uiColor: .systemBackground))
       .dynamicTypeSize(.large)
   }
 
   /// The whole sheet — navigation title, `Done`, bottom bar — as the user sees it.
-  private func sheet(path: String, _ content: FilePreviewFeature.Content) -> some View {
-    FilePreviewSheet(store: store(path: path, content: content))
+  private func sheet(
+    path: String, _ content: FilePreviewFeature.Content, copiedToken: Int? = nil
+  ) -> some View {
+    FilePreviewSheet(store: store(path: path, content: content, copiedToken: copiedToken))
       .dynamicTypeSize(.large)
   }
 
@@ -126,6 +133,58 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  // MARK: Text preview
+
+  /// A short source file: the `swift` caption row over the monospaced text, which fills the
+  /// region (the empty space under the last line is still the text view).
+  func testContent_text_withLanguage() {
+    let view = content(path: "/home/eugene/project/Sources/App.swift", .text(Self.shortSwift))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  func testContent_text_withLanguage_light() {
+    let view = content(path: "/home/eugene/project/Sources/App.swift", .text(Self.shortSwift))
+    assertSnapshot(of: view, as: componentImage(appearance: .light))
+  }
+
+  /// A log the server cut at its 512 KB limit: the "Showing first 512 KB" banner under the
+  /// caption, then the (long) text scrolling inside the region — only the first screenful
+  /// renders, the rest is proven scrollable by `FilePreviewTextLayoutTests`.
+  func testContent_text_truncated() {
+    let read = FileTextRead(
+      byteSize: 3_145_728,
+      language: "log",
+      text: (1...80).map { "2026-11-03T09:\(String(format: "%02d", $0 % 60)):00Z INFO worker-\($0 % 4) processed batch \($0)" }
+        .joined(separator: "\n"),
+      truncated: true
+    )
+    let view = content(path: "/home/eugene/logs/agent.log", .text(read))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// No language from the server and nothing truncated: just the text, no caption rows.
+  func testContent_text_plain() {
+    let read = FileTextRead(byteSize: 112, text: "name = \"hermes\"\nport = 9119\nverbose = true\n")
+    let view = content(path: "/home/eugene/.hermes/settings.toml", .text(read))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  private static let shortSwift = FileTextRead(
+    byteSize: 180,
+    language: "swift",
+    text: """
+      import Foundation
+
+      struct Greeting {
+        let name: String
+
+        var text: String { "Hello, \\(name)!" }
+      }
+
+      print(Greeting(name: "Hermes").text)
+      """
+  )
+
   // MARK: Whole sheet
 
   /// The chrome around the generic card: the file name as the inline title, `Done`, and the
@@ -134,6 +193,19 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
     let view = sheet(
       path: "/home/eugene/out/export-2026-11-03.zip",
       .generic(.init(reason: .unsupported, byteSize: 4_718_592))
+    )
+    assertSnapshot(of: view, as: deviceImage())
+  }
+
+  /// Copy path just fired on a text preview: the "Path copied" toast floats over the text,
+  /// ABOVE the Copy path / Share bar — the content region's safe area ends at the bar, which
+  /// is what `.safeAreaPadding(.bottom)` in `CopiedToastView` adds. Built from state
+  /// (`copiedToken` set), no clock involved. A whole-sheet key-window capture, like the other
+  /// toast baselines: the toast's glass capsule (and the label it composites) does not draw
+  /// in a `componentImage()` layer render — only the SF Symbol survives.
+  func testSheet_text_copiedToast() {
+    let view = sheet(
+      path: "/home/eugene/project/Sources/App.swift", .text(Self.shortSwift), copiedToken: 1
     )
     assertSnapshot(of: view, as: deviceImage())
   }
