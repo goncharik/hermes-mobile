@@ -2,14 +2,11 @@ import Foundation
 
 // MARK: - Pure transcript scroll/anchor math (platform-independent, unit-testable)
 
-/// Pure scroll/anchor math shared by both transcript rendering engines (the SwiftUI
-/// `ScrollView` engine and the `UICollectionView` engine). Foundation-only — no UIKit — so the
-/// threshold/anchor logic is platform-independent, lives in `HermesKit` (logic, not views), and
-/// is directly unit-testable via `swift test`. Keeping the numbers here is what makes the two
-/// renderers agree on the at-bottom contract.
+/// Pure scroll/anchor math for the transcript renderer (`CollectionTranscriptView`).
+/// Foundation-only — no UIKit — so the threshold/anchor logic is platform-independent, lives in
+/// `HermesKit` (logic, not views), and is directly unit-testable via `swift test`.
 public enum TranscriptScrollMath {
-  /// Distance from the bottom (in points) that still counts as "pinned" — both renderers read
-  /// this single constant so they agree on the at-bottom contract.
+  /// Distance from the bottom (in points) that still counts as "pinned".
   public static let bottomThreshold: CGFloat = 60
 
   /// Distance from the *top* (in points) at which scrolling up triggers a load-older page.
@@ -70,9 +67,9 @@ public enum TranscriptScrollMath {
 /// append/in-place mutation (streaming / new turn / live-turn reorder), a *slide* (the reducer's
 /// fixed bottom window moving under the reader as live rows come and go), or a *reset* (a
 /// genuine wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A
-/// prepend requires offset preservation; a slide follows if pinned and otherwise preserves the
-/// reader's anchor row; a reset forces a jump-to-bottom (the open/hydrate contract); everything
-/// else follows the pin rule. Pure over the row id sequences so it is testable.
+/// prepend requires offset preservation; a slide or an append/mutate holds the reader's anchor
+/// row and follows if pinned (`holdsReaderAnchor`); a reset forces a jump-to-bottom (the
+/// open/hydrate contract). Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
@@ -110,7 +107,7 @@ public enum TranscriptDiffKind: Equatable, Sendable {
   public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
       // First population (empty → rows): treat as a reset so the renderer performs the
-      // open-at-bottom jump. (Both renderers also guard this via their first-population flag.)
+      // open-at-bottom jump. (The renderer also guards this via its first-population flag.)
       return new.isEmpty ? .inPlace : .reset
     }
     if new == old { return .inPlace }
@@ -136,8 +133,7 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     //   2. A superset: every old id survives in the new sequence (the usual live-turn case where
     //      a tool/answer row is inserted *above* the thinking row, then thinking is moved last —
     //      counts grow and the insert lands in the middle, so it's neither prefix nor suffix).
-    // Only when neither holds — the old ids were largely replaced by different ids — is this a
-    // genuine hydrate/wholesale reset.
+    // When neither holds, some old rows are gone; the slide/reset split below decides.
     let oldSet = Set(old)
     let newSet = Set(new)
     if newSet == oldSet { return .appendOrMutate }       // permutation / reorder

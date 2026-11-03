@@ -67,41 +67,41 @@
     the reducer). Fixes it at the source but moves stick-to-bottom knowledge into reducer state,
     against the "renderer-local" rule, and needs a re-trim path when the reader returns.
   - C. Hysteresis on window trimming (grow to 100, trim to 50). Only makes the yank rarer.
-- **Slide rule** (in `classify`, after the permutation/superset checks, before `.reset`): a
-  leading run of `k > 0` old ids is gone, every remaining old id survives in `new`, and the window
-  did not shrink (`new.count >= old.count`). The live keepThinkingLast mid-insert (tool row above
-  the thinking row) combined with a dropped head must also classify as a slide.
-- **What stays `.reset`** (jump to bottom): zero overlap, and any update where the window shrank —
-  notably a hydrate after paging up, which trims the reader's rows. Existing reset tests unchanged.
-- **Renderer handling of `.slide`**: pinned ⇒ follow (`scrollToBottom`, same as append). Scrolled
-  up ⇒ before the apply, capture the topmost *visible* row whose id survives in the new order and
-  its `frame.minY`; after the apply, `layoutIfNeeded`, read the anchor's new `minY`, and shift the
-  offset by the difference (captured offset + shift, clamped) under the `isAdjustingOffset` guard.
-  No surviving visible anchor ⇒ fall back to today's reset jump.
-- **Deliberate contract change (flag in PR)**: a foreground hydrate that keeps the window size and
-  leaves the reader's visible rows in place now preserves their position instead of jumping. A
-  hydrate that removes the rows they were reading still jumps. Consistent with #125's intent.
+- **Slide rule** (in `classify`, after the permutation/superset checks): some old rows are gone
+  but at least one survives, and the window did not both shrink and lose its head ⇒
+  `.slide(droppedHeadCount:)` (`0` for a turn-end row removal). Survivor order is not checked.
+- **What stays `.reset`** (jump to bottom): no old row survives, or the window shrank AND lost its
+  head — notably a hydrate after paging up, which trims the reader's rows. Existing reset tests
+  unchanged.
+- **Renderer**: every `holdsReaderAnchor` update (`.slide`, `.appendOrMutate`) captures the
+  reader's anchor before the apply — the topmost on-screen surviving row, else the surviving row
+  nearest the viewport (a reader inside a tall dropped row). Right after the non-animated apply
+  returns (same pass), `layoutIfNeeded`, measure the anchor's shift and, if it moved, set the
+  offset to pre-apply offset + shift (clamped; a shift to the window top pages older rows). The
+  prepend preserve runs in the same place. The apply's completion (a later pass) only jumps
+  (open / `.reset` / a pinned `.slide`) or follows a pinned append with an animated scroll, both
+  against the live pin state.
+- **Deliberate contract change (flag in PR)**: a hydrate whose rows survive keeps a scrolled-up
+  reader's position instead of jumping. A hydrate that removes the rows they were reading still
+  jumps. Consistent with #125's intent.
 
 ## Technical Details
-- `TranscriptDiffKind` gains `case slide(droppedHeadCount: Int)`; doc comment explains it is the
-  reducer's fixed bottom window advancing on a live append (follow-if-pinned, never yank).
+- `TranscriptDiffKind` gains `case slide(droppedHeadCount: Int)` plus `isPrepend` /
+  `holdsReaderAnchor`.
 - Classify sketch:
   ```swift
-  if new.count >= old.count,
-     let k = old.firstIndex(where: newSet.contains), k > 0,
-     old[k...].allSatisfy(newSet.contains) {
-    return .slide(droppedHeadCount: k)
-  }
+  guard let firstSurvivor = old.firstIndex(where: newSet.contains) else { return .reset }
+  if new.count < old.count, firstSurvivor > 0 { return .reset }
+  return .slide(droppedHeadCount: firstSurvivor)
   ```
 - `TranscriptScrollMath.offsetAfterAnchorShift(previousOffsetY:anchorShift:contentHeight:viewportHeight:topInset:bottomInset:)`
-  = `previousOffsetY + anchorShift` clamped to `[-topInset, maxOffsetY]`. `offsetAfterPrepend`
-  becomes a thin call into it (prepend is a positive shift); its existing tests stay green.
-- `apply(rows:)` flow: compute `diff` → if `.slide` and `!wasPinned`, capture `(anchorID, minY)`
-  BEFORE `dataSource.apply` → completion: existing first-population/reset branch (slide is no
-  longer a reset) → `preservePrepend` → `wasPinned` follow → `.slide` anchor preserve → `.slide`
-  without anchor ⇒ reset-jump fallback. Plain `.appendOrMutate` while scrolled up stays a no-op.
-- Risk to verify manually: a slide arriving mid-drag/deceleration. A delta shift (not an absolute
-  target) keeps UIKit's gesture continuous; confirm on device.
+  = `previousOffsetY + anchorShift` clamped to `[-topInset, maxOffsetY]`; it replaces
+  `offsetAfterPrepend` (a prepend is a positive shift).
+- `apply(rows:)` flow: classify → capture pre-apply offset, content height, and the anchor →
+  `dataSource.apply(animatingDifferences: false)` → same pass: prepend preserve or anchor hold
+  (skipped when the anchor moved ≤ 0.5pt, so a plain append leaves the offset alone) → completion:
+  jump-and-settle, or the pinned animated follow. Offsets are written directly (`assignOffset`).
+- Unverified on device: whether a fling continues smoothly across a hold.
 
 ## What Goes Where
 - **Implementation Steps**: classifier, math helper, renderer glue, tests, CLAUDE.md/doc comments.
@@ -167,7 +167,8 @@
 - [x] ➕ classify: any update that keeps an old row is a `.slide` unless the window shrank AND lost its head; turn-end empty-thinking removal (`freezeThinking`) and `reparkDrainingEntry` no longer `.reset` (`turnEndRemovingEmptyThinkingRowSlidesWindowNotReset`, `classifyTurnEndRowRemoval*`, `classifyTailRemovalThatShrinksIsSlide`)
 - [x] ➕ renderer: hold the reader's anchor on every `holdsReaderAnchor` update; no on-screen survivor ⇒ nearest survivor (tall dropped row clamps at the window top), never the jump-to-bottom fallback
 - [x] ➕ renderer: a programmatic shift that lands near the window top pages older rows (`loadOlderIfNearTop`)
-- [x] ➕ renderer: a pinned slide holds the survivors before the animated follow; offsets assigned directly (`assignOffset`), fling continuity unverified on device
+- [x] ➕ renderer: offsets assigned directly (`assignOffset`), fling continuity unverified on device
+- [x] ➕ review phase 4: hold and prepend preserve run in the same pass as the apply (no stale-offset overwrite, no uncorrected frame); a pinned slide jumps and settles (a re-id'd tail lands on estimated heights); measured tests `testHoldLandsWithTheSlideAndKeepsAScrollThatFollowsIt`, `testPinnedReaderEndsAtTheBottomAfterAHydrateReIdsTheTailRows`
 - [x] ➕ `offsetAfterPrepend` folded into `offsetAfterAnchorShift`; `TranscriptDiffKind.isPrepend` / `holdsReaderAnchor`
 - [x] ➕ measured tests: live tool-row shape, near-top paging, tall dropped row, pinned follow start; hydrate classify assertions in `ChatWindowingTests`
 
