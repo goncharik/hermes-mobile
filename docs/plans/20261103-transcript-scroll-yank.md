@@ -158,10 +158,10 @@
 - [x] `tuist generate` (new source file), then run `make snapshot` — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
-- [ ] scrolled-up reader is not moved by tool-call rows on a 50+ row chat; pinned reader still follows
-- [ ] load-older prepend preservation and open/hydrate-to-bottom behave as before
-- [ ] run full test suite: `make test`
-- [ ] run `make snapshot` (clean, no baseline changes)
+- [x] scrolled-up reader is not moved by tool-call rows on a 50+ row chat; pinned reader still follows (`liveToolCallSlidesWindowNotReset`, `classify*Slide*`, `TranscriptSlidePreservationTests`; on-device check in Post-Completion)
+- [x] load-older prepend preservation and open/hydrate-to-bottom behave as before (existing classify/windowing tests unchanged and green; renderer reset/prepend branches only extracted `jumpToBottomAndSettle`)
+- [x] run full test suite: `make test` (1940 tests passed)
+- [x] run `make snapshot` (clean, no baseline changes — 253/253)
 
 ### Task 6: [Final] Update documentation
 - [ ] CLAUDE.md "History paginates client-side" bullet: note the live window slides and the renderer classifies that as `.slide` (follow-if-pinned, anchor-preserve otherwise), never `.reset`
