@@ -313,23 +313,30 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Create: `HermesKit/Sources/HermesKit/Models/FileReference.swift`
 - Create: `HermesKit/Tests/HermesKitTests/FileReferenceScannerTests.swift`
 
-- [ ] add `InlineFileSegment` (`.text` / `.file(display:path:)`), `FileReference.url(for:)`,
+- [x] add `InlineFileSegment` (`.text` / `.file(display:path:)`), `FileReference.url(for:)`,
       `FileReference.path(from:)`, `FileReference.path(fromLinkTarget:)` in `FileReference.swift`
-- [ ] implement `FileReferenceScanner.segments(_ line: String) -> [InlineFileSegment]` with the
+- [x] implement `FileReferenceScanner.segments(_ line: String) -> [InlineFileSegment]` with the
       `MEDIA:` tag pass (quoted + unquoted, display = last component) and the bare-path regex
       pass incl. trailing-punctuation trimming, per the grammar in Technical Details
-- [ ] add `FilePreviewKind.infer(path:)`, `displayName`, `symbolName`
-- [ ] write table-driven tests for positives: `/home/e/out/report.pdf`, `~/Downloads/x.png`,
+- [x] add `FilePreviewKind.infer(path:)`, `displayName`, `symbolName`
+- [x] write table-driven tests for positives: `/home/e/out/report.pdf`, `~/Downloads/x.png`,
       backticked path, path followed by `.`/`,`/`)`, two paths in one line, `MEDIA:/a/b.mp3`,
       `MEDIA:"/a/with space.pdf"`, `+`/`@`/`%` in segments, 10-char extension
-- [ ] write the false-positive corpus: `https://host/a/b.pdf`, `1/2/2026`, `3/4`, `./out/x.pdf`,
+- [x] write the false-positive corpus: `https://host/a/b.pdf`, `1/2/2026`, `3/4`, `./out/x.pdf`,
       `src/foo.swift`, `/tmp`, `/usr/bin/python`, `a/b.c`, `/x/y.toolongextension`, a 11-char
       extension, mid-word `foo/bar.txt`
-- [ ] write tests for `path(fromLinkTarget:)` (`file:///a b.pdf` → `/a b.pdf`, `/abs/x.md`,
+- [x] write tests for `path(fromLinkTarget:)` (`file:///a b.pdf` → `/a b.pdf`, `/abs/x.md`,
       `~/x.md`, `https://…` → nil, `mailto:` → nil) and URL round-trip (spaces, `~`, unicode, `%`,
       `?`/`#` in path; foreign scheme → nil)
-- [ ] write tests for `FilePreviewKind.infer` (case-insensitive extensions, no extension → other)
-- [ ] run `swift test` — must pass before task 2
+- [x] write tests for `FilePreviewKind.infer` (case-insensitive extensions, no extension → other)
+- [x] run `swift test` — must pass before task 2
+- ➕ grammar refinements made while implementing (both reflected in `barePathPattern`'s doc
+  comment and the test corpus): a `~` root needs no directory segment (`~/x.md` links;
+  `/report.pdf` still does not), and the extension carries a `(?!\w|\.\w)` lookahead so
+  `/x/y.toolongextension` cannot match its first ten letters and `/x/y.z.longext` cannot match
+  `/x/y.z`, while `/a/b.pdf.` (sentence period) still ends cleanly. A bare `MEDIA:` capture
+  also sheds trailing sentence punctuation and must be a plausible path (desktop parity;
+  `MEDIA:...` stays prose).
 
 ### Task 2: `FilePreviewClient` over the `/api/fs/*` routes
 
