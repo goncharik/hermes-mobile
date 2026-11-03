@@ -359,6 +359,11 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     ///   on a live append) while scrolled up keeps the reader's topmost visible surviving row at
     ///   the same on-screen y; with no surviving visible row it falls back to the jump.
     /// - **nothing** — a plain append/mutate while scrolled up (no yank; the jump button stays).
+    ///
+    /// A hydrate is classified like any other update, so it jumps a scrolled-up reader only when
+    /// their rows are gone — the window shrank (a paged-up window re-trimmed to the bottom) or old
+    /// ids were replaced beyond a dropped head (`.reset`). A hydrate whose rows survive (unchanged,
+    /// appended, or slid) keeps the reader where they are.
     func apply(rows: [ChatRow]) {
       let newOrder = rows.map(\.id)
       let oldOrder = currentOrder
@@ -401,10 +406,11 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       }
 
       let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
-      // A wholesale replace of the visible slice — a server-authoritative re-hydrate
-      // (`session.resume` rebuilds rows to the bottom window) or a reorder. Per the open/hydrate
-      // contract this forces a jump-to-bottom regardless of pin state, so a re-hydrate while the
-      // user is scrolled up doesn't leave the list parked mid-history. A prepend that is *also*
+      // A wholesale replace of the visible slice — a server-authoritative re-hydrate that removed
+      // the reader's rows (`session.resume` re-trimming a paged-up window to the bottom, or
+      // replacing ids). Per the open/hydrate contract this forces a jump-to-bottom regardless of
+      // pin state, so the list isn't left parked mid-history. A hydrate whose rows survive is not
+      // a reset (append/mutate or `.slide`) and keeps the reader's place. A prepend that is *also*
       // being offset-preserved (`preservePrepend`) is explicitly NOT a reset — the prepend path
       // owns the offset there.
       let isReset = !preservePrepend && {
@@ -418,9 +424,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         guard let self else { return }
         defer { self.isApplyingSnapshot = false }
         if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
-          // Open / hydrate / wholesale-reset: jump to bottom (no animation) — always, regardless
-          // of pin state (honours the open/hydrate→bottom contract on a re-hydrate while the
-          // user had scrolled up).
+          // Open / wholesale-reset (incl. a hydrate that removed the reader's rows): jump to
+          // bottom (no animation) — always, regardless of pin state.
           self.jumpToBottomAndSettle()
         } else if preservePrepend {
           self.preserveOffsetAfterPrepend(

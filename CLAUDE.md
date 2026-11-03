@@ -143,7 +143,9 @@ bullets below are the compressed rules.
   hydrate; `message.delta` mutates the row in place, preserving its id.
 - **History paginates client-side** (no server pagination): `windowStart` window over
   the full in-memory transcript; hydrate resets to the bottom window; streaming append
-  never yanks a scrolled-up user.
+  never yanks a scrolled-up user. A live append that drops the window's head is a
+  `TranscriptDiffKind.slide`, never `.reset` (#125): follow if pinned, else hold the
+  reader's anchor row; only a `.reset` (rows gone / window shrank) jumps.
 - **`CollectionTranscriptView` is the ONLY renderer** — `UICollectionView` + diffable
   data source keyed on the deterministic row id + `UIHostingConfiguration` cells (the
   pure-SwiftUI engine was removed: it dropped tail messages). Stick-to-bottom is
@@ -331,7 +333,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (285/285), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (287/287), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

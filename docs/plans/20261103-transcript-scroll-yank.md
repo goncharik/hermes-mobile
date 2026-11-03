@@ -164,9 +164,9 @@
 - [x] run `make snapshot` (clean, no baseline changes — 253/253)
 
 ### Task 6: [Final] Update documentation
-- [ ] CLAUDE.md "History paginates client-side" bullet: note the live window slides and the renderer classifies that as `.slide` (follow-if-pinned, anchor-preserve otherwise), never `.reset`
-- [ ] note the hydrate contract nuance (jump only when the reader's rows are gone) in the renderer doc comment
-- [ ] move this plan to `docs/plans/completed/`
+- [x] CLAUDE.md "History paginates client-side" bullet: note the live window slides and the renderer classifies that as `.slide` (follow-if-pinned, anchor-preserve otherwise), never `.reset`
+- [x] note the hydrate contract nuance (jump only when the reader's rows are gone) in the renderer doc comment
+- [x] move this plan to `docs/plans/completed/` (deferred to the orchestrator's completion step)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — no checkboxes, informational only*
