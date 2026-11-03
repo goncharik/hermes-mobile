@@ -210,4 +210,64 @@ import Testing
     }
     #expect(TranscriptDiffKind.classify(old: oldTopSlice, new: newBottomWindow) == .reset)
   }
+
+  // MARK: - TranscriptDiffKind.classify — window slide (#125)
+
+  private func id(_ index: Int, _ kind: String = "message") -> ChatRow.ID {
+    ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: kind)
+  }
+
+  @Test func classifyPlainSlideIsSlide() {
+    // The reducer's fixed bottom window advanced by one row: the head row dropped off the top,
+    // one row appended at the bottom. Not a reset — a scrolled-up reader must not be yanked.
+    let old = (0..<50).map { id($0) }
+    let new = (1..<51).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyLiveToolCallSlideIsSlide() {
+    // Live `tool.start`: a tool row is inserted ABOVE the thinking row (keepThinkingLast) and the
+    // window drops its head row — a mid-insert combined with a dropped head.
+    let thinking = id(900, "thinking")
+    let tool = id(901, "tool")
+    let old = (0...48).map { id($0) } + [thinking]
+    let new = (1...48).map { id($0) } + [tool, thinking]
+    #expect(old.count == 50 && new.count == 50)
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyMultiRowSlideIsSlide() {
+    // Two rows appended in one update ⇒ two head rows dropped.
+    let old = (0..<50).map { id($0) }
+    let new = (2..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 2))
+  }
+
+  @Test func classifySlideThatGrewIsSlide() {
+    // The head dropped but the window still grew (rare, but the no-shrink rule admits it).
+    let old = (0..<50).map { id($0) }
+    let new = (1..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyShrunkWindowWithOverlapIsReset() {
+    // Paged up (100 visible rows), then a hydrate re-trims to the 50-row bottom window: the
+    // window shrank and the reader's rows are gone ⇒ still a reset (jump to bottom).
+    let old = (100..<200).map { id($0) }
+    let new = (150..<200).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
+
+  @Test func classifyZeroOverlapSameSizeIsReset() {
+    let old = (0..<50).map { id($0) }
+    let new = (100..<150).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
+
+  @Test func classifyHoleAfterDroppedHeadIsReset() {
+    // A head row dropped AND a surviving-range row vanished: not a clean slide ⇒ reset.
+    let old = (0..<50).map { id($0) }
+    let new = (1..<25).map { id($0) } + (26..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
 }

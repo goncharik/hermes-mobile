@@ -177,6 +177,30 @@ struct ChatWindowingTests {
     await store.send(.teardown)
   }
 
+  /// #125 regression: on a 50+ row transcript parked at the bottom window, each live row (the
+  /// thinking row at `message.start`, a tool row at `tool.start`) slides the fixed window — the
+  /// head row drops off. The renderer must see that as a `.slide`, never a `.reset` (which jumps
+  /// a scrolled-up reader to the bottom).
+  @Test func liveToolCallSlidesWindowNotReset() async {
+    let store = makeStore(transcript: rows(200))
+    store.exhaustivity = .off
+    let initial = store.state.visibleRows.map(\.id)
+
+    await store.send(.gatewayEvent(.messageStart))
+    let afterStart = store.state.visibleRows.map(\.id)
+    #expect(TranscriptDiffKind.classify(old: initial, new: afterStart) == .slide(droppedHeadCount: 1))
+
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: nil, argsText: nil)))
+    let afterTool = store.state.visibleRows.map(\.id)
+    #expect(afterTool.count == ChatFeature.State.initialWindow)
+    #expect(afterTool.last == store.state.thinkingRowID) // tool row landed above thinking
+    let kind = TranscriptDiffKind.classify(old: afterStart, new: afterTool)
+    #expect(kind == .slide(droppedHeadCount: 1))
+    #expect(kind != .reset)
+
+    await store.send(.teardown)
+  }
+
   // MARK: Hydrate resets to the bottom window
 
   /// A wholesale hydrate (`session.resume`) resets the window to the bottom, discarding any prior

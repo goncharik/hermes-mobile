@@ -116,13 +116,13 @@
 - Modify: `HermesKit/Tests/HermesKitTests/TranscriptScrollMathTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatWindowingTests.swift`
 
-- [ ] write failing test: plain slide (old `[0..<50]`, new `[1..<51]`) ⇒ `.slide(droppedHeadCount: 1)`
-- [ ] write failing test: live tool-call slide (old `[r0…r48, thinking]`, new `[r1…r48, tool, thinking]`) ⇒ `.slide(1)`
-- [ ] write failing test: multi-row slide (two rows appended in one update) ⇒ `.slide(2)`
-- [ ] write tests that stay `.reset`: window shrank with overlap (paged-up then hydrate), zero overlap; existing reset/prepend/append tests unchanged
-- [ ] write failing reducer regression in `ChatWindowingTests`: 200-row transcript at the bottom window, `.messageStart` then `.toolStart(...)`; `classify(old visibleRows ids, new visibleRows ids)` is `.slide`, never `.reset`
-- [ ] add `case slide(droppedHeadCount:)` and the slide rule to `classify` with doc comments; update the enum's top doc comment
-- [ ] run `make test` — must pass before task 2
+- [x] write failing test: plain slide (old `[0..<50]`, new `[1..<51]`) ⇒ `.slide(droppedHeadCount: 1)`
+- [x] write failing test: live tool-call slide (old `[r0…r48, thinking]`, new `[r1…r48, tool, thinking]`) ⇒ `.slide(1)`
+- [x] write failing test: multi-row slide (two rows appended in one update) ⇒ `.slide(2)`
+- [x] write tests that stay `.reset`: window shrank with overlap (paged-up then hydrate), zero overlap; existing reset/prepend/append tests unchanged
+- [x] write failing reducer regression in `ChatWindowingTests`: 200-row transcript at the bottom window, `.messageStart` then `.toolStart(...)`; `classify(old visibleRows ids, new visibleRows ids)` is `.slide`, never `.reset`
+- [x] add `case slide(droppedHeadCount:)` and the slide rule to `classify` with doc comments; update the enum's top doc comment
+- [x] run `make test` — must pass before task 2
 
 ### Task 2: Add the anchor-shift offset helper
 

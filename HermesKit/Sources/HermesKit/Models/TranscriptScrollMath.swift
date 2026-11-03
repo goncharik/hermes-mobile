@@ -65,10 +65,12 @@ public enum TranscriptScrollMath {
 }
 
 /// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
-/// append/in-place mutation (streaming / new turn / live-turn reorder), or a *reset* (a genuine
-/// wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A prepend
-/// requires offset preservation; a reset forces a jump-to-bottom (the open/hydrate contract);
-/// everything else follows the pin rule. Pure over the row id sequences so it is testable.
+/// append/in-place mutation (streaming / new turn / live-turn reorder), a *slide* (the reducer's
+/// fixed bottom window advancing on a live append, dropping its head rows), or a *reset* (a
+/// genuine wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A
+/// prepend requires offset preservation; a slide follows if pinned and otherwise preserves the
+/// reader's anchor row; a reset forces a jump-to-bottom (the open/hydrate contract); everything
+/// else follows the pin rule. Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
@@ -80,12 +82,21 @@ public enum TranscriptDiffKind: Equatable, Sendable {
   case appendOrMutate
   /// No structural change to the id sequence (pure content mutation, e.g. a delta).
   case inPlace
+  /// The reducer's fixed bottom window (`ChatFeature.State.initialWindow`) advanced on a live
+  /// append (#125): a leading run of `droppedHeadCount` old rows fell off the top, every other
+  /// old row survives, and the window did not shrink. New rows may land anywhere below the
+  /// dropped head (including the `keepThinkingLast` insert above the thinking row). Follow if
+  /// pinned; otherwise the renderer preserves the reader's on-screen anchor row — **never yank**.
+  /// Without this case a tool-heavy turn on a 50+ row chat classified every tool row as `.reset`.
+  case slide(droppedHeadCount: Int)
   /// A *genuine* wholesale replacement of the visible slice: the new id sequence is neither a
   /// reordering nor a superset of the old one — the old rows were largely replaced by different
   /// ids, which is what `reconstructTranscript` produces (fresh deterministic ids) only when the
   /// underlying messages actually changed (a server-authoritative re-hydrate via `session.resume`,
   /// or first population). Per the open/hydrate contract the renderer must force a jump-to-bottom
-  /// on a reset, regardless of pin state. A live-turn reorder is explicitly NOT a reset.
+  /// on a reset, regardless of pin state. A live-turn reorder is explicitly NOT a reset, and
+  /// neither is a window slide (`.slide`); a window that SHRANK (a hydrate re-trimming a
+  /// paged-up window) still is.
   case reset
 
   /// Classify the transition from `old` row ids to `new` row ids.
@@ -132,6 +143,15 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     let newSet = Set(new)
     if newSet == oldSet { return .appendOrMutate }       // permutation / reorder
     if oldSet.isSubset(of: newSet) { return .appendOrMutate } // superset: old rows preserved
+    // Slide (#125): the fixed bottom window advanced — a leading run of old ids is gone, every
+    // remaining old id survives, and the window did not shrink. A shrink is deliberately NOT a
+    // slide: that is a hydrate re-trimming a paged-up window, which removes the reader's rows
+    // and keeps the jump-to-bottom contract.
+    if new.count >= old.count,
+       let firstSurvivor = old.firstIndex(where: newSet.contains), firstSurvivor > 0,
+       old[firstSurvivor...].allSatisfy(newSet.contains) {
+      return .slide(droppedHeadCount: firstSurvivor)
+    }
     // The old rows were largely replaced by different ids ⇒ genuine wholesale reset.
     return .reset
   }
