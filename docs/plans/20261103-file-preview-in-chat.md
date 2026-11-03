@@ -388,25 +388,33 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Create: `HermesKit/Sources/HermesKit/Features/FilePreviewFeature.swift`
 - Create: `HermesKit/Tests/HermesKitTests/FilePreviewFeatureTests.swift`
 
-- [ ] add `State` (public init), `Content`, `Reason`, `GenericInfo`, `ShareState`, `Action` per
+- [x] add `State` (public init), `Content`, `Reason`, `GenericInfo`, `ShareState`, `Action` per
       Technical Details; `CancelID.load / .download / .copyFeedback`;
       `copiedFeedbackDuration = .seconds(1.5)` (duplicated per feature, per the toast idiom)
-- [ ] implement `.task` / `.retry` → load effect by kind (`readData` for image/pdf, `readText`
+- [x] implement `.task` / `.retry` → load effect by kind (`readData` for image/pdf, `readText`
       otherwise), `.loaded` fold (`binary` → generic, error → reason mapping or `.failed`)
-- [ ] implement share lifecycle: `.shareTapped` → `.downloading(nil)` + `download` effect;
+- [x] implement share lifecycle: `.shareTapped` → `.downloading(nil)` + `download` effect;
       `.downloadEvent`; `.downloadFailed` → `.idle` + `shareError`; `.cancelDownload`;
       `.shareDismissed`
-- [ ] implement `.copyPath` (pasteboard + token bump + dwell) and `.copiedFeedbackElapsed`
-- [ ] write `TestStore` tests: image success, pdf success, text success (truncated flag
+- [x] implement `.copyPath` (pasteboard + token bump + dwell) and `.copiedFeedbackElapsed`
+- [x] write `TestStore` tests: image success, pdf success, text success (truncated flag
       preserved), binary → `.generic(.unsupported)` with byteSize, 404 → `.notFound` with
       server detail, 403 → `.protected`, 413 → `.tooLarge`, transport error → `.failed` then
       `.retry` succeeds
-- [ ] write share tests: progress sequence → `.ready(url)`; cancel mid-download → `.idle` and the
+- [x] write share tests: progress sequence → `.ready(url)`; cancel mid-download → `.idle` and the
       effect is cancelled; failure → `.idle` + `shareError`; `.shareDismissed` → `.idle` keeps no
       URL but a second `.shareTapped` restarts cleanly
-- [ ] write copy-toast tests with `TestClock`: token bumps on each copy, clears after 1.5 s, a
+- [x] write copy-toast tests with `TestClock`: token bumps on each copy, clears after 1.5 s, a
       second copy inside the dwell restarts it
-- [ ] run `swift test` — must pass before task 4
+- [x] run `swift test` — must pass before task 4
+- ➕ `State` gained `downloadedURL: URL?` alongside `share`: `.shareDismissed` drops `share` to
+  `.idle` (no URL in the share state) while the finished temp file's URL is kept here, so a
+  second Share re-presents instantly with no round-trip and **Task 4's dismiss cleanup reads
+  `downloadedURL`** (not `share`) for `removeTemp`. `.task` loads only while `content ==
+  .loading` (a re-appearance never discards a loaded preview; `.retry` is the explicit reload).
+  The client types a 404 as `RESTError.notFound` (no detail); the reducer ALSO maps
+  `.server(404, detail)` → `.generic(.notFound, serverDetail:)` so the sandbox hint is kept
+  if the transport ever surfaces it — the "404 with server detail" test covers that shape.
 
 ### Task 4: Wire the child into `ChatFeature`
 
