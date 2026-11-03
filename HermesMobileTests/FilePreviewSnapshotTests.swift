@@ -9,9 +9,10 @@ import XCTest
 /// Snapshots for the file preview sheet (file preview in chat): the generic card for each
 /// `Reason`, the failure state with Retry, the loading spinner, the monospaced text preview
 /// (with its language caption, its truncation banner, and the "Path copied" toast), the
-/// zoomable image preview, the PDF preview, and the view-side fallback for image bytes UIKit
-/// can't decode. The image and PDF fixtures are generated in-test (`UIGraphicsImageRenderer`
-/// / `UIGraphicsPDFRenderer`) so no binary fixture is checked in.
+/// zoomable image preview, the PDF preview, the view-side fallback for image bytes UIKit
+/// can't decode, and the Share status strip (determinate and indeterminate download, the
+/// download-failed banner). The image and PDF fixtures are generated in-test
+/// (`UIGraphicsImageRenderer` / `UIGraphicsPDFRenderer`) so no binary fixture is checked in.
 ///
 /// The content region is rendered on its own (`FilePreviewSheet.content`) at a pinned width
 /// AND height: every state fills the greedy region the sheet gives it, the text preview is a
@@ -27,12 +28,16 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
   private var phoneWidth: CGFloat { device.size?.width ?? 390 }
 
   private func store(
-    path: String, content: FilePreviewFeature.Content, copiedToken: Int? = nil
+    path: String,
+    content: FilePreviewFeature.Content,
+    share: FilePreviewFeature.ShareState = .idle,
+    shareError: String? = nil,
+    copiedToken: Int? = nil
   ) -> StoreOf<FilePreviewFeature> {
     Store(
       initialState: FilePreviewFeature.State(
         path: path, sessionID: "snapshot-session", connection: connection, content: content,
-        copiedToken: copiedToken
+        share: share, shareError: shareError, copiedToken: copiedToken
       )
     ) {
       FilePreviewFeature().ignoring(\.task)
@@ -41,9 +46,17 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
 
   /// The sheet's content region alone, pinned to a phone-wide 600pt slot.
   private func content(
-    path: String, _ content: FilePreviewFeature.Content, copiedToken: Int? = nil
+    path: String,
+    _ content: FilePreviewFeature.Content,
+    share: FilePreviewFeature.ShareState = .idle,
+    shareError: String? = nil,
+    copiedToken: Int? = nil
   ) -> some View {
-    FilePreviewSheet(store: store(path: path, content: content, copiedToken: copiedToken)).content
+    FilePreviewSheet(
+      store: store(
+        path: path, content: content, share: share, shareError: shareError, copiedToken: copiedToken
+      )
+    ).content
       .frame(width: phoneWidth, height: regionHeight)
       .background(Color(uiColor: .systemBackground))
       .dynamicTypeSize(.large)
@@ -51,10 +64,18 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
 
   /// The whole sheet — navigation title, `Done`, bottom bar — as the user sees it.
   private func sheet(
-    path: String, _ content: FilePreviewFeature.Content, copiedToken: Int? = nil
+    path: String,
+    _ content: FilePreviewFeature.Content,
+    share: FilePreviewFeature.ShareState = .idle,
+    shareError: String? = nil,
+    copiedToken: Int? = nil
   ) -> some View {
-    FilePreviewSheet(store: store(path: path, content: content, copiedToken: copiedToken))
-      .dynamicTypeSize(.large)
+    FilePreviewSheet(
+      store: store(
+        path: path, content: content, share: share, shareError: shareError, copiedToken: copiedToken
+      )
+    )
+    .dynamicTypeSize(.large)
   }
 
   // MARK: Generic card
@@ -244,6 +265,52 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
     }
   }
 
+  // MARK: Share status strip
+
+  /// Share in flight with a known size: the strip inset at the bottom of the region (the
+  /// generic card re-centres above it) with "Downloading… 45%", Cancel, and the linear bar
+  /// filled to 45 %.
+  func testContent_downloading_determinate() {
+    let view = content(
+      path: "/home/eugene/out/export-2026-11-03.zip",
+      .generic(.init(reason: .unsupported, byteSize: 4_718_592)),
+      share: .downloading(fraction: 0.45)
+    )
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  func testContent_downloading_determinate_light() {
+    let view = content(
+      path: "/home/eugene/out/export-2026-11-03.zip",
+      .generic(.init(reason: .unsupported, byteSize: 4_718_592)),
+      share: .downloading(fraction: 0.45)
+    )
+    assertSnapshot(of: view, as: componentImage(appearance: .light))
+  }
+
+  /// No `Content-Length` from the server: a small spinner leads the "Downloading…" label, no
+  /// percentage, no bar — Cancel still offered. A layer render draws the spinner's model
+  /// layer, so the capture is deterministic (as for `testContent_loading`).
+  func testContent_downloading_indeterminate() {
+    let view = content(
+      path: "/home/eugene/out/export-2026-11-03.zip",
+      .generic(.init(reason: .unsupported, byteSize: 4_718_592)),
+      share: .downloading(fraction: nil)
+    )
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// The download failed: Share is back to idle (the bottom bar re-enables it — see the
+  /// sheet capture) and the error strip shows the message in the chat's red banner idiom.
+  func testContent_shareError() {
+    let view = content(
+      path: "/home/eugene/out/export-2026-11-03.zip",
+      .generic(.init(reason: .unsupported, byteSize: 4_718_592)),
+      shareError: "The agent is offline. Check the connection and try again."
+    )
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   // MARK: Whole sheet
 
   /// The chrome around the generic card: the file name as the inline title, `Done`, and the
@@ -275,6 +342,19 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
     let view = sheet(
       path: "/home/eugene/out/report.pdf",
       .failed(message: "The agent is offline. Check the connection and try again.")
+    )
+    assertSnapshot(of: view, as: deviceImage())
+  }
+
+  /// A determinate download inside the sheet: the strip sits directly ABOVE the Copy path /
+  /// Share bottom bar (the content region's safe area ends at the bar), and Share itself is
+  /// disabled while the bytes are in flight. Determinate on purpose — a whole-sheet capture
+  /// of the indeterminate spinner would catch it at an arbitrary rotation.
+  func testSheet_downloading() {
+    let view = sheet(
+      path: "/home/eugene/out/export-2026-11-03.zip",
+      .generic(.init(reason: .unsupported, byteSize: 4_718_592)),
+      share: .downloading(fraction: 0.45)
     )
     assertSnapshot(of: view, as: deviceImage())
   }

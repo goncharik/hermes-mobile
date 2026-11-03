@@ -581,13 +581,30 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Modify: `HermesMobile/Sources/Features/Chat/FilePreview/FilePreviewSheet.swift`
 - Modify: `HermesMobileTests/FilePreviewSnapshotTests.swift`
 
-- [ ] implement `ActivityShareSheet` (`UIActivityViewController` representable, iPad popover
+- [x] implement `ActivityShareSheet` (`UIActivityViewController` representable, iPad popover
       anchored to the toolbar, completion → `.shareDismissed`)
-- [ ] add the download progress overlay (determinate `ProgressView` when the fraction is known,
+- [x] add the download progress overlay (determinate `ProgressView` when the fraction is known,
       indeterminate otherwise, Cancel → `.cancelDownload`) and the `shareError` banner
-- [ ] present `ActivityShareSheet` via `.sheet(item:)` bound to `share == .ready(url)`
-- [ ] write snapshots: downloading at 45 %, downloading indeterminate, share error banner
-- [ ] run `make snapshot` twice — must pass before task 10
+- [x] present `ActivityShareSheet` via `.sheet(item:)` bound to `share == .ready(url)`
+- [x] write snapshots: downloading at 45 %, downloading indeterminate, share error banner
+- [x] run `make snapshot` twice — must pass before task 10
+- ➕ the share sheet is a SwiftUI `.sheet(item:)` (detents `.medium` / `.large`) over a private
+  `ShareItem` (`Identifiable` by the URL string) derived from `share == .ready(url)` — NOT a
+  popover, so no iPad source-view anchor is needed on any device. The activity controller is a
+  child of the sheet's hosting controller, so its completion handler and the binding's nil-set
+  can both fire for one dismissal; the sheet sends `.shareDismissed` through one guarded helper
+  (`share` must still be `.ready`), so the reducer sees it once. The reducer already cleared
+  `shareError` on `.shareTapped` (Task 3) — no HermesKit change. The status strip is a bottom
+  `safeAreaInset` on the `content` region, attached AFTER the toast overlay (the toast's
+  `.safeAreaPadding(.bottom)` then lifts it above the strip): determinate = label with the
+  percentage + Cancel over a linear bar; indeterminate = a small spinner leading the label, no
+  bar (an empty track would read as stuck at 0); the error strip reuses the chat banner idiom
+  (red caption over `red.opacity(0.12)`). Appearance / swap animates with `.snappy`, keyed on a
+  three-state kind (never on a progress tick), nil under reduce-motion. The strip draws in a
+  `componentImage()` layer render (solid backgrounds, no glass), so 4 captures are `content`
+  renders at 390×600 (45 % dark + light, indeterminate, error) plus one whole-sheet
+  `deviceImage()` of the determinate case pinning the strip above the bottom bar with Share
+  disabled. `make snapshot` is now 275/275 (5 new baselines; the Task 11 count update stands).
 
 ### Task 10: Verify acceptance criteria
 - [ ] verify every detection shape from the Overview is tappable in a real chat (link, `MEDIA:`,
