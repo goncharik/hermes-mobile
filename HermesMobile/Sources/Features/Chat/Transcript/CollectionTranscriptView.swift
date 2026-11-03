@@ -212,9 +212,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var rowsByID: [ChatRow.ID: ChatRow] = [:]
     private var currentOrder: [ChatRow.ID] = []
 
-    /// Renderer-local pin state (~60pt). Never lives in the reducer. Starts pinned so the
-    /// first population follows the open-at-bottom contract.
+    /// Renderer-local pin state. Never lives in the reducer. Starts pinned so the first
+    /// population follows the open-at-bottom contract; afterwards only the user's own scrolling
+    /// (`TranscriptScrollMath.pinnedAfterUserScroll`), the jump button, or a jump changes it.
     private var isPinnedToBottom = true
+    /// The offset at the last `scrollViewDidScroll`, so a user scroll's direction is known.
+    private var lastOffsetY: CGFloat?
     /// Guards the one-shot open/hydrate jump for this view instance.
     private var didInitialJump = false
     /// True while the initial (or post-hydrate) open-at-bottom is still *settling*. Two things make
@@ -325,6 +328,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       let host = UIHostingController(
         rootView: ScrollToBottomButton { [weak self] in
           guard let self else { return }
+          self.isPinnedToBottom = true
+          self.setJumpButtonVisible(false)
           self.scrollToBottom(animated: !self.reduceMotion)
         }
       )
@@ -565,7 +570,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           guard let self, self.animationGuardGeneration == generation, self.isAdjustingOffset
           else { return }
           self.isAdjustingOffset = false
-          self.updatePinState()
         }
       } else {
         DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
@@ -622,18 +626,22 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       scrollToBottom(animated: false)
     }
 
-    /// Re-evaluate pin state from live geometry and toggle the jump button on a change.
-    private func updatePinState() {
+    /// Update the pin from a user scroll that moved the offset by `delta`, and toggle the jump
+    /// button on a change.
+    private func updatePinState(delta: CGFloat) {
       // While settling the initial open-at-bottom, intermediate cell-sizing can momentarily look
-      // "not at bottom"; don't let that flip the pin off (it would stop the re-pin and strand the
-      // list short of the real bottom). The settle-release timer re-evaluates once stable.
+      // "not at bottom"; don't let that flip the pin off (a drag ends the settle first).
       guard !needsInitialBottomSettle else { return }
       guard let collectionView else { return }
-      let pinned = TranscriptScrollMath.isPinnedToBottom(
+      let maxY = TranscriptScrollMath.maxOffsetY(
         contentHeight: collectionView.contentSize.height,
         viewportHeight: collectionView.bounds.height,
-        bottomInset: collectionView.adjustedContentInset.bottom,
-        offsetY: collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        topInset: collectionView.adjustedContentInset.top,
+        bottomInset: collectionView.adjustedContentInset.bottom
+      )
+      let pinned = TranscriptScrollMath.pinnedAfterUserScroll(
+        wasPinned: isPinnedToBottom, delta: delta,
+        distanceFromBottom: maxY - collectionView.contentOffset.y
       )
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
@@ -644,10 +652,15 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     // MARK: UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-      // Skip programmatic adjustments (jump / follow / anchor hold / prepend-preserve) — only real user scrolls
-      // should mutate pin state.
+      // Track every offset change, programmatic included, so a user scroll's delta is measured
+      // from where our own adjustments left the list.
+      let offsetY = scrollView.contentOffset.y
+      let delta = offsetY - (lastOffsetY ?? offsetY)
+      lastOffsetY = offsetY
+      // Skip programmatic adjustments (jump / follow / anchor hold / prepend-preserve) — only
+      // real user scrolls mutate pin state.
       guard !isAdjustingOffset else { return }
-      updatePinState()
+      updatePinState(delta: delta)
       loadOlderIfNearTop()
     }
 
@@ -671,9 +684,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // An animated programmatic follow (`scrollToBottom(animated: true)`) has settled. Clear
       // the re-entrancy guard now — not synchronously when the animation was kicked off — so the
       // intermediate animation frames were never mistaken for user scrolls (which would have
-      // dropped the pin mid-follow). Re-evaluate pin state from the final resting offset.
+      // dropped the pin mid-follow). The pin stays as the follow found it: only a user scroll
+      // changes it.
       isAdjustingOffset = false
-      updatePinState()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -684,6 +697,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
       // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
       isAdjustingOffset = false
+      lastOffsetY = scrollView.contentOffset.y
       // A deliberate user scroll also ends any initial open-at-bottom settle — respect their
       // intent rather than yanking back to the bottom as cells finish sizing.
       needsInitialBottomSettle = false

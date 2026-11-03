@@ -28,6 +28,23 @@ public enum TranscriptScrollMath {
     return distanceFromBottom <= threshold
   }
 
+  /// The pin after a user-driven scroll moved the offset by `delta` (negative = toward older
+  /// rows). Pinning follows the user's direction, not just geometry: scrolling up off the bottom
+  /// unpins, and only scrolling down to within `threshold` of the bottom re-pins. A viewport
+  /// change (the keyboard hiding grows the list at the bottom and can land a reader who scrolled
+  /// up inside the threshold) never re-pins on its own (#125). The `> 0.5` distance guard keeps
+  /// the bounce-back from an overscroll at the bottom from counting as scrolling up.
+  public static func pinnedAfterUserScroll(
+    wasPinned: Bool,
+    delta: CGFloat,
+    distanceFromBottom: CGFloat,
+    threshold: CGFloat = bottomThreshold
+  ) -> Bool {
+    if delta < -0.5, distanceFromBottom > 0.5 { return false }
+    if delta > 0.5, distanceFromBottom <= threshold { return true }
+    return wasPinned
+  }
+
   /// The maximum legal vertical content offset for a scroll view (clamped at 0 so short
   /// transcripts that don't fill the viewport never produce a negative offset).
   public static func maxOffsetY(

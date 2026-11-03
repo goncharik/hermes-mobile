@@ -146,6 +146,33 @@ import Testing
     )
   }
 
+  // MARK: - pinnedAfterUserScroll (#125)
+
+  @Test func scrollingUpOffTheBottomUnpinsEvenInsideTheThreshold() {
+    // The keyboard case: the reader scrolled up and the list grew under them, leaving them
+    // 50pt from the bottom. Their scroll went up, so they are not following.
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -20, distanceFromBottom: 50))
+  }
+
+  @Test func scrollingDownToWithinTheThresholdRepins() {
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 30, distanceFromBottom: 40))
+  }
+
+  @Test func scrollingDownButStillFarFromTheBottomStaysUnpinned() {
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 30, distanceFromBottom: 200))
+  }
+
+  @Test func bounceBackFromAnOverscrollAtTheBottomKeepsThePin() {
+    // Rubber-banding back from past the bottom moves the offset up while still at the bottom.
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -15, distanceFromBottom: -10))
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -15, distanceFromBottom: 0))
+  }
+
+  @Test func noMovementKeepsThePin() {
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: 0, distanceFromBottom: 300))
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 0, distanceFromBottom: 0))
+  }
+
   // MARK: - TranscriptDiffKind.classify
 
   private func ids(_ count: Int) -> [ChatRow.ID] {
