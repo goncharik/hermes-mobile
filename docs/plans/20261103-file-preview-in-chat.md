@@ -487,20 +487,29 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Create: `HermesMobile/Sources/Features/Chat/FilePreview/GenericFileCardView.swift`
 - Create: `HermesMobileTests/FilePreviewSnapshotTests.swift`
 
-- [ ] add one `OpenURLAction` in `ChatView` (`hermes-file:` → `store.send(.fileReferenceTapped
+- [x] add one `OpenURLAction` in `ChatView` (`hermes-file:` → `store.send(.fileReferenceTapped
       (path:))`, `.handled`; otherwise `.systemAction`) and apply it to the `transcriptCell`
       content and to the chat body
-- [ ] add `.sheet(item: $store.scope(state: \.filePreview, action: \.filePreview))` presenting
+- [x] add `.sheet(item: $store.scope(state: \.filePreview, action: \.filePreview))` presenting
       `FilePreviewSheet` with `.presentationDetents([.large])`
-- [ ] implement `FilePreviewSheet`: `NavigationStack`, filename title, `Done`, bottom toolbar
+- [x] implement `FilePreviewSheet`: `NavigationStack`, filename title, `Done`, bottom toolbar
       with `Copy path` and `Share` (Share disabled while `.downloading`), content switch with
       `ProgressView` for `.loading`, `GenericFileCardView` for `.generic`, an error view with
       `Retry` for `.failed`; text/image/pdf branches render placeholder views until Task 7/8
-- [ ] implement `GenericFileCardView` (symbol, filename, centered selectable path, byte size,
+- [x] implement `GenericFileCardView` (symbol, filename, centered selectable path, byte size,
       reason copy, optional server detail)
-- [ ] write snapshots: generic card (unsupported with size; not found with server detail;
+- [x] write snapshots: generic card (unsupported with size; not found with server detail;
       protected; too large), error state with Retry, loading — pinned width/height, light + dark
-- [ ] run `tuist generate`, `make snapshot` twice — must pass before task 7
+- [x] run `tuist generate`, `make snapshot` twice — must pass before task 7
+- ➕ the sheet's content region is an internal `FilePreviewSheet.content` so the snapshot suite
+  renders it at a pinned 390×600 via `componentImage()` (8 captures: four generic reasons,
+  failed, loading; light variants for unsupported + failed); two `deviceImage()` captures of the
+  whole sheet pin the chrome (inline file-name title, `Done`, Copy path / Share bottom bar — iOS 26
+  renders bottom-bar labels icon-only, the text stays the accessibility label). `.failed` uses
+  `ContentUnavailableView` with a prominent Retry. `Done` is the environment `dismiss` (nils the
+  scoped `.sheet(item:)` binding → `.filePreview(.dismiss)`), matching `ToolDetailSheet`. Every
+  snapshot store swallows `.task` (`Reducer.ignoring`) so the unimplemented test client is never
+  hit. `make snapshot` is now 258/258.
 
 ### Task 7: Text preview and copy toast
 
