@@ -15,6 +15,10 @@ final class MockURLProtocol: URLProtocol {
     /// `RESTError(transport:)` maps only those to `.offline`.
     var failCode: URLError.Code = .cannotConnectToHost
     var headers: [String: String] = [:]
+    /// Deliver the response and `body` first, THEN fail with `failCode` — a connection that
+    /// drops mid-transfer. Lets the streaming download tests prove a partial file is cleaned
+    /// up; every other stub leaves it `false`.
+    var failAfterBody = false
   }
 
   nonisolated(unsafe) static var stub = Stub()
@@ -68,6 +72,10 @@ final class MockURLProtocol: URLProtocol {
     )!
     client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
     client?.urlProtocol(self, didLoad: stub.body)
+    if stub.failAfterBody {
+      client?.urlProtocol(self, didFailWithError: URLError(stub.failCode))
+      return
+    }
     client?.urlProtocolDidFinishLoading(self)
   }
 }

@@ -346,31 +346,41 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Create: `HermesKit/Tests/HermesKitTests/FilePreviewClientTests.swift`
 - Create: `HermesKit/Tests/HermesKitTests/DataURLTests.swift`
 
-- [ ] add `DataURL.parse(_:) -> (mimeType: String?, data: Data)?` (base64 only; rejects
+- [x] add `DataURL.parse(_:) -> (mimeType: String?, data: Data)?` (base64 only; rejects
       non-base64 and malformed headers)
-- [ ] add `FileTextRead`, `FileDataRead`, `DownloadEvent` and the `@DependencyClient`
+- [x] add `FileTextRead`, `FileDataRead`, `DownloadEvent` and the `@DependencyClient`
       `FilePreviewClient` (`readText`, `readData`, `download`, `removeTemp`) with `testValue`
       and `DependencyValues.filePreview`
-- [ ] implement `live(session:tokenStore:)` mirroring `HermesRESTClient.live`: `makeURL` +
+- [x] implement `live(session:tokenStore:)` mirroring `HermesRESTClient.live`: `makeURL` +
       `path`/`session_id` query items (omit `session_id` when nil), `resolveAuth`, `validate`,
       `serverDetail`; `readData` decodes the `dataUrl` via `DataURL.parse` (malformed →
       `RESTError.decoding`)
-- [ ] implement `download` streaming to `temporaryDirectory/hermes-file-preview/<UUID>/<fileName>`
+- [x] implement `download` streaming to `temporaryDirectory/hermes-file-preview/<UUID>/<fileName>`
       with `.progress` events (≥64 KB granularity, nil fraction without `Content-Length`) and
       `.finished(url)`; cancellation / failure removes the partial directory; `removeTemp` deletes
       the file's parent `<UUID>` directory
-- [ ] (manual, no checkbox needed in code) sanity-check the real routes once against a running
+- [x] (manual, no checkbox needed in code) sanity-check the real routes once against a running
       agent: `curl -H "X-Hermes-Session-Token: …" "$URL/api/fs/read-text?path=~/x.txt"` — and
       confirm whether `session_id` wants the stored id (`sessionKey`); note the answer in
-      `docs/features/file-preview.md` in Task 10
-- [ ] write `MockURLProtocol` tests: request path + query items + auth header for token and
+      `docs/features/file-preview.md` in Task 10 — **skipped (not automatable: no running
+      agent in the unattended run)**; the `session_id` = stored-id question stays OPEN for the
+      docs task (Task 11) and the Post-Completion manual verification
+- [x] write `MockURLProtocol` tests: request path + query items + auth header for token and
       bearer modes; `readText` decode; `readData` decode of a tiny PNG data URL; 404 →
       `RESTError.notFound`; 403 / 413 → `.server(status:detail:)`; malformed data URL → `.decoding`
-- [ ] write download tests: bytes land in a file named `fileName`, progress reaches 1.0 with
+- [x] write download tests: bytes land in a file named `fileName`, progress reaches 1.0 with
       `Content-Length`, nil fractions without it, `removeTemp` deletes the directory, a thrown
       transport error cleans up the partial directory
-- [ ] write `DataURL` tests (valid, missing `;base64`, bad base64, empty payload)
-- [ ] run `swift test` — must pass before task 3
+- [x] write `DataURL` tests (valid, missing `;base64`, bad base64, empty payload)
+- [x] run `swift test` — must pass before task 3
+- ➕ `live` also takes `temporaryDirectory:` (default `FileManager.default.temporaryDirectory`)
+  so the download tests own a scratch root and can assert "no folder left behind" exactly;
+  `MockURLProtocol.Stub` gained `failAfterBody` (body first, then the transport error) for
+  the mid-transfer cleanup test. An empty base64 payload parses to empty `Data` (a 0-byte
+  file is a real file; the view's image-decode fallback shows the generic card). A cancelled
+  consumer removes the partial directory synchronously from the stream's `onTermination`; a
+  download that already finished before the effect was cancelled keeps its file until the
+  sheet's `removeTemp` / the OS clears `tmp` (accepted residual).
 
 ### Task 3: `FilePreviewFeature` reducer
 
