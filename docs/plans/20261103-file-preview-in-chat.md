@@ -452,22 +452,32 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Modify: `HermesMobile/Sources/Features/Chat/MarkdownText.swift`
 - Modify: `HermesMobileTests/ChatSnapshotTests.swift` (or create `FileReferenceLinkSnapshotTests.swift`)
 
-- [ ] `ProseAttributedBuilder.inlineRuns`: for a run with `run.link`, swap to
+- [x] `ProseAttributedBuilder.inlineRuns`: for a run with `run.link`, swap to
       `FileReference.url(for:)` when `path(fromLinkTarget:)` returns a path; for a run without a
       link, map `FileReferenceScanner.segments(text)` to sub-runs, attaching `.link` and the tint
       color to `.file` segments (code-span font preserved on the path)
-- [ ] `MarkdownText.inline`: same segment mapping on the `AttributedString` runs so blockquotes,
+- [x] `MarkdownText.inline`: same segment mapping on the `AttributedString` runs so blockquotes,
       list items and table cells carry the link too
-- [ ] `SelectableText`: add the `Coordinator` `UITextViewDelegate` with
+- [x] `SelectableText`: add the `Coordinator` `UITextViewDelegate` with
       `primaryAction(for:defaultAction:)` (our scheme → `UIAction` calling
       `context.environment.openURL`; else `defaultAction`) and `menuConfiguration(for:defaultMenu:)`
       (nil for our scheme); set `view.delegate = context.coordinator`
-- [ ] verify `ChatRow.copyText` and the code-block copy path still copy the raw source (the
+- [x] verify `ChatRow.copyText` and the code-block copy path still copy the raw source (the
       `MEDIA:` display swap is render-only) — assert in an existing `ChatRowCopyTests` case
-- [ ] write a snapshot: assistant bubble with `Saved to /home/e/out/report.pdf and MEDIA:/a/b.png`
+- [x] write a snapshot: assistant bubble with `Saved to /home/e/out/report.pdf and MEDIA:/a/b.png`
       (link tint on the path, filename shown for the tag), light + dark; and one blockquote line
       with a path through the `Text` path
-- [ ] run `make snapshot` twice (record, then assert) — must pass before task 6
+- [x] run `make snapshot` twice (record, then assert) — must pass before task 6
+- ➕ the segment mapping lives ONCE, in `MarkdownText.inline`; `ProseAttributedBuilder.inlineRuns`
+  now consumes that `AttributedString` (it used to run the same markdown parse itself) and only
+  resolves fonts/colours, so the two renderers cannot disagree on which ranges are links. The
+  coordinator recognises our scheme via `FileReference.path(from:)` (scheme AND host), not a bare
+  scheme compare, and re-captures `openURL` on every `updateUIView` (the cell-builder handler is
+  environment state). New suite `FileReferenceLinkSnapshotTests` (3 snapshots + 3 attribute
+  tests over `ProseAttributedBuilder.make` / `MarkdownText.inline`); `make snapshot` is now
+  248/248 — the CLAUDE.md / `docs/development.md` "242 of 242" figures are updated in Task 11 with
+  the final count. The bubble fixture adds a second paragraph (backticked `~/` path, `file://`
+  markdown link, an `https` markdown link that must stay system-routed) on top of the plan's line.
 
 ### Task 6: `ChatView` tap hook and sheet presentation (skeleton sheet)
 
