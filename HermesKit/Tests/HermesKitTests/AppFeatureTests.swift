@@ -296,6 +296,128 @@ struct AppFeatureTests {
     #expect(store.state.liveChat != nil, "queued work keeps the slot alive across the pop")
   }
 
+  /// The slot nil-out (`.clearLiveChat`, the last step of every `teardownSlot`) is what cancels
+  /// a presented file preview's download: `ifLet` auto-cancels the `@Presents` child's effects
+  /// with the rest of the slot, so `ChatFeature.teardown`'s cancel list needs no entry for it.
+  @Test func clearingTheSlotCancelsAPresentedFilePreviewDownload() async {
+    let terminated = LockIsolated(false)
+    let held = LockIsolated<AsyncThrowingStream<DownloadEvent, any Error>.Continuation?>(nil)
+    var liveChat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    liveChat.liveSessionID = "live1"
+    liveChat.status = .ready
+    liveChat.filePreview = FilePreviewFeature.State(
+      path: "/home/e/out/big.zip", sessionID: "s1", profile: nil, connection: connection,
+      content: .generic(.init(reason: .unsupported, byteSize: 50_000_000))
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: liveChat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.filePreview.download = { @Sendable _, _, _, _, _ in
+        AsyncThrowingStream { continuation in
+          held.setValue(continuation)
+          continuation.onTermination = { @Sendable _ in terminated.setValue(true) }
+          continuation.yield(.progress(0.25))
+        }
+      }
+    }
+
+    await store.send(.liveChat(.filePreview(.presented(.shareTapped)))) {
+      $0.liveChat?.filePreview?.share = .downloading(fraction: nil)
+    }
+    await store.receive(\.liveChat.filePreview.presented.downloadEvent) {
+      $0.liveChat?.filePreview?.share = .downloading(fraction: 0.25)
+    }
+
+    // The mandatory nil-out: the child's stream is torn down with the slot — no `removeTemp`
+    // (nothing finished; the live client's `onTermination` removes the partial folder) — and
+    // the producer's later yields go into a finished stream, never into a nil slot.
+    await store.send(.clearLiveChat) { $0.liveChat = nil }
+    await waitUntil { terminated.value }
+    held.value?.yield(.progress(0.9))
+    held.value?.yield(.finished(URL(fileURLWithPath: "/tmp/hermes-file-preview/ABC/big.zip")))
+    await store.finish()
+  }
+
+  /// A FINISHED Share download is a file, not an effect: the nil-out cancels nothing that would
+  /// remove it, and the sheet's own `.filePreview(.dismiss)` cleanup is never sent on a slot
+  /// replacement — so `.clearLiveChat` (the last step of every `teardownSlot`) removes it.
+  @Test func clearingTheSlotRemovesAPresentedFilePreviewsFinishedDownload() async {
+    let removed = LockIsolated<URL?>(nil)
+    let url = URL(fileURLWithPath: "/tmp/hermes-file-preview/ABC/report.pdf")
+    var liveChat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    liveChat.filePreview = FilePreviewFeature.State(
+      path: "/home/e/out/report.pdf", sessionID: "s1", profile: nil, connection: connection,
+      content: .pdf(Data("%PDF".utf8)), share: .idle, downloadedURL: url
+    )
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: liveChat
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.filePreview.removeTemp = { @Sendable url in removed.setValue(url) }
+    }
+
+    await store.send(.clearLiveChat) { $0.liveChat = nil }
+    await store.finish()
+    #expect(removed.value == url)
+  }
+
+  /// The identity teardowns drop the slot by ASSIGNMENT (no `.clearLiveChat`), so each must
+  /// remove a presented preview's finished download itself, like the mic.
+  @Test func identityTeardownsRemoveAPresentedFilePreviewsFinishedDownload() async {
+    let url = URL(fileURLWithPath: "/tmp/hermes-file-preview/ABC/report.pdf")
+    var previewing = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    previewing.filePreview = FilePreviewFeature.State(
+      path: "/home/e/out/report.pdf", sessionID: "s1", profile: nil, connection: connection,
+      content: .pdf(Data("%PDF".utf8)), share: .idle, downloadedURL: url
+    )
+
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: freshCookieConnection(username: "bob"), sameUser: false
+      )))),
+    ] {
+      let removed = LockIsolated<[URL]>([])
+      let label = "\(action)"
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          path: StackState([ChatScreen.State(sessionKey: "s1")]),
+          liveChat: previewing,
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .password,
+            provider: "basic", previousUsername: "alice"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.filePreview.removeTemp = { @Sendable url in removed.withValue { $0.append(url) } }
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(removed.value == [url], "\(label) left the finished download on disk")
+    }
+  }
+
   /// Turn-end-while-detached with entries queued (#66): the slot's own reducer drained the
   /// head in the same reduction that emitted `runningChanged(false)`, so the parent keeps
   /// the slot (the drained turn streams into it). Once the queue is empty and THAT turn

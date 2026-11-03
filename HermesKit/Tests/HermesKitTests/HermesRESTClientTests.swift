@@ -7,10 +7,26 @@ import Testing
 /// state is process-global.
 final class MockURLProtocol: URLProtocol {
   struct Stub: Sendable {
+    /// How the stubbed transfer ends — one value, so no two endings can be set at once.
+    enum Completion: Sendable {
+      /// Deliver the response and `body`, then finish normally.
+      case finish
+      /// Fail with `failCode` before any response — the server didn't answer.
+      case failBeforeResponse
+      /// Deliver the response and `body` first, THEN fail with `failCode` — a connection that
+      /// drops mid-transfer. Lets the streaming download tests prove a partial file is
+      /// cleaned up.
+      case failAfterBody
+      /// Deliver the response and `body`, then never finish: the request stays in flight
+      /// until its task is cancelled. Lets the download-cancel test hold the producer
+      /// mid-transfer instead of racing it to the end of the body.
+      case holdAfterBody
+    }
+
     var statusCode = 200
     var body = Data()
-    var failWithError = false
-    /// Which `URLError` a `fail: true` stub raises. Defaults to a *generic* transport
+    var completion: Completion = .finish
+    /// Which `URLError` a failing stub raises. Defaults to a *generic* transport
     /// failure (server didn't answer) — the offline codes are opt-in, since
     /// `RESTError(transport:)` maps only those to `.offline`.
     var failCode: URLError.Code = .cannotConnectToHost
@@ -31,8 +47,8 @@ final class MockURLProtocol: URLProtocol {
     failCode: URLError.Code = .cannotConnectToHost, headers: [String: String] = [:]
   ) {
     stub = Stub(
-      statusCode: status, body: Data(json.utf8), failWithError: fail, failCode: failCode,
-      headers: headers
+      statusCode: status, body: Data(json.utf8), completion: fail ? .failBeforeResponse : .finish,
+      failCode: failCode, headers: headers
     )
     lastRequest = nil
     requests = []
@@ -58,7 +74,7 @@ final class MockURLProtocol: URLProtocol {
     let stub = MockURLProtocol.queue.isEmpty
       ? MockURLProtocol.stub
       : MockURLProtocol.queue.removeFirst()
-    if stub.failWithError {
+    if case .failBeforeResponse = stub.completion {
       client?.urlProtocol(self, didFailWithError: URLError(stub.failCode))
       return
     }
@@ -68,7 +84,14 @@ final class MockURLProtocol: URLProtocol {
     )!
     client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
     client?.urlProtocol(self, didLoad: stub.body)
-    client?.urlProtocolDidFinishLoading(self)
+    switch stub.completion {
+    case .finish:
+      client?.urlProtocolDidFinishLoading(self)
+    case .failAfterBody:
+      client?.urlProtocol(self, didFailWithError: URLError(stub.failCode))
+    case .holdAfterBody, .failBeforeResponse:
+      break
+    }
   }
 }
 

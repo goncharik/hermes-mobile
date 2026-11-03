@@ -17,6 +17,20 @@ import Testing
     #expect(row.copyText == body)
   }
 
+  /// File references are linkified RENDER-side only (a `MEDIA:/a/b.png` tag shows as `b.png`
+  /// in the transcript): the row's copy text and a fenced block's copy source stay the raw
+  /// markdown, tag and path included.
+  @Test func fileReferencesCopyRawSource() {
+    let body = "Saved to /home/e/out/report.pdf and MEDIA:/a/b.png\n\n```sh\nopen MEDIA:/a/b.png\n```"
+    let row = ChatRow(
+      id: UUID(),
+      kind: .message(role: .assistant, text: body, isComplete: true)
+    )
+    #expect(row.copyText == body)
+    // The code-block copy button hands `CodeBlockView` the parsed segment's text verbatim.
+    #expect(MarkdownSegment.parse(body).contains(.code(text: "open MEDIA:/a/b.png", language: "sh")))
+  }
+
   @Test func streamingMessageStillCopiesText() {
     let row = ChatRow(
       id: UUID(),

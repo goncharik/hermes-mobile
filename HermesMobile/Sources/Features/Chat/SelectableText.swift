@@ -1,3 +1,4 @@
+import HermesKit
 import SwiftUI
 import UIKit
 
@@ -13,6 +14,8 @@ import UIKit
 struct SelectableText: UIViewRepresentable {
   let attributed: NSAttributedString
 
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
   func makeUIView(context: Context) -> UITextView {
     let view = UITextView()
     view.isEditable = false
@@ -23,6 +26,8 @@ struct SelectableText: UIViewRepresentable {
     view.textContainer.lineFragmentPadding = 0
     view.adjustsFontForContentSizeCategory = true
     view.dataDetectorTypes = []
+    view.delegate = context.coordinator
+    context.coordinator.openURL = context.environment.openURL
     // Hug content tightly so the cell measures the text's natural height.
     view.setContentCompressionResistancePriority(.required, for: .vertical)
     view.setContentHuggingPriority(.required, for: .vertical)
@@ -31,7 +36,39 @@ struct SelectableText: UIViewRepresentable {
   }
 
   func updateUIView(_ view: UITextView, context: Context) {
+    // Re-captured on every update: the `openURL` handler installed by the transcript cell
+    // builder is part of the environment and may change between renders.
+    context.coordinator.openURL = context.environment.openURL
     view.attributedText = attributed
+  }
+
+  /// Routes a tap on a `hermes-file:` link (attached by `MarkdownText.inline`) into
+  /// SwiftUI's `openURL`, so both prose renderers end in the same `OpenURLAction` and one
+  /// hook in `ChatView` can turn it into `ChatFeature.fileReferenceTapped`. Every other
+  /// link keeps the system default (an `https:` link still opens Safari and still gets its
+  /// long-press preview menu); our private scheme gets no menu — there is nothing the
+  /// system could preview or share for it.
+  final class Coordinator: NSObject, UITextViewDelegate {
+    var openURL: OpenURLAction?
+
+    func textView(
+      _ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction
+    ) -> UIAction? {
+      guard let url = Self.fileReferenceURL(in: textItem), let openURL else { return defaultAction }
+      return UIAction { _ in openURL(url) }
+    }
+
+    func textView(
+      _ textView: UITextView, menuConfigurationFor textItem: UITextItem, defaultMenu: UIMenu
+    ) -> UITextItem.MenuConfiguration? {
+      guard Self.fileReferenceURL(in: textItem) == nil else { return nil }
+      return UITextItem.MenuConfiguration(menu: defaultMenu)
+    }
+
+    private static func fileReferenceURL(in textItem: UITextItem) -> URL? {
+      guard case let .link(url) = textItem.content, FileReference.path(from: url) != nil else { return nil }
+      return url
+    }
   }
 
   func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -73,11 +110,13 @@ enum ProseAttributedBuilder {
   /// Parse one line of inline Markdown and resolve each run's presentation intent to a
   /// concrete `UIFont`, so bold/italic/code render in a `UITextView` (which, unlike
   /// SwiftUI's `Text`, does not interpret `inlinePresentationIntent` on its own).
+  ///
+  /// The parse is `MarkdownText.inline`, which has already attached the `hermes-file:`
+  /// links for file references (markdown file links, bare paths, `MEDIA:` tags), so a path
+  /// renders in the tint colour like any other link — in the code-span font when it was
+  /// backticked — and `SelectableText.Coordinator` can route its tap.
   private static func inlineRuns(_ line: String) -> NSAttributedString {
-    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    guard let parsed = try? AttributedString(markdown: line, options: options) else {
-      return plainRun(line, color: .label)
-    }
+    let parsed = MarkdownText.inline(line)
     let output = NSMutableAttributedString()
     for run in parsed.runs {
       let text = String(parsed[run.range].characters)

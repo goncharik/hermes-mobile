@@ -140,6 +140,29 @@ struct ChatView: View {
         )
       }
     }
+    // The file preview (file preview in chat): the first `@Presents` child on this feature.
+    // Swipe-down and `Done` both nil the scoped binding, which TCA delivers as
+    // `.filePreview(.dismiss)` — the reducer's temp-file cleanup hook — before `.ifLet`
+    // cancels the child's in-flight read or download.
+    .sheet(item: $store.scope(state: \.filePreview, action: \.filePreview)) { previewStore in
+      FilePreviewSheet(store: previewStore)
+        .presentationDetents([.large])
+    }
+    // Links in the chat body outside the transcript cells (a path in the footer, a card) take
+    // the same route as the cells — see `transcriptCell` for why the cells need their own.
+    .environment(\.openURL, openFileReference)
+  }
+
+  /// The ONE hook that turns a `hermes-file:` link tap into `ChatFeature.fileReferenceTapped`.
+  /// Both prose renderers (`SelectableText`'s coordinator and SwiftUI `Text`) end in
+  /// `openURL`, so this is the only place the private scheme is recognised view-side. Every
+  /// other URL is handed back to the system — an `https` link keeps opening Safari.
+  private var openFileReference: OpenURLAction {
+    OpenURLAction { url in
+      guard let path = FileReference.path(from: url) else { return .systemAction }
+      store.send(.fileReferenceTapped(path: path))
+      return .handled
+    }
   }
 
   /// Drives the rename alert's presentation; dismissing routes through `.cancelRename`.
@@ -211,8 +234,17 @@ struct ChatView: View {
     }
   }
 
-  @ViewBuilder
+  /// Each cell is its own SwiftUI hierarchy inside a `UIHostingConfiguration`, so nothing set
+  /// on `ChatView`'s body reaches it — the `openURL` hook has to be installed HERE, on the
+  /// content the builder hands to the collection view, or a `hermes-file:` tap in a message
+  /// would fall through to the system (which has no handler for the scheme) and do nothing.
   private func transcriptCell(_ row: ChatRow) -> some View {
+    transcriptCellContent(row)
+      .environment(\.openURL, openFileReference)
+  }
+
+  @ViewBuilder
+  private func transcriptCellContent(_ row: ChatRow) -> some View {
     // Only user messages get the long-press "Copy whole message" menu (mirrors their bubble).
     // Assistant/tool/thinking rows render bubble-less plain text — no context menu, so a
     // long-press starts native text selection (select any range → system Copy/Share) instead

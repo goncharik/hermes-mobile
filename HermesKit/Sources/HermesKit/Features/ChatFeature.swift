@@ -167,6 +167,11 @@ public struct ChatFeature {
     public var usage: Usage?
     /// The model/reasoning picker sheet, when open (Task 7).
     public var modelPicker: ModelPicker?
+    /// The file preview sheet raised by a `hermes-file:` link tap, when open. The first (and
+    /// deliberately `@Presents`) child of this feature: dismissing it must cancel an in-flight
+    /// read or a multi-megabyte Share download, and `.ifLet` auto-cancellation gives exactly
+    /// that. Transient and never persisted — `ChatSnapshot` carries no trace of it.
+    @Presents public var filePreview: FilePreviewFeature.State?
     /// Draft text for the rename alert. `nil` = alert closed; non-nil = alert open
     /// with the in-progress title (Task 4).
     public var renameDraft: String?
@@ -784,6 +789,7 @@ public struct ChatFeature {
       self.pendingConfigRollback = [:]
       self.usage = nil
       self.modelPicker = nil
+      self.filePreview = nil
       self.renameDraft = nil
       self.recentlyCopiedToken = nil
       self.copiedIDToastToken = nil
@@ -1114,6 +1120,10 @@ public struct ChatFeature {
     /// optimistic picker write can roll back. One path serves both keys (#81).
     case configSetFailed(key: String, value: String, previousValue: String?, error: GatewayError)
     case modelPickerDismissed
+    /// A `hermes-file:` link in the transcript was tapped (routed by `ChatView`'s one
+    /// `OpenURLAction`). Raises the preview sheet for `path`; a no-op while one is already up.
+    case fileReferenceTapped(path: String)
+    case filePreview(PresentationAction<FilePreviewFeature.Action>)
     case renameButtonTapped
     case confirmRename
     case renameFailed(previousTitle: String?)
@@ -1284,6 +1294,7 @@ public struct ChatFeature {
   @Dependency(\.idleTimer) var idleTimer
   @Dependency(\.attachmentPicker) var attachmentPicker
   @Dependency(\.debugLog) var debugLog
+  @Dependency(\.filePreview) var filePreviewClient
 
   public init() {}
 
@@ -1332,6 +1343,13 @@ public struct ChatFeature {
 
       case .teardown:
         state.isReplayReadPending = false
+        // `filePreview` (the `@Presents` child) is deliberately NOT in this list: its load and
+        // download effects are wrapped by `.ifLet`, which cancels them when the sheet is
+        // dismissed and when `AppFeature` nils the whole slot (`.clearLiveChat` — the
+        // mandatory nil-out) — the same `ifLet` cancellation this feature's own un-ID'd
+        // one-shot effects rely on. There is no child `CancelID` to name here. The child's
+        // finished Share download (`downloadedURL`, a file, not an effect) is removed by
+        // `AppFeature` at the nil-out (`releaseSlotFilePreviewTemp`).
         return .merge(
           releaseVoiceResources(&state),
           .cancel(id: CancelID.socket),
@@ -2556,6 +2574,33 @@ public struct ChatFeature {
         state.modelPicker = nil
         return .none
 
+      case let .fileReferenceTapped(path):
+        // One sheet at a time: a second tap (a double-tap, or a tap landing while the sheet
+        // is animating in) must not replace the preview under the user.
+        guard state.filePreview == nil else { return .none }
+        // The fs routes resolve STORED ids only (a live-only handle 404s), scoped to the chat's
+        // profile per the multi-profile rule; nil omits either parameter. Whether the stored id
+        // has a DB row yet (a seeded branch's does on current agents, a fresh draft's does not)
+        // is not knowable here — the child sends it and retries once without it on the
+        // server's "Session not found".
+        state.filePreview = FilePreviewFeature.State(
+          path: path, sessionID: state.storedSessionID,
+          profile: state.profileName, connection: state.connection
+        )
+        return .none
+
+      case .filePreview(.dismiss):
+        // `.ifLet` nils the child and cancels its in-flight read/download after this runs;
+        // the one thing it can't reach is the finished temp file on disk. The child keeps it
+        // in `downloadedURL` (not `share`, which `.shareDismissed` already reset) so a second
+        // Share was instant — the preview going away is when it's removed. Fire-and-forget:
+        // there is no state to update and nothing to surface if the OS already swept `tmp`.
+        guard let url = state.filePreview?.downloadedURL else { return .none }
+        return .run { [filePreviewClient] _ in await filePreviewClient.removeTemp(url) }
+
+      case .filePreview:
+        return .none
+
       case .renameButtonTapped:
         // Pre-fill the alert with the current title.
         state.renameDraft = state.title ?? ""
@@ -2616,6 +2661,9 @@ public struct ChatFeature {
         idleTimer.setDisabled(wantsAwake)
         return .none
       }
+    }
+    .ifLet(\.$filePreview, action: \.filePreview) {
+      FilePreviewFeature()
     }
   }
 

@@ -163,6 +163,10 @@ a `testValue`/`.inMemory()` variant):
   the generation-scoped expiration handler). `liveValue` is `#if canImport(UIKit)`-guarded
   (no-op elsewhere); `.inMemory()` exposes a test-drivable `expire()` plus begin/end spies.
 - **`PasteboardClient`** — copy.
+- **`FilePreviewClient`** — the three `/api/fs/*` routes behind the file preview sheet
+  (`read-text`, `read-data-url`, streamed `download` into a per-download temp folder, plus
+  `removeTemp`); same `resolveAuth`/`serverDetail` transport, deliberately no capability flip.
+  Contract: `docs/features/file-preview.md`.
 - **`DebugLogClient`** — an event ring buffer for the in-app debug log; `note(type, summary)`
   adds free-text client entries to the same ring (a swallowed `session.events.since` failure,
   #98).
@@ -287,8 +291,9 @@ not assumed):
 - **Profiles are device-local with per-call scoping** — the selected profile *name* lives
   in `PreferencesClient`; we never call `POST /api/profiles/active`. Instead the scoped list
   comes from `GET /api/profiles/sessions?profile=`, and an optional `profile` param threads
-  into `session.create`/`session.resume` (gateway), the archived sheet, search, cron, and
-  session-scoped archive/rename/delete/unread (REST). Whenever the agent has the profiles API,
+  into `session.create`/`session.resume` (gateway), the archived sheet, search, cron,
+  session-scoped archive/rename/delete/unread (REST), and the three `/api/fs/*` file preview
+  routes (`docs/features/file-preview.md`). Whenever the agent has the profiles API,
   that param is the **literal** selected name — including `"default"`; it is omitted only when
   the API is absent, so those agents stay byte-identical. The server reads an omitted profile
   as the dashboard's **launch** profile, not `"default"` (#114): under `hermes -p work

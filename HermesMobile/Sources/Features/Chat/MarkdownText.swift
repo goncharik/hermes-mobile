@@ -101,10 +101,46 @@ struct MarkdownText: View {
 
   /// Inline-only Markdown so bold/code/links render but block layout (which `Text`
   /// can't show) is avoided; whitespace is preserved. Shared with `MarkdownTableView`'s
-  /// cells so the two cannot drift on parsing options.
+  /// cells and `ProseAttributedBuilder` so the renderers cannot drift on parsing options
+  /// — or on which ranges are file references.
+  ///
+  /// File references become `hermes-file:` links here, once, for every renderer: a markdown
+  /// link whose target names a host path (`file://…`, `/abs/x.md`, `~/x.md`) is re-targeted
+  /// to `FileReference.url(for:)` keeping its label; every link-less run is split by
+  /// `FileReferenceScanner.segments` so bare paths and `MEDIA:` tags carry the link too
+  /// (a `MEDIA:` tag displays its filename — a render-only swap, the row's copy text stays
+  /// the raw source). The run's own attributes (code span, bold, italic) are preserved on
+  /// the path. SwiftUI `Text` routes a tap on the link through the `openURL` environment.
   static func inline(_ value: String) -> AttributedString {
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    return (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+    let parsed = (try? AttributedString(markdown: value, options: options)) ?? AttributedString(value)
+    return attachingFileReferences(to: parsed)
+  }
+
+  private static func attachingFileReferences(to parsed: AttributedString) -> AttributedString {
+    var output = AttributedString()
+    for run in parsed.runs {
+      if let link = run.link {
+        var piece = AttributedString(parsed[run.range])
+        if let path = FileReference.path(fromLinkTarget: link) {
+          piece.link = FileReference.url(for: path)
+        }
+        output.append(piece)
+        continue
+      }
+      let text = String(parsed[run.range].characters)
+      for segment in FileReferenceScanner.segments(text) {
+        switch segment {
+        case let .text(plain):
+          output.append(AttributedString(plain, attributes: run.attributes))
+        case let .file(display, path):
+          var piece = AttributedString(display, attributes: run.attributes)
+          piece.link = FileReference.url(for: path)
+          output.append(piece)
+        }
+      }
+    }
+    return output
   }
 
   /// Classify a line as a list item, returning the marker to show and the content
