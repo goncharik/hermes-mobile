@@ -9,8 +9,15 @@ import SwiftUI
 /// through the presentation binding (SwiftUI's `dismiss` nils the `.sheet(item:)` binding,
 /// which TCA turns into `.filePreview(.dismiss)` — the reducer's cleanup hook), and the
 /// bottom bar carries the two actions every kind offers, Copy path and Share. The body
-/// switches on `content`; text renders in `MonospacedFileTextView`, image and PDF renderers
-/// arrive in Task 8 and replace the placeholders here.
+/// switches on `content`: text renders in `MonospacedFileTextView`, images in
+/// `ZoomableImageView`, PDFs in `PDFKitView`, and anything the reducer resolved to `.generic`
+/// in `GenericFileCardView`.
+///
+/// Image and PDF bytes are decoded HERE, not in the reducer (HermesKit is platform-free):
+/// `ZoomableImageView.image(from:)` / `PDFKitView.document(from:)` are synchronous static
+/// checks, and a nil result falls back to the generic card with reason `.unsupported`. The
+/// two branches are `Equatable` sub-views keyed on the bytes, so a re-render for the copy
+/// toast or the share bar does not decode a multi-megabyte image again or reset its zoom.
 ///
 /// The "Path copied" toast is the shared `CopiedToastView` off `copiedToken`, overlaid on the
 /// content region INSIDE the navigation stack: the region's safe area already excludes the
@@ -93,17 +100,46 @@ struct FilePreviewSheet: View {
     case let .text(read):
       MonospacedFileTextView(read: read)
 
-    // Placeholders until the real renderers land (Task 8: image + PDF).
-    case .image:
-      placeholder("Image preview")
-    case .pdf:
-      placeholder("PDF preview")
+    case let .image(data):
+      ImagePreviewBody(path: store.path, fileName: store.fileName, data: data)
+        .equatable()
+
+    case let .pdf(data):
+      PDFPreviewBody(path: store.path, data: data)
+        .equatable()
     }
   }
+}
 
-  private func placeholder(_ title: String) -> some View {
-    Text(title)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
+/// The `.image` branch: decodes once per distinct `data` (see `Equatable`) and falls back to
+/// the generic card — with the byte count, which is known — when UIKit can't make an image
+/// out of the bytes.
+private struct ImagePreviewBody: View, Equatable {
+  let path: String
+  let fileName: String
+  let data: Data
+
+  var body: some View {
+    if let image = ZoomableImageView.image(from: data) {
+      ZoomableImageView(image: image, accessibilityLabel: fileName)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      GenericFileCardView(path: path, info: .init(reason: .unsupported, byteSize: data.count))
+    }
+  }
+}
+
+/// The `.pdf` branch: same shape as `ImagePreviewBody`, with PDFKit as the decoder.
+private struct PDFPreviewBody: View, Equatable {
+  let path: String
+  let data: Data
+
+  var body: some View {
+    if let document = PDFKitView.document(from: data) {
+      PDFKitView(document: document)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      GenericFileCardView(path: path, info: .init(reason: .unsupported, byteSize: data.count))
+    }
   }
 }

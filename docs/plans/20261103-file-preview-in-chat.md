@@ -553,15 +553,26 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Modify: `HermesMobile/Sources/Features/Chat/FilePreview/FilePreviewSheet.swift`
 - Modify: `HermesMobileTests/FilePreviewSnapshotTests.swift`
 
-- [ ] implement `ZoomableImageView` (`UIScrollView` + `UIImageView`, min 1× / max 4×, double-tap
+- [x] implement `ZoomableImageView` (`UIScrollView` + `UIImageView`, min 1× / max 4×, double-tap
       toggle, image centered on layout) and the view-side fallback: `UIImage(data:) == nil` →
       `GenericFileCardView(reason: .unsupported)`
-- [ ] implement `PDFKitView` (`PDFView`, `autoScales`, `displayMode = .singlePageContinuous`,
+- [x] implement `PDFKitView` (`PDFView`, `autoScales`, `displayMode = .singlePageContinuous`,
       document from `Data`)
-- [ ] wire `.image` / `.pdf` in `FilePreviewSheet`
-- [ ] write snapshots: image preview from an in-test generated 64×64 PNG; PDF preview from an
+- [x] wire `.image` / `.pdf` in `FilePreviewSheet`
+- [x] write snapshots: image preview from an in-test generated 64×64 PNG; PDF preview from an
       in-test `UIGraphicsPDFRenderer` one-pager; undecodable image bytes → generic card
-- [ ] run `make snapshot` twice — must pass before task 9
+- [x] run `make snapshot` twice — must pass before task 9
+- ➕ the decode helpers are static on the renderers (`ZoomableImageView.image(from:)`,
+  `PDFKitView.document(from:)` — the latter also rejects a zero-page document), so the sheet
+  never imports PDFKit; the two branches are private `Equatable` sub-views (`ImagePreviewBody`
+  / `PDFPreviewBody`, `.equatable()`) keyed on the bytes, so a toast or share-bar re-render
+  neither re-decodes a multi-megabyte image nor resets its zoom. The fallback card carries the
+  byte count (known from the data), mirroring the reducer's `.other` data-route fallback. An
+  image smaller than the region scales UP to fit at 1× (system-viewer behaviour; the fitted
+  size is the 1× content size, re-fitted only when the bounds change so a zoom-driven layout
+  pass never resets it). `PDFView` renders fully in a `componentImage()` layer render — no
+  `deviceImage()` route needed — and was stable across three consecutive `make snapshot` runs.
+  `make snapshot` is now 270/270 (3 new baselines; the Task 11 count update stands).
 
 ### Task 9: Share download UI
 
