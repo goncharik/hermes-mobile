@@ -45,6 +45,7 @@ public enum TranscriptScrollMath {
   /// Offset-preservation across a prepend: when older rows are inserted at the top, the
   /// content grows by `insertedHeight`, so to keep the on-screen anchor row visually fixed we
   /// shift the offset down by exactly that delta. Returns the new offset (clamped to legal).
+  /// A prepend is the positive-shift case of `offsetAfterAnchorShift`.
   public static func offsetAfterPrepend(
     previousOffsetY: CGFloat,
     insertedHeight: CGFloat,
@@ -53,7 +54,31 @@ public enum TranscriptScrollMath {
     topInset: CGFloat,
     bottomInset: CGFloat
   ) -> CGFloat {
-    let target = previousOffsetY + insertedHeight
+    offsetAfterAnchorShift(
+      previousOffsetY: previousOffsetY,
+      anchorShift: insertedHeight,
+      contentHeight: contentHeight,
+      viewportHeight: viewportHeight,
+      topInset: topInset,
+      bottomInset: bottomInset
+    )
+  }
+
+  /// Offset-preservation for an anchor row that moved in content coordinates by `anchorShift`
+  /// (its new `frame.minY` minus its old one): shifting the offset by the same delta keeps the
+  /// anchor visually fixed on screen. Negative when rows above the anchor were removed (a window
+  /// `.slide` dropping its head), positive when rows were inserted above it (a prepend). A delta
+  /// rather than an absolute target, so an in-flight drag/deceleration stays continuous. Returns
+  /// the new offset clamped to `[-topInset, maxOffsetY]`.
+  public static func offsetAfterAnchorShift(
+    previousOffsetY: CGFloat,
+    anchorShift: CGFloat,
+    contentHeight: CGFloat,
+    viewportHeight: CGFloat,
+    topInset: CGFloat,
+    bottomInset: CGFloat
+  ) -> CGFloat {
+    let target = previousOffsetY + anchorShift
     let maxY = maxOffsetY(
       contentHeight: contentHeight,
       viewportHeight: viewportHeight,

@@ -130,10 +130,10 @@
 - Modify: `HermesKit/Sources/HermesKit/Models/TranscriptScrollMath.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/TranscriptScrollMathTests.swift`
 
-- [ ] write tests for `offsetAfterAnchorShift`: negative shift (head removed), positive shift, clamp at `-topInset`, clamp at `maxOffsetY`
-- [ ] implement `offsetAfterAnchorShift`; route `offsetAfterPrepend` through it
-- [ ] confirm existing `offsetAfterPrepend` tests still pass unchanged
-- [ ] run `make test` — must pass before task 3
+- [x] write tests for `offsetAfterAnchorShift`: negative shift (head removed), positive shift, clamp at `-topInset`, clamp at `maxOffsetY`
+- [x] implement `offsetAfterAnchorShift`; route `offsetAfterPrepend` through it
+- [x] confirm existing `offsetAfterPrepend` tests still pass unchanged
+- [x] run `make test` — must pass before task 3
 
 ### Task 3: Preserve the reader's anchor on a slide in the renderer
 

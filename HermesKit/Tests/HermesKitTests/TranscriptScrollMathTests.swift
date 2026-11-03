@@ -106,6 +106,57 @@ import Testing
     )
   }
 
+  // MARK: - offsetAfterAnchorShift
+
+  @Test func offsetAfterAnchorShiftNegativeShiftForDroppedHead() {
+    // A slide dropped 120pt of head rows above the anchor: the anchor moved up by 120, so the
+    // offset moves up by the same amount to keep it on screen in place.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 900, anchorShift: -120,
+        contentHeight: 3000, viewportHeight: 800, topInset: 0, bottomInset: 0
+      ) == 780
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftPositiveShift() {
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 500, anchorShift: 80,
+        contentHeight: 3000, viewportHeight: 800, topInset: 0, bottomInset: 0
+      ) == 580
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftClampsAtNegativeTopInset() {
+    // Target would scroll above the top edge ⇒ clamps to -topInset.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 50, anchorShift: -200,
+        contentHeight: 3000, viewportHeight: 800, topInset: 20, bottomInset: 0
+      ) == -20
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftClampsAtMaxOffsetY() {
+    // maxOffsetY = 2000 + 40 - 800 = 1240.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 1200, anchorShift: 100,
+        contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 40
+      ) == 1240
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftZeroShiftIsIdentity() {
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 640, anchorShift: 0,
+        contentHeight: 3000, viewportHeight: 800, topInset: 0, bottomInset: 0
+      ) == 640
+    )
+  }
+
   // MARK: - TranscriptDiffKind.classify
 
   private func ids(_ count: Int) -> [ChatRow.ID] {
