@@ -194,9 +194,36 @@ struct ChatWindowingTests {
     let afterTool = store.state.visibleRows.map(\.id)
     #expect(afterTool.count == ChatFeature.State.initialWindow)
     #expect(afterTool.last == store.state.thinkingRowID) // tool row landed above thinking
-    let kind = TranscriptDiffKind.classify(old: afterStart, new: afterTool)
-    #expect(kind == .slide(droppedHeadCount: 1))
-    #expect(kind != .reset)
+    #expect(TranscriptDiffKind.classify(old: afterStart, new: afterTool) == .slide(droppedHeadCount: 1))
+
+    await store.send(.teardown)
+  }
+
+  /// #125 at turn end: a turn with no reasoning or status ends by removing its empty thinking row
+  /// (`freezeThinking`), so the bottom window re-admits an older head row. Every step of the turn
+  /// — including the end — must keep a scrolled-up reader's rows, never `.reset`.
+  @Test func turnEndRemovingEmptyThinkingRowSlidesWindowNotReset() async {
+    let store = makeStore(transcript: rows(200))
+    store.exhaustivity = .off
+    var previous = store.state.visibleRows.map(\.id)
+    var lastKind: TranscriptDiffKind?
+
+    for event: GatewayEvent in [
+      .messageStart,
+      .messageDelta(text: "Hello"),
+      .messageComplete(text: "Hello", usage: nil),
+    ] {
+      await store.send(.gatewayEvent(event))
+      let current = store.state.visibleRows.map(\.id)
+      #expect(current.count == ChatFeature.State.initialWindow)
+      let kind = TranscriptDiffKind.classify(old: previous, new: current)
+      #expect(kind != .reset, "\(event)")
+      lastKind = kind
+      previous = current
+    }
+    #expect(lastKind == .slide(droppedHeadCount: 0))
+    #expect(store.state.thinkingRowID == nil)
+    #expect(store.state.transcript.count == 201) // the thinking row is gone, the answer stays
 
     await store.send(.teardown)
   }
@@ -254,12 +281,44 @@ struct ChatWindowingTests {
     // Scroll up.
     await store.send(.loadOlderRequested)
     #expect(store.state.windowStart < ChatFeature.State.bottomWindowStart(count: 80))
+    let pagedUp = store.state.visibleRows.map(\.id)
 
     // A second hydrate (e.g. a foreground re-resume) snaps the window back to the bottom even
     // though the user had scrolled up — server wins on every wholesale replace.
     let response = ActivateResponse(sessionID: "live123", messages: messages, running: false)
     await store.send(.activateResult(.success(response)))
     #expect(store.state.windowStart == ChatFeature.State.bottomWindowStart(count: store.state.transcript.count))
+    // The re-trim removed the paged-up rows, so the renderer jumps.
+    #expect(TranscriptDiffKind.classify(old: pagedUp, new: store.state.visibleRows.map(\.id)) == .reset)
+
+    await store.send(.teardown)
+  }
+
+  /// A re-hydrate at the bottom window that brings one more server message slides the window:
+  /// the reader's rows survive, so the renderer holds them rather than jumping.
+  @Test func hydrateWithOneMoreMessageSlidesWindow() async {
+    let messages = (1...81).map { i in
+      SessionMessage(id: i, role: "user", content: "m\(i)")
+    }
+    let payload: JSONValue = .object([
+      "session_id": .string("live123"),
+      "messages": .array(messages.dropLast().map {
+        .object(["id": .number(Double($0.id ?? 0)), "role": .string($0.role), "content": .string($0.content ?? "")])
+      }),
+      "running": .bool(false),
+    ])
+    let store = makeHydratingStore { @Sendable _, _ in payload }
+    store.exhaustivity = .off
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+    let before = store.state.visibleRows.map(\.id)
+
+    let response = ActivateResponse(sessionID: "live123", messages: messages, running: false)
+    await store.send(.activateResult(.success(response)))
+    let after = store.state.visibleRows.map(\.id)
+    #expect(after.count == ChatFeature.State.initialWindow)
+    #expect(TranscriptDiffKind.classify(old: before, new: after) == .slide(droppedHeadCount: 1))
 
     await store.send(.teardown)
   }

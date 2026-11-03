@@ -80,6 +80,96 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     )
   }
 
+  /// The live `tool.start` shape with the tail on screen: the head drops and a tool row lands
+  /// ABOVE the thinking row, so the thinking row does not move while every row above the insert
+  /// moves up by one row. Only the topmost surviving row is the right anchor.
+  @MainActor
+  func testLiveToolRowSlideHoldsTheTopmostVisibleRow() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    Self.selfSizeEveryRow(in: transcript)
+    // Just past the pin threshold, so the thinking row (row 49) is partly on screen.
+    let parked = Self.maxOffsetY(of: transcript) - TranscriptScrollMath.bottomThreshold - 15
+    Self.park(transcript, at: parked)
+    spinRunLoop()
+    transcript.layoutIfNeeded()
+    let thinkingFrame = try XCTUnwrap(transcript.layoutAttributesForItem(at: IndexPath(item: 49, section: 0))?.frame)
+    XCTAssertLessThan(
+      thinkingFrame.minY, transcript.bounds.maxY, "Fixture sanity: the thinking row is on screen"
+    )
+
+    let watched = Self.fullyVisibleRowIndices(in: transcript).filter { $0 < 49 }
+    XCTAssertGreaterThanOrEqual(watched.count, 3, "Fixture sanity: several rows above the insert")
+    let before = watched.map { Self.onScreenMinY(ofRow: $0, in: transcript) }
+
+    hosted.update(rows: Self.rows(1..<49) + Self.rows(900..<901) + Self.rows(49..<50))
+
+    for (index, row) in watched.enumerated() {
+      XCTAssertEqual(
+        Self.onScreenMinY(ofRow: row, in: transcript, firstRow: 1), before[index], accuracy: 0.5,
+        "Row \(row) above the tool insert must stay where the reader saw it"
+      )
+    }
+  }
+
+  /// A slide that carries the reader to the window top pages older rows in, as a user scroll
+  /// there would — otherwise each further slide pins them against the top and the content creeps.
+  @MainActor
+  func testSlideThatCarriesTheReaderToTheWindowTopPagesOlderRows() throws {
+    let olderPages = OlderPageRequests()
+    let hosted = try host(rows: Self.rows(0..<50), olderPages: olderPages)
+    let transcript = hosted.transcript
+
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    Self.selfSizeEveryRow(in: transcript)
+    // Just below the load-older trigger, with row 0 scrolled off the top.
+    let parked = -transcript.adjustedContentInset.top + TranscriptScrollMath.loadOlderTopThreshold + 40
+    Self.park(transcript, at: parked)
+    spinRunLoop()
+    transcript.layoutIfNeeded()
+    let watchedY = Self.onScreenMinY(ofRow: 1, in: transcript)
+    let requestsBefore = olderPages.count
+
+    hosted.update(rows: Self.rows(1..<51))
+
+    XCTAssertEqual(
+      Self.onScreenMinY(ofRow: 1, in: transcript, firstRow: 1), watchedY, accuracy: 0.5,
+      "Row 1 must stay where the reader saw it"
+    )
+    XCTAssertEqual(olderPages.count, requestsBefore + 1, "The shift to the window top must page older rows")
+  }
+
+  /// The reader is inside a row taller than the screen when the slide drops it: no surviving row
+  /// is on screen, so the nearest survivor is held — the offset clamps at the window top — and
+  /// older rows are paged in. Never the jump to the bottom.
+  @MainActor
+  func testReaderInsideATallDroppedRowIsHeldAtTheWindowTop() throws {
+    let olderPages = OlderPageRequests()
+    let hosted = try host(rows: Self.rows(0..<50), tallRows: [Self.rowID(0): 2000], olderPages: olderPages)
+    let transcript = hosted.transcript
+
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    Self.selfSizeEveryRow(in: transcript)
+    Self.park(transcript, at: 1000)
+    spinRunLoop()
+    transcript.layoutIfNeeded()
+    XCTAssertEqual(
+      transcript.indexPathsForVisibleItems.map(\.item), [0],
+      "Fixture sanity: only the tall row is on screen"
+    )
+    let requestsBefore = olderPages.count
+
+    hosted.update(rows: Self.rows(1..<51))
+
+    XCTAssertEqual(
+      transcript.contentOffset.y, -transcript.adjustedContentInset.top, accuracy: 0.5,
+      "The reader must be held at the window top, next to the row that dropped"
+    )
+    XCTAssertEqual(olderPages.count, requestsBefore + 1, "Older rows must be paged back in")
+  }
+
   // MARK: - Pinned: follow
 
   /// The other half of the contract: a reader parked at the bottom follows the slide to the new
@@ -98,8 +188,16 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     spinRunLoop()
     let oldBottom = Self.maxOffsetY(of: transcript)
     XCTAssertEqual(transcript.contentOffset.y, oldBottom, accuracy: 0.5, "Fixture sanity: opens at the bottom")
+    let watched = try XCTUnwrap(Self.fullyVisibleRowIndices(in: transcript).first)
+    let watchedY = Self.onScreenMinY(ofRow: watched, in: transcript)
 
-    hosted.update(rows: Self.rows(1..<51))
+    hosted.render(rows: Self.rows(1..<51))
+
+    // Before the follow advances, the surviving rows have not jumped by the dropped head's height.
+    XCTAssertEqual(
+      Self.onScreenMinY(ofRow: watched, in: transcript, firstRow: 1), watchedY, accuracy: 0.5,
+      "The follow must start from the rows the reader saw, not from a jump by the dropped row"
+    )
 
     let newBottom = Self.maxOffsetY(of: transcript)
     XCTAssertGreaterThan(
@@ -126,13 +224,22 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let controller: UIHostingController<TranscriptHarnessView>
     let transcript: UICollectionView
     let tallRows: [ChatRow.ID: CGFloat]
+    let olderPages: OlderPageRequests?
 
+    /// Deliver `rows` and let queued main-queue work (guard clears, a load-older request) run.
     func update(rows: [ChatRow]) {
-      controller.rootView = TranscriptHarnessView(rows: rows, tallRows: tallRows)
-      controller.view.setNeedsLayout()
-      controller.view.layoutIfNeeded()
+      render(rows: rows)
       RunLoop.current.run(until: Date().addingTimeInterval(0.05))
       transcript.layoutIfNeeded()
+    }
+
+    /// Deliver `rows` and run ONE run-loop pass — enough for the snapshot apply's completion
+    /// (which UIKit runs on a later pass), not for an animated follow to advance.
+    func render(rows: [ChatRow]) {
+      controller.rootView = TranscriptHarnessView(rows: rows, tallRows: tallRows, olderPages: olderPages)
+      controller.view.setNeedsLayout()
+      controller.view.layoutIfNeeded()
+      RunLoop.current.run(mode: .default, before: Date())
     }
   }
 
@@ -140,11 +247,12 @@ final class TranscriptSlidePreservationTests: XCTestCase {
   private func host(
     rows: [ChatRow],
     tallRows: [ChatRow.ID: CGFloat] = [:],
+    olderPages: OlderPageRequests? = nil,
     file: StaticString = #filePath,
     line: UInt = #line
   ) throws -> Hosted {
     let controller = UIHostingController(
-      rootView: TranscriptHarnessView(rows: rows, tallRows: tallRows)
+      rootView: TranscriptHarnessView(rows: rows, tallRows: tallRows, olderPages: olderPages)
     )
     let window = UIWindow(frame: CGRect(origin: .zero, size: Self.windowSize))
     window.rootViewController = controller
@@ -165,7 +273,9 @@ final class TranscriptSlidePreservationTests: XCTestCase {
       transcript.contentSize.height, transcript.bounds.height * 2,
       "Fixture sanity: the transcript must be several screens tall", file: file, line: line
     )
-    return Hosted(controller: controller, transcript: transcript, tallRows: tallRows)
+    return Hosted(
+      controller: controller, transcript: transcript, tallRows: tallRows, olderPages: olderPages
+    )
   }
 
   /// Let queued main-queue work (the coordinator clears its `isAdjustingOffset` guard on the
@@ -198,6 +308,12 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     }
     view.setContentOffset(CGPoint(x: 0, y: maxOffsetY(of: view)), animated: false)
     view.layoutIfNeeded()
+  }
+
+  /// Park the reader at `offsetY` as a user scroll would, so the coordinator re-reads its pin.
+  private static func park(_ view: UICollectionView, at offsetY: CGFloat) {
+    view.setContentOffset(CGPoint(x: 0, y: offsetY), animated: false)
+    view.delegate?.scrollViewDidScroll?(view)
   }
 
   /// A row's top edge in viewport coordinates. `firstRow` is the row number at item 0 of the
@@ -254,21 +370,27 @@ private struct TranscriptHarnessView: View {
   /// Every row's height unless `tallRows` overrides it.
   static let rowHeight: CGFloat = 80
 
-
   let rows: [ChatRow]
   let tallRows: [ChatRow.ID: CGFloat]
+  /// When set, older history exists above the window and each request is counted here.
+  let olderPages: OlderPageRequests?
 
   var body: some View {
     CollectionTranscriptView(
       rows: rows,
       turnState: .streaming,
-      canLoadOlder: false,
-      onLoadOlder: {}
+      canLoadOlder: olderPages != nil,
+      onLoadOlder: { olderPages?.count += 1 }
     ) { row in
       FixedHeightRow(row: row, height: tallRows[row.id] ?? Self.rowHeight)
     }
     .dynamicTypeSize(.large)
   }
+}
+
+/// Counts the transcript's `onLoadOlder` calls.
+private final class OlderPageRequests {
+  var count = 0
 }
 
 private struct FixedHeightRow: View {

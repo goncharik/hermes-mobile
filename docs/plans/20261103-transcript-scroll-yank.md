@@ -163,6 +163,14 @@
 - [x] run full test suite: `make test` (1940 tests passed)
 - [x] run `make snapshot` (clean, no baseline changes — 253/253)
 
+### ➕ Task 5b: Review phase 1 fixes (never yank a scrolled-up reader)
+- [x] ➕ classify: any update that keeps an old row is a `.slide` unless the window shrank AND lost its head; turn-end empty-thinking removal (`freezeThinking`) and `reparkDrainingEntry` no longer `.reset` (`turnEndRemovingEmptyThinkingRowSlidesWindowNotReset`, `classifyTurnEndRowRemoval*`, `classifyTailRemovalThatShrinksIsSlide`)
+- [x] ➕ renderer: hold the reader's anchor on every `holdsReaderAnchor` update; no on-screen survivor ⇒ nearest survivor (tall dropped row clamps at the window top), never the jump-to-bottom fallback
+- [x] ➕ renderer: a programmatic shift that lands near the window top pages older rows (`loadOlderIfNearTop`)
+- [x] ➕ renderer: a pinned slide holds the survivors before the animated follow; offsets assigned directly (`assignOffset`), fling continuity unverified on device
+- [x] ➕ `offsetAfterPrepend` folded into `offsetAfterAnchorShift`; `TranscriptDiffKind.isPrepend` / `holdsReaderAnchor`
+- [x] ➕ measured tests: live tool-row shape, near-top paging, tall dropped row, pinned follow start; hydrate classify assertions in `ChatWindowingTests`
+
 ### Task 6: [Final] Update documentation
 - [x] CLAUDE.md "History paginates client-side" bullet: note the live window slides and the renderer classifies that as `.slide` (follow-if-pinned, anchor-preserve otherwise), never `.reset`
 - [x] note the hydrate contract nuance (jump only when the reader's rows are gone) in the renderer doc comment
