@@ -228,9 +228,10 @@ and `AppFeature` removes the finished download the effects can no longer reach (
   is dropped): the download effect itself calls `removeTemp` when it sees `.finished` with
   `Task.isCancelled`. (2) A slot nil-out never sends `.filePreview(.dismiss)`:
   `AppFeature.releaseSlotFilePreviewTemp` reads `liveChat?.filePreview?.downloadedURL` BEFORE
-  the assignment and removes it — from `.clearLiveChat` (every `teardownSlot`) and, via
-  `releaseSlotResources` (merged with the mic release), from the four identity teardowns that
-  drop the slot by assignment (disconnect, logout, reauth quit, different-user reauth). A double
+  the assignment and removes it — through `releaseSlotDeviceResources` (alongside the mic and
+  idle-timer releases) from `.clearLiveChat` (every `teardownSlot`) and from the four identity
+  teardowns that drop the slot by assignment (disconnect, logout, reauth quit, different-user
+  reauth). A double
   `removeTemp` is an idempotent `try? removeItem`.
 - **Single-dismissal guard in the reducer**: the activity controller is presented through a
   SwiftUI `.sheet(item:)` over a `ShareItem` (identified by the URL string; detents
