@@ -192,6 +192,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   final class Coordinator: NSObject, UICollectionViewDelegate {
     enum Section { case main }
 
+    /// An offset change below this is a no-op: not worth a programmatic write or an animation.
+    private static var minimumOffsetChange: CGFloat { 0.5 }
+
     var onLoadOlder: () -> Void
     var cell: (ChatRow) -> Cell
     var reduceMotion = false
@@ -421,9 +424,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           )
         } else {
           // Rows above the reader came or went (the #125 slide): hold their anchor row still.
-          let shifted = anchor.map {
-            self.holdAnchor($0, previousOffsetY: capturedOffsetY)
-          } ?? false
+          var shifted = false
+          if let anchor {
+            shifted = self.holdAnchor(anchor, previousOffsetY: capturedOffsetY)
+          }
           if wasPinned {
             // Appended row, streaming delta grew the last cell, or the window slid: follow only
             // if pinned.
@@ -493,7 +497,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         topInset: collectionView.adjustedContentInset.top,
         bottomInset: collectionView.adjustedContentInset.bottom
       )
-      guard abs(newOffsetY - collectionView.contentOffset.y) > 0.5 else { return false }
+      guard abs(newOffsetY - collectionView.contentOffset.y) > Self.minimumOffsetChange else {
+        return false
+      }
       assignOffset(newOffsetY)
       return true
     }
@@ -504,7 +510,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private func assignOffset(_ y: CGFloat) {
       guard let collectionView else { return }
       isAdjustingOffset = true
-      collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: y)
+      collectionView.contentOffset = CGPoint(x: 0, y: y)
       // Clear on the next runloop — unless an animated follow started since and owns the guard.
       let generation = animationGuardGeneration
       DispatchQueue.main.async { [weak self] in
@@ -535,7 +541,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // Animate only when there's a meaningful distance to travel; an animated call that is
       // already at the target produces NO `scrollViewDidEndScrollingAnimation`, which would
       // strand `isAdjustingOffset == true` forever. Treat a no-op as a synchronous settle.
-      let willAnimate = animated && abs(collectionView.contentOffset.y - target) > 0.5
+      let willAnimate =
+        animated && abs(collectionView.contentOffset.y - target) > Self.minimumOffsetChange
       isAdjustingOffset = true
       collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: willAnimate)
       // For non-animated jumps the offset settles synchronously; clear the guard on the next

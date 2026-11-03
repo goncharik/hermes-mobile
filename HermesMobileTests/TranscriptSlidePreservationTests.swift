@@ -48,15 +48,7 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let hosted = try host(rows: Self.rows(0..<50))
     let transcript = hosted.transcript
 
-    // A real user drag ends the open-at-bottom settle, then parks the reader mid-list.
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    Self.selfSizeEveryRow(in: transcript)
-    let parked = Self.maxOffsetY(of: transcript) / 2
-    transcript.setContentOffset(CGPoint(x: 0, y: parked), animated: false)
-    transcript.delegate?.scrollViewDidScroll?(transcript)
-    spinRunLoop()
-    // Lay the cells out at the new offset, as the next frame would during a real scroll.
-    transcript.layoutIfNeeded()
+    let parked = parkReader(transcript) { Self.maxOffsetY(of: $0) / 2 }
     XCTAssertEqual(transcript.contentOffset.y, parked, accuracy: 0.5, "Fixture sanity: the reader is parked")
 
     // Track every row fully on screen, not just one, so a partial preservation can't slip by.
@@ -88,13 +80,8 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let hosted = try host(rows: Self.rows(0..<50))
     let transcript = hosted.transcript
 
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    Self.selfSizeEveryRow(in: transcript)
     // Just past the pin threshold, so the thinking row (row 49) is partly on screen.
-    let parked = Self.maxOffsetY(of: transcript) - TranscriptScrollMath.bottomThreshold - 15
-    Self.park(transcript, at: parked)
-    spinRunLoop()
-    transcript.layoutIfNeeded()
+    parkReader(transcript) { Self.maxOffsetY(of: $0) - TranscriptScrollMath.bottomThreshold - 15 }
     let thinkingFrame = try XCTUnwrap(transcript.layoutAttributesForItem(at: IndexPath(item: 49, section: 0))?.frame)
     XCTAssertLessThan(
       thinkingFrame.minY, transcript.bounds.maxY, "Fixture sanity: the thinking row is on screen"
@@ -122,13 +109,10 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let hosted = try host(rows: Self.rows(0..<50), olderPages: olderPages)
     let transcript = hosted.transcript
 
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    Self.selfSizeEveryRow(in: transcript)
     // Just below the load-older trigger, with row 0 scrolled off the top.
-    let parked = -transcript.adjustedContentInset.top + TranscriptScrollMath.loadOlderTopThreshold + 40
-    Self.park(transcript, at: parked)
-    spinRunLoop()
-    transcript.layoutIfNeeded()
+    parkReader(transcript) {
+      -$0.adjustedContentInset.top + TranscriptScrollMath.loadOlderTopThreshold + 40
+    }
     let watchedY = Self.onScreenMinY(ofRow: 1, in: transcript)
     let requestsBefore = olderPages.count
 
@@ -150,11 +134,7 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let hosted = try host(rows: Self.rows(0..<50), tallRows: [Self.rowID(0): 2000], olderPages: olderPages)
     let transcript = hosted.transcript
 
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    Self.selfSizeEveryRow(in: transcript)
-    Self.park(transcript, at: 1000)
-    spinRunLoop()
-    transcript.layoutIfNeeded()
+    parkReader(transcript) { _ in 1000 }
     XCTAssertEqual(
       transcript.indexPathsForVisibleItems.map(\.item), [0],
       "Fixture sanity: only the tall row is on screen"
@@ -310,10 +290,23 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     view.layoutIfNeeded()
   }
 
-  /// Park the reader at `offsetY` as a user scroll would, so the coordinator re-reads its pin.
-  private static func park(_ view: UICollectionView, at offsetY: CGFloat) {
-    view.setContentOffset(CGPoint(x: 0, y: offsetY), animated: false)
+  /// Scroll the reader away from the open-at-bottom as a user would: a drag ends the settle, every
+  /// row self-sizes, then the reader parks at `offsetY` (read after sizing) and the coordinator
+  /// re-reads its pin. Returns the parked offset.
+  @MainActor
+  @discardableResult
+  private func parkReader(
+    _ view: UICollectionView, at offsetY: (UICollectionView) -> CGFloat
+  ) -> CGFloat {
+    view.delegate?.scrollViewWillBeginDragging?(view)
+    Self.selfSizeEveryRow(in: view)
+    let parked = offsetY(view)
+    view.setContentOffset(CGPoint(x: 0, y: parked), animated: false)
     view.delegate?.scrollViewDidScroll?(view)
+    spinRunLoop()
+    // Lay the cells out at the new offset, as the next frame would during a real scroll.
+    view.layoutIfNeeded()
+    return parked
   }
 
   /// A row's top edge in viewport coordinates. `firstRow` is the row number at item 0 of the
