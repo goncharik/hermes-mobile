@@ -172,6 +172,51 @@ import Testing
     #expect(segments("MEDIA:/usr/bin/tool") == [.file(display: "tool", path: "/usr/bin/tool")])
   }
 
+  // MARK: End-to-end message
+
+  /// Every detection shape from the plan's Overview in ONE realistic assistant message, run the
+  /// way the renderers run it: the scanner over each prose line, and `path(fromLinkTarget:)`
+  /// over the markdown link targets the inline parse extracts first. The `https` link must stay
+  /// untouched on both routes (it keeps opening Safari through `.systemAction`).
+  @Test func realisticAssistantMessageLinksEveryShapeAndLeavesHTTPSAlone() throws {
+    let message = """
+      Done. The report is at /home/eugene/out/report.pdf, and the chart is `~/out/chart.png`.
+      Audio: MEDIA:/home/eugene/out/summary.mp3
+      Also see [the notes](file:///home/eugene/out/notes.md) and [the docs](https://example.com/a/b.pdf).
+      """
+    let lines = message.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    try #require(lines.count == 3)
+
+    // Line 1: bare path followed by punctuation (`,`) + backticked path followed by `.`.
+    #expect(segments(lines[0]) == [
+      .text("Done. The report is at "),
+      .file(display: "/home/eugene/out/report.pdf", path: "/home/eugene/out/report.pdf"),
+      .text(", and the chart is `"),
+      .file(display: "~/out/chart.png", path: "~/out/chart.png"),
+      .text("`."),
+    ])
+
+    // Line 2: `MEDIA:` tag displays the filename, links the full path.
+    #expect(segments(lines[1]) == [
+      .text("Audio: "),
+      .file(display: "summary.mp3", path: "/home/eugene/out/summary.mp3"),
+    ])
+
+    // Line 3, raw: neither `file:///…` nor `https://…` is a bare path (the `//` is preceded by
+    // `:`), so the scanner leaves the whole line alone — link targets are the parser's job.
+    #expect(segments(lines[2]) == [.text(lines[2])])
+
+    // Line 3, as the renderer sees it: the link-less runs carry nothing...
+    #expect(segments("Also see ") == [.text("Also see ")])
+    #expect(segments(" and ") == [.text(" and ")])
+    #expect(segments(".") == [.text(".")])
+    // ...the `file://` target becomes a host path with its label kept by the renderer...
+    #expect(try linkPath("file:///home/eugene/out/notes.md") == "/home/eugene/out/notes.md")
+    // ...and the `https` target is left exactly as it was.
+    #expect(try linkPath("https://example.com/a/b.pdf") == nil)
+    #expect(FileReference.path(from: try #require(URL(string: "https://example.com/a/b.pdf"))) == nil)
+  }
+
   // MARK: Link targets
 
   /// `path(fromLinkTarget:)` for a markdown link destination as the inline parser emits it.

@@ -607,14 +607,54 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
   disabled. `make snapshot` is now 275/275 (5 new baselines; the Task 11 count update stands).
 
 ### Task 10: Verify acceptance criteria
-- [ ] verify every detection shape from the Overview is tappable in a real chat (link, `MEDIA:`,
+- [x] verify every detection shape from the Overview is tappable in a real chat (link, `MEDIA:`,
       bare path, backticked path, path followed by punctuation) and `https` links still open Safari
-- [ ] verify edge cases: image over 16 MB → too-large card with working Share; binary file →
+      — **(static + unit check; live-agent tap run skipped — not automatable, no running agent.)**
+      New `FileReferenceScannerTests.realisticAssistantMessageLinksEveryShapeAndLeavesHTTPSAlone`
+      runs one three-line assistant message through the scanner per line and the two link targets
+      through `path(fromLinkTarget:)`: bare path + `,`, backticked `~/` path + `.`, `MEDIA:` tag
+      (filename display), `file:///` link → path, `https://` link → nil on both routes. Grep of
+      `ChatView.swift` confirms the ONE `OpenURLAction` (`openFileReference`) returns
+      `.systemAction` for every URL `FileReference.path(from:)` rejects and is installed on both
+      the chat body and `transcriptCell`; `SelectableText.Coordinator` hands non-`hermes-file:`
+      links back to `defaultAction` (Safari) and keeps their default menu.
+- [x] verify edge cases: image over 16 MB → too-large card with working Share; binary file →
       generic card; missing file → not-found card; `.env` → protected card; dismiss mid-download
       leaves no temp directory behind; a second Share after dismissing the share sheet is instant
-- [ ] run full test suite: `make test` and `make snapshot` (clean, no re-records outside this PR)
-- [ ] verify iPad regular width: sheet presents over the split detail; Share popover anchors
-- [ ] verify VoiceOver reads the path link as a link and announces "Copied"
+      — **(reducer/client tests only; live-agent run skipped — not automatable.)** Covered by
+      `FilePreviewFeatureTests` (`payloadTooLargeShowsTheTooLargeCard`,
+      `binaryVerdictShowsTheGenericCardWithByteSize`, `notFoundShowsTheNotFoundCard` +
+      `…WithServerDetail`, `forbiddenShowsTheProtectedCard`,
+      `shareDismissedReturnsToIdleAndASecondShareIsInstant` — one download for two Shares),
+      `ChatFilePreviewTests.dismissDuringADownloadCancelsTheChildEffect` (`.ifLet` cancels the
+      stream) + `FilePreviewClientTests.downloadCancelledByTheConsumerRemovesThePartialDirectory`
+      (the partial `<UUID>` folder is gone). "Working Share on the too-large card" was the one
+      gap: new `FilePreviewFeatureTests.shareOnTheTooLargeCardStillDownloads` asserts `.shareTapped`
+      on `.generic(.tooLarge)` starts the download and reaches `.ready`; the view disables Share
+      only while `share == .downloading`, never on `content` (`FilePreviewSheet.isDownloading`).
+- [x] run full test suite: `make test` and `make snapshot` (clean, no re-records outside this PR)
+      — `make test`: `Test run with 1862 tests in 79 suites passed after 6.784 seconds with 2 known
+      issues` (the 2 known issues are the pre-existing `withKnownIssue` wraps; 1860 + the 2 tests
+      added here). `make snapshot`: `Executed 275 tests, with 0 failures (0 unexpected)` /
+      `** TEST SUCCEEDED **`; `git status --porcelain -- HermesMobileTests/__Snapshots__/` is empty,
+      so nothing was re-recorded. `HermesKit/Package.resolved` restored before the commit.
+- [x] verify iPad regular width: sheet presents over the split detail; Share popover anchors
+      — **(static review only; interactive iPad check skipped — no device/simulator run.)**
+      `ChatView.swift` attaches `.sheet(item: $store.scope(state: \.filePreview, …))` to the chat
+      body itself (next to the tool-detail and model-picker sheets), so in regular width it presents
+      over the `NavigationSplitView` detail the slot occupies. `FilePreviewSheet` presents the
+      activity controller through a SwiftUI `.sheet(item: shareItem)` (detents `.medium`/`.large`),
+      not a popover, so no iPad `sourceView`/anchor is needed and the "popover anchors" wording is
+      moot (Task 9 decision).
+- [x] verify VoiceOver reads the path link as a link and announces "Copied"
+      — **(static review only; VoiceOver run skipped — not automatable.)** `MarkdownText.inline`
+      sets `piece.link = FileReference.url(for:)` on every file segment; `ProseAttributedBuilder`
+      copies `run.link` into `NSAttributedString.Key.link`, which `UITextView` exposes to VoiceOver
+      as a link (`FileReferenceLinkSnapshotTests` attribute tests assert the `.link` attribute on
+      both renderers' output). `ZoomableImageView` is one accessibility element (`isAccessibilityElement`,
+      `.image` trait) labelled with the file name. `CopiedToastView` posts
+      `AccessibilityNotification.Announcement(message)` on every `copiedToken` change; the sheet's
+      actual announcement string is **"Path copied"** (`FilePreviewSheet.copiedMessage`), not "Copied".
 
 ### Task 11: [Final] Update documentation
 - [ ] create `docs/features/file-preview.md`: detection grammar (with the false-positive corpus),

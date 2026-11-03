@@ -222,6 +222,34 @@ struct FilePreviewFeatureTests {
     #expect(seen.value?.fileName == "report.pdf")
   }
 
+  @Test func shareOnTheTooLargeCardStillDownloads() async {
+    // An image over the 16 MB data-URL cap lands on the too-large card, but `/api/fs/download`
+    // has no cap: Share must still work there — the reducer gates on `share`, never on
+    // `content`, and the view's Share button is disabled only while `.downloading`.
+    let url = fileURL("huge.png")
+    var initial = FilePreviewFeature.State(path: "/home/e/out/huge.png", sessionID: "sess-1", connection: connection)
+    initial.content = .generic(.init(reason: .tooLarge))
+    let store = TestStore(initialState: initial) { FilePreviewFeature() } withDependencies: {
+      $0.filePreview.download = { @Sendable _, path, _, fileName in
+        #expect(path == "/home/e/out/huge.png")
+        #expect(fileName == "huge.png")
+        return AsyncThrowingStream { continuation in
+          continuation.yield(.progress(0.5))
+          continuation.yield(.finished(url))
+          continuation.finish()
+        }
+      }
+    }
+
+    await store.send(.shareTapped) { $0.share = .downloading(fraction: nil) }
+    await store.receive(.downloadEvent(.progress(0.5))) { $0.share = .downloading(fraction: 0.5) }
+    await store.receive(.downloadEvent(.finished(url))) {
+      $0.share = .ready(url)
+      $0.downloadedURL = url
+    }
+    #expect(store.state.content == .generic(.init(reason: .tooLarge)))
+  }
+
   @Test func cancelMidDownloadReturnsToIdleAndCancelsTheEffect() async {
     let terminated = LockIsolated(false)
     let held = LockIsolated<AsyncThrowingStream<DownloadEvent, any Error>.Continuation?>(nil)
