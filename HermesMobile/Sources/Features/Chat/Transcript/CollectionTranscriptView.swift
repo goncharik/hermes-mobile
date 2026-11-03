@@ -231,8 +231,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var pendingPrependPreservation = false
     /// Re-entrancy guard: programmatic offset changes shouldn't be read back as user scrolls.
     ///
-    /// Lifecycle: set `true` when we kick off a programmatic `setContentOffset`. For a
-    /// *non-animated* jump the offset settles synchronously, so we clear it on the next runloop.
+    /// Lifecycle: set `true` when we kick off a programmatic offset change — `setContentOffset`
+    /// (`scrollToBottom`) or a direct `contentOffset` write (`assignOffset`: the anchor hold and
+    /// the prepend preserve). A *non-animated* change settles synchronously, so we clear it on the
+    /// next runloop (`assignOffset` skips that clear if an animated follow took the guard since).
     /// For an *animated* follow we must keep it set across the whole animation (UIKit emits
     /// intermediate `scrollViewDidScroll` frames that would otherwise be misread as user scrolls
     /// and flip the pin mid-follow); it is cleared by whichever of these fires first:
@@ -246,20 +248,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// Monotonic token identifying the latest animated follow, so a stale watchdog from a
     /// superseded animation can't clear the guard belonging to a newer one.
     private var animationGuardGeneration = 0
-    /// True while a snapshot apply is in flight. The `contentSize` KVO fires during a diff
-    /// apply (the layout grows as rows are inserted/resized); the apply *completion* already
-    /// owns the authoritative re-pin/preserve/jump, so the KVO must not also snap mid-apply
-    /// (which could fight the completion's prepend-preservation). Streaming-delta growth
+    /// True while a snapshot apply is in flight (until its completion runs). The `contentSize`
+    /// KVO fires during a diff apply (the layout grows as rows are inserted/resized); `apply`
+    /// and its completion already own the authoritative hold/preserve/re-pin/jump, so the KVO
+    /// must not also snap mid-apply (which could fight the prepend-preservation). Streaming-delta growth
     /// happens *outside* an apply, where this is false, so the KVO still handles that.
     private var isApplyingSnapshot = false
-    /// What the reader saw before the first of a run of snapshot applies whose completions have not
-    /// run yet (UIKit calls a completion on a later run-loop pass, so a second update can land
-    /// first). Only the latest apply's completion corrects the offset, from this merged capture.
-    private var pendingCorrection: PendingCorrection?
-    /// Bumped per apply, so a superseded completion knows it is stale.
-    private var applyGeneration = 0
-    /// Bumped per user drag, so a correction captured before a drag began leaves the offset alone.
-    private var dragGeneration = 0
     /// KVO token watching `contentSize` so a self-sizing cell that grows (a streaming delta
     /// resizing the last bubble) re-pins to the bottom while pinned — the primary jank fix.
     private var contentSizeObservation: NSKeyValueObservation?
@@ -368,8 +362,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// - **hold** — any change that keeps old rows (`holdsReaderAnchor`: `.slide`, e.g. #125's
     ///   live window dropping its head, or an append/mutate) keeps the reader's anchor row at the
     ///   same on-screen y; a shift that carries them to the window top pages older rows in.
-    /// - **follow** — then, if pinned, scroll to the new bottom (after the hold, so a pinned slide
-    ///   animates only the new content in).
+    /// - **follow** — then, if pinned, go to the new bottom: an animated scroll for an
+    ///   append/mutate, the jump-and-settle for a `.slide`.
+    ///
+    /// The preserve and the hold run right after the (non-animated, synchronous) apply, in the same
+    /// pass; the jump and the follow run in the apply's completion, which UIKit calls on a later
+    /// pass.
     ///
     /// A hydrate is classified like any other update, so it jumps a scrolled-up reader only when
     /// their rows are gone (`.reset`: nothing survives, or the window shrank and lost its head — a
@@ -392,35 +390,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       let preservePrepend = pendingPrependPreservation && diff.isPrepend
       pendingPrependPreservation = false
 
-      let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
-      // A wholesale replace of the visible slice — a server-authoritative re-hydrate that removed
-      // the reader's rows (`session.resume` re-trimming a paged-up window to the bottom, or
-      // replacing ids). Per the open/hydrate contract this forces a jump-to-bottom regardless of
-      // pin state, so the list isn't left parked mid-history. A hydrate whose rows survive is not
-      // a reset (append/mutate or `.slide`) and keeps the reader's place.
-      let isReset = diff == .reset
+      // Open, or a wholesale replace of the reader's rows (`.reset`, e.g. a hydrate re-trimming a
+      // paged-up window to the bottom): jump to the bottom regardless of pin state.
+      let jumps = !didInitialJump || diff == .reset
+      let isSlide = if case .slide = diff { true } else { false }
 
-      // Capture against the PRE-apply layout — or, while an earlier apply's completion is still
-      // pending, keep that capture (the offset has not been corrected for it yet) and merge in.
-      let survivors = Set(newOrder)
-      var correction = pendingCorrection ?? PendingCorrection(
-        offsetY: collectionView?.contentOffset.y ?? 0,
-        contentHeight: collectionView?.contentSize.height ?? 0,
-        wasPinned: isPinnedToBottom,
-        dragGeneration: dragGeneration
-      )
-      if let anchor = correction.anchor, !survivors.contains(anchor.id) {
-        correction.anchor = nil
-      }
-      if correction.anchor == nil, diff.holdsReaderAnchor {
-        // The reader's anchor row, so the completion can shift the offset by how far it moved.
-        correction.anchor = captureReaderAnchor(survivors: survivors)
-      }
-      correction.jumps = correction.jumps || isFirstPopulation || isReset
-      correction.preservesPrepend = correction.preservesPrepend || preservePrepend
-      pendingCorrection = correction
-      applyGeneration &+= 1
-      let generation = applyGeneration
+      // Capture against the PRE-apply layout.
+      let previousOffsetY = collectionView?.contentOffset.y ?? 0
+      let previousContentHeight = collectionView?.contentSize.height ?? 0
+      let anchor = !jumps && diff.holdsReaderAnchor
+        ? captureReaderAnchor(survivors: Set(newOrder)) : nil
 
       var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
       snapshot.appendSections([.main])
@@ -429,41 +408,37 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         snapshot.reconfigureItems(changedIDs)
       }
 
-      // Suppress the contentSize KVO for the duration of the apply: the completion below is the
-      // single authority on where the offset lands for this structural change.
+      // Suppress the contentSize KVO for the duration of the apply: this method and its
+      // completion are the single authority on where the offset lands for this change.
       isApplyingSnapshot = true
       dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
-        // A newer apply landed before this completion ran: its completion corrects for both.
-        guard let self, generation == self.applyGeneration else { return }
-        self.pendingCorrection = nil
+        // UIKit runs this on a later run-loop pass. It reads the live pin state, so a reader who
+        // scrolled away since the apply is not pulled back.
+        guard let self else { return }
         defer { self.isApplyingSnapshot = false }
-        if correction.jumps || !self.didInitialJump, !newOrder.isEmpty {
-          // Open / wholesale-reset (incl. a hydrate that removed the reader's rows): jump to
-          // bottom (no animation) — always, regardless of pin state.
+        guard !newOrder.isEmpty else { return }
+        if jumps || !self.didInitialJump || (isSlide && self.isPinnedToBottom) {
+          // Open / reset — or a pinned reader's slide (a hydrate re-iding the tail rows lands on
+          // estimated heights, which an animated follow would stop short of): jump and settle.
           self.jumpToBottomAndSettle()
-        } else if correction.preservesPrepend {
-          self.preserveOffsetAfterPrepend(
-            previousOffsetY: correction.offsetY,
-            previousContentHeight: correction.contentHeight
-          )
-        } else if correction.dragGeneration == self.dragGeneration {
-          // Rows above the reader came or went (the #125 slide): hold their anchor row still —
-          // unless a drag began since the capture, which then owns the offset (no hold, no follow).
-          var shifted = false
-          if let anchor = correction.anchor {
-            shifted = self.holdAnchor(anchor, previousOffsetY: correction.offsetY)
-          }
-          if correction.wasPinned {
-            // Appended row, streaming delta grew the last cell, or the window slid: follow only
-            // if pinned.
-            self.scrollToBottom(animated: !self.reduceMotion)
-          } else if shifted {
-            // A programmatic shift never reaches `scrollViewDidScroll`'s top sentinel, so check
-            // it here — after this view update, since paging older rows sends a store action.
-            DispatchQueue.main.async { [weak self] in self?.loadOlderIfNearTop() }
-          }
+        } else if !preservePrepend, self.isPinnedToBottom {
+          // Appended row or streaming delta grew the last cell: follow only if pinned.
+          self.scrollToBottom(animated: !self.reduceMotion)
         }
         // Scrolled-up reader: no yank, the jump button stays.
+      }
+
+      // The non-animated apply has already updated the collection view, so correct the offset
+      // now, in the same pass, so the changed layout is never drawn uncorrected.
+      if jumps { return }
+      if preservePrepend {
+        preserveOffsetAfterPrepend(
+          previousOffsetY: previousOffsetY, previousContentHeight: previousContentHeight
+        )
+      } else if let anchor, holdAnchor(anchor, previousOffsetY: previousOffsetY), !isPinnedToBottom {
+        // A programmatic shift never reaches `scrollViewDidScroll`'s top sentinel, so check it
+        // here — after this view update, since paging older rows sends a store action.
+        DispatchQueue.main.async { [weak self] in self?.loadOlderIfNearTop() }
       }
     }
 
@@ -471,17 +446,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private struct ReaderAnchor {
       let id: ChatRow.ID
       let minY: CGFloat
-    }
-
-    /// The pre-apply state an apply completion corrects the offset from (see `pendingCorrection`).
-    private struct PendingCorrection {
-      let offsetY: CGFloat
-      let contentHeight: CGFloat
-      let wasPinned: Bool
-      let dragGeneration: Int
-      var anchor: ReaderAnchor?
-      var jumps = false
-      var preservesPrepend = false
     }
 
     /// The topmost on-screen row (below the top inset) that survives into the new order — or,
@@ -515,7 +479,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     }
 
     /// Keep `anchor` where it was on screen: lay out the new snapshot, measure how far the row
-    /// moved in content space, and shift the offset by that delta. Returns whether it moved.
+    /// moved in content space, and shift the pre-apply offset by that delta. Runs in the same pass
+    /// as the apply, so no user scroll lies between the capture and the shift. A row that did not
+    /// move (a plain append below the reader) leaves the offset alone. Returns whether it shifted.
     private func holdAnchor(_ anchor: ReaderAnchor, previousOffsetY: CGFloat) -> Bool {
       guard
         let collectionView,
@@ -525,18 +491,18 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else {
         return false
       }
-      let newOffsetY = TranscriptScrollMath.offsetAfterAnchorShift(
-        previousOffsetY: previousOffsetY,
-        anchorShift: frame.minY - anchor.minY,
-        contentHeight: collectionView.contentSize.height,
-        viewportHeight: collectionView.bounds.height,
-        topInset: collectionView.adjustedContentInset.top,
-        bottomInset: collectionView.adjustedContentInset.bottom
+      let anchorShift = frame.minY - anchor.minY
+      guard abs(anchorShift) > Self.minimumOffsetChange else { return false }
+      assignOffset(
+        TranscriptScrollMath.offsetAfterAnchorShift(
+          previousOffsetY: previousOffsetY,
+          anchorShift: anchorShift,
+          contentHeight: collectionView.contentSize.height,
+          viewportHeight: collectionView.bounds.height,
+          topInset: collectionView.adjustedContentInset.top,
+          bottomInset: collectionView.adjustedContentInset.bottom
+        )
       )
-      guard abs(newOffsetY - collectionView.contentOffset.y) > Self.minimumOffsetChange else {
-        return false
-      }
-      assignOffset(newOffsetY)
       return true
     }
 
@@ -613,6 +579,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       previousContentHeight: CGFloat
     ) {
       guard let collectionView else { return }
+      collectionView.layoutIfNeeded()
       let insertedHeight = collectionView.contentSize.height - previousContentHeight
       guard insertedHeight > 0 else { return }
       let newOffsetY = TranscriptScrollMath.offsetAfterAnchorShift(
@@ -677,7 +644,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     // MARK: UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-      // Skip programmatic adjustments (jump / prepend-preserve) — only real user scrolls
+      // Skip programmatic adjustments (jump / follow / anchor hold / prepend-preserve) — only real user scrolls
       // should mutate pin state.
       guard !isAdjustingOffset else { return }
       updatePinState()
@@ -717,7 +684,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
       // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
       isAdjustingOffset = false
-      dragGeneration &+= 1
       // A deliberate user scroll also ends any initial open-at-bottom settle — respect their
       // intent rather than yanking back to the bottom as cells finish sizing.
       needsInitialBottomSettle = false

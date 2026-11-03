@@ -13,9 +13,19 @@ import XCTest
 ///
 /// - **preserve** — a reader scrolled up keeps the row they were reading at the same on-screen
 ///   y (the dropped head row was above it, so the offset shifts by exactly that row's height);
-/// - **follow** — a reader pinned at the bottom ends at the new bottom.
+/// - **topmost anchor** — with a tool row inserted above the thinking row, the topmost surviving
+///   row is held, not the unmoved thinking row;
+/// - **page older** — a hold that carries the reader to the window top requests older rows;
+/// - **tall dropped row** — a reader inside a dropped row taller than the screen is held at the
+///   window top, never jumped to the bottom;
+/// - **back-to-back slides** — two slides before UIKit runs the first apply's completion drift
+///   nothing;
+/// - **drag / scroll before the completion** — the completion never overwrites where the user
+///   moved the list, and the hold lands in the same pass as the apply;
+/// - **follow** — a reader pinned at the bottom ends at the new bottom, including after a
+///   hydrate that re-ids the tail rows (they land on estimated heights and grow).
 ///
-/// A snapshot can't see either: both are offsets across an update. So these tests host the real
+/// A snapshot can't see any of these: they are offsets across an update. So these tests host the real
 /// `CollectionTranscriptView` in a window, drive the user scroll through the collection view's
 /// own delegate (the coordinator), apply a slid window by re-rendering the representable, and
 /// read the geometry straight off the `UICollectionView`. Rows are fixed-height so every number
@@ -23,7 +33,9 @@ import XCTest
 ///
 /// **Red-checked** against a renderer whose scrolled-up slide takes the reset jump (the pre-fix
 /// behaviour): every watched row moved ~2000pt off screen and the offset landed on the bottom,
-/// so the preserve test went red on every assertion.
+/// so the preserve test went red on every assertion. The hold-timing and pinned-hydrate tests
+/// went red against a renderer that held the anchor in the apply's completion and followed a
+/// pinned slide with an animated scroll (a 60pt pull-back; a pinned reader 480pt short).
 final class TranscriptSlidePreservationTests: XCTestCase {
   /// iPhone 13 Pro width, a phone-height transcript region.
   private static let windowSize = CGSize(width: 390, height: 700)
@@ -195,6 +207,34 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     )
   }
 
+  /// The hold lands in the same update as the slide, so the slid layout is never drawn
+  /// uncorrected; and a scroll that moves the list before UIKit runs the apply's completion (a
+  /// fling still decelerating, no new drag) is kept, not overwritten by a pre-apply offset.
+  @MainActor
+  func testHoldLandsWithTheSlideAndKeepsAScrollThatFollowsIt() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+
+    parkReader(transcript) { Self.maxOffsetY(of: $0) / 2 }
+    let watched = try XCTUnwrap(Self.fullyVisibleRowIndices(in: transcript).first)
+    let watchedY = Self.onScreenMinY(ofRow: watched, in: transcript)
+
+    hosted.deliver(rows: Self.rows(1..<51))
+    XCTAssertEqual(
+      Self.onScreenMinY(ofRow: watched, in: transcript, firstRow: 1), watchedY, accuracy: 0.5,
+      "The hold must land in the same update as the slide, not on a later pass"
+    )
+
+    let scrolled = transcript.contentOffset.y - 30
+    transcript.setContentOffset(CGPoint(x: 0, y: scrolled), animated: false)
+    hosted.settle()
+
+    XCTAssertEqual(
+      transcript.contentOffset.y, scrolled, accuracy: 0.5,
+      "The slide's completion must not pull back a scroll that followed the apply"
+    )
+  }
+
   // MARK: - Pinned: follow
 
   /// The other half of the contract: a reader parked at the bottom follows the slide to the new
@@ -216,8 +256,8 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let watched = try XCTUnwrap(Self.fullyVisibleRowIndices(in: transcript).first)
     let watchedY = Self.onScreenMinY(ofRow: watched, in: transcript)
 
-    // Run single run-loop passes until the offset first moves: UIKit runs the apply's completion
-    // (the hold, then the animated follow's start) on a later pass, but not always the next one.
+    // Run single run-loop passes until the offset first moves (the hold, in the same pass as the
+    // apply; the follow comes from the apply's completion on a later pass).
     hosted.deliver(rows: Self.rows(1..<51))
     let moveDeadline = Date().addingTimeInterval(1)
     while abs(transcript.contentOffset.y - oldBottom) < 0.5, Date() < moveDeadline {
@@ -234,7 +274,7 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     XCTAssertGreaterThan(
       newBottom, oldBottom + 200, "Fixture sanity: the tall landing row must move the bottom"
     )
-    // The follow animates (reduce motion is off), so wait for it to land.
+    // Wait for the follow to land.
     let deadline = Date().addingTimeInterval(2)
     while abs(transcript.contentOffset.y - newBottom) > 0.5, Date() < deadline {
       spinRunLoop()
@@ -242,6 +282,45 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     XCTAssertEqual(
       transcript.contentOffset.y, newBottom, accuracy: 0.5,
       "A pinned reader must follow the slide to the new bottom"
+    )
+  }
+
+  /// A hydrate after a finished turn rebuilds the live tail rows under new (history) ids while the
+  /// older rows keep theirs — a `.slide` with nothing dropped. The rebuilt rows land on estimated
+  /// heights and grow as they size, so a pinned reader must end on the bottom as it is once every
+  /// row has sized, not on one computed from the estimates.
+  @MainActor
+  func testPinnedReaderEndsAtTheBottomAfterAHydrateReIdsTheTailRows() throws {
+    let rebuilt = 1000..<1005
+    let hosted = try host(
+      rows: Self.rows(0..<50),
+      tallRows: Dictionary(uniqueKeysWithValues: rebuilt.map { (Self.rowID($0), 300) })
+    )
+    let transcript = hosted.transcript
+
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    transcript.delegate?.scrollViewDidScroll?(transcript)
+    spinRunLoop()
+    XCTAssertEqual(
+      transcript.contentOffset.y, Self.maxOffsetY(of: transcript), accuracy: 0.5,
+      "Fixture sanity: opens at the bottom"
+    )
+    let contentHeightBefore = transcript.contentSize.height
+
+    hosted.update(rows: Self.rows(0..<45) + Self.rows(rebuilt))
+
+    let deadline = Date().addingTimeInterval(2)
+    while abs(transcript.contentOffset.y - Self.maxOffsetY(of: transcript)) > 0.5, Date() < deadline {
+      spinRunLoop()
+      transcript.layoutIfNeeded()
+    }
+    XCTAssertGreaterThan(
+      transcript.contentSize.height, contentHeightBefore + 300,
+      "Fixture sanity: the rebuilt rows must have grown past their estimates"
+    )
+    XCTAssertEqual(
+      transcript.contentOffset.y, Self.maxOffsetY(of: transcript), accuracy: 0.5,
+      "A pinned reader must end on the current bottom after the hydrate"
     )
   }
 
