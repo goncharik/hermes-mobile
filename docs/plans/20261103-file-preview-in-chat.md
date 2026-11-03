@@ -422,21 +422,28 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ChatFilePreviewTests.swift`
 
-- [ ] add `@Presents public var filePreview: FilePreviewFeature.State?` and the two actions
+- [x] add `@Presents public var filePreview: FilePreviewFeature.State?` and the two actions
       (`fileReferenceTapped(path:)`, `filePreview(PresentationAction<…>)`)
-- [ ] implement `.fileReferenceTapped`: ignored while presented; otherwise seeds the child with
+- [x] implement `.fileReferenceTapped`: ignored while presented; otherwise seeds the child with
       `path`, `sessionID: state.sessionKey`, `state.connection`
-- [ ] implement `.filePreview(.dismiss)` cleanup: `removeTemp` for a `.ready(url)` share before
+- [x] implement `.filePreview(.dismiss)` cleanup: `removeTemp` for a `.ready(url)` share before
       `.ifLet` nils the state; compose `.ifLet(\.$filePreview, action: \.filePreview)`
-- [ ] confirm `teardown` / slot nil-out needs no extra cancel (child effects die with `.ifLet`) —
+- [x] confirm `teardown` / slot nil-out needs no extra cancel (child effects die with `.ifLet`) —
       add a comment next to the existing `CancelID` teardown list saying why `filePreview` is
       not listed
-- [ ] write tests: tap seeds the child with the session key and connection; a second tap while
+- [x] write tests: tap seeds the child with the session key and connection; a second tap while
       presented is a no-op; dismiss with a ready share calls `removeTemp` with that URL; dismiss
       during `.downloading` cancels the download effect (no trailing `downloadEvent` lands);
       `Equatable` state round-trips through the existing snapshot persist path unaffected (the
       child is not persisted)
-- [ ] run `swift test` — must pass before task 5
+- [x] run `swift test` — must pass before task 5
+- ➕ the dismiss cleanup reads the child's `downloadedURL` (Task 3's addition), not `share`:
+  after `.shareDismissed` the share state is already `.idle` while the temp file is still on
+  disk, and that file must go when the preview does. A dismiss with no finished download calls
+  nothing (a cancelled in-flight download cleans its own partial folder via the stream's
+  `onTermination`). The dependency is held as `filePreviewClient` in the reducer so it can't be
+  confused with `state.filePreview`. `ChatSnapshot` was already a fixed projection (model /
+  reasoning / usage / rows), so no persistence exclusion was needed — the persist test proves it.
 
 ### Task 5: Attach `hermes-file:` links in both prose renderers
 
