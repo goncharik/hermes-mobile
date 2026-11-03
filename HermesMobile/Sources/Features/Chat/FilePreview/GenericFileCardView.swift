@@ -51,8 +51,8 @@ struct GenericFileCardView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
-  /// One line per reason. The too-large copy deliberately points at Share: the download
-  /// route has no cap, so the file is still reachable from this very sheet.
+  /// One line per reason. The too-large card keeps the Share button enabled (the download
+  /// route has no cap), so the copy names only the reason.
   static func reasonText(_ reason: FilePreviewFeature.Reason) -> String {
     switch reason {
     case .unsupported: "No preview available"

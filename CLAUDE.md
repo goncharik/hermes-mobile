@@ -182,13 +182,14 @@ bullets below are the compressed rules.
   forms, layout, push-tap recovery: `docs/features/approvals.md`.
 - **Context-usage pill**: display derives from `Usage` helpers in HermesKit (thresholds
   mirror the Hermes TUI, unit-tested); severity→color and popover are local `@State`.
-- **File references are tappable in place** — the pure `FileReferenceScanner` (markdown
-  `file:`/abs link targets, `MEDIA:` tags, bare absolute paths WITH an extension; no relative
-  paths, spaces or inline images) attaches `hermes-file://preview?path=` ONCE in
-  `MarkdownText.inline`; `ChatView.openFileReference` is the ONE `openURL` hook, installed on
-  the cell builder AND the body (cells don't inherit the chat environment). `FilePreviewFeature`
-  is an `@Presents`/`.ifLet` child over `/api/fs/*` (server decides binary; deliberately NO
-  `*Supported` flip; `session.create` unchanged). Details: `docs/features/file-preview.md`.
+- **File references are tappable in place** — `MarkdownText.inline` attaches
+  `hermes-file://preview?path=` ONCE: markdown `file:`/abs link targets via
+  `FileReference.path(fromLinkTarget:)`, `MEDIA:` tags and bare ASCII absolute paths WITH an
+  extension via the pure `FileReferenceScanner` (no relative paths, spaces or inline images).
+  `ChatView.openFileReference` is the ONE `openURL` hook, installed on the cell builder AND the
+  body. `FilePreviewFeature` is an `@Presents`/`.ifLet` child over `/api/fs/*` (stored id +
+  profile, ONE retry on "Session not found"; deliberately NO `*Supported` flip; `session.create`
+  unchanged). Details: `docs/features/file-preview.md`.
 
 ## Composer & input
 
@@ -330,7 +331,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (275/275), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (276/276), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

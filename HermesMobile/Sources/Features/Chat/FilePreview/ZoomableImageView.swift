@@ -6,21 +6,15 @@ import UIKit
 /// the tap point. The image is always centered — in the region while it is smaller than it,
 /// at the scroll view's origin once zoomed past it.
 ///
-/// Display-only. Whether the bytes decode is decided by the sheet through `image(from:)`
-/// (the reducer is platform-free and hands over raw `Data`); a nil image is the sheet's cue
-/// to show `GenericFileCardView` instead. The whole scroll view is ONE accessibility element
+/// Display-only. Whether the bytes decode is decided by the sheet (`UIImage(data:)` — the
+/// reducer is platform-free and hands over raw `Data`); a nil image is the sheet's cue to
+/// show `GenericFileCardView` instead. The whole scroll view is ONE accessibility element
 /// labelled with the file name, so VoiceOver reads "report.png, image" rather than an
 /// anonymous scroll area.
 struct ZoomableImageView: UIViewRepresentable {
   let image: UIImage
   /// The file name — what VoiceOver announces for the image.
   let accessibilityLabel: String
-
-  /// View-side decodability check: UIKit's verdict on the bytes the data-URL route
-  /// returned. Static and synchronous so the sheet can branch on it inside `body`.
-  static func image(from data: Data) -> UIImage? {
-    UIImage(data: data)
-  }
 
   func makeUIView(context: Context) -> ZoomableImageScrollView {
     let view = ZoomableImageScrollView(image: image)
@@ -44,6 +38,9 @@ final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
   static let maximumZoom: CGFloat = 4
   /// Where a double-tap on an unzoomed image lands.
   static let doubleTapZoom: CGFloat = 2
+  /// How far above `minimumZoom` still counts as unzoomed: a zoom bounce can leave float
+  /// residue after `setZoomScale(minimumZoom)`.
+  static let zoomTolerance: CGFloat = 0.01
 
   private let imageView = UIImageView()
   /// The bounds the image was last fitted to, so a zoom-driven `layoutSubviews` (the
@@ -115,8 +112,8 @@ final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
   }
 
   /// The largest size with `image`'s aspect ratio that fits `container` (zero for a degenerate
-  /// image or container). Pure so it can be reasoned about without a view.
-  static func fittedSize(of image: CGSize, in container: CGSize) -> CGSize {
+  /// image or container).
+  private static func fittedSize(of image: CGSize, in container: CGSize) -> CGSize {
     guard image.width > 0, image.height > 0, container.width > 0, container.height > 0 else {
       return .zero
     }
@@ -125,7 +122,7 @@ final class ZoomableImageScrollView: UIScrollView, UIScrollViewDelegate {
   }
 
   @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-    if zoomScale > Self.minimumZoom + 0.01 {
+    if zoomScale > Self.minimumZoom + Self.zoomTolerance {
       setZoomScale(Self.minimumZoom, animated: true)
     } else {
       // Zoom to a rect (in the image view's coordinates) centered on the tap, sized so the

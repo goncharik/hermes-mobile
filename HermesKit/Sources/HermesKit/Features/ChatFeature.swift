@@ -1347,7 +1347,9 @@ public struct ChatFeature {
         // download effects are wrapped by `.ifLet`, which cancels them when the sheet is
         // dismissed and when `AppFeature` nils the whole slot (`.clearLiveChat` — the
         // mandatory nil-out) — the same `ifLet` cancellation this feature's own un-ID'd
-        // one-shot effects rely on. There is no child `CancelID` to name here.
+        // one-shot effects rely on. There is no child `CancelID` to name here. The child's
+        // finished Share download (`downloadedURL`, a file, not an effect) is removed by
+        // `AppFeature` at the nil-out (`releaseSlotFilePreviewTemp`).
         return .merge(
           releaseVoiceResources(&state),
           .cancel(id: CancelID.socket),
@@ -2576,8 +2578,14 @@ public struct ChatFeature {
         // One sheet at a time: a second tap (a double-tap, or a tap landing while the sheet
         // is animating in) must not replace the preview under the user.
         guard state.filePreview == nil else { return .none }
+        // The fs routes resolve STORED ids only (a live-only handle 404s), scoped to the chat's
+        // profile per the multi-profile rule; nil omits either parameter. Whether the stored id
+        // has a DB row yet (a seeded branch's does on current agents, a fresh draft's does not)
+        // is not knowable here — the child sends it and retries once without it on the
+        // server's "Session not found".
         state.filePreview = FilePreviewFeature.State(
-          path: path, sessionID: state.sessionKey, connection: state.connection
+          path: path, sessionID: state.storedSessionID,
+          profile: state.profileName, connection: state.connection
         )
         return .none
 

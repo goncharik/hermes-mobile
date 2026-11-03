@@ -14,8 +14,8 @@ import SwiftUI
 /// in `GenericFileCardView`.
 ///
 /// Image and PDF bytes are decoded HERE, not in the reducer (HermesKit is platform-free):
-/// `ZoomableImageView.image(from:)` / `PDFKitView.document(from:)` are synchronous static
-/// checks, and a nil result falls back to the generic card with reason `.unsupported`. The
+/// `UIImage(data:)` / `PDFKitView.document(from:)` are synchronous checks, and a nil result
+/// falls back to the generic card with reason `.unsupported`. The
 /// two branches are `Equatable` sub-views keyed on the bytes, so a re-render for the copy
 /// toast or the share bar does not decode a multi-megabyte image again or reset its zoom.
 ///
@@ -30,8 +30,8 @@ import SwiftUI
 /// (`.cancelDownload`). A failed download shows `shareError` in the same strip until the next
 /// Share clears it (the reducer's job). Once the bytes are on disk (`.ready(url)`) the system
 /// share sheet is presented through `.sheet(item:)` over a `ShareItem` derived from that state;
-/// both ways out — the activity controller's completion and a swipe-down on the sheet — end in
-/// ONE `.shareDismissed`, guarded here by checking that the share is still `.ready`.
+/// both ways out — the activity controller's completion and a swipe-down on the sheet — send
+/// `.shareDismissed`, and the reducer ignores the second (the share is no longer `.ready`).
 struct FilePreviewSheet: View {
   let store: StoreOf<FilePreviewFeature>
 
@@ -69,7 +69,7 @@ struct FilePreviewSheet: View {
     // The system share sheet, over the preview. A SwiftUI sheet (not a popover) so the iPad
     // popover-anchor requirement never applies — see `ActivityShareSheet`.
     .sheet(item: shareItem) { item in
-      ActivityShareSheet(url: item.url, onComplete: sendShareDismissed)
+      ActivityShareSheet(url: item.url, onComplete: { store.send(.shareDismissed) })
         .presentationDetents([.medium, .large])
     }
   }
@@ -88,21 +88,13 @@ struct FilePreviewSheet: View {
         return nil
       },
       set: { item in
-        if item == nil { sendShareDismissed() }
+        if item == nil { store.send(.shareDismissed) }
       }
     )
   }
 
-  /// One `.shareDismissed` per presentation: the completion handler and the binding reset can
-  /// both fire for the same dismissal, and the second finds the share already `.idle`.
-  private func sendShareDismissed() {
-    guard case .ready = store.share else { return }
-    store.send(.shareDismissed)
-  }
-
-  /// What the toast says here (and announces to VoiceOver) — one constant for the view and
-  /// its snapshot.
-  static let copiedMessage = "Path copied"
+  /// What the toast says here (and announces to VoiceOver).
+  private static let copiedMessage = "Path copied"
 
   /// The region under the navigation bar, with the copy toast overlaid and the share status
   /// strip inset at the bottom. Internal (not `private`) so the snapshot suite can render it
@@ -189,7 +181,7 @@ private struct ImagePreviewBody: View, Equatable {
   let data: Data
 
   var body: some View {
-    if let image = ZoomableImageView.image(from: data) {
+    if let image = UIImage(data: data) {
       ZoomableImageView(image: image, accessibilityLabel: fileName)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
@@ -262,8 +254,9 @@ private struct ShareDownloadStrip: View {
   }
 }
 
-/// A failed Share download, in the chat's error-banner idiom (red caption over a faint tint).
-/// Stays until the next Share, which the reducer clears `shareError` on.
+/// A failed Share download: the chat banner's red caption `Label`, given a faint red tint and a
+/// top divider because it sits as a strip between content and the bottom bar rather than loose
+/// above the composer. Stays until the next Share, which the reducer clears `shareError` on.
 private struct ShareErrorStrip: View {
   let message: String
 

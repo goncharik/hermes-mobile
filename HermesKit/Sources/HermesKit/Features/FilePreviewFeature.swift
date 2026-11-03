@@ -15,7 +15,7 @@ import Foundation
 /// Lifecycle: the sheet is an `.ifLet` child, so dismissing it auto-cancels an in-flight read
 /// or a multi-megabyte download. The downloaded temp file outlives the share sheet (a second
 /// Share is instant) but not the preview — `ChatFeature` reads `downloadedURL` on dismiss and
-/// calls `removeTemp`.
+/// calls `removeTemp`, and `AppFeature` does the same when it drops the whole chat slot.
 @Reducer
 public struct FilePreviewFeature {
   @ObservableState
@@ -24,11 +24,18 @@ public struct FilePreviewFeature {
     /// `path` parameter and what Copy path puts on the pasteboard).
     public var path: String
     /// Last path component — the sheet title and the share sheet's file name.
-    public var fileName: String
-    public var kind: FilePreviewKind
-    /// `session_id` for the fs routes (`ChatFeature.sessionKey`), so relative and
-    /// `/workspace/...` sandbox paths resolve against the session; nil omits it.
+    public var fileName: String { FilePreviewKind.displayName(for: path) }
+    public var kind: FilePreviewKind { FilePreviewKind.infer(path: path) }
+    /// `session_id` for the fs routes — the STORED id only (`ChatFeature.storedSessionID`:
+    /// the server resolves stored ids, never the live handle), so relative and
+    /// `/workspace/...` sandbox paths resolve against the session; nil omits it. Whether the
+    /// id has a DB row yet is the SERVER's call (a fresh draft's row is lazy, a seeded branch's
+    /// is not, and that rule has moved between agent versions): its "Session not found" 404
+    /// makes the effect retry once without the id (`isSessionNotFound`).
     public var sessionID: String?
+    /// `profile` for the fs routes (`ChatFeature.profileName`): the DB the server looks
+    /// `sessionID` up in. nil omits it (= the server's launch profile).
+    public var profile: String?
     public var connection: ServerConnection
     public var content: Content
     public var share: ShareState
@@ -44,6 +51,7 @@ public struct FilePreviewFeature {
     public init(
       path: String,
       sessionID: String?,
+      profile: String?,
       connection: ServerConnection,
       content: Content = .loading,
       share: ShareState = .idle,
@@ -52,9 +60,8 @@ public struct FilePreviewFeature {
       downloadedURL: URL? = nil
     ) {
       self.path = path
-      self.fileName = FilePreviewKind.displayName(for: path)
-      self.kind = FilePreviewKind.infer(path: path)
       self.sessionID = sessionID
+      self.profile = profile
       self.connection = connection
       self.content = content
       self.share = share
@@ -81,8 +88,8 @@ public struct FilePreviewFeature {
     /// The server called the bytes binary (or an image/PDF route returned something the view
     /// cannot decode).
     case unsupported
-    /// 413 from `read-data-url` — over the 16 MB data-URL limit. Share still works (the
-    /// download route has no cap).
+    /// 413 from either read route (`read-data-url` above 16 MB, `read-text` above 64 MB of
+    /// source). Share still works (the download route has no cap).
     case tooLarge
     /// 404 — missing on the host (the detail may say the path lives only inside the sandbox).
     case notFound
@@ -137,7 +144,7 @@ public struct FilePreviewFeature {
     case load, download, copyFeedback
   }
 
-  /// How long the "Copied" toast stays up — duplicated per feature (the toast idiom) rather
+  /// How long the "Path copied" toast stays up — duplicated per feature (the toast idiom) rather
   /// than shared, so a chat tweak can't silently restyle the sheet.
   static let copiedFeedbackDuration: Duration = .seconds(1.5)
 
@@ -204,27 +211,49 @@ public struct FilePreviewFeature {
           return .none
         }
         state.share = .downloading(fraction: nil)
-        let (connection, path, sessionID, fileName) = (state.connection, state.path, state.sessionID, state.fileName)
+        let connection = state.connection
+        let path = state.path
+        let sessionID = state.sessionID
+        let profile = state.profile
+        let fileName = state.fileName
         return .run { [filePreview] send in
-          do {
-            for try await event in filePreview.download(connection, path, sessionID, fileName) {
+          @Sendable func consume(_ sessionID: String?) async throws {
+            for try await event in filePreview.download(connection, path, sessionID, profile, fileName) {
               await send(.downloadEvent(event))
+              // The stream buffers `.finished` ahead of the consumer; a cancel landing in that
+              // gap (`.cancelDownload`, the sheet or the slot going away) is too late for the
+              // client's `onTermination` cleanup and too early for the reducer — a cancelled
+              // effect's `send` is dropped — so nothing would ever record or remove the file.
+              if case let .finished(url) = event, Task.isCancelled {
+                await filePreview.removeTemp(url)
+              }
+            }
+          }
+          do {
+            do {
+              try await consume(sessionID)
+            } catch where sessionID != nil && Self.isSessionNotFound(error) {
+              // The status is validated before the first event, so nothing was yielded yet.
+              try await consume(nil)
             }
           } catch {
             // A cancelled consumer ends the stream quietly; only a real failure is reported.
             guard !Task.isCancelled else { return }
-            await send(.downloadFailed(asRESTError(error).message))
+            await send(.downloadFailed(Self.downloadFailureMessage(error)))
           }
         }
         .cancellable(id: CancelID.download, cancelInFlight: true)
 
       case let .downloadEvent(.progress(fraction)):
-        // A late event after Cancel must not resurrect the bar.
+        // Only a download in flight owns these events: a cancelled effect's late event (the
+        // belt — the effect's own cancellation already drops them) must neither resurrect
+        // the bar nor pop the share sheet.
         guard case .downloading = state.share else { return .none }
         state.share = .downloading(fraction: fraction)
         return .none
 
       case let .downloadEvent(.finished(url)):
+        guard case .downloading = state.share else { return .none }
         state.downloadedURL = url
         state.share = .ready(url)
         return .none
@@ -240,6 +269,10 @@ public struct FilePreviewFeature {
         return .cancel(id: CancelID.download)
 
       case .shareDismissed:
+        // One dismissal per presentation: the activity controller's completion and the
+        // sheet binding's nil-set can both fire for the same dismissal, and a stale second
+        // must not reset a Share the user has since restarted.
+        guard case .ready = state.share else { return .none }
         state.share = .idle
         return .none
       }
@@ -247,19 +280,27 @@ public struct FilePreviewFeature {
   }
 
   /// The load effect for the current kind: images and PDFs take the data-URL route,
-  /// everything else `read-text`. Any error is normalised to `RESTError` and folded by
-  /// `.loaded(.failure)`.
+  /// everything else `read-text`. A "Session not found" 404 against a `sessionID` is retried
+  /// ONCE without it (the #17 single-retry shape — no loop); any other error is normalised to
+  /// `RESTError` and folded by `.loaded(.failure)`.
   private func load(_ state: State) -> Effect<Action> {
-    let (connection, path, sessionID, kind) = (state.connection, state.path, state.sessionID, state.kind)
+    let connection = state.connection
+    let path = state.path
+    let sessionID = state.sessionID
+    let profile = state.profile
+    let kind = state.kind
     return .run { [filePreview] send in
-      do {
+      @Sendable func read(_ sessionID: String?) async throws -> Loaded {
         switch kind {
-        case .image, .pdf:
-          let read = try await filePreview.readData(connection, path, sessionID)
-          await send(.loaded(.success(.data(read))))
-        case .other:
-          let read = try await filePreview.readText(connection, path, sessionID)
-          await send(.loaded(.success(.text(read))))
+        case .image, .pdf: .data(try await filePreview.readData(connection, path, sessionID, profile))
+        case .other: .text(try await filePreview.readText(connection, path, sessionID, profile))
+        }
+      }
+      do {
+        do {
+          await send(.loaded(.success(try await read(sessionID))))
+        } catch where sessionID != nil && Self.isSessionNotFound(error) {
+          await send(.loaded(.success(try await read(nil))))
         }
       } catch {
         await send(.loaded(.failure(asRESTError(error))))
@@ -268,10 +309,32 @@ public struct FilePreviewFeature {
     .cancellable(id: CancelID.load, cancelInFlight: true)
   }
 
+  /// The sessions router's 404 `detail` for an id the profile's DB holds no row for
+  /// (`_NOT_FOUND` in `hermes_cli/web_routers/sessions.py`, raised by `_fs_owned_session`
+  /// before the path is even looked at). Matched exactly: every other 404 — "File not found",
+  /// the sandbox hint — is a verdict about the FILE and lands on the not-found card unretried.
+  static let sessionNotFoundDetail = "Session not found"
+
+  static func isSessionNotFound(_ error: any Error) -> Bool {
+    guard case .server(status: 404, detail: let detail?) = error as? RESTError else { return false }
+    return detail.trimmingCharacters(in: .whitespacesAndNewlines) == sessionNotFoundDetail
+  }
+
+  /// The Share strip's message for a failed download. A typed `RESTError` or a raw transport
+  /// `URLError` reads as its REST message; a local failure — the temp file could not be written
+  /// (`FileHandle`, disk full) — keeps its own description rather than blaming the connection.
+  static func downloadFailureMessage(_ error: any Error) -> String {
+    switch error {
+    case let rest as RESTError: rest.message
+    case let transport as URLError: RESTError(transport: transport).message
+    default: error.localizedDescription
+    }
+  }
+
   /// Error → content mapping, identical for both routes. 404 / 403 / 413 are expected
-  /// verdicts and get a reasoned generic card; anything else is a failure with Retry. A 404
-  /// normally arrives as the typed `.notFound`; a `.server(404, detail)` is accepted too so a
-  /// server `detail` (the sandbox hint) is never dropped if the transport surfaces it.
+  /// verdicts and get a reasoned generic card; anything else is a failure with Retry.
+  /// `FilePreviewClient` surfaces a 404 as `.server(404, detail)` so the server's sandbox hint
+  /// reaches the card; the typed `.notFound` is still accepted (detail-less card).
   static func content(for error: RESTError) -> Content {
     switch error {
     case .notFound:

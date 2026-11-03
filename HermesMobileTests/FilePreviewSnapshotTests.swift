@@ -36,7 +36,7 @@ final class FilePreviewSnapshotTests: SnapshotTestCase {
   ) -> StoreOf<FilePreviewFeature> {
     Store(
       initialState: FilePreviewFeature.State(
-        path: path, sessionID: "snapshot-session", connection: connection, content: content,
+        path: path, sessionID: "snapshot-session", profile: nil, connection: connection, content: content,
         share: share, shareError: shareError, copiedToken: copiedToken
       )
     ) {

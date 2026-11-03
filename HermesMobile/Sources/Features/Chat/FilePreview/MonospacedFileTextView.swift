@@ -15,8 +15,8 @@ import UIKit
 struct MonospacedFileTextView: View {
   let read: FileTextRead
 
-  /// What the banner says — one constant so the snapshot and the view can't disagree on it.
-  static let truncatedBanner = "Showing first 512 KB"
+  /// What the banner says.
+  private static let truncatedBanner = "Showing first 512 KB"
 
   var body: some View {
     VStack(spacing: 0) {

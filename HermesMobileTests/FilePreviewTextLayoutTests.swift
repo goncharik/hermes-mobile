@@ -85,6 +85,32 @@ final class FilePreviewTextLayoutTests: XCTestCase {
     XCTAssertGreaterThan(decorated.contentSize.height, decorated.bounds.height)
   }
 
+  /// The monospaced font is the body curve applied ONCE to the unscaled body size: at `.large`
+  /// it is exactly the body point size (17pt), and at an accessibility size the hosted text
+  /// view's font is that 17pt base run through `UIFontMetrics(.body)` for THAT category — not
+  /// the category's preferred body size run through the metrics again (which compounds the
+  /// scale).
+  func testMonospacedFontScalesOnceWithDynamicType() throws {
+    let largeTraits = UITraitCollection(preferredContentSizeCategory: .large)
+    let accessibilityTraits = UITraitCollection(preferredContentSizeCategory: .accessibilityExtraLarge)
+    let metrics = UIFontMetrics(forTextStyle: .body)
+    let bodyAtLarge = UIFont.preferredFont(forTextStyle: .body, compatibleWith: largeTraits).pointSize
+    XCTAssertEqual(MonospacedTextView.font.pointSize, bodyAtLarge, accuracy: 0.01, "the base is the unscaled body size")
+
+    let large = try XCTUnwrap(hostedTextView(lines: 5).font)
+    // SwiftUI's `.accessibility3` is UIKit's `.accessibilityExtraLarge`.
+    let accessibility = try XCTUnwrap(hostedTextView(lines: 5, dynamicTypeSize: .accessibility3).font)
+    let scaledOnce = metrics.scaledValue(for: bodyAtLarge, compatibleWith: accessibilityTraits)
+    let scaledTwice = metrics.scaledValue(
+      for: UIFont.preferredFont(forTextStyle: .body, compatibleWith: accessibilityTraits).pointSize,
+      compatibleWith: accessibilityTraits
+    )
+    XCTAssertEqual(large.pointSize, bodyAtLarge, accuracy: 0.01)
+    XCTAssertGreaterThan(accessibility.pointSize, large.pointSize, "the text view rescales with the content size category")
+    XCTAssertEqual(accessibility.pointSize, scaledOnce, accuracy: 0.5, "the body curve applied once to the 17pt base")
+    XCTAssertLessThan(accessibility.pointSize, scaledTwice - 1, "never the preferred size scaled again")
+  }
+
   // MARK: - Helpers
 
   /// Hosts `MonospacedFileTextView` for an `n`-line fixture in a real window at the sheet's
@@ -93,6 +119,7 @@ final class FilePreviewTextLayoutTests: XCTestCase {
     lines: Int,
     language: String? = nil,
     truncated: Bool = false,
+    dynamicTypeSize: DynamicTypeSize = .large,
     file: StaticString = #filePath,
     line: UInt = #line
   ) throws -> UITextView {
@@ -102,7 +129,7 @@ final class FilePreviewTextLayoutTests: XCTestCase {
     let host = UIHostingController(
       rootView: MonospacedFileTextView(read: read)
         .frame(width: Self.regionSize.width, height: Self.regionSize.height)
-        .dynamicTypeSize(.large)
+        .dynamicTypeSize(dynamicTypeSize)
     )
     let window = UIWindow(frame: CGRect(origin: .zero, size: Self.regionSize))
     window.rootViewController = host

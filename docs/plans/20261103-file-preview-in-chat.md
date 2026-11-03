@@ -668,13 +668,34 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
 - [x] add a line to the README feature overview
 - [x] move this plan to `docs/plans/completed/` (deferred to the exec orchestrator's move-plan step)
 
+### Review-phase contract changes (after Task 11)
+- ➕ the four review rounds changed the as-built contract described in the task notes above;
+  `docs/features/file-preview.md` is the normative text. In short: every `/api/fs/*` request
+  carries `profile` (the chat's `profileName`) and `session_id` is the STORED id only — never
+  `sessionKey`'s live fallback — with ONE retry without `session_id` when the server answers
+  404 `"Session not found"` (`FilePreviewFeature.isSessionNotFound`; the earlier
+  `isUnpersistedBranch` guess was dropped because current agents persist a seeded branch's row
+  immediately); the fs client builds its query with `percentEncodedQueryItems` (`+` → `%2B`)
+  and surfaces a 404 as `.server(404, detail)` through `validateFS`, so the sandbox hint IS
+  shown on the card (the "detail-less `.notFound`" notes above are superseded); the
+  single-`.shareDismissed` guard lives in the reducer (`share` must be `.ready`), not the
+  sheet; the temp-file cleanup has no residual (the download effect removes a `.finished` that
+  reaches a cancelled consumer, `AppFeature.releaseSlotFilePreviewTemp` removes a finished
+  download on `.clearLiveChat` and the four identity teardowns); the bare-path lookahead
+  refuses a truncated match (`/a/b.pdf-old` links nothing) and `//host/...` link targets are
+  not paths; `ZoomableImageView.image(from:)` / `appendFile` / the `expectedLength` dual path
+  were deleted; `fileName`/`kind` are computed from `path`.
+
 ## Post-Completion
 
 **Manual verification:**
 - Against a live self-hosted agent in token, password and OAuth modes: open a session where the
   agent produced a PDF, a PNG and a log file; tap each; share the PDF to Files.
-- Against a Hermes Cloud agent: confirm `/workspace/...` sandbox paths resolve via `session_id`,
-  and confirm the 404 detail copy when a path lives only inside the sandbox.
+- Against a Hermes Cloud (Docker-sandboxed) agent: tap a `/workspace/...` path in a resumed
+  session (resolves via `session_id`), then the same shape in a freshly branched chat before its
+  first prompt (should resolve on current agents; on an older agent the single retry without
+  `session_id` lands on the not-found card with the sandbox hint, not a blank failure). Tap a
+  path in a chat under a non-launch profile.
 - TestFlight build after merge (internal by default).
 
 **Possible follow-ups (not in this plan):**

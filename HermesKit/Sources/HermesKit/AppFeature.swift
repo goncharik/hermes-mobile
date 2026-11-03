@@ -289,6 +289,7 @@ public struct AppFeature {
   // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.idleTimer) var idleTimer
+  @Dependency(\.filePreview) var filePreview
   /// The `.bearer` regime's single token owner (#19). `AppFeature` owns its LIFECYCLE — seed
   /// on launch restore and on a re-auth that hands back a bearer connection, drain on every
   /// logout — while `ConnectionFeature`/`ReauthFeature` seed it for the login they just ran.
@@ -613,7 +614,9 @@ public struct AppFeature {
 
       case .clearLiveChat:
         // Pop-to-list teardown completed — drop the slot state. `ifLet` auto-cancels any
-        // remaining child effects on the nil-out.
+        // remaining child effects on the nil-out; what the slot holds outside its effects (mic,
+        // idle timer, a presented preview's finished download) is released here, read BEFORE
+        // the assignment.
         let release = releaseSlotDeviceResources(state)
         state.liveChat = nil
         return release
@@ -1282,14 +1285,28 @@ public struct AppFeature {
   ///   assignment skips. The split sidebar (#80) puts Settings on screen next to a recording
   ///   composer, so this is reachable without ever leaving the chat;
   /// - the idle timer (#74): an awake slot (`wantsScreenAwake`, e.g. a running auto-speak
-  ///   turn) disabled auto-lock, and once the slot is gone no `.onChange` edge can restore it.
-  /// The idle-timer release runs IMMEDIATELY, when this is called; only the mic release is
-  /// the returned effect. No slot, or an idle one → nothing.
+  ///   turn) disabled auto-lock, and once the slot is gone no `.onChange` edge can restore it;
+  /// - a presented file preview's finished Share download: the file `downloadedURL` names is
+  ///   held outside the child's effects, and the sheet's own `.filePreview(.dismiss)` cleanup
+  ///   is not sent on a slot nil-out (`releaseSlotFilePreviewTemp`).
+  /// The idle-timer release runs IMMEDIATELY, when this is called; the mic and temp-file
+  /// releases are the returned effect. No slot, or an idle one → nothing.
   private func releaseSlotDeviceResources(_ state: State) -> Effect<Action> {
     guard let chat = state.liveChat else { return .none }
     if chat.wantsScreenAwake { idleTimer.setDisabled(false) }
-    guard chat.recording.isBusy else { return .none }
-    return .run { [audioRecorder] _ in await audioRecorder.cancel() }
+    let releaseTemp = releaseSlotFilePreviewTemp(state)
+    guard chat.recording.isBusy else { return releaseTemp }
+    return .merge(.run { [audioRecorder] _ in await audioRecorder.cancel() }, releaseTemp)
+  }
+
+  /// Remove a presented file preview's finished Share download when the slot is dropped —
+  /// `.clearLiveChat` (every `teardownSlot`) and the identity teardowns alike, via
+  /// `releaseSlotDeviceResources`. Must be read BEFORE the assignment. No slot, no preview, or
+  /// nothing finished → no effect. Fire-and-forget: nothing can act on a failed delete of a
+  /// temp file.
+  private func releaseSlotFilePreviewTemp(_ state: State) -> Effect<Action> {
+    guard let url = state.liveChat?.filePreview?.downloadedURL else { return .none }
+    return .run { [filePreview] _ in await filePreview.removeTemp(url) }
   }
 
   /// Best-effort push cleanup on logout: unregister the last-known device token with the

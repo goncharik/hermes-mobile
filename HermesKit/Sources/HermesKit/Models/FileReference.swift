@@ -15,9 +15,10 @@ public enum InlineFileSegment: Equatable, Sendable {
 
 /// The `hermes-file:` URL convention that both prose renderers attach to a file reference and
 /// the one `openURL` hook in `ChatView` recognises: `hermes-file://preview?path=<encoded>`.
-/// The scheme is private to the app — nothing else ever produces it — so the hook can route
-/// it into `ChatFeature.fileReferenceTapped` and let every other URL fall through to the
-/// system (`https:` keeps opening Safari).
+/// The app is the scheme's intended producer, so the hook routes it into
+/// `ChatFeature.fileReferenceTapped` and lets every other URL fall through to the system
+/// (`https:` keeps opening Safari). An inbound `hermes-file:` markdown link in model output is
+/// accepted as-is — it opens the same sheet, and the server still gates sensitive files.
 public enum FileReference {
   public static let scheme = "hermes-file"
   static let host = "preview"
@@ -55,13 +56,16 @@ public enum FileReference {
       return path.isEmpty ? nil : path
     }
     let raw = url.absoluteString.removingPercentEncoding ?? url.absoluteString
+    // `//cdn.example.com/lib.js` is a protocol-relative URL, not a host path.
+    guard !raw.hasPrefix("//") else { return nil }
     return raw.hasPrefix("/") || raw.hasPrefix("~/") ? raw : nil
   }
 }
 
 extension CharacterSet {
-  /// RFC 3986 unreserved characters — the only ones left bare in the `path` query value.
-  fileprivate static let fileReferenceUnreserved: CharacterSet = {
+  /// RFC 3986 unreserved characters — the only ones left bare in a path query value, here and
+  /// in `FilePreviewClient`'s `/api/fs/*` query (so `+` travels as `%2B`, never as a space).
+  static let fileReferenceUnreserved: CharacterSet = {
     var set = CharacterSet.alphanumerics
     set.insert(charactersIn: "-._~")
     return set
@@ -102,7 +106,7 @@ public enum FileReferenceScanner {
         let media = mediaPath(in: line, match: match)
       else { continue }
       appendBarePaths(in: line[cursor..<range.lowerBound], to: &out)
-      out.appendFile(display: lastPathComponent(of: media.path), path: media.path)
+      out.append(.file(display: lastPathComponent(of: media.path), path: media.path))
       out.appendText(media.trailing)
       cursor = range.upperBound
     }
@@ -149,10 +153,12 @@ public enum FileReferenceScanner {
   /// ending in `.ext` (1–10 alphanumerics). A `/` root needs at least one directory segment
   /// (`/report.pdf` alone is too close to a fraction or a URL path) while `~/x.md` is
   /// unambiguous and needs none. The lookahead keeps `/x/y.toolongextension` from matching
-  /// its first ten letters and `/x/y.z.longext` from matching `/x/y.z`, while a sentence
-  /// period after the extension (`/a/b.pdf.`) still ends the match cleanly.
+  /// its first ten letters, `/x/y.z.longext` from matching `/x/y.z`, and a filename
+  /// character right after the extension (`/a/b.pdf-old`, `/a/b.pdf@2x`, `/a/b.pdf/`) from
+  /// linking a truncated path, while a sentence period after the extension (`/a/b.pdf.`)
+  /// still ends the match cleanly.
   private static let barePathPattern =
-    #"(?<![\w/~.])(?:~(?:/[A-Za-z0-9._\-+@%~]+)*|(?:/[A-Za-z0-9._\-+@%~]+)+)/[A-Za-z0-9._\-+@%~]*\.[A-Za-z0-9]{1,10}(?!\w|\.\w)"#
+    #"(?<![\w/~.])(?:~(?:/[A-Za-z0-9._\-+@%~]+)*|(?:/[A-Za-z0-9._\-+@%~]+)+)/[A-Za-z0-9._\-+@%~]*\.[A-Za-z0-9]{1,10}(?!\w|\.\w|[\-+@%~/])"#
 
   private static let barePathRegex = try! NSRegularExpression(pattern: barePathPattern)
 
@@ -171,7 +177,7 @@ public enum FileReferenceScanner {
       let (path, trailing) = splitTrailingPunctuation(String(piece[range]))
       guard !path.isEmpty else { continue }
       out.appendText(String(piece[cursor..<range.lowerBound]))
-      out.appendFile(display: path, path: path)
+      out.append(.file(display: path, path: path))
       out.appendText(trailing)
       cursor = range.upperBound
     }
@@ -207,10 +213,6 @@ extension Array where Element == InlineFileSegment {
     } else {
       append(.text(text))
     }
-  }
-
-  fileprivate mutating func appendFile(display: String, path: String) {
-    append(.file(display: display, path: path))
   }
 }
 

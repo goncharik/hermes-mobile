@@ -30,6 +30,9 @@ import Testing
     "/a/b+c/d@e/f%20g/h~i.tar.gz",
     "/srv/data/report.abcdefghij", // 10-char extension is the ceiling
     "/Users/me/My_Project-v2/out.JSON",
+    "/home/e/.env", // dotfiles link: read-text answers 403 → the protected card
+    "~/.zshrc",
+    "/home/e/.env.local",
   ])
   func barePathIsTheWholeLine(path: String) {
     #expect(segments(path) == [.file(display: path, path: path)])
@@ -108,6 +111,13 @@ import Testing
     "foo/bar.txt",
     "/report.pdf", // a `/` root needs a directory segment
     "/a/b.pdf_old",
+    // A filename character right after the extension: linking `/a/b.pdf` out of these would
+    // be a truncated, dead link.
+    "/a/b.pdf-old",
+    "/x/y.z-longext",
+    "/a/b.pdf@2x",
+    "/a/b.tar+bak",
+    "/a/b.pdf/",
     "file:///a/b.pdf", // explicit URLs are the markdown parser's job, not the scanner's
     "",
     "plain prose with no slash",
@@ -155,6 +165,8 @@ import Testing
   @Test func mediaTagWithoutAPlausiblePathStaysProse() {
     #expect(segments("MEDIA:...") == [.text("MEDIA:...")])
     #expect(segments("MEDIA:soon") == [.text("MEDIA:soon")])
+    // The quoted form too: the tag match is skipped and the raw text falls through intact.
+    #expect(segments(#"MEDIA:"soon" later"#) == [.text(#"MEDIA:"soon" later"#)])
     #expect(segments("MEDIA: /a/b.png") == [.text("MEDIA: "), .file(display: "/a/b.png", path: "/a/b.png")])
   }
 
@@ -248,6 +260,7 @@ import Testing
     "relative/x.md",
     "./x.md",
     "hermes-file://preview?path=%2Fa",
+    "//cdn.example.com/lib.js", // protocol-relative URL, not a host path
   ])
   func otherLinkTargetsAreLeftAlone(target: String) throws {
     #expect(try linkPath(target) == nil)

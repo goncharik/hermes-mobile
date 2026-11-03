@@ -12,13 +12,24 @@ import Testing
 struct ChatFilePreviewTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
 
-  /// A resumed chat whose stored id is known — `sessionKey` resolves to the STORED id, which is
-  /// what the fs routes' `session_id` should carry.
+  /// A resumed chat in a named profile whose stored id is known — the fs routes' `session_id`
+  /// carries the STORED id (the server resolves no other) and `profile` the chat's profile.
   private func resumedState() -> ChatFeature.State {
     var state = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     state.liveSessionID = "live"
+    state.profileName = "work"
     state.status = .ready
     return state
+  }
+
+  private func presented(
+    path: String, content: FilePreviewFeature.Content,
+    share: FilePreviewFeature.ShareState = .idle, downloadedURL: URL? = nil
+  ) -> FilePreviewFeature.State {
+    FilePreviewFeature.State(
+      path: path, sessionID: "stored123", profile: "work", connection: conn,
+      content: content, share: share, downloadedURL: downloadedURL
+    )
   }
 
   private func tempURL(_ name: String) -> URL {
@@ -29,25 +40,56 @@ struct ChatFilePreviewTests {
 
   // MARK: - Tap
 
-  @Test func tapSeedsTheChildWithTheSessionKeyAndConnection() async {
+  @Test func tapSeedsTheChildWithTheStoredSessionProfileAndConnection() async {
     let store = TestStore(initialState: resumedState()) { ChatFeature() }
 
     await store.send(.fileReferenceTapped(path: "/home/e/out/report.pdf")) {
       $0.filePreview = FilePreviewFeature.State(
-        path: "/home/e/out/report.pdf", sessionID: "stored123", connection: self.conn
+        path: "/home/e/out/report.pdf", sessionID: "stored123", profile: "work", connection: self.conn
       )
     }
     #expect(store.state.filePreview?.kind == .pdf)
     #expect(store.state.filePreview?.fileName == "report.pdf")
   }
 
-  @Test func tapBeforeTheSessionResolvesOmitsTheSessionID() async {
-    // A brand-new chat with no id yet still previews absolute paths; `session_id` is simply
-    // omitted (the server resolves against nothing — absolute paths don't need it).
-    let store = TestStore(initialState: ChatFeature.State(connection: conn)) { ChatFeature() }
+  @Test func tapOnALiveOnlyChatOmitsTheSessionIDAndProfile() async {
+    // A chat that has a live handle but no stored id (an old agent's `session.create` answered
+    // without one) still previews absolute paths; the server resolves stored ids only, so the
+    // live handle is NOT sent — `session_id` is omitted rather than 404ing. No profile
+    // selected → `profile` omitted too (the server's launch profile).
+    var state = ChatFeature.State(connection: conn)
+    state.liveSessionID = "live"
+    let store = TestStore(initialState: state) { ChatFeature() }
 
     await store.send(.fileReferenceTapped(path: "~/notes.md")) {
-      $0.filePreview = FilePreviewFeature.State(path: "~/notes.md", sessionID: nil, connection: self.conn)
+      $0.filePreview = FilePreviewFeature.State(path: "~/notes.md", sessionID: nil, profile: nil, connection: self.conn)
+    }
+  }
+
+  @Test func tapOnAFreshBranchSendsItsStoredIDAndLetsTheServerDecide() async {
+    // A branch primed from its `session.create` (#34) has a stored id whose DB row may or may
+    // not exist yet (current agents persist a seeded branch immediately; older ones on the first
+    // prompt). The client has no local signal for that, so the id is sent as-is — a
+    // "Session not found" 404 is the child's to retry once without it
+    // (`FilePreviewFeatureTests`). The seed-only shape (an interrupted replay nilled
+    // `attachLiveSessionID`) is seeded the same way.
+    var attaching = ChatFeature.State(connection: conn, resumeStoredID: "branch-1")
+    attaching.liveSessionID = "branch-live"
+    attaching.attachLiveSessionID = "branch-live"
+    attaching.branchSeed = .init(text: "seeded answer", parentSessionID: "parent")
+    attaching.profileName = "work"
+    attaching.status = .ready
+
+    var seedOnly = attaching
+    seedOnly.attachLiveSessionID = nil
+
+    for state in [attaching, seedOnly] {
+      let store = TestStore(initialState: state) { ChatFeature() }
+      await store.send(.fileReferenceTapped(path: "/home/e/out/report.pdf")) {
+        $0.filePreview = FilePreviewFeature.State(
+          path: "/home/e/out/report.pdf", sessionID: "branch-1", profile: "work", connection: self.conn
+        )
+      }
     }
   }
 
@@ -55,7 +97,9 @@ struct ChatFilePreviewTests {
     let store = TestStore(initialState: resumedState()) { ChatFeature() }
 
     await store.send(.fileReferenceTapped(path: "/home/e/out/a.txt")) {
-      $0.filePreview = FilePreviewFeature.State(path: "/home/e/out/a.txt", sessionID: "stored123", connection: self.conn)
+      $0.filePreview = FilePreviewFeature.State(
+        path: "/home/e/out/a.txt", sessionID: "stored123", profile: "work", connection: self.conn
+      )
     }
     // A double-tap (or a tap on another link while the sheet animates in) must not swap the
     // preview under the user: no state change, no effect.
@@ -69,9 +113,8 @@ struct ChatFilePreviewTests {
     let removed = LockIsolated<URL?>(nil)
     let url = tempURL("report.pdf")
     var initial = resumedState()
-    initial.filePreview = FilePreviewFeature.State(
-      path: "/home/e/out/report.pdf", sessionID: "stored123", connection: conn,
-      content: .pdf(Data("%PDF".utf8)), share: .ready(url), downloadedURL: url
+    initial.filePreview = presented(
+      path: "/home/e/out/report.pdf", content: .pdf(Data("%PDF".utf8)), share: .ready(url), downloadedURL: url
     )
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.filePreview.removeTemp = { @Sendable url in removed.setValue(url) }
@@ -88,9 +131,9 @@ struct ChatFilePreviewTests {
     let removed = LockIsolated<URL?>(nil)
     let url = tempURL("export.zip")
     var initial = resumedState()
-    initial.filePreview = FilePreviewFeature.State(
-      path: "/home/e/out/export.zip", sessionID: "stored123", connection: conn,
-      content: .generic(.init(reason: .unsupported, byteSize: 10)), share: .idle, downloadedURL: url
+    initial.filePreview = presented(
+      path: "/home/e/out/export.zip", content: .generic(.init(reason: .unsupported, byteSize: 10)),
+      share: .idle, downloadedURL: url
     )
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.filePreview.removeTemp = { @Sendable url in removed.setValue(url) }
@@ -104,10 +147,7 @@ struct ChatFilePreviewTests {
   @Test func dismissWithoutADownloadRemovesNothing() async {
     // `removeTemp` is left unimplemented: calling it would fail the test.
     var initial = resumedState()
-    initial.filePreview = FilePreviewFeature.State(
-      path: "/home/e/out/a.txt", sessionID: "stored123", connection: conn,
-      content: .text(FileTextRead(text: "hi"))
-    )
+    initial.filePreview = presented(path: "/home/e/out/a.txt", content: .text(FileTextRead(text: "hi")))
     let store = TestStore(initialState: initial) { ChatFeature() }
 
     await store.send(.filePreview(.dismiss)) { $0.filePreview = nil }
@@ -117,12 +157,11 @@ struct ChatFilePreviewTests {
     let terminated = LockIsolated(false)
     let held = LockIsolated<AsyncThrowingStream<DownloadEvent, any Error>.Continuation?>(nil)
     var initial = resumedState()
-    initial.filePreview = FilePreviewFeature.State(
-      path: "/home/e/out/big.zip", sessionID: "stored123", connection: conn,
-      content: .generic(.init(reason: .unsupported, byteSize: 50_000_000))
+    initial.filePreview = presented(
+      path: "/home/e/out/big.zip", content: .generic(.init(reason: .unsupported, byteSize: 50_000_000))
     )
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
-      $0.filePreview.download = { @Sendable _, _, _, _ in
+      $0.filePreview.download = { @Sendable _, _, _, _, _ in
         AsyncThrowingStream { continuation in
           held.setValue(continuation)
           continuation.onTermination = { @Sendable _ in terminated.setValue(true) }
@@ -140,7 +179,8 @@ struct ChatFilePreviewTests {
 
     // Dismissing the sheet mid-download: `.ifLet` nils the child AND cancels its effects —
     // no `removeTemp` (nothing finished; the live client's `onTermination` deletes the partial
-    // folder) and no trailing `downloadEvent` can land on a nil child.
+    // folder), and the producer's later yields go into a finished stream, so no trailing
+    // `downloadEvent` can reach the nil child.
     await store.send(.filePreview(.dismiss)) { $0.filePreview = nil }
     await waitUntil { terminated.value }
     held.value?.yield(.progress(0.9))
@@ -158,10 +198,7 @@ struct ChatFilePreviewTests {
     var initial = resumedState()
     initial.transcript = [row]
     initial.model = "gpt-5"
-    initial.filePreview = FilePreviewFeature.State(
-      path: "/home/e/out/report.pdf", sessionID: "stored123", connection: conn,
-      content: .pdf(Data("%PDF".utf8))
-    )
+    initial.filePreview = presented(path: "/home/e/out/report.pdf", content: .pdf(Data("%PDF".utf8)))
     let presented = initial.filePreview
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.date = .constant(Date(timeIntervalSince1970: 123))
