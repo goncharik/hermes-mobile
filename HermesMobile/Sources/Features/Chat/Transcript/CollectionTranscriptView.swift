@@ -252,6 +252,14 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// (which could fight the completion's prepend-preservation). Streaming-delta growth
     /// happens *outside* an apply, where this is false, so the KVO still handles that.
     private var isApplyingSnapshot = false
+    /// What the reader saw before the first of a run of snapshot applies whose completions have not
+    /// run yet (UIKit calls a completion on a later run-loop pass, so a second update can land
+    /// first). Only the latest apply's completion corrects the offset, from this merged capture.
+    private var pendingCorrection: PendingCorrection?
+    /// Bumped per apply, so a superseded completion knows it is stale.
+    private var applyGeneration = 0
+    /// Bumped per user drag, so a correction captured before a drag began leaves the offset alone.
+    private var dragGeneration = 0
     /// KVO token watching `contentSize` so a self-sizing cell that grows (a streaming delta
     /// resizing the last bubble) re-pins to the bottom while pinned — the primary jank fix.
     private var contentSizeObservation: NSKeyValueObservation?
@@ -384,21 +392,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       let preservePrepend = pendingPrependPreservation && diff.isPrepend
       pendingPrependPreservation = false
 
-      let capturedOffsetY = collectionView?.contentOffset.y ?? 0
-      let capturedContentHeight = collectionView?.contentSize.height ?? 0
-      let wasPinned = isPinnedToBottom
-
-      // Measure the reader's anchor row against the PRE-apply layout, so the completion can shift
-      // the offset by exactly how far that row moved.
-      let anchor = diff.holdsReaderAnchor ? captureReaderAnchor(survivors: Set(newOrder)) : nil
-
-      var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
-      snapshot.appendSections([.main])
-      snapshot.appendItems(newOrder, toSection: .main)
-      if !changedIDs.isEmpty {
-        snapshot.reconfigureItems(changedIDs)
-      }
-
       let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
       // A wholesale replace of the visible slice — a server-authoritative re-hydrate that removed
       // the reader's rows (`session.resume` re-trimming a paged-up window to the bottom, or
@@ -407,28 +400,60 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // a reset (append/mutate or `.slide`) and keeps the reader's place.
       let isReset = diff == .reset
 
+      // Capture against the PRE-apply layout — or, while an earlier apply's completion is still
+      // pending, keep that capture (the offset has not been corrected for it yet) and merge in.
+      let survivors = Set(newOrder)
+      var correction = pendingCorrection ?? PendingCorrection(
+        offsetY: collectionView?.contentOffset.y ?? 0,
+        contentHeight: collectionView?.contentSize.height ?? 0,
+        wasPinned: isPinnedToBottom,
+        dragGeneration: dragGeneration
+      )
+      if let anchor = correction.anchor, !survivors.contains(anchor.id) {
+        correction.anchor = nil
+      }
+      if correction.anchor == nil, diff.holdsReaderAnchor {
+        // The reader's anchor row, so the completion can shift the offset by how far it moved.
+        correction.anchor = captureReaderAnchor(survivors: survivors)
+      }
+      correction.jumps = correction.jumps || isFirstPopulation || isReset
+      correction.preservesPrepend = correction.preservesPrepend || preservePrepend
+      pendingCorrection = correction
+      applyGeneration &+= 1
+      let generation = applyGeneration
+
+      var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
+      snapshot.appendSections([.main])
+      snapshot.appendItems(newOrder, toSection: .main)
+      if !changedIDs.isEmpty {
+        snapshot.reconfigureItems(changedIDs)
+      }
+
       // Suppress the contentSize KVO for the duration of the apply: the completion below is the
       // single authority on where the offset lands for this structural change.
       isApplyingSnapshot = true
       dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
-        guard let self else { return }
+        // A newer apply landed before this completion ran: its completion corrects for both.
+        guard let self, generation == self.applyGeneration else { return }
+        self.pendingCorrection = nil
         defer { self.isApplyingSnapshot = false }
-        if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
+        if correction.jumps || !self.didInitialJump, !newOrder.isEmpty {
           // Open / wholesale-reset (incl. a hydrate that removed the reader's rows): jump to
           // bottom (no animation) — always, regardless of pin state.
           self.jumpToBottomAndSettle()
-        } else if preservePrepend {
+        } else if correction.preservesPrepend {
           self.preserveOffsetAfterPrepend(
-            previousOffsetY: capturedOffsetY,
-            previousContentHeight: capturedContentHeight
+            previousOffsetY: correction.offsetY,
+            previousContentHeight: correction.contentHeight
           )
-        } else {
-          // Rows above the reader came or went (the #125 slide): hold their anchor row still.
+        } else if correction.dragGeneration == self.dragGeneration {
+          // Rows above the reader came or went (the #125 slide): hold their anchor row still —
+          // unless a drag began since the capture, which then owns the offset (no hold, no follow).
           var shifted = false
-          if let anchor {
-            shifted = self.holdAnchor(anchor, previousOffsetY: capturedOffsetY)
+          if let anchor = correction.anchor {
+            shifted = self.holdAnchor(anchor, previousOffsetY: correction.offsetY)
           }
-          if wasPinned {
+          if correction.wasPinned {
             // Appended row, streaming delta grew the last cell, or the window slid: follow only
             // if pinned.
             self.scrollToBottom(animated: !self.reduceMotion)
@@ -446,6 +471,17 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private struct ReaderAnchor {
       let id: ChatRow.ID
       let minY: CGFloat
+    }
+
+    /// The pre-apply state an apply completion corrects the offset from (see `pendingCorrection`).
+    private struct PendingCorrection {
+      let offsetY: CGFloat
+      let contentHeight: CGFloat
+      let wasPinned: Bool
+      let dragGeneration: Int
+      var anchor: ReaderAnchor?
+      var jumps = false
+      var preservesPrepend = false
     }
 
     /// The topmost on-screen row (below the top inset) that survives into the new order — or,
@@ -681,6 +717,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
       // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
       isAdjustingOffset = false
+      dragGeneration &+= 1
       // A deliberate user scroll also ends any initial open-at-bottom settle — respect their
       // intent rather than yanking back to the bottom as cells finish sizing.
       needsInitialBottomSettle = false

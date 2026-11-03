@@ -330,6 +330,18 @@ import Testing
     #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 0))
   }
 
+  @Test func classifyCompletedTurnHydrateKeepingOnlyOlderRowsIsSlide() {
+    // A foreground hydrate after a long turn completed: the turn's live rows (random ids) are
+    // rebuilt with history ids, so only the rows above the turn survive — a minority, all off
+    // screen for a reader inside the turn. Those survivors are the same server rows (position ids
+    // over immutable history), so this is deliberately a slide, not a reset: the reader is held
+    // against them instead of being jumped to the bottom.
+    let history = (0..<10).map { id($0) }
+    let old = history + (0..<40).map { id(1000 + $0, "live") }
+    let new = history + (10..<50).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 0))
+  }
+
   @Test func classifyDroppedHeadWithReorderedSurvivorsIsSlide() {
     // Survivor order is deliberately not checked: a reorder is never a reset (see the
     // permutation case), so a dropped head plus a reorder is still a slide.

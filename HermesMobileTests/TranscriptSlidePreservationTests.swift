@@ -150,6 +150,51 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     XCTAssertEqual(olderPages.count, requestsBefore + 1, "Older rows must be paged back in")
   }
 
+  /// Two slides land before UIKit runs the first apply's completion: the second completion must
+  /// not undo the first one's shift (a one-row drift), so the reader's rows stay put across both.
+  @MainActor
+  func testBackToBackSlidesBeforeTheApplyCompletesKeepTheReadersRows() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+
+    parkReader(transcript) { Self.maxOffsetY(of: $0) / 2 }
+    let watched = Self.fullyVisibleRowIndices(in: transcript)
+    XCTAssertGreaterThanOrEqual(watched.count, 3, "Fixture sanity: several rows must be on screen")
+    let before = watched.map { Self.onScreenMinY(ofRow: $0, in: transcript) }
+
+    hosted.deliver(rows: Self.rows(1..<51))
+    hosted.deliver(rows: Self.rows(2..<52))
+    hosted.settle()
+
+    for (index, row) in watched.enumerated() {
+      XCTAssertEqual(
+        Self.onScreenMinY(ofRow: row, in: transcript, firstRow: 2), before[index], accuracy: 0.5,
+        "Row \(row) must stay where the reader saw it across both slides"
+      )
+    }
+  }
+
+  /// A drag that starts before the slide's apply completes owns the offset: the completion must
+  /// not overwrite where the user's finger has moved the list.
+  @MainActor
+  func testDragStartedBeforeTheApplyCompletesKeepsTheUsersOffset() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+
+    parkReader(transcript) { Self.maxOffsetY(of: $0) / 2 }
+
+    hosted.deliver(rows: Self.rows(1..<51))
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    let dragged = transcript.contentOffset.y - 30
+    transcript.setContentOffset(CGPoint(x: 0, y: dragged), animated: false)
+    hosted.settle()
+
+    XCTAssertEqual(
+      transcript.contentOffset.y, dragged, accuracy: 0.5,
+      "The pending slide correction must not override the user's drag"
+    )
+  }
+
   // MARK: - Pinned: follow
 
   /// The other half of the contract: a reader parked at the bottom follows the slide to the new
@@ -171,7 +216,13 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let watched = try XCTUnwrap(Self.fullyVisibleRowIndices(in: transcript).first)
     let watchedY = Self.onScreenMinY(ofRow: watched, in: transcript)
 
-    hosted.render(rows: Self.rows(1..<51))
+    // Run single run-loop passes until the offset first moves: UIKit runs the apply's completion
+    // (the hold, then the animated follow's start) on a later pass, but not always the next one.
+    hosted.deliver(rows: Self.rows(1..<51))
+    let moveDeadline = Date().addingTimeInterval(1)
+    while abs(transcript.contentOffset.y - oldBottom) < 0.5, Date() < moveDeadline {
+      RunLoop.current.run(mode: .default, before: Date())
+    }
 
     // Before the follow advances, the surviving rows have not jumped by the dropped head's height.
     XCTAssertEqual(
@@ -208,18 +259,22 @@ final class TranscriptSlidePreservationTests: XCTestCase {
 
     /// Deliver `rows` and let queued main-queue work (guard clears, a load-older request) run.
     func update(rows: [ChatRow]) {
-      render(rows: rows)
-      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-      transcript.layoutIfNeeded()
+      deliver(rows: rows)
+      settle()
     }
 
-    /// Deliver `rows` and run ONE run-loop pass — enough for the snapshot apply's completion
-    /// (which UIKit runs on a later pass), not for an animated follow to advance.
-    func render(rows: [ChatRow]) {
+    /// Deliver `rows` through `updateUIView` WITHOUT a run-loop pass, so the snapshot apply's
+    /// completion is still pending when this returns.
+    func deliver(rows: [ChatRow]) {
       controller.rootView = TranscriptHarnessView(rows: rows, tallRows: tallRows, olderPages: olderPages)
       controller.view.setNeedsLayout()
       controller.view.layoutIfNeeded()
-      RunLoop.current.run(mode: .default, before: Date())
+    }
+
+    /// Let pending apply completions and queued main-queue work run, then lay out.
+    func settle() {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+      transcript.layoutIfNeeded()
     }
   }
 
