@@ -78,6 +78,11 @@ away from your desk and still keep your agent moving.
   one-tap button and a green-check confirmation — or grab a session's id from its
   long-press menu (or the chat's ⋯ menu) when you need to cross-reference it with the
   agent's CLI or logs.
+- **Open the files it made.** When the agent mentions a file on its host — a report, a
+  screenshot, a log, a `/workspace/...` path — the path is a tappable link right in the
+  message. Text files, images and PDFs preview in a sheet; anything else shows a card
+  with the name, path and size. Copy the path, or Share the file to Files, AirDrop or
+  Mail without ever walking over to the machine.
 - **Branch a reply into a new chat.** Every finished assistant message has a branch
   button that starts a fresh session seeded with just that message — explore a tangent
   without derailing the original conversation. Branches show nested under their parent

@@ -657,14 +657,16 @@ dismissed, so a second Share is instant). Copy path: `pasteboard.copy(path)`, bu
       actual announcement string is **"Path copied"** (`FilePreviewSheet.copiedMessage`), not "Copied".
 
 ### Task 11: [Final] Update documentation
-- [ ] create `docs/features/file-preview.md`: detection grammar (with the false-positive corpus),
+- [x] create `docs/features/file-preview.md`: detection grammar (with the false-positive corpus),
       the `hermes-file:` URL convention, the one-`openURL`-hook rule, server-decides-binary,
       the no-capability-flip rationale, the share temp-file lifecycle, the `session_id` answer
       from Task 2, and known limitations (no relative paths, no inline images, markdown shown as
-      plain text, no bare paths with spaces)
-- [ ] add a 5–8 line CLAUDE.md bullet under **Transcript & chat UI** (rule + pointer only)
-- [ ] add a line to the README feature overview
-- [ ] move this plan to `docs/plans/completed/`
+      plain text, no bare paths with spaces) — the `session_id` item is recorded as OPEN (what the
+      client sends, to be confirmed against a live agent in Post-Completion), not answered
+- [x] add a 5–8 line CLAUDE.md bullet under **Transcript & chat UI** (rule + pointer only) — plus
+      the `make snapshot` figure 242 → 275 there and in `docs/development.md`
+- [x] add a line to the README feature overview
+- [x] move this plan to `docs/plans/completed/` (deferred to the exec orchestrator's move-plan step)
 
 ## Post-Completion
 
