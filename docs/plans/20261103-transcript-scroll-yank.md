@@ -151,11 +151,11 @@
 **Files:**
 - Create: `HermesMobileTests/TranscriptSlidePreservationTests.swift`
 
-- [ ] host `CollectionTranscriptView` in a `UIWindow` (pattern from `MarkdownTableLayoutTests`) with 50 fixed-height rows, `.dynamicTypeSize(.large)`
-- [ ] test: scroll up mid-list, apply a slid 50-row window ⇒ the anchor row's on-screen y is unchanged (±0.5pt) and the list is not at the bottom
-- [ ] test: pinned at bottom, apply a slid window ⇒ ends at the bottom
-- [ ] if either needs test hooks in production code, drop this task, mark it ⚠️ here, and rely on post-completion manual verification
-- [ ] `tuist generate` (new source file), then run `make snapshot` — must pass before task 5
+- [x] host `CollectionTranscriptView` in a `UIWindow` (pattern from `MarkdownTableLayoutTests`) with 50 fixed-height rows, `.dynamicTypeSize(.large)`
+- [x] test: scroll up mid-list, apply a slid 50-row window ⇒ the anchor row's on-screen y is unchanged (±0.5pt) and the list is not at the bottom
+- [x] test: pinned at bottom, apply a slid window ⇒ ends at the bottom
+- [x] if either needs test hooks in production code, drop this task, mark it ⚠️ here, and rely on post-completion manual verification (not needed — driven through the collection view's own delegate; no production hooks)
+- [x] `tuist generate` (new source file), then run `make snapshot` — must pass before task 5
 
 ### Task 5: Verify acceptance criteria
 - [ ] scrolled-up reader is not moved by tool-call rows on a 50+ row chat; pinned reader still follows
