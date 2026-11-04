@@ -171,6 +171,109 @@ struct TranscriptReconstructionTests {
       .reasoning(text: "ponder", isComplete: true),
       .message(role: .assistant, text: "done", isComplete: true),
     ]))
+    // An old agent sends no timestamps: every row stays unstamped.
+    #expect(rows.allSatisfy { $0.timestamp == nil })
+  }
+
+  // MARK: - Rich cooked tool rows + timestamps
+
+  /// A newer agent's resume payload: an edit row with `args`, raw JSON `content`, a
+  /// `display_metadata` inline diff and a timestamp; a terminal row with `args` but no
+  /// `content` (live-only output); a non-JSON `content`.
+  private static let richHistoryJSON = """
+  [
+    {"role": "user", "text": "fix it", "timestamp": 1700000000.5},
+    {"role": "assistant", "text": "on it", "reasoning": "plan", "timestamp": 1700000001},
+    {"role": "tool", "name": "patch", "context": "Sources/A.swift",
+     "args": {"path": "Sources/A.swift", "old_string": "a", "new_string": "b"},
+     "content": "{\\"success\\": true, \\"files_modified\\": [\\"Sources/A.swift\\"]}",
+     "tool_call_id": "call_1", "timestamp": 1700000002,
+     "display_metadata": {"tool_result_metadata": {"inline_diff": "--- a\\n+++ b\\n-a\\n+b"}}},
+    {"role": "tool", "name": "terminal", "context": "pytest -q",
+     "args": {"command": "pytest -q"}, "timestamp": 1700000003},
+    {"role": "tool", "name": "skill_manage", "content": "Skill saved.", "timestamp": 0},
+    {"role": "assistant", "text": "done", "timestamp": 1700000004}
+  ]
+  """
+
+  @Test func richCookedToolRowsCarryArgsResultDiffAndTimestamps() throws {
+    let messages = try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    let rows = reconstructTranscript(messages)
+
+    #expect(rows.map(\.kind) == [ChatRow.Kind]([
+      .message(role: .user, text: "fix it", isComplete: true),
+      .reasoning(text: "plan", isComplete: true),
+      .message(role: .assistant, text: "on it", isComplete: true),
+      .tool(name: "patch", title: "patch", state: .complete, detail: ToolDetail(
+        argsText: "Sources/A.swift",
+        args: .object([
+          "path": .string("Sources/A.swift"), "old_string": .string("a"), "new_string": .string("b"),
+        ]),
+        result: .object(["success": .bool(true), "files_modified": .array([.string("Sources/A.swift")])]),
+        resultText: #"{"success": true, "files_modified": ["Sources/A.swift"]}"#,
+        inlineDiff: "--- a\n+++ b\n-a\n+b"
+      ), durationS: nil),
+      // Terminal output is live-only: args survive, no result.
+      .tool(name: "terminal", title: "terminal", state: .complete, detail: ToolDetail(
+        argsText: "pytest -q", args: .object(["command": .string("pytest -q")])
+      ), durationS: nil),
+      // Non-JSON content stays text-only (no structured result invented).
+      .tool(name: "skill_manage", title: "skill_manage", state: .complete,
+            detail: ToolDetail(resultText: "Skill saved."), durationS: nil),
+      .message(role: .assistant, text: "done", isComplete: true),
+    ]))
+    // Every row carries its message's timestamp (the reasoning row shares its message's);
+    // a non-positive timestamp is no timestamp.
+    #expect(rows.map(\.timestamp) == [
+      Date(timeIntervalSince1970: 1_700_000_000.5),
+      Date(timeIntervalSince1970: 1_700_000_001),
+      Date(timeIntervalSince1970: 1_700_000_001),
+      Date(timeIntervalSince1970: 1_700_000_002),
+      Date(timeIntervalSince1970: 1_700_000_003),
+      nil,
+      Date(timeIntervalSince1970: 1_700_000_004),
+    ])
+  }
+
+  @Test func richRowsKeepTheSameDeterministicIDsAsTheirOldAgentShape() throws {
+    // Ids derive from (index, role, discriminator) only — the new args/content/diff/timestamp
+    // fields never move an id, so an agent upgrade (or a re-hydrate) reconciles row identity.
+    let rich = reconstructTranscript(
+      try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    )
+    let bare = reconstructTranscript([
+      msg(1, "user", text: "fix it"),
+      msg(2, "assistant", text: "on it", reasoning: "plan"),
+      msg(3, "tool", name: "patch", context: "Sources/A.swift"),
+      msg(4, "tool", name: "terminal", context: "pytest -q"),
+      msg(5, "tool", name: "skill_manage"),
+      msg(6, "assistant", text: "done"),
+    ])
+    #expect(rich.map(\.id) == bare.map(\.id))
+    #expect(rich.map(\.id) == reconstructTranscript(
+      try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    ).map(\.id))
+  }
+
+  @Test(arguments: [
+    ("[1, 2]", JSONValue.array([.number(1), .number(2)]) as JSONValue?),
+    ("  {\"ok\": false}\n", .object(["ok": .bool(false)])),
+    ("42", nil), // a bare scalar is text, not a structured result
+    ("\"quoted\"", nil),
+    ("{not json", nil),
+    ("plain words", nil),
+  ])
+  func toolContentParsesOnlyJSONContainers(content: String, expected: JSONValue?) {
+    let rows = reconstructTranscript([
+      SessionMessage(id: 1, role: "tool", content: content, name: "write_file"),
+    ])
+    guard case let .tool(call) = rows.first?.kind else {
+      Issue.record("expected a tool row")
+      return
+    }
+    #expect(call.detail?.result == expected)
+    // The raw text is kept regardless — never hidden.
+    #expect(call.detail?.resultText == content)
   }
 
   // MARK: - Deterministic, content-derived identity

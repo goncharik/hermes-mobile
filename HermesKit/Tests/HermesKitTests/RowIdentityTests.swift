@@ -101,6 +101,7 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "ning"))) {
       $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Planning", isComplete: false)
@@ -126,6 +127,7 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
       $0.transcript = [

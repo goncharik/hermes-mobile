@@ -669,6 +669,11 @@ public struct ChatFeature {
     /// exec was in flight" guard reads it.
     var isTurnLive: Bool
     var toolRowIDs: [String: ChatRow.ID]
+    /// Every reasoning burst row the live fold created this turn (open AND closed) — the
+    /// reasoning counterpart of `toolRowIDs`, with the same lifecycle (cleared at
+    /// `message.complete` / `.error`, restored by a running hydrate). A running hydrate (#26)
+    /// preserves these rows: `inflight` carries no reasoning, so they exist only client-side.
+    var liveReasoningRowIDs: Set<ChatRow.ID>
     /// The wire identity of one sealed `message.interim` segment.
     struct SealedSegment: Hashable, Sendable {
       var turnID: String
@@ -789,6 +794,7 @@ public struct ChatFeature {
       self.reasoningRowID = nil
       self.isTurnLive = false
       self.toolRowIDs = [:]
+      self.liveReasoningRowIDs = []
       self.sealedSegments = []
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
@@ -2816,9 +2822,10 @@ public struct ChatFeature {
       }
       // else: empty tool-only turn → no row at all.
       state.streamingRowID = nil
-      // The turn's tool rows are history now: a later running hydrate (#26) must not
-      // re-append them next to their cooked history rows.
+      // The turn's tool + reasoning rows are history now: a later running hydrate (#26) must
+      // not re-append them next to their cooked history rows.
       state.toolRowIDs = [:]
+      state.liveReasoningRowIDs = []
       // Close every open reasoning burst and reset the turn-level timer/label/status.
       freezeTurn(into: &state)
       state.isSending = false
@@ -2944,6 +2951,7 @@ public struct ChatFeature {
       state.errorBanner = message
       state.isSending = false
       state.toolRowIDs = [:]
+      state.liveReasoningRowIDs = []
       freezeTurn(into: &state)
       // Same staleness rule as `message.complete`: an errored turn is over, so any
       // standing approval card (real or recovered), the server request queue and the
@@ -3680,6 +3688,7 @@ public struct ChatFeature {
     let id = uuid()
     state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text, isComplete: false), timestamp: now))
     state.reasoningRowID = id
+    state.liveReasoningRowIDs.insert(id)
   }
 
   /// End the open reasoning burst (if any): mark its row complete (re-stamped at the close)
@@ -4160,11 +4169,12 @@ public struct ChatFeature {
     var preservedLiveRows: [(toolKey: String?, row: ChatRow)] = []
     let openReasoningID = state.reasoningRowID
     if running {
-      // Tracked tool rows + the open reasoning burst, in transcript order (so re-append
-      // preserves the original ordering).
+      // Tracked tool rows + every reasoning burst of the live turn (closed ones too, and the
+      // open one), in transcript order (so re-append preserves the original interleaving).
+      let toolKeys = Dictionary(state.toolRowIDs.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
       preservedLiveRows = state.transcript.compactMap { row -> (String?, ChatRow)? in
-        if let entry = state.toolRowIDs.first(where: { $0.value == row.id }) { return (entry.key, row) }
-        if row.id == openReasoningID { return (nil, row) }
+        if let key = toolKeys[row.id] { return (key, row) }
+        if row.id == openReasoningID || state.liveReasoningRowIDs.contains(row.id) { return (nil, row) }
         return nil
       }
     }
@@ -4174,6 +4184,7 @@ public struct ChatFeature {
     state.streamingRowID = nil
     state.reasoningRowID = nil
     state.toolRowIDs = [:]
+    state.liveReasoningRowIDs = []
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
     // Use DETERMINISTIC, position-derived ids (same convention as `reconstructTranscript`) so
@@ -4208,15 +4219,18 @@ public struct ChatFeature {
 
     // #26: re-append the preserved live rows (in their original transcript order) after the
     // rebuilt history + seeded inflight rows, restoring `toolRowIDs` so a later `tool.complete`
-    // for the same tool key reconciles the same row in place, and `reasoningRowID` so the next
-    // `reasoning.delta` keeps extending the open burst. Keep the ORIGINAL row ids (the rows
-    // already exist client-side under those ids) — no UUID churn, no diff delete/insert.
+    // for the same tool key reconciles the same row in place, `liveReasoningRowIDs` so the
+    // NEXT running hydrate preserves them again (never dropped, never duplicated), and
+    // `reasoningRowID` (open burst only) so the next `reasoning.delta` keeps extending it.
+    // Keep the ORIGINAL row ids (the rows already exist client-side under those ids) — no UUID
+    // churn, no diff delete/insert.
     for (toolKey, row) in preservedLiveRows where state.transcript[id: row.id] == nil {
       state.transcript.append(row)
       if let toolKey {
         state.toolRowIDs[toolKey] = row.id
       } else {
-        state.reasoningRowID = row.id
+        state.liveReasoningRowIDs.insert(row.id)
+        if row.id == openReasoningID { state.reasoningRowID = row.id }
       }
     }
 

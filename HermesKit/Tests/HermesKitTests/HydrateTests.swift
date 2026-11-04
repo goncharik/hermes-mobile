@@ -673,6 +673,163 @@ struct HydrateTests {
     #expect(!store.state.isTurnLive)
     #expect(store.state.turnActivityLabel == nil)
     #expect(store.state.turnStatus == nil)
+    #expect(store.state.liveReasoningRowIDs.isEmpty)
+
+    await store.send(.teardown)
+  }
+
+  /// A running hydrate whose history holds the PRIOR (finished) turn and whose `inflight`
+  /// carries the live turn's user prompt + streamed text so far.
+  nonisolated private static func runningWithHistoryResponse() -> JSONValue {
+    .object([
+      "session_id": .string("live123"),
+      "stored_session_id": .string("stored123"),
+      "messages": .array([
+        .object(["role": .string("user"), "text": .string("earlier"), "timestamp": .number(900)]),
+        .object([
+          "role": .string("tool"), "name": .string("terminal"), "context": .string("ls"),
+          "args": .object(["command": .string("ls")]), "timestamp": .number(901),
+        ]),
+        .object(["role": .string("assistant"), "text": .string("listed"), "timestamp": .number(902)]),
+      ]),
+      "running": .bool(true),
+      "inflight": .object([
+        "user": .string("now"), "assistant": .string("partial"), "streaming": .bool(true),
+      ]),
+    ])
+  }
+
+  @Test func runningHydrateKeepsEveryLiveReasoningBurstAndToolWithoutDuplicates() async {
+    // The live turn built [reasoning(closed), tool, reasoning(closed), tool, reasoning(open)]
+    // client-side; the server's payload has none of it. A running hydrate rebuilds the prior
+    // turn from history (rich tool detail + timestamps), seeds the inflight rows, then
+    // re-appends EVERY live burst (closed ones too, not just the open one) interleaved with
+    // the tools in their original order. A second running hydrate reproduces the exact same
+    // transcript — nothing dropped, nothing doubled — and the open burst stays extendable.
+    let clock = TestClock()
+    let r1 = uuid(401), t1 = uuid(402), r2 = uuid(403), t2 = uuid(404), r3 = uuid(405)
+    let live: [ChatRow] = [
+      ChatRow(id: r1, kind: .reasoning(text: "first", isComplete: true)),
+      ChatRow(id: t1, kind: .tool(name: "grep", title: "Search", state: .complete, detail: nil, durationS: 1)),
+      ChatRow(id: r2, kind: .reasoning(text: "second", isComplete: true)),
+      ChatRow(id: t2, kind: .tool(name: "read", title: "Read", state: .running, detail: nil, durationS: nil)),
+      ChatRow(id: r3, kind: .reasoning(text: "third", isComplete: false)),
+    ]
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = IdentifiedArrayOf(uniqueElements: live)
+    initial.toolRowIDs = ["t1": t1, "t2": t2]
+    initial.liveReasoningRowIDs = [r1, r2, r3]
+    initial.reasoningRowID = r3
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in Self.runningWithHistoryResponse() }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    let rebuilt = Array(store.state.transcript)
+    // 3 history rows + inflight user + inflight streaming assistant + 5 preserved live rows.
+    #expect(rebuilt.count == 10)
+    #expect(Array(rebuilt.suffix(5)) == live)
+    #expect(rebuilt[3].kind == .message(role: .user, text: "now", isComplete: true))
+    #expect(rebuilt[4].kind == .message(role: .assistant, text: "partial", isComplete: false))
+    #expect(store.state.streamingRowID == rebuilt[4].id)
+    // History rows carry the cooked detail + server timestamps.
+    #expect(rebuilt[1].kind == .tool(
+      name: "terminal", title: "terminal", state: .complete,
+      detail: ToolDetail(argsText: "ls", args: .object(["command": .string("ls")])), durationS: nil
+    ))
+    #expect(rebuilt[1].timestamp == Date(timeIntervalSince1970: 901))
+    // Tracking restored for every preserved live row.
+    #expect(store.state.toolRowIDs == ["t1": t1, "t2": t2])
+    #expect(store.state.liveReasoningRowIDs == [r1, r2, r3])
+    #expect(store.state.reasoningRowID == r3)
+
+    // A second running hydrate (another foreground) is byte-identical: no duplicates.
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(Array(store.state.transcript) == rebuilt)
+    #expect(store.state.liveReasoningRowIDs == [r1, r2, r3])
+
+    // The open burst still extends in place (it is the last row).
+    await store.send(.gatewayEvent(.reasoningDelta(text: " more")))
+    #expect(store.state.transcript[id: r3]?.kind == .reasoning(text: "third more", isComplete: false))
+    #expect(store.state.transcript.count == 10)
+
+    await store.send(.teardown)
+  }
+
+  @Test func closedBurstsFromBeforeASocketDropSurviveTheRunningHydrate() async throws {
+    // A `.gatewayClosed` drop freezes the open burst (closing it) but the turn keeps running
+    // server-side. The frozen burst is still this turn's reasoning: the reconnect's running
+    // hydrate keeps it (as it keeps the turn's tool rows), and fresh reasoning after the
+    // hydrate starts a NEW burst after it rather than extending the frozen one.
+    let clock = TestClock()
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in Self.activateResponse(running: true) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "before the drop")))
+    let burst = try #require(store.state.reasoningRowID)
+    #expect(store.state.liveReasoningRowIDs == [burst])
+    await store.send(.gatewayClosed)
+    #expect(store.state.reasoningRowID == nil)
+    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop", isComplete: true))
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+    #expect(store.state.transcript.map(\.id) == [burst])
+    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop", isComplete: true))
+    // Closed, so not re-opened: the next reasoning is a new burst.
+    #expect(store.state.reasoningRowID == nil)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "after")))
+    #expect(store.state.transcript.count == 2)
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "after", isComplete: false))
+
+    await store.send(.teardown)
+  }
+
+  @Test func completedTurnsReasoningIsNotPreservedByALaterRunningHydrate() async {
+    // `message.complete` hands the turn's rows to history: its bursts stop being live, so a
+    // later running hydrate (the NEXT turn) rebuilds them from history only — never a
+    // client-side duplicate beside the cooked rows.
+    let clock = TestClock()
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in Self.activateResponse(running: true) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "done thinking")))
+    await store.send(.gatewayEvent(.messageComplete(text: "answer", usage: nil)))
+    #expect(store.state.liveReasoningRowIDs.isEmpty)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+    // The empty history wins; no stale live row resurfaces.
+    #expect(store.state.transcript.isEmpty)
 
     await store.send(.teardown)
   }

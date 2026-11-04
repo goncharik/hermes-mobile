@@ -830,6 +830,7 @@ struct AppFeatureTests {
         timestamp: Date(timeIntervalSince1970: 0)
       )]
       $0.liveChat?.reasoningRowID = reasoningID
+      $0.liveChat?.liveReasoningRowIDs = [reasoningID]
     }
 
     // Exhaustive: the pop only empties the path — the running slot is untouched.

@@ -376,11 +376,11 @@ public enum Body {
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift` (`applyActivate`)
 - Modify: `HermesKit/Tests/HermesKitTests/TranscriptReconstructionTests.swift`, `HydrateTests.swift`
 
-- [ ] `reconstructTranscript`: reasoning → `.reasoning(isComplete: true)`; tool rows carry `args`, `content` (as `result` when JSON-parsable else `resultText`), `inlineDiff`; every row gets `timestamp`
-- [ ] #26: a running hydrate preserves the live turn's tool rows (existing tool-key dedup) and its reasoning rows (replacing `preservedThinkingRow`); completed turns stay strict server-wins
-- [ ] re-read the hydration section of `docs/architecture.md` and keep `inflight` seeding of the streaming row intact
-- [ ] tests: deterministic ids reproduce; old-agent rows (name + context only) still reconstruct; running hydrate keeps live reasoning + tools without duplicates; completed hydrate replaces wholesale
-- [ ] run tests — must pass before Task 5
+- [x] `reconstructTranscript`: reasoning → `.reasoning(isComplete: true)`; tool rows carry `args`, `content` (raw text always as `resultText`, plus `result` when it parses as a JSON object/array — mirrors the live `tool.complete` shape), `inlineDiff`; every row gets `timestamp`
+- [x] #26: a running hydrate preserves the live turn's tool rows (existing tool-key dedup) and its reasoning rows (➕ `State.liveReasoningRowIDs`, same lifecycle as `toolRowIDs`); completed turns stay strict server-wins
+- [x] re-read the hydration section of `docs/architecture.md` and keep `inflight` seeding of the streaming row intact
+- [x] tests: deterministic ids reproduce; old-agent rows (name + context only) still reconstruct; running hydrate keeps live reasoning + tools without duplicates; completed hydrate replaces wholesale
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Add turn structure and point final-reply consumers at it
 
