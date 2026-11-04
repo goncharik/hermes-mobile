@@ -501,10 +501,10 @@ public enum Body {
 - Modify: `HermesMobile/Sources/Features/Chat/ToolDetailSheet.swift`
 - Modify: `HermesMobileTests/` snapshot suite
 
-- [ ] header: icon + title + duration + outcome; body = the same per-tool view, uncapped
-- [ ] collapsed "Raw" disclosure with pretty-printed args + result (never hide info)
-- [ ] snapshot tests: terminal full output, diff, generic/unknown, failure
-- [ ] `make snapshot` clean and `make test` pass before Task 14
+- [x] header: icon + title + duration + outcome; body = the same per-tool view, uncapped (➕ the sheet takes the `ToolCall`; nav title = wire name; outcome badge Succeeded / Failed / Notice / Running, none for a reloaded call; pure `ToolPresentation.durationLabel`)
+- [x] collapsed "Raw" disclosure with pretty-printed args + result (never hide info) (➕ pure `ToolCall.rawSections` in HermesKit: Context, Arguments, Arguments (text), Result, Result (text), Diff — deduped, blank skipped; `ToolCallDetailTests`)
+- [x] snapshot tests: terminal full output, diff, generic/unknown, failure (➕ new `ToolDetailSheetSnapshotTests` incl. a reloaded "unavailable" case; the old `testToolDetailSheet` removed with its baseline)
+- [x] `make snapshot` clean and `make test` pass before Task 14 (302/302; 2244 tests)
 
 ### Task 14: Verify acceptance criteria
 - [ ] #55: a 15-call finished turn shows `[user][Worked for …][reply]`; the reply is on screen without scrolling

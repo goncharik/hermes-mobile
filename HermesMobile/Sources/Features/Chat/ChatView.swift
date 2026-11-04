@@ -123,9 +123,7 @@ struct ChatView: View {
     // not a view event.
     .sheet(item: toolDetailBinding) { row in
       if case let .tool(call) = row.kind {
-        ToolDetailSheet(
-          name: call.name, title: call.title, detail: call.detail ?? ToolDetail(), durationS: call.durationS
-        )
+        ToolDetailSheet(call: call)
       }
     }
     .sheet(isPresented: modelPickerBinding) {

@@ -41,8 +41,9 @@ struct ToolBodyView: View {
   }
 }
 
-/// A failed call's error (red), or a routine notice (a missing file, `exit 1`) in grey.
-private struct OutcomeMessageView: View {
+/// A failed call's error (red), or a routine notice (a missing file, `exit 1`) in grey. Shared
+/// with the detail sheet.
+struct OutcomeMessageView: View {
   let message: String
   let isFailure: Bool
 

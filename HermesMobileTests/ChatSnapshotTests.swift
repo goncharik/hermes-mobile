@@ -852,20 +852,6 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
-  func testToolDetailSheet() {
-    let view = ToolDetailSheet(
-      name: "edit_file",
-      title: "Edited 3 lines in ChatView.swift",
-      detail: ToolDetail(
-        args: .object(["path": .string("ChatView.swift"), "start": .number(42)]),
-        resultText: "Applied edit successfully.",
-        inlineDiff: "- old line\n+ new line"
-      ),
-      durationS: 1.4
-    )
-    assertSnapshot(of: view, as: deviceImage())
-  }
-
   func testScrollToBottomButton() {
     // Over a gradient so the Liquid Glass refraction is visible (it's near-invisible on
     // flat black).
