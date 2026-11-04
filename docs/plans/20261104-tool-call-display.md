@@ -406,11 +406,11 @@ public enum Body {
 - Create: `HermesKit/Sources/HermesKit/Models/TranscriptLayout.swift`
 - Create: `HermesKit/Tests/HermesKitTests/TranscriptLayoutTests.swift`
 
-- [ ] `TranscriptItem` + deterministic derived ids; `FoldExpansion` with ordinal keys
-- [ ] `TranscriptLayout.items(rows:expansion:runningTurnOrdinal:liveLine:)` — header per turn, folded content per visibility rules, runs (≥ 2 calls → summary), status/commandOutput never folded, collapsed-running keeps the streaming row + live line
-- [ ] a plain `RunSummary.text` using tool NAMES only for now (categories arrive in Task 11) so Phase B is shippable
-- [ ] tests: finished turn collapsed by default; `.expanded` override survives finish; `.collapsed` running → header + live line + streaming row; runs split by interim text; run of 1 has no summary; ids stable while a run grows; ids stable across re-layout
-- [ ] run tests — must pass before Task 7
+- [x] `TranscriptItem` + deterministic derived ids; `FoldExpansion` with ordinal keys
+- [x] `TranscriptLayout.items(rows:expansion:runningTurnOrdinal:liveLine:)` — header per turn, folded content per visibility rules, runs (≥ 2 calls → summary), status/commandOutput never folded, collapsed-running keeps the streaming row + live line (➕ the namespace is `TranscriptFold` — the app target already has a `TranscriptLayout` enum that would shadow it; file name kept; extra `ordinalOffset:` param makes window ordinals absolute; `.toolCall` carries a `ToolCallItem` with its `CallKey`)
+- [x] a plain `RunSummary.text` using tool NAMES only for now (categories arrive in Task 11) so Phase B is shippable
+- [x] tests: finished turn collapsed by default; `.expanded` override survives finish; `.collapsed` running → header + live line + streaming row; runs split by interim text; run of 1 has no summary; ids stable while a run grows; ids stable across re-layout
+- [x] run tests — must pass before Task 7
 
 ### Task 7: Hold fold expansion state in ChatFeature
 
