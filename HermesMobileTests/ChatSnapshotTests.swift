@@ -326,6 +326,44 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  /// Interim commentary (a completed assistant segment followed by tools and the turn's final
+  /// reply) gets NO action bar — only the final reply does. Store-driven: the verdict comes
+  /// from `State.finalReplyRowIDs`.
+  func testInterimCommentaryRow_noActionBar() {
+    let interim = ChatRow(id: id(1), kind: .message(
+      role: .assistant, text: "Let me check the gateway first.", isComplete: true
+    ))
+    let rows: [ChatRow] = [
+      ChatRow(id: id(0), kind: .message(role: .user, text: "What's in server.py?", isComplete: true)),
+      interim,
+      ChatRow(id: id(2), kind: .tool(name: "read_file", title: "server.py", state: .complete,
+                                     detail: nil, durationS: 0.4)),
+      ChatRow(id: id(3), kind: .message(
+        role: .assistant, text: "It defines the WebSocket gateway.", isComplete: true
+      )),
+    ]
+    let chat = ChatView(
+      store: Store(
+        initialState: ChatFeature.State(
+          connection: connection,
+          title: "Action bar",
+          transcript: IdentifiedArray(uniqueElements: rows),
+          status: .ready
+        )
+      ) {
+        ChatFeature()
+      } withDependencies: {
+        $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+        $0.continuousClock = ImmediateClock()
+      }
+    )
+    let view = chat.rowView(interim)
+      .padding()
+      .frame(width: 320)
+      .background(Color(uiColor: .systemBackground))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   // MARK: Read aloud (#74)
 
   /// A completed assistant reply rendered through the store-driven `rowView`, with

@@ -220,6 +220,30 @@ struct ChatBranchTests {
     await store.send(.branchFromMessage(id: uuid(9))) // no such row
   }
 
+  @Test func interimCommentaryIsANoOpOnlyTheFinalReplyBranches() async {
+    var initial = branchableState()
+    initial.transcript = [
+      ChatRow(id: uuid(0), kind: .message(role: .user, text: "list files", isComplete: true)),
+      ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Let me check.", isComplete: true)),
+      ChatRow(id: uuid(2), kind: .tool(name: "terminal", title: "ls", state: .complete, detail: nil, durationS: nil)),
+      ChatRow(id: uuid(3), kind: .message(role: .assistant, text: "Found 3 files.", isComplete: true)),
+    ]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.hermesGateway.send = { @Sendable _, _ in .object(["session_id": .string("b")]) }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.branchFromMessage(id: uuid(1))) { // interim commentary → no RPC
+      $0.isBranching = false
+      $0.pendingBranchSeed = nil
+    }
+    await store.send(.branchFromMessage(id: uuid(3))) { // the turn's final reply
+      $0.isBranching = true
+      $0.pendingBranchSeed = .init(text: "Found 3 files.", parentSessionID: "stored123")
+    }
+    await store.skipReceivedActions()
+  }
+
   @Test func secondTapWhileBranchInFlightIsANoOp() async {
     var initial = branchableState()
     initial.isBranching = true // first tap's RPC still outstanding

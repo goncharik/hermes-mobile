@@ -7,7 +7,9 @@ Normative invariants moved out of `CLAUDE.md` (2026-08-14 restructure). The shor
 
 ## Action bar & copy
 
-Completed assistant messages get a `MessageActionBar`: **copy** reuses `.copyRow` with checkmark
+Completed FINAL replies get a `MessageActionBar` — a finished turn's last assistant message
+(`State.finalReplyRowIDs`, from `turnSpans`); interim commentary and every segment of the running
+turn get none, and `.branchFromMessage` re-guards it: **copy** reuses `.copyRow` with checkmark
 feedback via the shared `copyWithFeedback`/`rowCopyToken` mechanism (row-scoped token, 1.5s clock
 expiry, `cancelInFlight`). The third **Read aloud** button (#74) is specified in
 `docs/features/read-aloud.md` → "UI".

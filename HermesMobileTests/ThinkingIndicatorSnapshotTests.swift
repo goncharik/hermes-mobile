@@ -38,6 +38,23 @@ final class ThinkingIndicatorSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  /// Active with the agent's spinner line as the live label (`turnActivityLabel`) — a long
+  /// provider-wait line truncates to one line so the timer stays visible.
+  func testThinking_active_spinnerLabel() {
+    let view = host(
+      ThinkingIndicatorView(
+        liveLabel: "ಠ_ಠ waiting for the provider to respond (retry 2 of 5, rate limited)…",
+        liveSeconds: 19,
+        reasoning: "",
+        status: nil,
+        elapsedSeconds: 0,
+        isComplete: false,
+        reduceMotionOverride: true
+      )
+    )
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   /// Active, expanded — reasoning + status in the disclosed area at 1m 5s.
   func testThinking_active_reasoningAndStatus_expanded() {
     let view = host(

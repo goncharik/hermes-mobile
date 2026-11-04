@@ -274,11 +274,11 @@ public struct ChatFeature {
     public var ttsSupported: Bool
     /// The one read-aloud clip this slot is preparing or playing.
     public var ttsPlayback: TTSPlayback
-    /// The auto-speak anchor: how many COMPLETED assistant message rows are already consumed
-    /// (spoken, skipped, or pre-existing when armed). A reply is pending only while
-    /// `completedAssistantCount > spokenAssistantCount`. Armed on toggle-on, on the `.task`
-    /// pref load, and on the slot's first hydrate; RE-BASED on every later hydrate (the
-    /// rebuild can turn one live assistant row into several history rows). Unpersisted.
+    /// The auto-speak anchor: how many COMPLETED final replies (`completedReplies`) are
+    /// already consumed (spoken, skipped, or pre-existing when armed). A reply is pending only
+    /// while `completedReplyCount > spokenAssistantCount`; interim commentary never counts.
+    /// Armed on toggle-on, on the `.task` pref load, and on the slot's first hydrate;
+    /// RE-BASED on every later hydrate. Unpersisted.
     var spokenAssistantCount: Int
     /// Barge-in latch: when a user submit/mic tap silenced playback. The next regular
     /// `prompt.submit` within 120 s carries `interrupted: true` and clears it.
@@ -327,18 +327,38 @@ public struct ChatFeature {
         && (ttsPlayback.isActive || (autoSpeakReplies && ttsSupported && isSending) || recording.isBusy)
     }
 
-    /// Number of COMPLETED assistant message rows — what the auto-speak anchor counts. A
-    /// still-streaming assistant row never counts (only finished replies are read).
-    var completedAssistantCount: Int {
-      transcript.reduce(into: 0) { count, row in
-        if Self.isCompletedAssistantMessage(row) { count += 1 }
+    /// The turn the agent is still working on — the newest one — while a turn is live
+    /// (`isTurnLive`), else `nil`. Ordinal scale of ``turnSpans(_:runningTurnOrdinal:)``.
+    var runningTurnOrdinal: Int? {
+      guard isTurnLive else { return nil }
+      return transcript.count(where: Self.isUserMessage) - 1
+    }
+
+    /// The transcript's turns (see ``TurnSpan``); offsets index `transcript` directly.
+    var turns: [TurnSpan] { turnSpans(transcript, runningTurnOrdinal: runningTurnOrdinal) }
+
+    /// Every finished turn's FINAL reply row id (its last assistant message). Interim
+    /// commentary sealed mid-turn — and every segment of the running turn — is not in it: only
+    /// final replies get the action bar (copy / branch / read aloud) and are read aloud.
+    public var finalReplyRowIDs: Set<ChatRow.ID> {
+      Set(turns.compactMap { $0.finalReplyIndex.map { transcript[$0].id } })
+    }
+
+    /// The COMPLETED final replies, oldest first — the auto-speak anchor's scale (see
+    /// `spokenAssistantCount`). A still-streaming row and interim commentary never count.
+    var completedReplies: [ChatRow] {
+      turns.compactMap { span in
+        span.finalReplyIndex.map { transcript[$0] }.flatMap {
+          Self.isCompletedAssistantMessage($0) ? $0 : nil
+        }
       }
     }
 
-    /// The newest COMPLETED assistant message row (the auto-speak candidate), if any.
-    var lastCompletedAssistantRow: ChatRow? {
-      transcript.last(where: Self.isCompletedAssistantMessage)
-    }
+    /// Number of completed final replies — what the auto-speak anchor counts.
+    var completedReplyCount: Int { completedReplies.count }
+
+    /// The newest completed final reply (the auto-speak candidate), if any.
+    var lastCompletedReply: ChatRow? { completedReplies.last }
 
     static func isCompletedAssistantMessage(_ row: ChatRow) -> Bool {
       if case .message(.assistant, _, true) = row.kind { return true }
@@ -363,14 +383,11 @@ public struct ChatFeature {
       return transcript[..<index].count(where: Self.isUserMessage)
     }
 
-    /// How many COMPLETED assistant message rows precede `rowID` — its position on the
-    /// auto-speak anchor's scale (see `spokenAssistantCount`). `nil` unless `rowID` is itself
-    /// a completed assistant message row.
-    func completedAssistantOrdinal(of rowID: ChatRow.ID) -> Int? {
-      guard let index = transcript.index(id: rowID),
-            Self.isCompletedAssistantMessage(transcript[index])
-      else { return nil }
-      return transcript[..<index].count(where: Self.isCompletedAssistantMessage)
+    /// How many completed final replies precede `rowID` — its position on the auto-speak
+    /// anchor's scale (see `spokenAssistantCount`). `nil` unless `rowID` is itself a completed
+    /// final reply.
+    func completedReplyOrdinal(of rowID: ChatRow.ID) -> Int? {
+      completedReplies.firstIndex { $0.id == rowID }
     }
 
     /// The newest COMPLETED assistant message row of turn `ordinal` (see `turnOrdinal`).
@@ -392,8 +409,8 @@ public struct ChatFeature {
     /// hidden once the agent proved it has no TTS route; `preparing`/`speaking` when the one
     /// clip targets this row; `disabled` while any OTHER row's clip is active (one clip at a
     /// time) or the mic is busy (it owns the audio session) — `.readAloudTapped` re-guards
-    /// both; otherwise `idle`. The view shows the bar only under completed assistant replies,
-    /// so row kind is not re-checked here.
+    /// both; otherwise `idle`. The view shows the bar only under completed final replies
+    /// (`finalReplyRowIDs`), so row kind is not re-checked here.
     public func readAloudState(for rowID: ChatRow.ID) -> ReadAloudButtonState {
       guard ttsSupported else { return .hidden }
       switch ttsPlayback {
@@ -892,6 +909,28 @@ public struct ChatFeature {
       guard count > 0 else { return [] }
       let start = min(max(0, windowStart), count)
       return transcript.elements[start..<count]
+    }
+
+    /// The fixed id of the live-turn indicator row (see `renderedRows`).
+    public static let liveTurnIndicatorRowID = ChatRow.deterministicID(
+      sequenceIndex: -1, role: nil, kindDiscriminator: "liveTurnIndicator"
+    )
+
+    /// What the transcript renders: `visibleRows`, plus — while a turn is live and no open
+    /// reasoning burst carries the live indicator — a placeholder open reasoning row
+    /// (`liveTurnIndicatorRowID`) at the bottom, so the turn shows its live label + timer from
+    /// `message.start` on (before the first reasoning text, and between bursts). Never stored
+    /// in `transcript` (not persisted, never hydrated, never read aloud). Interim until the
+    /// turn header replaces it (tool-call display plan, Phase B).
+    public var renderedRows: [ChatRow] {
+      var rows = Array(visibleRows)
+      let hasOpenBurst = reasoningRowID.flatMap { transcript[id: $0] } != nil
+      if isTurnLive, !hasOpenBurst {
+        rows.append(ChatRow(
+          id: Self.liveTurnIndicatorRowID, kind: .reasoning(text: "", isComplete: false)
+        ))
+      }
+      return rows
     }
 
     public var canSend: Bool {
@@ -1713,6 +1752,8 @@ public struct ChatFeature {
         if !state.queuedPrompts.isEmpty { state.isQueueParked = true }
         // Freeze the live turn + stop the elapsed timer (mirrors the `.error` /
         // socket-drop turn-ending paths) so an interrupt doesn't leave it shimmering forever.
+        // Not consumed for read-aloud (#74): the interrupted turn's `message.complete` still
+        // follows, and its final reply is read like any other.
         freezeTurn(into: &state)
         return .merge(
           .cancel(id: CancelID.turnTimer),
@@ -1933,12 +1974,13 @@ public struct ChatFeature {
       // MARK: Branch a message into a new chat (#34)
 
       case let .branchFromMessage(id):
-        // Only a COMPLETED assistant message with actual text can seed a branch. The view
-        // hides the button on other rows, but the reducer stays the authority — a
-        // streaming, empty, or non-message row is a silent no-op.
+        // Only a COMPLETED final reply with actual text can seed a branch. The view hides
+        // the button on other rows, but the reducer stays the authority — a streaming,
+        // empty, non-message, or interim-commentary row is a silent no-op.
         guard case let .message(role, text, isComplete)? = state.transcript[id: id]?.kind,
               role == .assistant, isComplete,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              state.finalReplyRowIDs.contains(id)
         else { return .none }
         // Double-fire guard: one branch RPC at a time — a second tap is a no-op.
         guard !state.isBranching else { return .none }
@@ -2202,15 +2244,14 @@ public struct ChatFeature {
 
       case let .readAloudTapped(id):
         // One clip at a time, and never while the mic holds the audio session: such a tap is
-        // a no-op (the action bar disables it). Only a COMPLETED assistant reply is readable.
+        // a no-op (the action bar disables it). Only a COMPLETED final reply is readable —
+        // interim commentary never is.
         guard state.ttsSupported, !state.ttsPlayback.isActive, !state.recording.isBusy,
-              let row = state.transcript[id: id], State.isCompletedAssistantMessage(row)
+              let ordinal = state.completedReplyOrdinal(of: id)
         else { return .none }
         // The row counts as read: bump the anchor past it (never lower it), so a later idle
         // edge does not read it again — while a NEWER pending reply stays pending.
-        if let ordinal = state.completedAssistantOrdinal(of: id) {
-          state.spokenAssistantCount = max(state.spokenAssistantCount, ordinal + 1)
-        }
+        state.spokenAssistantCount = max(state.spokenAssistantCount, ordinal + 1)
         return speakRow(id, into: &state)
 
       case .stopReadAloud:
@@ -2779,6 +2820,11 @@ public struct ChatFeature {
       freezeTurn(into: &state)
       state.isTurnLive = true
       state.sealedSegments = []
+      // Read aloud (#74): a turn that starts without a user row of ours (another client's
+      // prompt on a shared session) re-opens the newest turn, whose final reply then stops
+      // counting until it finishes. Keep the anchor on the new scale, so the turn's eventual
+      // reply is pending exactly as a fresh turn's would be.
+      state.spokenAssistantCount = min(state.spokenAssistantCount, state.completedReplyCount)
       // Reaffirm the turn-start anchor at the authoritative turn start (the submit anchor is
       // optimistic; `message.start` is the agent's first beat). A hydrate mid-turn reconciles
       // the live elapsed timer against this instant. Tell the list this session is now
@@ -2948,11 +2994,15 @@ public struct ChatFeature {
       return .none
 
     case let .error(message):
+      let repliesBefore = state.completedReplyCount
       state.errorBanner = message
       state.isSending = false
       state.toolRowIDs = [:]
       state.liveReasoningRowIDs = []
       freezeTurn(into: &state)
+      // An errored turn is never read aloud (#74), but ending it makes its last sealed
+      // segment a counted final reply — consume that one.
+      consumeRepliesFinishedSince(repliesBefore, into: &state)
       // Same staleness rule as `message.complete`: an errored turn is over, so any
       // standing approval card (real or recovered), the server request queue and the
       // recovery hint are moot.
@@ -3488,22 +3538,38 @@ public struct ChatFeature {
   /// close, the timer/label/status reset) so a dropped socket leaves nothing live.
   /// Idempotent.
   private func finalizeInFlight(into state: inout State) {
+    let repliesBefore = state.completedReplyCount
+    var finalizedPartial = false
     if let id = state.streamingRowID,
        case let .message(role, text, _) = state.transcript[id: id]?.kind {
       state.transcript[id: id]?.kind = .message(role: role, text: text, isComplete: true)
-      // A dropped partial is never read aloud (#74): whether the turn really finished is the
-      // reconnect replay's and hydrate's business, so consume it here.
-      arm(&state)
+      finalizedPartial = true
     }
     state.streamingRowID = nil
     freezeTurn(into: &state)
     state.isSending = false
+    // A dropped partial is never read aloud (#74): whether the turn really finished is the
+    // reconnect replay's and hydrate's business, so consume it here — AFTER the freeze, which
+    // ends the turn and so turns its last segment into a counted final reply. Without a
+    // partial, the freeze can still promote a sealed interim segment: consume just that.
+    if finalizedPartial {
+      arm(&state)
+    } else {
+      consumeRepliesFinishedSince(repliesBefore, into: &state)
+    }
   }
 
   /// Point the read-aloud anchor at everything completed so far (#74): no reply that is
   /// already in the transcript is pending afterwards.
   private func arm(_ state: inout State) {
-    state.spokenAssistantCount = state.completedAssistantCount
+    state.spokenAssistantCount = state.completedReplyCount
+  }
+
+  /// A turn ended WITHOUT a `message.complete` (`.error`, a socket drop): its last segment
+  /// is now a counted final reply, but such a turn is never read aloud (#74). Consume only
+  /// the replies the ending added, so an older reply still pending stays pending.
+  private func consumeRepliesFinishedSince(_ before: Int, into state: inout State) {
+    state.spokenAssistantCount += max(0, state.completedReplyCount - before)
   }
 
   /// The chat view is back on screen (`.reattached`, or a later `.task`) (#74). Navigating
@@ -3516,15 +3582,16 @@ public struct ChatFeature {
   }
 
   /// Re-derive the read-aloud anchor after a hydrate's wholesale rebuild (#74). The first
-  /// hydrate arms. A later one cannot keep the old count — the live fold keeps ONE assistant
-  /// row per turn while history may hold several — so the anchor is re-based on the rebuilt
-  /// transcript: a hydrate never CREATES a pending reply, it only PRESERVES the one the user
-  /// was already waiting on (e.g. completed live while backgrounded).
+  /// hydrate arms. A later one cannot keep the old count — the rebuild re-segments turns and
+  /// settles which turn is running — so the anchor is re-based on the rebuilt transcript: a
+  /// hydrate never CREATES a pending reply, it only PRESERVES the one the user was already
+  /// waiting on (e.g. completed live while backgrounded). Runs after the running verdict is
+  /// applied (`isTurnLive`), which decides whether the newest turn has a final reply yet.
   private func rebaseSpokenAnchor(
     isFirstHydrate: Bool, wasReplyPending: Bool, into state: inout State
   ) {
     let keepsPending = !isFirstHydrate && wasReplyPending
-    state.spokenAssistantCount = max(0, state.completedAssistantCount - (keepsPending ? 1 : 0))
+    state.spokenAssistantCount = max(0, state.completedReplyCount - (keepsPending ? 1 : 0))
   }
 
   /// A hydrate's rebuild replaced the row the clip belongs to (the live `uuid()` row became a
@@ -3550,23 +3617,25 @@ public struct ChatFeature {
 
   /// The auto-speak check (#74), run at the speak edges: a LIVE `message.complete`, every
   /// playback-idle edge (`.ttsFinished` / `.ttsFailed`, except an interruption), the mic
-  /// going idle, and `.foreground`. Reads the newest assistant reply when the toggle is on,
+  /// going idle, and `.foreground`. Reads the newest final reply when the toggle is on,
   /// the endpoint is supported, nothing is playing, the mic is not busy (it owns the audio
   /// session), the app is foreground with this chat on screen, no #98 replay fold is running,
-  /// the newest assistant message row is COMPLETE, and it is pending
-  /// (`completedAssistantCount > spokenAssistantCount`). The anchor then jumps to the full
-  /// count: a backlog that piled up during a clip collapses to the newest reply.
+  /// that reply is the newest assistant message row of all (a newer turn already streaming
+  /// or sealing commentary makes the edge wait for that turn's completion), and it is pending
+  /// (`completedReplyCount > spokenAssistantCount`). Interim commentary is never read. The
+  /// anchor then jumps to the full count: a backlog that piled up during a clip collapses to
+  /// the newest reply.
   private func autoSpeakIfReady(_ state: inout State) -> Effect<Action> {
     guard state.autoSpeakReplies, state.ttsSupported, !state.ttsPlayback.isActive,
           !state.recording.isBusy, !state.isSceneBackgrounded, state.isOnScreen,
           !state.isFoldingReplay
     else { return .none }
-    let completed = state.completedAssistantCount
-    guard completed > state.spokenAssistantCount,
-          let newest = state.transcript.last(where: State.isAssistantMessage),
-          State.isCompletedAssistantMessage(newest)
+    let replies = state.completedReplies
+    guard replies.count > state.spokenAssistantCount,
+          let newest = replies.last,
+          state.transcript.last(where: State.isAssistantMessage)?.id == newest.id
     else { return .none }
-    state.spokenAssistantCount = completed
+    state.spokenAssistantCount = replies.count
     return speakRow(newest.id, into: &state)
   }
 
@@ -4091,7 +4160,7 @@ public struct ChatFeature {
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
     // Read-aloud inputs (#74), captured BEFORE the rebuild below changes the rows.
     let isFirstHydrate = !state.hasHydrated
-    let wasReplyPending = state.completedAssistantCount > state.spokenAssistantCount
+    let wasReplyPending = state.completedReplyCount > state.spokenAssistantCount
     let playbackTurn: Int? = switch state.ttsPlayback {
     case .idle: nil
     case let .preparing(id), let .speaking(id): state.turnOrdinal(of: id)
@@ -4234,17 +4303,19 @@ public struct ChatFeature {
       }
     }
 
-    rebaseSpokenAnchor(
-      isFirstHydrate: isFirstHydrate, wasReplyPending: wasReplyPending, into: &state
-    )
-    repointPlaybackAfterRebuild(playbackTurn: playbackTurn, into: &state)
-
     // Reconcile the live turn elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;
     // the anchor only supplies the *start instant*. A `!running` + stale anchor must DISCARD
     // the anchor (no phantom timer); a `running` turn resumes the tick seeded at the elapsed
     // offset rather than restarting at 0.
     let timerEffect = reconcileTurnTimer(running: running, into: &state)
+
+    // After the timer reconcile: it settles `isTurnLive`, which decides whether the newest
+    // turn already has a (countable) final reply.
+    rebaseSpokenAnchor(
+      isFirstHydrate: isFirstHydrate, wasReplyPending: wasReplyPending, into: &state
+    )
+    repointPlaybackAfterRebuild(playbackTurn: playbackTurn, into: &state)
 
     // Server wins: a wholesale transcript replace resets the client-side window to the bottom
     // (newest) so the chat opens/re-hydrates parked at the latest rows, discarding any prior

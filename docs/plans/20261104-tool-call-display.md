@@ -391,12 +391,12 @@ public enum Body {
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift` (action bar gate, reasoning row rendering)
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReadAloudTests.swift` (+ branch tests as needed)
 
-- [ ] `turnSpans(_:)` pure function: ordinals, ranges, `finalReplyIndex` (finished turns only), duration from timestamps
-- [ ] read-aloud: auto-speak and the completed-row anchor use the final reply only — interim segments never read; `MessageActionBar` and branch shown only on final replies
-- [ ] `ChatView`: render `.reasoning` rows with the existing disclosure look (interim only — Phase B replaces it); `ThinkingIndicatorView` shows `turnActivityLabel ?? "Thinking"` + `turnSeconds` while running so Phase A ships coherently
-- [ ] tests: spans for preamble / running / tool-only / errored turns, missing timestamps; read-aloud never reads interim; action-bar predicate
-- [ ] re-record affected snapshots (thinking / hydration suites) in their own commit; `make snapshot` clean
-- [ ] run tests — must pass before Task 6
+- [x] `turnSpans(_:runningTurnOrdinal:)` pure function: ordinals, ranges, `finalReplyIndex` (finished turns only), duration from timestamps
+- [x] read-aloud: auto-speak and the completed-row anchor use the final reply only — interim segments never read; `MessageActionBar` and branch shown only on final replies (➕ anchor kept in step at turn edges: `.error` / socket drop consume a promoted segment, a `message.start` without a user row clamps; hydrate re-base moved after the running verdict)
+- [x] `ChatView`: render `.reasoning` rows with the existing disclosure look (interim only — Phase B replaces it); `ThinkingIndicatorView` shows `turnActivityLabel ?? "Thinking"` + `turnSeconds` while running so Phase A ships coherently (➕ `State.renderedRows` adds a placeholder live row while a turn is live without an open burst)
+- [x] tests: spans for preamble / running / tool-only / errored turns, missing timestamps; read-aloud never reads interim; action-bar predicate
+- [x] re-record affected snapshots (thinking / hydration suites) in their own commit; `make snapshot` clean (no existing baseline changed — 285/285 before the new tests; 2 new baselines added: spinner label, interim row without action bar → 287/287)
+- [x] run tests — must pass before Task 6
 
 ### Phase B — turn fold & run summaries (PR 2, closes #55)
 

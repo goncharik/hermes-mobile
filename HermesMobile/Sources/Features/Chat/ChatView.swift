@@ -214,10 +214,13 @@ struct ChatView: View {
     if store.showsEmptyHero {
       ChatEmptyHeroView()
     } else {
-      let rows = Array(store.visibleRows)
+      let rows = store.renderedRows
       let turnState: TurnState = store.isSending ? .streaming : .idle
       let canLoadOlder = store.hasMoreAbove
       let onLoadOlder = { _ = store.send(.loadOlderRequested) }
+      // Derived once per render, not per cell: every apply reconfigures all visible cells,
+      // so a reply that just became final picks up its action bar on the next pass.
+      let finalReplyIDs = store.finalReplyRowIDs
 
       // The transcript is rendered by the `UICollectionView`-backed engine (the only engine):
       // a diffable data source keyed on the deterministic row id gives stable diffing, scroll
@@ -227,7 +230,7 @@ struct ChatView: View {
         turnState: turnState,
         canLoadOlder: canLoadOlder,
         onLoadOlder: onLoadOlder,
-        cell: transcriptCell
+        cell: { row in transcriptCell(row, isFinalReply: finalReplyIDs.contains(row.id)) }
       )
       // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a
       // `.simultaneousGesture(TapGesture())` here: it would swallow the hosted
@@ -240,20 +243,20 @@ struct ChatView: View {
   /// on `ChatView`'s body reaches it — the `openURL` hook has to be installed HERE, on the
   /// content the builder hands to the collection view, or a `hermes-file:` tap in a message
   /// would fall through to the system (which has no handler for the scheme) and do nothing.
-  private func transcriptCell(_ row: ChatRow) -> some View {
-    transcriptCellContent(row)
+  private func transcriptCell(_ row: ChatRow, isFinalReply: Bool) -> some View {
+    transcriptCellContent(row, isFinalReply: isFinalReply)
       .environment(\.openURL, openFileReference)
   }
 
   @ViewBuilder
-  private func transcriptCellContent(_ row: ChatRow) -> some View {
+  private func transcriptCellContent(_ row: ChatRow, isFinalReply: Bool) -> some View {
     // Only user messages get the long-press "Copy whole message" menu (mirrors their bubble).
     // Assistant/tool/thinking rows render bubble-less plain text — no context menu, so a
     // long-press starts native text selection (select any range → system Copy/Share) instead
     // of grabbing the entire row. The menu's long-press gesture would otherwise pre-empt
     // `.textSelection`.
     if row.kind.role == .user {
-      rowView(row)
+      rowView(row, isFinalReply: isFinalReply)
         .contextMenu {
           Button {
             store.send(.copyRow(id: row.id))
@@ -262,15 +265,23 @@ struct ChatView: View {
           }
         }
     } else {
-      rowView(row)
+      rowView(row, isFinalReply: isFinalReply)
     }
   }
 
   // Internal (not `private`) so snapshot tests can render a single transcript cell
   // deterministically — a full-device capture of a *streaming* row is flaky (the
   // spinner keeps animations alive while the collection view re-pins to bottom).
-  @ViewBuilder
+  // Reads the row's final-reply verdict from the store (the transcript derives it once per
+  // render instead).
   func rowView(_ row: ChatRow) -> some View {
+    rowView(row, isFinalReply: store.finalReplyRowIDs.contains(row.id))
+  }
+
+  /// `isFinalReply`: the row is its turn's final reply (`State.finalReplyRowIDs`) — the only
+  /// assistant message that gets the action bar; interim commentary renders without one.
+  @ViewBuilder
+  func rowView(_ row: ChatRow, isFinalReply: Bool) -> some View {
     switch row.kind {
     case let .message(role, text, isComplete):
       VStack(alignment: .leading, spacing: 8) {
@@ -281,9 +292,10 @@ struct ChatView: View {
           onCopyCode: { text, token in store.send(.copyCode(text: text, token: token)) },
           attachmentImages: row.attachmentImages
         )
-        // The visible action row (#34): only under COMPLETED assistant messages with
-        // real text — hidden while streaming (the reducer re-guards all of this).
-        if role == .assistant, isComplete,
+        // The visible action row (#34): only under a COMPLETED final reply with real
+        // text — hidden while streaming and on interim commentary (the reducer re-guards
+        // all of this).
+        if role == .assistant, isComplete, isFinalReply,
            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           MessageActionBar(
             isCopied: store.recentlyCopiedToken == ChatFeature.rowCopyToken(row.id),
@@ -305,9 +317,12 @@ struct ChatView: View {
       )
     case let .reasoning(text, isComplete):
       // Interim rendering of a reasoning burst with the existing disclosure look (the turn
-      // header replaces it in Phase B of the tool-call display plan). The open burst shows
-      // the live turn timer + status; a closed one is a static "Thought" disclosure.
+      // header replaces it in Phase B of the tool-call display plan). The open burst — or
+      // the live-turn placeholder row (`State.renderedRows`) — shows the live label
+      // (spinner line, else "Thinking"), the turn timer and status; a closed burst is a
+      // static "Thought" disclosure.
       ThinkingIndicatorView(
+        liveLabel: store.turnActivityLabel ?? "Thinking",
         liveSeconds: store.turnSeconds,
         reasoning: text,
         status: isComplete ? nil : store.turnStatus,

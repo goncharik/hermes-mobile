@@ -3,13 +3,15 @@ import SwiftUI
 
 /// The live "Thinking" indicator that owns a turn's reasoning + status line.
 ///
-/// While the turn is in flight (`isComplete == false`) it shows a shimmering
-/// "Thinking" label with a live `1h 1m 1s` elapsed timer (read from
-/// `store.turnSeconds` via `liveSeconds`); its disclosed area accumulates the
-/// reasoning text and the latest `status.update` line and shimmers alongside the label.
-/// On completion it freezes into a static, collapsed `Thought · <elapsed>` disclosure kept
-/// in the transcript so past reasoning + status stay reviewable.
+/// While the turn is in flight (`isComplete == false`) it shows a shimmering live label
+/// (`store.turnActivityLabel ?? "Thinking"` — the agent's spinner line) with a live
+/// `1h 1m 1s` elapsed timer (read from `store.turnSeconds` via `liveSeconds`); its disclosed
+/// area accumulates the reasoning text and the latest `status.update` line and shimmers
+/// alongside the label. On completion it freezes into a static, collapsed
+/// `Thought · <elapsed>` disclosure kept in the transcript so past reasoning stays reviewable.
 struct ThinkingIndicatorView: View {
+  /// The live header text while active; ignored once complete.
+  let liveLabel: String
   /// Live elapsed seconds while active (`store.turnSeconds`); ignored once complete.
   let liveSeconds: Int
   /// Accumulated reasoning/thinking text (may be empty while only status has arrived).
@@ -32,6 +34,7 @@ struct ThinkingIndicatorView: View {
   @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
 
   init(
+    liveLabel: String = "Thinking",
     liveSeconds: Int,
     reasoning: String,
     status: String?,
@@ -40,6 +43,7 @@ struct ThinkingIndicatorView: View {
     initiallyExpanded: Bool = false,
     reduceMotionOverride: Bool? = nil
   ) {
+    self.liveLabel = liveLabel
     self.liveSeconds = liveSeconds
     self.reasoning = reasoning
     self.status = status
@@ -79,7 +83,7 @@ struct ThinkingIndicatorView: View {
         .font(.caption)
         .foregroundStyle(.primary)
     } else {
-      ThinkingLabel(elapsed: liveSeconds, reduceMotionOverride: reduceMotionOverride)
+      ThinkingLabel(text: liveLabel, elapsed: liveSeconds, reduceMotionOverride: reduceMotionOverride)
     }
   }
 
@@ -104,9 +108,11 @@ struct ThinkingIndicatorView: View {
   }
 }
 
-/// The active label: "Thinking" + a live elapsed timer, with a shimmer that sweeps the
-/// text while the turn runs. Held flat under reduce-motion.
+/// The active label: the live text ("Thinking" or the agent's spinner line) + a live elapsed
+/// timer, with a shimmer that sweeps the text while the turn runs. Held flat under
+/// reduce-motion. One line: a long provider-wait line truncates, the timer stays visible.
 private struct ThinkingLabel: View {
+  let text: String
   let elapsed: Int
   /// When non-nil, overrides the environment reduce-motion value (snapshot tests only).
   var reduceMotionOverride: Bool?
@@ -117,9 +123,11 @@ private struct ThinkingLabel: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Text("Thinking")
+      Text(text)
         .font(.caption.weight(.medium))
         .foregroundStyle(.primary)
+        .lineLimit(1)
+        .truncationMode(.tail)
       Text(formatElapsed(elapsed))
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
