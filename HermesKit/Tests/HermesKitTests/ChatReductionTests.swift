@@ -76,7 +76,7 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = uuid(0)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Hmm"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     // A tool starts mid-turn: it slots in above the thinking row, which stays last.
@@ -159,10 +159,10 @@ struct ChatReductionTests {
     await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
     await store.receive(\.thinkingTick) { $0.thinkingSeconds = 3 }
     // Reasoning accumulates into the existing row, then the assistant message streams.
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Thinking"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Thinking"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Thinking", status: nil, elapsedSeconds: 0, isComplete: false)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "…"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "…"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Thinking…", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     await store.send(.gatewayEvent(.messageDelta(text: "pong"))) {
@@ -342,7 +342,7 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = uuid(0)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "First"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "First"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "First", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     await clock.advance(by: .seconds(2))
@@ -388,7 +388,7 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = uuid(0)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Live one"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Live one"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Live one", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     await clock.advance(by: .seconds(2))
@@ -480,7 +480,7 @@ struct ChatReductionTests {
       $0.continuousClock = clock
     }
 
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Orphan reasoning"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Orphan reasoning"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "Orphan reasoning", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = uuid(0)
     }

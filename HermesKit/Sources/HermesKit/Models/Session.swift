@@ -264,6 +264,13 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
   /// `reasoning_details` is provider-shaped (often an array). We only surface it when it
   /// arrives as a plain string, matching the desktop fallback.
   public var reasoningDetails: String?
+  /// Cooked `role:"tool"` row: the call's full structured arguments (`args`, newer agents;
+  /// the server omits it when empty). Kept in whatever JSON shape arrives — the presentation
+  /// layer decides what it can read, nothing is dropped here.
+  public var args: JSONValue?
+  /// Cooked `role:"tool"` row: the edit preview the server persisted with the result
+  /// (`display_metadata.tool_result_metadata.inline_diff`), or nil.
+  public var inlineDiff: String?
 
   /// The single reasoning string for this message, first-non-empty of the three variants
   /// (`reasoning ?? reasoning_content ?? reasoning_details`), or `nil`.
@@ -279,12 +286,13 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
   public var toolDisplayName: String? { name?.nonEmpty ?? toolName?.nonEmpty }
 
   enum CodingKeys: String, CodingKey {
-    case id, role, content, text, name, context, timestamp, reasoning
+    case id, role, content, text, name, context, timestamp, reasoning, args
     case toolName = "tool_name"
     case toolCallID = "tool_call_id"
     case toolCalls = "tool_calls"
     case reasoningContent = "reasoning_content"
     case reasoningDetails = "reasoning_details"
+    case displayMetadata = "display_metadata"
   }
 
   public init(
@@ -292,7 +300,8 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     text: String? = nil, name: String? = nil, context: String? = nil,
     timestamp: Double? = nil,
     toolName: String? = nil, toolCallID: String? = nil, toolCalls: [ToolCallRef]? = nil,
-    reasoning: String? = nil, reasoningContent: String? = nil, reasoningDetails: String? = nil
+    reasoning: String? = nil, reasoningContent: String? = nil, reasoningDetails: String? = nil,
+    args: JSONValue? = nil, inlineDiff: String? = nil
   ) {
     self.id = id
     self.role = role
@@ -307,13 +316,22 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     self.reasoning = reasoning
     self.reasoningContent = reasoningContent
     self.reasoningDetails = reasoningDetails
+    self.args = args
+    self.inlineDiff = inlineDiff
   }
 
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     id = (try? c.decode(Int.self, forKey: .id)) ?? 0
     role = (try? c.decode(String.self, forKey: .role)) ?? ""
-    content = try? c.decodeIfPresent(String.self, forKey: .content)
+    // A cooked tool row carries the RAW stored result (`write_file` / `patch` /
+    // `skill_manage` only), which is not always a string (multimodal parts) — keep a
+    // non-string value as its display rendering rather than dropping it. Other roles keep
+    // the string-only read (their body is the cooked `text`).
+    let stringContent = (try? c.decodeIfPresent(String.self, forKey: .content)) ?? nil
+    content = stringContent ?? (role == "tool"
+      ? ((try? c.decodeIfPresent(JSONValue.self, forKey: .content)) ?? nil)?.displayString
+      : nil)
     text = try? c.decodeIfPresent(String.self, forKey: .text)
     name = try? c.decodeIfPresent(String.self, forKey: .name)
     context = try? c.decodeIfPresent(String.self, forKey: .context)
@@ -326,6 +344,9 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     reasoningContent = try? c.decodeIfPresent(String.self, forKey: .reasoningContent)
     // `reasoning_details` is usually an array of provider blocks; surface only string form.
     reasoningDetails = try? c.decodeIfPresent(String.self, forKey: .reasoningDetails)
+    args = ((try? c.decodeIfPresent(JSONValue.self, forKey: .args)) ?? nil)?.nonNull
+    let metadata = (try? c.decodeIfPresent(JSONValue.self, forKey: .displayMetadata)) ?? nil
+    inlineDiff = metadata?["tool_result_metadata"]?["inline_diff"]?.stringValue?.nonEmpty
   }
 }
 

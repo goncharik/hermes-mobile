@@ -9,13 +9,28 @@ public enum GatewayEvent: Equatable, Sendable {
   case messageStart
   case messageDelta(text: String)
   case messageComplete(text: String, usage: Usage?)
-  case thinkingDelta(text: String)
+  /// `message.interim`: the server sealed a segment of interim assistant commentary (text
+  /// beside tool calls). `alreadyStreamed` means the text already arrived as `message.delta`s;
+  /// `turnID` + `segment` identify the sealed segment (a re-sent seal is not a new bubble).
+  case messageInterim(text: String, alreadyStreamed: Bool, turnID: String?, segment: Int?)
+  /// `thinking.delta`: the agent's kawaii spinner frame (`ಠ_ಠ pondering…`) or a provider-wait
+  /// diagnostic. Each frame REWRITES the previous one — it is a transient activity label,
+  /// never reasoning text.
+  case spinnerFrame(text: String)
+  /// `reasoning.delta`: an incremental chunk of the model's reasoning.
+  case reasoningDelta(text: String)
   case reasoningAvailable(text: String)
   case statusUpdate(kind: String, text: String)
-  case toolStart(toolID: String?, name: String, title: String?, argsText: String?)
+  /// `tool.start`. `args` is the call's full structured arguments (newer agents; absent on
+  /// older ones and on mirrored subagent rows); `argsText` only on verbose sessions.
+  case toolStart(toolID: String?, name: String, title: String?, argsText: String?, args: JSONValue? = nil)
+  /// `tool.complete`. `result` is the parsed structured result (`nil` when absent or JSON
+  /// `null`); `resultText` keeps the legacy display string (`result_text`, else `result`
+  /// rendered for display).
   case toolComplete(
     toolID: String?, name: String?, title: String?,
-    args: JSONValue?, resultText: String?, inlineDiff: String?, durationS: Double?
+    args: JSONValue?, resultText: String?, inlineDiff: String?, durationS: Double?,
+    result: JSONValue? = nil
   )
   case approvalRequest(ApprovalRequest)
   /// A rendered v7 server→client request (`{"id":"srq-…","method":…}`), decoded by the
@@ -63,11 +78,18 @@ public enum GatewayEvent: Equatable, Sendable {
       self = .messageDelta(text: p["text"]?.stringValue ?? "")
     case "message.complete":
       self = .messageComplete(text: p["text"]?.stringValue ?? "", usage: p["usage"]?.decoded(Usage.self))
+    case "message.interim":
+      self = .messageInterim(
+        text: p["text"]?.stringValue ?? "",
+        alreadyStreamed: p["already_streamed"]?.boolValue ?? false,
+        turnID: p["turn_id"]?.stringValue,
+        segment: p["segment"]?.intValue
+      )
     case "thinking.delta":
-      self = .thinkingDelta(text: p["text"]?.stringValue ?? "")
+      // The agent's spinner (`agent_callbacks._agent_thinking_update`), NOT reasoning.
+      self = .spinnerFrame(text: p["text"]?.stringValue ?? "")
     case "reasoning.delta":
-      // Incremental reasoning folds into the same collapsible "thinking" row.
-      self = .thinkingDelta(text: p["text"]?.stringValue ?? "")
+      self = .reasoningDelta(text: p["text"]?.stringValue ?? "")
     case "reasoning.available":
       self = .reasoningAvailable(text: p["text"]?.stringValue ?? "")
     case "status.update":
@@ -77,7 +99,8 @@ public enum GatewayEvent: Equatable, Sendable {
         toolID: p["tool_id"]?.stringValue,
         name: p["name"]?.stringValue ?? "",
         title: p["context"]?.stringValue,       // human description shown as the row title
-        argsText: p["args_text"]?.stringValue   // present only in verbose runs
+        argsText: p["args_text"]?.stringValue,  // present only in verbose runs
+        args: p["args"]?.nonNull
       )
     case "tool.complete":
       self = .toolComplete(
@@ -87,7 +110,8 @@ public enum GatewayEvent: Equatable, Sendable {
         args: p["args"],
         resultText: p["result_text"]?.stringValue ?? p["result"]?.displayString,
         inlineDiff: p["inline_diff"]?.stringValue,
-        durationS: p["duration_s"]?.doubleValue
+        durationS: p["duration_s"]?.doubleValue,
+        result: p["result"]?.nonNull
       )
     case "approval.request":
       if let req = p.decoded(ApprovalRequest.self) { self = .approvalRequest(req) }

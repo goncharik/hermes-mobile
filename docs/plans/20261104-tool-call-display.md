@@ -333,12 +333,12 @@ public enum Body {
 - Modify: `HermesKit/Sources/HermesKit/Models/Session.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/` (gateway event + session message decode tests)
 
-- [ ] split `thinking.delta` into its own case (`.spinnerFrame(text:)`) — `reasoning.delta` keeps `.thinkingDelta` (rename to `.reasoningDelta`)
-- [ ] add `.messageInterim(text:alreadyStreamed:turnID:segment:)` for `message.interim`
-- [ ] `tool.start`: decode `args` (JSONValue) alongside `context` / `args_text`; `tool.complete`: decode `result` as structured `JSONValue` in addition to `result_text`
-- [ ] `SessionMessage`: decode `args`, `display_metadata.tool_result_metadata.inline_diff`, keep tool-row `content`; all lenient (`try?`)
-- [ ] write decode tests for each new field/case incl. absent fields (older agent) and odd shapes (`args` not an object, `display_metadata` missing keys)
-- [ ] run tests — must pass before Task 2
+- [x] split `thinking.delta` into its own case (`.spinnerFrame(text:)`) — `reasoning.delta` keeps `.thinkingDelta` (rename to `.reasoningDelta`)
+- [x] add `.messageInterim(text:alreadyStreamed:turnID:segment:)` for `message.interim`
+- [x] `tool.start`: decode `args` (JSONValue) alongside `context` / `args_text`; `tool.complete`: decode `result` as structured `JSONValue` in addition to `result_text`
+- [x] `SessionMessage`: decode `args`, `display_metadata.tool_result_metadata.inline_diff`, keep tool-row `content`; all lenient (`try?`)
+- [x] write decode tests for each new field/case incl. absent fields (older agent) and odd shapes (`args` not an object, `display_metadata` missing keys)
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Replace the thinking row with per-burst reasoning rows and turn state
 

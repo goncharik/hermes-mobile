@@ -1503,7 +1503,7 @@ struct ChatInteractionTests {
       $0.transcript = [ChatRow(id: self.uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = self.uuid(0)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Pondering"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Pondering"))) {
       $0.transcript[id: self.uuid(0)]?.kind = .thinking(reasoning: "Pondering", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     await clock.advance(by: .seconds(2))

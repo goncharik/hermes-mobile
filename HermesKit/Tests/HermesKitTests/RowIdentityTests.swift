@@ -100,10 +100,10 @@ struct RowIdentityTests {
       $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
       $0.thinkingRowID = uuid(0)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Plan"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Plan", status: nil, elapsedSeconds: 0, isComplete: false)
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "ning"))) {
+    await store.send(.gatewayEvent(.reasoningDelta(text: "ning"))) {
       $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Planning", status: nil, elapsedSeconds: 0, isComplete: false)
     }
     await store.send(.gatewayEvent(.statusUpdate(kind: "context", text: "Context: 12%"))) {
@@ -319,8 +319,8 @@ struct RowIdentityTests {
     store.exhaustivity = .off
 
     await store.send(.gatewayEvent(.messageStart))
-    await store.send(.gatewayEvent(.thinkingDelta(text: "just ")))
-    await store.send(.gatewayEvent(.thinkingDelta(text: "reasoning")))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "just ")))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "reasoning")))
     // The reasoning row kept its id (uuid 0) across both deltas.
     #expect(store.state.thinkingRowID == uuid(0))
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil)))

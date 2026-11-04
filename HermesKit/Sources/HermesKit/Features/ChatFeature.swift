@@ -2806,8 +2806,15 @@ public struct ChatFeature {
         drainQueueIfReady(into: &state), speak
       )
 
-    case let .thinkingDelta(text):
+    case let .reasoningDelta(text), let .spinnerFrame(text):
+      // Spinner frames still append here until the turn-activity label lands (tool-call
+      // display plan, Task 2) — decode-only split for now, behavior unchanged.
       appendToThinking(text, into: &state)
+      return .none
+
+    case .messageInterim:
+      // Decoded but not yet folded (tool-call display plan, Task 3) — inert, exactly as
+      // when `message.interim` decoded to `.unknown`.
       return .none
 
     case let .reasoningAvailable(text):
@@ -2818,7 +2825,7 @@ public struct ChatFeature {
       setThinkingStatus(text, into: &state)
       return .none
 
-    case let .toolStart(toolID, name, title, argsText):
+    case let .toolStart(toolID, name, title, argsText, _):
       let id = uuid()
       let detail = argsText.map { ToolDetail(argsText: $0) }
       state.transcript.append(ChatRow(id: id, kind: .tool(
@@ -2828,7 +2835,7 @@ public struct ChatFeature {
       keepThinkingLast(into: &state)
       return .none
 
-    case let .toolComplete(toolID, name, title, args, resultText, inlineDiff, durationS):
+    case let .toolComplete(toolID, name, title, args, resultText, inlineDiff, durationS, _):
       let detail = ToolDetail(args: args, resultText: resultText?.nonEmpty, inlineDiff: inlineDiff?.nonEmpty)
       if let toolID, let id = state.toolRowIDs[toolID],
          case let .tool(existingName, existingTitle, _, existingDetail, _) = state.transcript[id: id]?.kind {
@@ -4737,7 +4744,7 @@ public struct ChatFeature {
   private func persistRelevant(_ event: GatewayEvent) -> Bool {
     switch event {
     case .messageStart, .messageDelta, .messageComplete,
-         .thinkingDelta, .reasoningAvailable, .statusUpdate,
+         .spinnerFrame, .reasoningDelta, .reasoningAvailable, .statusUpdate,
          .toolStart, .toolComplete, .sessionInfo:
       return true
     case let .reviewSummary(text):
@@ -4745,7 +4752,8 @@ public struct ChatFeature {
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
     case .ready, .error, .serverRequestFailed, .serverRequestsUnavailable, .authExpired, .approvalRequest,
-         .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest, .unknown:
+         .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest, .unknown,
+         .messageInterim:
       return false
     }
   }

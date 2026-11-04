@@ -30,7 +30,9 @@ public extension GatewayEvent {
     case .messageStart: return "message.start"
     case .messageDelta: return "message.delta"
     case .messageComplete: return "message.complete"
-    case .thinkingDelta: return "thinking.delta"
+    case .messageInterim: return "message.interim"
+    case .spinnerFrame: return "thinking.delta"
+    case .reasoningDelta: return "reasoning.delta"
     case .reasoningAvailable: return "reasoning.available"
     case .statusUpdate: return "status.update"
     case .toolStart: return "tool.start"
@@ -60,11 +62,15 @@ public extension GatewayEvent {
     case let .sessionInfo(info): return info.model ?? ""
     case let .messageDelta(text): return Self.truncate(text)
     case let .messageComplete(text, _): return Self.truncate(text)
-    case let .thinkingDelta(text): return Self.truncate(text)
+    case let .messageInterim(text, alreadyStreamed, _, segment):
+      let seg = segment.map { "#\($0) " } ?? ""
+      return seg + (alreadyStreamed ? "(streamed) " : "") + Self.truncate(text)
+    case let .spinnerFrame(text): return Self.truncate(text)
+    case let .reasoningDelta(text): return Self.truncate(text)
     case let .reasoningAvailable(text): return Self.truncate(text)
     case let .statusUpdate(kind, text): return "[\(kind)] \(text)"
-    case let .toolStart(_, name, _, _): return name
-    case let .toolComplete(_, name, _, _, _, _, durationS):
+    case let .toolStart(_, name, _, _, _): return name
+    case let .toolComplete(_, name, _, _, _, _, durationS, _):
       let d = durationS.map { String(format: " (%.1fs)", $0) } ?? ""
       return (name ?? "") + d
     case let .approvalRequest(req): return req.command ?? req.detail ?? "approval"

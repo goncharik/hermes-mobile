@@ -103,6 +103,94 @@ struct SessionDecodingTests {
     #expect(resultMessage.toolCallID == "call_1")
   }
 
+  // MARK: - Cooked tool rows (tool-call display)
+
+  /// The cooked `session.resume` edit row (`tui_gateway/session_history.py`): structured
+  /// `args`, the raw stored `content`, `timestamp`, and the persisted inline diff.
+  @Test func cookedEditToolRowDecodesArgsContentAndInlineDiff() throws {
+    let json = """
+    {
+      "role": "tool", "name": "patch", "context": "ChatFeature.swift",
+      "tool_call_id": "call_9", "timestamp": 1730700000.5,
+      "args": { "path": "/repo/ChatFeature.swift", "old_string": "a", "new_string": "b" },
+      "content": "{\\"success\\": true, \\"path\\": \\"/repo/ChatFeature.swift\\"}",
+      "display_metadata": { "tool_result_metadata": { "inline_diff": "- a\\n+ b" } },
+      "labels": [{ "text": "edit" }]
+    }
+    """
+    let message = try decode(SessionMessage.self, json)
+    #expect(message.toolDisplayName == "patch")
+    #expect(message.context == "ChatFeature.swift")
+    #expect(message.toolCallID == "call_9")
+    #expect(message.timestamp == 1_730_700_000.5)
+    #expect(message.args == .object([
+      "path": .string("/repo/ChatFeature.swift"), "old_string": .string("a"), "new_string": .string("b"),
+    ]))
+    #expect(message.content == #"{"success": true, "path": "/repo/ChatFeature.swift"}"#)
+    #expect(message.inlineDiff == "- a\n+ b")
+  }
+
+  /// An older agent's cooked row is `{role, name, context}` only — every new field is nil.
+  @Test func oldAgentToolRowHasNoNewFields() throws {
+    let message = try decode(SessionMessage.self, #"{ "role": "tool", "name": "terminal", "context": "ls" }"#)
+    #expect(message.toolDisplayName == "terminal")
+    #expect(message.context == "ls")
+    #expect(message.args == nil)
+    #expect(message.content == nil)
+    #expect(message.inlineDiff == nil)
+    #expect(message.timestamp == nil)
+  }
+
+  /// Odd shapes degrade field-by-field and never throw: non-object `args` is kept as-is,
+  /// `null` args read as absent, and `display_metadata` without the diff (or not an object)
+  /// yields no diff.
+  @Test(arguments: [
+    (#"{ "role": "tool", "name": "t", "args": "raw string args", "display_metadata": { "tool_result_metadata": { "lines": 1000 } } }"#,
+     JSONValue.string("raw string args") as JSONValue?),
+    (#"{ "role": "tool", "name": "t", "args": null, "display_metadata": { "other": 1 } }"#, nil),
+    (#"{ "role": "tool", "name": "t", "args": [1, 2], "display_metadata": "nope" }"#,
+     JSONValue.array([.number(1), .number(2)]) as JSONValue?),
+    (#"{ "role": "tool", "name": "t", "display_metadata": { "tool_result_metadata": { "inline_diff": 42 } } }"#, nil),
+    (#"{ "role": "tool", "name": "t", "display_metadata": { "tool_result_metadata": { "inline_diff": "" } } }"#, nil),
+  ] as [(String, JSONValue?)])
+  func oddToolRowShapesDecodeLeniently(json: String, expectedArgs: JSONValue?) throws {
+    let message = try decode(SessionMessage.self, json)
+    #expect(message.toolDisplayName == "t")
+    #expect(message.args == expectedArgs)
+    #expect(message.inlineDiff == nil)
+  }
+
+  /// A tool row's raw `content` is not always a string (multimodal parts) — keep it as its
+  /// display rendering rather than dropping it. Other roles keep the string-only read.
+  @Test func nonStringToolContentIsKeptAsDisplayText() throws {
+    let tool = try decode(
+      SessionMessage.self, #"{ "role": "tool", "name": "skill_manage", "content": [{ "type": "text", "text": "ok" }] }"#
+    )
+    #expect(tool.content?.contains("\"text\" : \"ok\"") == true)
+
+    let user = try decode(
+      SessionMessage.self, #"{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }"#
+    )
+    #expect(user.content == nil)
+  }
+
+  /// The resume payload keeps the new fields through `ActivateResponse`.
+  @Test func activateResponseCarriesToolRowFields() throws {
+    let json = """
+    {
+      "session_id": "live1",
+      "messages": [
+        { "role": "user", "text": "fix it", "timestamp": 1730700000 },
+        { "role": "tool", "name": "terminal", "context": "pytest -q", "args": { "command": "pytest -q" } }
+      ]
+    }
+    """
+    let response = try decode(ActivateResponse.self, json)
+    #expect(response.messages.count == 2)
+    #expect(response.messages[0].timestamp == 1_730_700_000)
+    #expect(response.messages[1].args == .object(["command": .string("pytest -q")]))
+  }
+
   // MARK: - Session list row `model` (inbox card footer)
 
   @Test func listRowModelDecodesWhenPresent() throws {
