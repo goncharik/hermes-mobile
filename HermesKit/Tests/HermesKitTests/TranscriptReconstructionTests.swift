@@ -83,11 +83,22 @@ struct TranscriptReconstructionTests {
       msg(1, "tool", name: "read_file", context: "/etc/hosts"),
     ])
 
+    // The title is the context (the live `tool.start` shape), so the presentation reads a
+    // reloaded call's target the same way it reads a live one.
     #expect(rows.count == 1)
     #expect(rows[0].kind == .tool(
-      name: "read_file", title: "read_file", state: .complete,
+      name: "read_file", title: "/etc/hosts", state: .complete,
       detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil
     ))
+    guard case let .tool(call) = rows[0].kind else { return }
+    #expect(ToolPresentation(call: call).settledTitle == "Read hosts")
+  }
+
+  @Test func aBlankContextLeavesTheNameAsTheTitle() {
+    let rows = reconstructTranscript([msg(1, "tool", name: "grep", context: "  ")])
+    #expect(rows.map(\.kind) == [.tool(
+      name: "grep", title: "grep", state: .complete, detail: ToolDetail(argsText: "  "), durationS: nil
+    )])
   }
 
   @Test func toolRowWithoutContextHasNoDetail() {
@@ -99,7 +110,7 @@ struct TranscriptReconstructionTests {
   @Test func toolRowWithoutNameFallsBackToToolLabel() {
     let rows = reconstructTranscript([msg(1, "tool", context: "x")])
     #expect(rows.count == 1)
-    #expect(rows[0].kind == .tool(name: "tool", title: "tool", state: .complete, detail: ToolDetail(argsText: "x"), durationS: nil))
+    #expect(rows[0].kind == .tool(name: "tool", title: "x", state: .complete, detail: ToolDetail(argsText: "x"), durationS: nil))
   }
 
   // MARK: - Empty / blank rows
@@ -124,7 +135,7 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "What's in /etc/hosts?", isComplete: true),
-      .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil),
+      .tool(name: "read_file", title: "/etc/hosts", state: .complete, detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil),
       .reasoning(text: "thinking…", isComplete: true),
       .message(role: .assistant, text: "It maps localhost.", isComplete: true),
     ]))
@@ -167,7 +178,7 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "hi", isComplete: true),
-      .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/x"), durationS: nil),
+      .tool(name: "read_file", title: "/x", state: .complete, detail: ToolDetail(argsText: "/x"), durationS: nil),
       .reasoning(text: "ponder", isComplete: true),
       .message(role: .assistant, text: "done", isComplete: true),
     ]))
@@ -204,7 +215,7 @@ struct TranscriptReconstructionTests {
       .message(role: .user, text: "fix it", isComplete: true),
       .reasoning(text: "plan", isComplete: true),
       .message(role: .assistant, text: "on it", isComplete: true),
-      .tool(name: "patch", title: "patch", state: .complete, detail: ToolDetail(
+      .tool(name: "patch", title: "Sources/A.swift", state: .complete, detail: ToolDetail(
         argsText: "Sources/A.swift",
         args: .object([
           "path": .string("Sources/A.swift"), "old_string": .string("a"), "new_string": .string("b"),
@@ -214,7 +225,7 @@ struct TranscriptReconstructionTests {
         inlineDiff: "--- a\n+++ b\n-a\n+b"
       ), durationS: nil),
       // Terminal output is live-only: args survive, no result.
-      .tool(name: "terminal", title: "terminal", state: .complete, detail: ToolDetail(
+      .tool(name: "terminal", title: "pytest -q", state: .complete, detail: ToolDetail(
         argsText: "pytest -q", args: .object(["command": .string("pytest -q")])
       ), durationS: nil),
       // Non-JSON content stays text-only (no structured result invented).

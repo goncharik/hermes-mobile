@@ -76,6 +76,14 @@ struct ToolCallDetailTests {
     #expect(labels(call) == ["Context", "Arguments"])
   }
 
+  @Test func anOlderAgentsHydratedContextIsSaidOnce() {
+    // `{name, context}` only: the context is the title AND `argsText` — one Context section.
+    let call = ToolCall(
+      name: "terminal", title: "pytest -q", state: .complete, detail: ToolDetail(argsText: "pytest -q")
+    )
+    #expect(call.rawSections == [ToolCall.RawSection(label: "Context", text: "pytest -q")])
+  }
+
   @Test func argsTextWithoutStructuredArgsIsTheArguments() {
     let call = ToolCall(
       name: "terminal", title: "terminal", state: .complete, detail: ToolDetail(argsText: "ls -la")

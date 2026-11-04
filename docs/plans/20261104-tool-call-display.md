@@ -507,13 +507,13 @@ public enum Body {
 - [x] `make snapshot` clean and `make test` pass before Task 14 (302/302; 2244 tests)
 
 ### Task 14: Verify acceptance criteria
-- [ ] #55: a 15-call finished turn shows `[user][Worked for …][reply]`; the reply is on screen without scrolling
-- [ ] live turn: expanded by default, collapsible, collapsed shows the live line; finish collapses unless the user last expanded it
-- [ ] #45: every listed tool renders its body; unknown tools fall back without losing data; reloaded sessions show targets + edit diffs and "unavailable" for live-only output
-- [ ] spinner frames never appear in reasoning; interim commentary is separate from the reply; read-aloud reads only the reply
-- [ ] older agent (no `args`, no `message.interim`, cooked `{name, context}` only) still renders sensibly
-- [ ] run full suite: `make test`
-- [ ] run snapshots: `make snapshot` (clean; update the 285/285 count in CLAUDE.md)
+- [x] #55: a 15-call finished turn shows `[user][Worked for …][reply]`; the reply is on screen without scrolling (➕ new `ToolCallAcceptanceTests.aFifteenCallFinishedTurnFoldsToUserHeaderAndReply` drives 15 calls through real events → 3 items; visual: `TurnFoldSnapshotTests.testFinishedTurn_collapsed`)
+- [x] live turn: expanded by default, collapsible, collapsed shows the live line; finish collapses unless the user last expanded it (`TranscriptLayoutTests.aRunningTurnIsExpandedByDefault` / `aCollapsedRunningTurnShowsTheLiveLineAndTheStreamingRow`; `ChatFoldTests.headerTapOnTheRunningTurnCollapsesIt` + the three finish tests; snapshots `testLiveTurn_expanded` / `_collapsed`)
+- [x] #45: every listed tool renders its body; unknown tools fall back without losing data; reloaded sessions show targets + edit diffs and "unavailable" for live-only output (➕ new table `everyListedToolRendersItsBody` + `aReloadedSessionShowsTargetsEditDiffsAndUnavailableOutput`; per-body `ToolPresentationTests`, `ToolCallDetailTests`, `ToolBodySnapshotTests`, `ToolDetailSheetSnapshotTests`) — ⚠️ fixed: `reconstructTranscript` titled hydrated tool rows with the NAME, so an older agent's reloaded call lost its only target ("Ran command"); the title is now `context ?? name` (the live shape), and the sheet's Raw says a context-only row once
+- [x] spinner frames never appear in reasoning; interim commentary is separate from the reply; read-aloud reads only the reply (`ChatReductionTests.spinnerFramesReplaceTheTurnLabelAndNeverReachARow`, `interimSealThenFinalProducesTwoRowsAroundToolRows`; `ChatReadAloudTests.interimCommentaryIsNeverReadOnlyTheFinalReplyIs`; `ChatBranchTests.interimCommentaryIsANoOpOnlyTheFinalReplyBranches`)
+- [x] older agent (no `args`, no `message.interim`, cooked `{name, context}` only) still renders sensibly (➕ new `anOlderAgentsLiveTurnStillRendersSensibly` / `anOlderAgentsReloadedSessionStillRendersSensibly`; decode `GatewayEventDecodingTests` / `SessionDecodingTests`; `RunSummaryTests.olderAgentCallsStillSummarize`)
+- [x] run full suite: `make test` (2252 tests passed, 2 pre-existing known issues)
+- [x] run snapshots: `make snapshot` (clean; update the 285/285 count in CLAUDE.md) (302/302; CLAUDE.md + docs/development.md updated)
 
 ### Task 15: [Final] Update documentation
 - [ ] create `docs/features/tool-calls.md` (turn fold rules, ordinal-keyed expansion, display items, presentation table, data availability live vs hydrated, out-of-scope list)

@@ -41,7 +41,8 @@ extension ToolCall {
 
     let args = detail?.args?.nonNull?.displayString
     let argsText = detail?.argsText?.trimmedNonEmpty
-    add("Arguments", args ?? argsText)
+    // A cooked history row stores its `context` as both the title and `argsText`: say it once.
+    add("Arguments", args ?? (argsText == context ? nil : argsText))
     if args != nil, let argsText, argsText != context, !Self.sameJSON(argsText, detail?.args) {
       add("Arguments (text)", argsText)
     }

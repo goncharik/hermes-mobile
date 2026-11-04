@@ -15,7 +15,7 @@ import Foundation
 ///   1. an assistant **reasoning** row (from `reasoningText`), emitted as a completed
 ///      `.reasoning` burst;
 ///   2. an assistant / user **text** row from `displayText` (skipped when empty);
-///   3. a completed **tool** row for each `role: "tool"` entry (title = `name`; detail =
+///   3. a completed **tool** row for each `role: "tool"` entry (title = `context`, else `name`; detail =
 ///      `context` preview + structured `args` + stored `content` + `inline_diff`, whichever
 ///      the agent sent — `cookedToolDetail`).
 ///
@@ -50,10 +50,12 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
     let timestamp = message.timestamp.flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
     switch message.role {
     case "tool":
-      // The server already resolved the call → result into one cooked row.
+      // The server already resolved the call → result into one cooked row. The title is the
+      // `context` preview, else the name — the live `tool.start` shape, so the presentation
+      // reads a reloaded call's target the same way (an older agent's ONLY target).
       let toolName = message.toolDisplayName ?? "tool"
       append(.tool(
-        name: toolName, title: toolName, state: .complete,
+        name: toolName, title: message.context?.trimmedNonEmpty ?? toolName, state: .complete,
         detail: cookedToolDetail(message), durationS: nil
       ), timestamp: timestamp)
 

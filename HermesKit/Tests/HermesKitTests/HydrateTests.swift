@@ -744,7 +744,7 @@ struct HydrateTests {
     #expect(store.state.streamingRowID == rebuilt[4].id)
     // History rows carry the cooked detail + server timestamps.
     #expect(rebuilt[1].kind == .tool(
-      name: "terminal", title: "terminal", state: .complete,
+      name: "terminal", title: "ls", state: .complete,
       detail: ToolDetail(argsText: "ls", args: .object(["command": .string("ls")])), durationS: nil
     ))
     #expect(rebuilt[1].timestamp == Date(timeIntervalSince1970: 901))
