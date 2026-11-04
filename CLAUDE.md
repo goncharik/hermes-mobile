@@ -161,8 +161,9 @@ bullets below are the compressed rules.
   under a reader who scrolled up and must not re-pin them. Mechanics: `apply(items:rowIDs:)`.
 - **`CollectionTranscriptView` is the ONLY renderer** — `UICollectionView` + diffable
   data source keyed on the deterministic `TranscriptItem.ID` + `UIHostingConfiguration` cells
-  (the pure-SwiftUI engine was removed: it dropped tail messages); open/hydrate/prepend
-  classification runs on ROW ids, so a fold change is never a reset. Stick-to-bottom is
+  (the pure-SwiftUI engine was removed: it dropped tail messages); open/hydrate/prepend/slide
+  classification runs on the RAW window's row ids (`windowRowIDs`, unsnapped), so neither a
+  fold change nor the snapped start moving reads as a reset. Stick-to-bottom is
   renderer-local, not reducer state; pure scroll-math helpers stay outside the
   `#if canImport(UIKit)` guard.
 - **The empty-chat hero swaps the transcript REGION on `ChatFeature.State.showsEmptyHero`**

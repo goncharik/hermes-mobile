@@ -948,6 +948,16 @@ public struct ChatFeature {
       return transcript.elements[snappedWindowStart..<count]
     }
 
+    /// The RAW window's row ids (from `windowStart`, not snapped) — what the renderer classifies
+    /// a row change on (`TranscriptDiffKind`). At the bottom the raw window keeps its fixed size
+    /// across a live append, so a live turn reads as a `.slide` (#125). The snapped window
+    /// shrinks whenever its start moves past a user row, which would read as a hydrate re-trim
+    /// (`.reset`) and jump a scrolled-up reader to the bottom.
+    public var windowRowIDs: [ChatRow.ID] {
+      let count = transcript.count
+      return transcript.elements[min(max(0, windowStart), count)..<count].map(\.id)
+    }
+
     /// The window laid out as display items — turn headers, run summaries, call lines and plain
     /// rows (see ``TranscriptFold``) — what the transcript renders. Turn ordinals are absolute
     /// (counted from the transcript start, not the window's), so they match the `fold` keys and

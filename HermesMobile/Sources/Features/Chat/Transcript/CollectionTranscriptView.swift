@@ -115,9 +115,10 @@ extension TranscriptLayout {
 ///
 /// - `items` — the window laid out as display items (`store.transcriptItems`); never the full
 ///   transcript.
-/// - `rowIDs` — the window's ROW ids (`store.visibleRows`), what the open/hydrate/prepend
-///   classification runs on: a fold expanding or collapsing changes the items but not the
-///   rows, so it can never read as a hydrate (jump to bottom) or a prepend.
+/// - `rowIDs` — the raw window's ROW ids (`store.windowRowIDs`), what the open/hydrate/prepend/
+///   slide classification runs on: a fold expanding or collapsing changes the items but not the
+///   rows, so it can never read as a hydrate (jump to bottom) or a prepend; and the raw window,
+///   unlike the snapped one the items are built from, keeps its size across a live append.
 /// - `turnState` — `.idle` / `.streaming`, drives the follow-to-bottom decision.
 /// - `canLoadOlder` — whether older history exists above the window (`store.hasMoreAbove`).
 ///   When `false` the top sentinel does NOT fire `onLoadOlder` nor arm prepend preservation,

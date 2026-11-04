@@ -213,7 +213,7 @@ struct ChatView: View {
       ChatEmptyHeroView()
     } else {
       let items = store.transcriptItems
-      let rowIDs = store.visibleRows.map(\.id)
+      let rowIDs = store.windowRowIDs
       let turnState: TurnState = store.isSending ? .streaming : .idle
       let canLoadOlder = store.hasMoreAbove
       let onLoadOlder = { _ = store.send(.loadOlderRequested) }

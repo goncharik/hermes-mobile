@@ -369,8 +369,8 @@ import Testing
   }
 
   @Test func classifyLiveToolCallSlideIsSlide() {
-    // Live `tool.start`: a tool row is inserted ABOVE the thinking row (keepThinkingLast) and the
-    // window drops its head row — a mid-insert combined with a dropped head.
+    // A row inserted ABOVE the window's last row while the window drops its head row — a
+    // mid-insert combined with a dropped head.
     let thinking = id(900, "thinking")
     let tool = id(901, "tool")
     let old = (0...48).map { id($0) } + [thinking]
@@ -416,8 +416,8 @@ import Testing
   }
 
   @Test func classifyTurnEndRowRemovalOnFullWindowIsSlide() {
-    // Turn end on a 50+ row chat: `freezeThinking` removes the empty thinking row, so the bottom
-    // window re-admits an older head row while its last row leaves.
+    // A turn-end row removal on a 50+ row chat (e.g. a re-parked queue entry's echo row): the
+    // bottom window re-admits an older head row while its last row leaves.
     let thinking = id(900, "thinking")
     let old = (1...49).map { id($0) } + [thinking]
     let new = (0...49).map { id($0) }

@@ -159,13 +159,17 @@ survives the hydrate's live → deterministic id rewrite.
 
 ## Rendering
 
-- **`CollectionTranscriptView` keys on `TranscriptItem.ID`**, but its open / hydrate / prepend
-  classification (`TranscriptDiffKind`) runs on the window's ROW ids (`rowIDs`). A collapse
-  removes items, which an item-id diff would read as a reset and jump to the bottom; a fold
-  change leaves row ids untouched.
+- **`CollectionTranscriptView` keys on `TranscriptItem.ID`**, but its open / hydrate / prepend /
+  slide classification (`TranscriptDiffKind`) runs on the RAW window's row ids
+  (`windowRowIDs`, from the unsnapped `windowStart`). A collapse removes items, which an
+  item-id diff would read as a reset and jump to the bottom; a fold change leaves row ids
+  untouched. The raw window, not the snapped one: at the bottom it keeps its fixed size across
+  a live append (#125's `.slide`), while the snapped window shrinks each time its start passes a
+  user row — the shape of a hydrate re-trim (`.reset`), which would yank a scrolled-up reader.
 - **Fold changes hold the reader's place.** Pinned → normal re-pin. Scrolled up → the first
-  visible surviving item keeps its offset (pure `TranscriptScrollMath.preservationAnchor` /
-  `offsetPreservingAnchor`), falling back to the final reply when everything visible folded
+  visible surviving item keeps its on-screen y, through the same same-pass anchor hold as a
+  #125 window slide (pure `TranscriptScrollMath.holdsReaderAnchor` / `preservationAnchor` /
+  `offsetAfterAnchorShift`), falling back to the final reply when everything visible folded
   away. This covers auto-collapse on finish, user taps and expanding a body (an insert keeps
   every old item, so nothing above the tapped line moves).
 - **Taps** on headers, summaries and call lines are `onTapGesture` + button traits announcing
