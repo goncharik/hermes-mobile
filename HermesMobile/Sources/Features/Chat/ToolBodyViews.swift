@@ -78,7 +78,7 @@ struct ToolBodyContent: View {
       DiffBodyView(path: path, lines: lines)
     case let .fileRead(path, range, content):
       VStack(alignment: .leading, spacing: 6) {
-        BodyHeading(systemImage: "doc.text", text: path, detail: range)
+        BodyHeading(systemImage: ToolPresentation.Icon.file.systemImage, text: path, detail: range)
         if let content {
           CodeText(content)
         } else {
@@ -90,7 +90,7 @@ struct ToolBodyContent: View {
     case let .webPage(url, content):
       VStack(alignment: .leading, spacing: 6) {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Image(systemName: "globe").foregroundStyle(.secondary).accessibilityHidden(true)
+          Image(systemName: ToolPresentation.Icon.web.systemImage).foregroundStyle(.secondary).accessibilityHidden(true)
           LinkText(title: url, url: url)
         }
         .font(.footnote)
@@ -102,7 +102,7 @@ struct ToolBodyContent: View {
       }
     case let .skill(name, file, description):
       VStack(alignment: .leading, spacing: 4) {
-        BodyHeading(systemImage: "wrench.adjustable", text: name, detail: file)
+        BodyHeading(systemImage: ToolPresentation.Icon.skill.systemImage, text: name, detail: file)
         if let description { ProseText(description) }
       }
     case let .delegate(goals):
@@ -219,12 +219,12 @@ private struct DiffBodyView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       if let path, !lines.contains(where: { $0.kind == .file }) {
-        BodyHeading(systemImage: "pencil", text: path, detail: nil)
+        BodyHeading(systemImage: ToolPresentation.Icon.edit.systemImage, text: path, detail: nil)
           .padding(.bottom, 4)
       }
       ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
         if line.kind == .file {
-          BodyHeading(systemImage: "pencil", text: line.text, detail: nil)
+          BodyHeading(systemImage: ToolPresentation.Icon.edit.systemImage, text: line.text, detail: nil)
             .padding(.top, index == 0 ? 0 : 6)
             .padding(.bottom, 4)
         } else {
@@ -300,7 +300,7 @@ private struct SearchBodyView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if let query {
-        BodyHeading(systemImage: "magnifyingglass", text: "“\(query)”", detail: countLabel)
+        BodyHeading(systemImage: ToolPresentation.Icon.search.systemImage, text: "“\(query)”", detail: countLabel)
       }
       ForEach(Array(hits.enumerated()), id: \.offset) { _, hit in
         VStack(alignment: .leading, spacing: 2) {

@@ -10,7 +10,6 @@ import Testing
 struct ToolPresentationTests {
   /// Decodes a JSON literal into a `JSONValue` (fixtures read like the wire).
   private static func json(_ text: String) -> JSONValue {
-    // swiftlint:disable:next force_try
     try! JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
   }
 

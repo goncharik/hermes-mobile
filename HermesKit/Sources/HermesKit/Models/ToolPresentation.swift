@@ -11,7 +11,7 @@ import Foundation
 /// parsed from still gets a humanized-name title plus its context — never an empty line.
 public struct ToolPresentation: Equatable, Sendable {
   /// The call line's glyph. The view maps each case to an SF Symbol.
-  public enum Icon: String, Equatable, Sendable, CaseIterable {
+  public enum Icon: Equatable, Sendable {
     case terminal, file, edit, search, web, eye, skill, delegate, memory, generic
   }
 
@@ -72,17 +72,15 @@ public struct ToolPresentation: Equatable, Sendable {
   private let context: String?
   private let isRunning: Bool
 
-  /// Classifies a transcript tool row. `call.title` doubles as the context (server
-  /// `context` / `summary`) unless it is just the name fallback.
+  /// Classifies a transcript tool row.
   public init(call: ToolCall) {
-    let context = call.title.trimmedNonEmpty.flatMap { $0 == call.name ? nil : $0 }
     self.init(
       name: call.name,
       args: call.detail?.args,
       result: call.detail?.result,
       resultText: call.detail?.resultText,
       inlineDiff: call.detail?.inlineDiff,
-      context: context,
+      context: call.context,
       isRunning: call.state == .running
     )
   }
@@ -157,26 +155,30 @@ extension ToolPresentation {
     Spec(icon: icon, category: category, target: target, settled: past, live: present)
   }
 
-  // swiftlint:disable:next cyclomatic_complexity function_body_length
+  /// `host/path` of the page a `web_extract` / `browser_navigate` call targets.
+  private static func pageTarget(args: [String: JSONValue], context: String?) -> String? {
+    (firstURL(.object(args)) ?? context.flatMap { firstURL(.string($0)) }).map(hostAndPath)
+  }
+
   private static func spec(
     name: String, args: [String: JSONValue], resultRecord: [String: JSONValue], hasResult: Bool,
     inlineDiff: String?, context: String?, outcome: Outcome
   ) -> Spec {
     switch name {
     case "terminal":
-      let command = firstString(args, ["command", "code"]) ?? context
-      let target = command.map { withoutLeadingVerb(compact(summarizeShellCommand($0), 160)) }?.nonEmpty
+      let command = firstString(args, commandKeys) ?? context
+      let target = command.map { withoutLeadingVerb(compact(summarizeShellCommand($0), Width.line)) }?.nonEmpty
       return titled(.terminal, .run, target: target, past: "Ran", present: "Running",
                     fallbackPast: "Ran command", fallbackPresent: "Running command")
 
     case "execute_code":
       let code = firstString(args, ["code"]) ?? context
-      let target = code.flatMap(firstCodeLine).map { compact($0, 160) }
+      let target = code.flatMap(firstCodeLine).map { compact($0, Width.line) }
       return titled(.terminal, .run, target: target, past: "Ran code", present: "Scripting",
                     fallbackPast: "Ran code", fallbackPresent: "Scripting")
 
     case "read_file":
-      let target = firstString(args, ["path", "file", "filepath"]).map { path in
+      let target = firstString(args, pathKeys).map { path in
         [basename(path), readFileLineLabel(args: args, result: resultRecord)]
           .compactMap { $0 }.joined(separator: " ")
       } ?? context.map(displayPath)
@@ -188,8 +190,8 @@ extension ToolPresentation {
       return fixed(.file, .explore, "Listed files", "Listing files", target: target)
 
     case "write_file", "patch", "edit_file":
-      let path = firstString(args, ["path", "file", "filepath"])
-        ?? firstString(resultRecord, ["path", "file", "filepath", "resolved_path"])
+      let path = firstString(args, pathKeys)
+        ?? firstString(resultRecord, pathKeys + ["resolved_path"])
         ?? ToolOutputFormatting.diffPath(inlineDiff ?? firstString(resultRecord, ["inline_diff", "diff"]))
       let target = path.map(basename) ?? context.map(displayPath)
       let patch = name == "patch"
@@ -198,29 +200,28 @@ extension ToolPresentation {
                     fallbackPresent: patch ? "Patching file" : "Editing file")
 
     case "search_files":
-      let target = (firstString(args, ["pattern", "query"]) ?? context).map { compact($0, 48) }
+      let target = (firstString(args, ["pattern", "query"]) ?? context).map { compact($0, Width.query) }
       return titled(.search, .explore, target: target, past: "Searched", present: "Searching",
                     fallbackPast: "Searched files", fallbackPresent: "Searching files", quoted: true)
 
     case "web_search":
-      let target = (firstString(args, ["query", "search_term"]) ?? context).map { compact($0, 48) }
+      let target = (firstString(args, ["query", "search_term"]) ?? context).map { compact($0, Width.query) }
       return titled(.search, .search, target: target, past: "Searched", present: "Searching",
                     fallbackPast: "Searched web", fallbackPresent: "Searching web", quoted: true)
 
     case "session_search_recall", "session_search":
-      let target = (firstString(args, ["query"]) ?? context).map { compact($0, 48) }
+      let target = (firstString(args, ["query"]) ?? context).map { compact($0, Width.query) }
       return titled(.search, .search, target: target, past: "Searched history for",
                     present: "Searching history for",
                     fallbackPast: "Searched session history", fallbackPresent: "Searching session history",
                     quoted: true)
 
     case "web_extract":
-      let target = (firstURL(.object(args)) ?? context.flatMap { firstURL(.string($0)) }).map(hostAndPath)
-      return titled(.web, .read, target: target, past: "Read", present: "Reading",
+      return titled(.web, .read, target: pageTarget(args: args, context: context), past: "Read", present: "Reading",
                     fallbackPast: "Read webpage", fallbackPresent: "Reading webpage")
 
     case "browser_navigate":
-      let target = (firstURL(.object(args)) ?? context.flatMap { firstURL(.string($0)) }).map(hostAndPath)
+      let target = pageTarget(args: args, context: context)
       let failed = outcome.isFailure || resultRecord["success"] == .bool(false)
         || resultRecord["ok"] == .bool(false) || firstString(resultRecord, ["error"]) != nil
       var spec = titled(.web, .browse, target: target, past: "Opened", present: "Opening",
@@ -241,13 +242,13 @@ extension ToolPresentation {
       return fixed(.web, .interact, "Browser exec", "Running browser exec", target: context)
 
     case "vision_analyze":
-      let target = (firstString(args, ["question"]) ?? context).map { compact($0, 48) }
+      let target = (firstString(args, ["question"]) ?? context).map { compact($0, Width.query) }
       return titled(.eye, .analyze, target: target, past: "Analyzed", present: "Analyzing",
                     fallbackPast: "Analyzed image", fallbackPresent: "Analyzing image", quoted: true)
 
     case "image_generate":
       return fixed(.eye, .other, "Generated image", "Generating image",
-                   target: (firstString(args, ["prompt"]) ?? context).map { compact($0, 80) })
+                   target: (firstString(args, ["prompt"]) ?? context).map { compact($0, Width.phrase) })
 
     case "skill_view":
       let skill = firstString(args, ["name"]) ?? context
@@ -278,8 +279,8 @@ extension ToolPresentation {
       switch goals.count {
       case 0: target = firstString(args, ["action"]).map { action in
           [action, firstString(args, ["subagent_id"])].compactMap { $0 }.joined(separator: " ")
-        } ?? context.map { compact($0, 80) }
-      case 1: target = compact(goals[0], 80)
+        } ?? context.map { compact($0, Width.phrase) }
+      case 1: target = compact(goals[0], Width.phrase)
       default: target = "\(goals.count) tasks"
       }
       return titled(.delegate, .delegate, target: target, past: "Delegated", present: "Delegating",
@@ -303,7 +304,7 @@ extension ToolPresentation {
   /// Unknown tool: humanized name (`foo_bar` → "Foo bar") + its context (else the primary
   /// arg, as `agent/display.py` derives `context`). `browser_*` / `web_*` keep their family.
   private static func fallbackSpec(name: String, args: [String: JSONValue], context: String?) -> Spec {
-    let target = context.map { compact($0, 160) } ?? primaryArgPreview(args)
+    let target = context.map { compact($0, Width.line) } ?? primaryArgPreview(args)
     var icon = Icon.generic
     var category = RunCategory.other
     var past = humanize(name)
@@ -335,7 +336,7 @@ extension ToolPresentation {
   ]
   private static let failedStatus = #"^(error|failed|failure|fatal|exception)$"#
 
-  static func outcome(name: String, result: JSONValue?) -> Outcome {
+  private static func outcome(name: String, result: JSONValue?) -> Outcome {
     guard let result else { return .unknown }
     let record = object(result) ?? [:]
     // Explicit success wins over every nested-error heuristic.
@@ -509,7 +510,6 @@ extension ToolPresentation {
     )
   }
 
-  // swiftlint:disable:next cyclomatic_complexity function_body_length
   private static func body(
     name: String, args: [String: JSONValue], result: JSONValue?, inlineDiff: String?,
     context: String?, isRunning: Bool
@@ -524,7 +524,7 @@ extension ToolPresentation {
     switch name {
     case "terminal", "execute_code":
       guard hasOutput else { return unavailable }
-      let command = name == "terminal" ? firstString(args, ["command", "code"]) ?? context : nil
+      let command = name == "terminal" ? firstString(args, commandKeys) ?? context : nil
       let streams = outputStreams(result: result, record: record)
       return .terminal(
         command: command, exitCode: integer(record["exit_code"]),
@@ -533,7 +533,7 @@ extension ToolPresentation {
 
     case "read_file":
       guard hasOutput else { return unavailable }
-      guard let path = firstString(args, ["path", "file", "filepath"]) ?? context else { return generic() }
+      guard let path = firstString(args, pathKeys) ?? context else { return generic() }
       let content = result?.stringValue.flatMap { parseJSONLike($0) == nil ? $0 : nil }
         ?? rawString(record, ["content", "text", "data", "body"])
       return .fileRead(
@@ -546,8 +546,8 @@ extension ToolPresentation {
         .lazy.compactMap { $0 }.map(ToolOutputFormatting.diffLines).first { !$0.isEmpty }
       if let diff {
         let path = diff.first { $0.kind == .file }?.text
-          ?? firstString(args, ["path", "file", "filepath"])
-          ?? firstString(record, ["path", "file", "filepath", "resolved_path"])
+          ?? firstString(args, pathKeys)
+          ?? firstString(record, pathKeys + ["resolved_path"])
         return .diff(path: path, lines: diff)
       }
       return hasOutput ? generic() : unavailable
@@ -606,9 +606,10 @@ extension ToolPresentation {
 
   /// `web_extract`'s page text: a direct field, else every `results[]` page joined.
   private static func pageContent(_ record: [String: JSONValue]) -> String? {
-    if let direct = rawString(record, ["content", "text", "markdown", "body"]) { return direct }
+    let contentKeys = ["content", "text", "markdown", "body"]
+    if let direct = rawString(record, contentKeys) { return direct }
     let pages = (record["results"]?.arrayValue ?? []).compactMap { item in
-      object(item).flatMap { rawString($0, ["content", "text", "markdown", "body"]) }
+      object(item).flatMap { rawString($0, contentKeys) }
     }
     return pages.isEmpty ? nil : pages.joined(separator: "\n\n---\n\n")
   }
@@ -621,7 +622,7 @@ extension ToolPresentation {
       hits = matches.compactMap { item in
         guard let match = object(item), let path = firstString(match, ["path", "file"]) else { return nil }
         let line = integer(match["line"] ?? match["line_number"]).map { ":\($0)" } ?? ""
-        return SearchHit(title: path + line, snippet: firstString(match, ["content", "text"]).map { compact($0, 300) })
+        return SearchHit(title: path + line, snippet: firstString(match, ["content", "text"]).map { compact($0, Width.snippet) })
       }
     } else if let dense = record["matches_text"]?.stringValue {
       hits = denseMatchHits(dense)
@@ -649,9 +650,9 @@ extension ToolPresentation {
       let row = line.trimmingCharacters(in: .whitespaces)
       if let colon = row.firstIndex(of: ":"), let number = Int(row[..<colon]) {
         let content = row[row.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        hits.append(SearchHit(title: "\(path):\(number)", snippet: content.nonEmpty.map { compact($0, 300) }))
+        hits.append(SearchHit(title: "\(path):\(number)", snippet: content.nonEmpty.map { compact($0, Width.snippet) }))
       } else {
-        hits.append(SearchHit(title: path, snippet: compact(row, 300)))
+        hits.append(SearchHit(title: path, snippet: compact(row, Width.snippet)))
       }
       if hits.count == maxSearchHits { break }
     }
@@ -663,12 +664,12 @@ extension ToolPresentation {
   private static func webSearchHits(_ result: JSONValue?) -> [SearchHit] {
     let hits = collectResultItems(result, depth: 0).lazy.compactMap { item -> SearchHit? in
       guard let hit = object(item) else { return nil }
-      let title = firstString(hit, ["title", "name"]).map { compact($0, 160) }
+      let title = firstString(hit, ["title", "name"]).map { compact($0, Width.line) }
       let url = firstString(hit, ["url", "href", "link"])
       guard let shown = title ?? url else { return nil }
       return SearchHit(
         title: shown, url: url,
-        snippet: firstString(hit, ["snippet", "description", "body"]).map { compact($0, 300) }
+        snippet: firstString(hit, ["snippet", "description", "body"]).map { compact($0, Width.snippet) }
       )
     }
     return Array(hits.prefix(maxSearchHits))
@@ -786,6 +787,23 @@ extension ToolPresentation.Body {
 // MARK: - Value helpers
 
 extension ToolPresentation {
+  /// The arg / result keys a file path arrives under.
+  private static let pathKeys = ["path", "file", "filepath"]
+  /// The arg keys a shell command arrives under.
+  private static let commandKeys = ["command", "code"]
+
+  /// `compact` widths, in characters.
+  private enum Width {
+    /// A quoted query / question in a call line.
+    static let query = 48
+    /// A prompt, goal or step label.
+    static let phrase = 80
+    /// A command, context or hit title.
+    static let line = 160
+    /// A search hit's snippet.
+    static let snippet = 300
+  }
+
   /// An object from a value, parsing a JSON-object string (args arrive both ways).
   static func object(_ value: JSONValue?) -> [String: JSONValue]? {
     switch value {
@@ -799,7 +817,7 @@ extension ToolPresentation {
 
   /// The result to judge: the structured `result`, else `resultText` (parsed when it is
   /// JSON-shaped). `nil` when the call carries no result at all.
-  static func resultValue(result: JSONValue?, resultText: String?) -> JSONValue? {
+  private static func resultValue(result: JSONValue?, resultText: String?) -> JSONValue? {
     if let result, result != .null { return result }
     guard let text = resultText, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       return nil
@@ -823,7 +841,7 @@ extension ToolPresentation {
   }
 
   /// First non-blank string among `keys`, trimmed.
-  static func firstString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
+  private static func firstString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
     for key in keys {
       if let text = record[key]?.stringValue?.trimmedNonEmpty { return text }
     }
@@ -832,7 +850,7 @@ extension ToolPresentation {
 
   /// First non-blank string among `keys`, UNtrimmed — output and file content keep their
   /// leading indentation.
-  static func rawString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
+  private static func rawString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
     for key in keys {
       if let text = record[key]?.stringValue, text.trimmedNonEmpty != nil { return text }
     }
@@ -858,11 +876,12 @@ extension ToolPresentation {
   }
 
   private static func formatNumber(_ value: Double) -> String {
-    value == value.rounded() && abs(value) < 1e15 ? String(Int(value)) : String(value)
+    guard value == value.rounded(), let whole = integer(value) else { return String(value) }
+    return String(whole)
   }
 
   /// One line, whitespace collapsed, capped at `max` with `…`.
-  static func compact(_ value: String, _ max: Int) -> String {
+  private static func compact(_ value: String, _ max: Int) -> String {
     let line = value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     return line.count > max ? String(line.prefix(max - 1)) + "…" : line
   }
@@ -875,7 +894,7 @@ extension ToolPresentation {
     return String(parts[1])
   }
 
-  static func basename(_ path: String) -> String {
+  private static func basename(_ path: String) -> String {
     let normalized = path.replacingOccurrences(of: "\\", with: "/").trimmingCharacters(in: .whitespaces)
     return normalized.split(separator: "/").last.map(String.init) ?? normalized
   }
@@ -883,7 +902,7 @@ extension ToolPresentation {
   /// A context that is a bare path shows its file name; anything else stays as is.
   private static func displayPath(_ context: String) -> String {
     let looksLikePath = context.range(of: #"^(?:/|\.{1,2}/|~/)\S+$"#, options: .regularExpression) != nil
-    return looksLikePath ? basename(context) : compact(context, 160)
+    return looksLikePath ? basename(context) : compact(context, Width.line)
   }
 
   /// `L10` / `L10-40` from `offset` / `limit`, else from the `N|` line numbers of the
@@ -906,12 +925,11 @@ extension ToolPresentation {
     return first == last ? "L\(first)" : "L\(first)-\(last)"
   }
 
-
   private static let urlPattern = #"https?://[^\s'"<>)\]]+"#
 
   /// First http(s) URL anywhere in a value; `url` / `urls` keys first, then the rest in key
   /// order so the walk is deterministic.
-  static func firstURL(_ value: JSONValue) -> String? {
+  private static func firstURL(_ value: JSONValue) -> String? {
     switch value {
     case let .string(text):
       guard let range = text.range(of: urlPattern, options: [.regularExpression, .caseInsensitive]) else {
@@ -951,7 +969,7 @@ extension ToolPresentation {
     guard first.hasPrefix("#") else { return nil }
     let label = first.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
     guard !label.isEmpty else { return nil }
-    return label.count > 80 ? String(label.prefix(79)) + "…" : label
+    return compact(label, Width.phrase)
   }
 
   /// `tasks[].goal`, else `goal`.
@@ -968,9 +986,9 @@ extension ToolPresentation {
     for key in ["query", "text", "command", "path", "name", "prompt", "code", "goal"] {
       switch args[key] {
       case let .string(text)?:
-        if let text = text.trimmedNonEmpty { return compact(text, 160) }
+        if let text = text.trimmedNonEmpty { return compact(text, Width.line) }
       case let .array(items)?:
-        if let text = items.first?.stringValue?.trimmedNonEmpty { return compact(text, 160) }
+        if let text = items.first?.stringValue?.trimmedNonEmpty { return compact(text, Width.line) }
       default:
         continue
       }

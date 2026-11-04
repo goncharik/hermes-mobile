@@ -5,7 +5,7 @@ import Testing
 
 /// `ChatRow.copyText` is the single source of plain text the `.copyRow(id:)` context-menu
 /// puts on the pasteboard (#27b — agent responses must be fully copyable). These cover the
-/// message and tool branches; the thinking branch is covered by `ThinkingModelTests`.
+/// message and tool branches; the reasoning branch is covered by `TurnTimerAndReasoningRowTests`.
 @Suite struct ChatRowCopyTests {
   @Test func messageCopiesFullText() {
     let body = "# Heading\n\nFirst paragraph.\n\n- one\n- two\n\n> quoted line"

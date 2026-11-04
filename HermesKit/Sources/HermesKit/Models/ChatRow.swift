@@ -89,10 +89,10 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
       return nil
     }
 
-    /// Convenience for building a `.tool` row from its fields (the payload is a
-    /// ``ToolCall``; pattern-match `.tool(let call)` to read it).
+    /// Builds a `.tool` row from its ``ToolCall`` fields (pattern-match `.tool(let call)` to
+    /// read it).
     public static func tool(
-      name: String, title: String, state: ToolState, detail: ToolDetail?, durationS: Double?
+      name: String, title: String, state: ToolState, detail: ToolDetail? = nil, durationS: Double? = nil
     ) -> Kind {
       .tool(ToolCall(name: name, title: title, state: state, detail: detail, durationS: durationS))
     }
@@ -256,4 +256,11 @@ public func formatElapsed(_ seconds: Int) -> String {
   if h > 0 { return "\(h)h \(m)m \(s)s" }
   if m > 0 { return "\(m)m \(s)s" }
   return "\(s)s"
+}
+
+/// ``formatElapsed(_:)`` for a measured duration: rounded to the nearest second and clamped
+/// into `0...Int32.max`, so an absurd value can't trap; a non-finite one reads `"0s"`.
+public func formatElapsed(seconds: Double) -> String {
+  guard seconds.isFinite else { return formatElapsed(0) }
+  return formatElapsed(Int(min(max(seconds, 0), Double(Int32.max)).rounded()))
 }

@@ -251,7 +251,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -280,7 +280,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -308,7 +308,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -336,7 +336,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -345,7 +345,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
 
   /// Interim commentary (a completed assistant segment followed by tools and the turn's final
   /// reply) gets NO action bar — only the final reply does. Store-driven: the verdict comes
-  /// from `State.finalReplyRowIDs`.
+  /// from `State.visibleFinalReplyRowIDs`.
   func testInterimCommentaryRow_noActionBar() {
     let interim = ChatRow(id: id(1), kind: .message(
       role: .assistant, text: "Let me check the gateway first.", isComplete: true
@@ -374,11 +374,17 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(interim)
+    let view = cell(chat, interim)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
     assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// One transcript cell, its final-reply verdict read from the store the way the transcript
+  /// reads it.
+  private func cell(_ chat: ChatView, _ row: ChatRow) -> some View {
+    chat.rowView(row, isFinalReply: chat.store.visibleFinalReplyRowIDs.contains(row.id))
   }
 
   // MARK: Read aloud (#74)
@@ -411,7 +417,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))

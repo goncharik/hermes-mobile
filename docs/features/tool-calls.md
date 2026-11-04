@@ -95,7 +95,7 @@ its action bar meanwhile.
 
 ## Display items (`TranscriptFold.items`)
 
-The pure layout lives in `Models/TranscriptLayout.swift` under the namespace **`TranscriptFold`**
+The pure layout lives in `Models/TranscriptFold.swift` under the namespace **`TranscriptFold`**
 (the app target's own `TranscriptLayout` enum, the collection view's metrics, would shadow
 it). `TranscriptFold.items(rows:expansion:runningTurnOrdinal:liveLine:ordinalOffset:)` flattens
 the windowed rows into `TranscriptItem`s, which is what `CollectionTranscriptView` diffs:

@@ -5,7 +5,7 @@ import Testing
 
 /// Pure-logic tests for the turn-timer formatter (`formatElapsed`) and the
 /// `ChatRow.copyText` reasoning branch.
-@Suite struct ThinkingModelTests {
+@Suite struct TurnTimerAndReasoningRowTests {
   @Test func formatElapsedBoundaries() {
     #expect(formatElapsed(0) == "0s")
     #expect(formatElapsed(5) == "5s")

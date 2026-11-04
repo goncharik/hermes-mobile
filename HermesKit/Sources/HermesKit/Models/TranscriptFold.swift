@@ -123,7 +123,7 @@ public struct TurnHeader: Equatable, Sendable, Identifiable {
   /// is unknown. (A running header shows ``liveLabel(_:)`` beside the turn timer.)
   public var finishedTitle: String {
     guard let duration else { return "Worked" }
-    return "Worked for \(formatElapsed(Int(min(duration, Double(Int32.max)))))"
+    return "Worked for \(formatElapsed(seconds: duration))"
   }
 
   /// A running turn's label without its timer: the spinner line (trimmed), else "Working".

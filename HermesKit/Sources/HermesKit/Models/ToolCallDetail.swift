@@ -4,6 +4,12 @@ import Foundation
 /// the header's duration label and the collapsed "Raw" disclosure. Pure, so the "never hide
 /// info" rule is unit-tested on macOS rather than trusted to the view.
 extension ToolCall {
+  /// The server's `context` / `summary` (the row title), unless the title is just the name
+  /// fallback; `nil` when blank.
+  public var context: String? {
+    title.trimmedNonEmpty.flatMap { $0 == name ? nil : $0 }
+  }
+
   /// One labelled block of the raw payload.
   public struct RawSection: Equatable, Sendable {
     public let label: String
@@ -18,8 +24,7 @@ extension ToolCall {
   /// Everything the call carried, as pretty text, for the sheet's "Raw" disclosure — the
   /// fallback that guarantees no data is lost however the presentation classified the call.
   ///
-  /// - **Context**: the server's `context` / `summary` (the row title), unless it is just the
-  ///   name fallback.
+  /// - **Context**: ``context``.
   /// - **Arguments**: the structured args pretty-printed, else the verbose `args_text`.
   /// - **Arguments (text)**: `args_text` too when structured args exist and it isn't just them
   ///   re-serialized.
@@ -36,7 +41,6 @@ extension ToolCall {
       sections.append(RawSection(label: label, text: text))
     }
 
-    let context = title.trimmedNonEmpty.flatMap { $0 == name ? nil : $0 }
     add("Context", context)
 
     let args = detail?.args?.nonNull?.displayString
@@ -78,6 +82,6 @@ extension ToolPresentation {
     guard seconds.isFinite, seconds > 0 else { return "0s" }
     if seconds < 0.05 { return "<0.1s" }
     if seconds < 9.95 { return String(format: "%.1fs", seconds) }
-    return formatElapsed(Int(min(seconds, Double(Int32.max)).rounded()))
+    return formatElapsed(seconds: seconds)
   }
 }

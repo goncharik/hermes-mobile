@@ -300,14 +300,8 @@ struct ChatView: View {
   // Internal (not `private`) so snapshot tests can render a single transcript cell
   // deterministically — a full-device capture of a *streaming* row is flaky (the
   // spinner keeps animations alive while the collection view re-pins to bottom).
-  // Reads the row's final-reply verdict from the store (the transcript derives it once per
-  // render instead).
-  func rowView(_ row: ChatRow) -> some View {
-    rowView(row, isFinalReply: store.finalReplyRowIDs.contains(row.id))
-  }
-
-  /// `isFinalReply`: the row is its turn's final reply (`State.finalReplyRowIDs`) — the only
-  /// assistant message that gets the action bar; interim commentary renders without one.
+  /// `isFinalReply`: the row is its turn's final reply (`State.visibleFinalReplyRowIDs`) — the
+  /// only assistant message that gets the action bar; interim commentary renders without one.
   @ViewBuilder
   func rowView(_ row: ChatRow, isFinalReply: Bool) -> some View {
     switch row.kind {
