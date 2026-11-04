@@ -24,18 +24,18 @@ import Testing
   }
 
   @Test func copyTextIsTheBurstText() {
-    let row = ChatRow(id: UUID(), kind: .reasoning(text: "weighing options", isComplete: true))
+    let row = ChatRow(id: UUID(), kind: .reasoning(text: "weighing options"))
     #expect(row.copyText == "weighing options")
   }
 
   @Test func copyTextOfAnOpenBurstIsItsTextSoFar() {
-    let row = ChatRow(id: UUID(), kind: .reasoning(text: "still weighing", isComplete: false))
+    let row = ChatRow(id: UUID(), kind: .reasoning(text: "still weighing"))
     #expect(row.copyText == "still weighing")
   }
 
   @Test func reasoningDiscriminatorIsStable() {
-    #expect(ChatRow.Kind.reasoning(text: "a", isComplete: false).discriminator == "reasoning")
-    #expect(ChatRow.Kind.reasoning(text: "b", isComplete: true).discriminator == "reasoning")
-    #expect(ChatRow.Kind.reasoning(text: "a", isComplete: true).role == nil)
+    #expect(ChatRow.Kind.reasoning(text: "a").discriminator == "reasoning")
+    #expect(ChatRow.Kind.reasoning(text: "b").discriminator == "reasoning")
+    #expect(ChatRow.Kind.reasoning(text: "a").role == nil)
   }
 }

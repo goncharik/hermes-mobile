@@ -101,7 +101,7 @@ struct ToolCallAcceptanceTests {
     #expect(expanded.last?.id == reply?.id)
     // Spinner frames never became reasoning text.
     for row in store.state.transcript {
-      if case let .reasoning(text, _) = row.kind { #expect(!text.contains("pondering")) }
+      if case let .reasoning(text) = row.kind { #expect(!text.contains("pondering")) }
     }
 
     await store.send(.teardown)
@@ -182,8 +182,17 @@ struct ToolCallAcceptanceTests {
     #expect(!presentation.settledTitle.isEmpty)
     // The sheet's Raw section keeps the args and the result verbatim-in-substance.
     let raw = call.rawSections.map(\.text).joined(separator: "\n")
-    if case let .object(record)? = Self.json(testCase.args), let firstArgKey = record.keys.sorted().first {
-      #expect(raw.contains(firstArgKey))
+    for payload in [testCase.args, testCase.result] {
+      guard case let .object(record)? = Self.json(payload) else { continue }
+      for (key, value) in record {
+        #expect(raw.contains("\"\(key)\""), "\(testCase.name): \(key)")
+        // Scalar values survive too (a distinctive result value, not just its key).
+        switch value {
+        case let .string(text) where !text.contains("/"): #expect(raw.contains(text), "\(testCase.name): \(text)")
+        case let .number(number): #expect(raw.contains(String(Int(number))), "\(testCase.name): \(number)")
+        default: break
+        }
+      }
     }
   }
 

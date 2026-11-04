@@ -25,15 +25,9 @@ struct TurnHeaderView: View {
   var status: String?
   /// A collapsed running turn only: what the agent is doing right now.
   var liveLine: String?
-  /// Forces the flat (reduce-motion) label when non-nil — snapshot tests only, since
-  /// `accessibilityReduceMotion` can't be injected through `.environment`.
-  var reduceMotionOverride: Bool?
   var onTap: (() -> Void)?
 
-  @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
-
-  private var reduceMotion: Bool { reduceMotionOverride ?? environmentReduceMotion }
-  private var isRunning: Bool { elapsedSeconds != nil }
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {

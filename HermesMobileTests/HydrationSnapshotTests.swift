@@ -68,8 +68,7 @@ final class HydrationSnapshotTests: SnapshotTestCase {
 
     XCTAssertEqual(rows.map { $0.kind }, [
       .message(role: .user, text: "What's in server.py?", isComplete: true),
-      .tool(name: "read_file", title: "server.py", state: .complete,
-            detail: ToolDetail(argsText: "server.py"), durationS: nil),
+      .tool(name: "read_file", title: "server.py", state: .complete, detail: nil, durationS: nil),
       .message(role: .assistant, text: "It defines the WebSocket gateway.", isComplete: true),
     ])
 

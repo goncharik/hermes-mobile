@@ -338,10 +338,10 @@ struct ChatView: View {
         }
       }
     case let .tool(call):
-      // The fold lays tool rows out as `.toolCall` items (which expand in place); this branch
-      // keeps `rowView` total — a line whose tap opens the detail sheet.
+      // Unreachable from the transcript: the fold lays tool rows out as `.toolCall` items (which
+      // expand in place). Kept so `rowView` stays total — a plain line opening the detail sheet.
       ToolStatusView(call: call, onTap: { store.send(.toolTapped(id: row.id)) })
-    case let .reasoning(text, _):
+    case let .reasoning(text):
       // One line per reasoning burst (first sentence, tap to disclose). The turn's live label,
       // timer and status live on its header, not here. `.id` so a reused cell's disclosure
       // state never carries over to another burst.

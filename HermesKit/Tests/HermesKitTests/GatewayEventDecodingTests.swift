@@ -301,6 +301,21 @@ import Testing
     #expect(bareCancel.summary == "srq-1")
   }
 
+  @Test func segmentAndFinalLogEntriesNameTheirFlags() {
+    let streamed = GatewayLogEntry(id: 0, event: .messageInterim(
+      text: "Checking.", alreadyStreamed: true, turnID: "t", segment: 2
+    ))
+    #expect(streamed.summary == "#2 (streamed) Checking.")
+    let bare = GatewayLogEntry(id: 1, event: .messageInterim(
+      text: "Checking.", alreadyStreamed: false, turnID: nil, segment: nil
+    ))
+    #expect(bare.summary == "Checking.")
+    let reused = GatewayLogEntry(id: 2, event: .messageComplete(text: "Done.", usage: nil, responseReused: true))
+    #expect(reused.summary == "(reused) Done.")
+    let fresh = GatewayLogEntry(id: 3, event: .messageComplete(text: "Done.", usage: nil, responseReused: false))
+    #expect(fresh.summary == "Done.")
+  }
+
   @Test func approvalRequestWithoutRequestIDStillDecodes() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"s","payload":{"command":"rm foo"}}}"#)
     guard case (_, .approvalRequest)? = f.eventParts else {

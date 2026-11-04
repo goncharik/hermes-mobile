@@ -18,10 +18,7 @@ struct ToolBodyView: View {
     let presentation = ToolPresentation(call: call)
     let inline = presentation.body.inline()
     VStack(alignment: .leading, spacing: 8) {
-      if let message = presentation.outcome.message?.trimmingCharacters(in: .whitespacesAndNewlines),
-         !message.isEmpty {
-        OutcomeMessageView(message: message, isFailure: presentation.outcome.isFailure)
-      }
+      OutcomeMessageView(outcome: presentation.outcome)
       ToolBodyContent(inline.body, isRunning: call.state == .running)
       Text(inline.isTruncated ? "Show all" : "Details")
         .font(.footnote.weight(.medium))
@@ -41,22 +38,23 @@ struct ToolBodyView: View {
   }
 }
 
-/// A failed call's error (red), or a routine notice (a missing file, `exit 1`) in grey. Shared
-/// with the detail sheet.
+/// A failed call's error (red), or a routine notice (a missing file, `exit 1`) in grey; nothing
+/// when the outcome carries no message. Shared with the detail sheet.
 struct OutcomeMessageView: View {
-  let message: String
-  let isFailure: Bool
+  let outcome: ToolPresentation.Outcome
 
   var body: some View {
-    Label {
-      Text(message)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-    } icon: {
-      Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "info.circle")
+    if let message = outcome.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+      Label {
+        Text(message)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      } icon: {
+        Image(systemName: outcome.isFailure ? "exclamationmark.triangle.fill" : "info.circle")
+      }
+      .font(.footnote)
+      .foregroundStyle(outcome.isFailure ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
     }
-    .font(.footnote)
-    .foregroundStyle(isFailure ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
   }
 }
 

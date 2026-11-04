@@ -826,7 +826,7 @@ struct AppFeatureTests {
     await store.receive(\.home.setSessionRunning)
     await store.send(.liveChat(.gatewayEvent(.reasoningDelta(text: "weighing")))) {
       $0.liveChat?.transcript = [ChatRow(
-        id: reasoningID, kind: .reasoning(text: "weighing", isComplete: false),
+        id: reasoningID, kind: .reasoning(text: "weighing"),
         timestamp: Date(timeIntervalSince1970: 0)
       )]
       $0.liveChat?.reasoningRowID = reasoningID
@@ -861,7 +861,7 @@ struct AppFeatureTests {
     let assistantID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     await store.send(.liveChat(.gatewayEvent(.messageDelta(text: "still streaming")))) {
       $0.liveChat?.transcript = [
-        ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: true), timestamp: Date(timeIntervalSince1970: 0)),
+        ChatRow(id: reasoningID, kind: .reasoning(text: "weighing"), timestamp: Date(timeIntervalSince1970: 0)),
         ChatRow(
           id: assistantID, kind: .message(role: .assistant, text: "still streaming", isComplete: false),
           timestamp: Date(timeIntervalSince1970: 0)
@@ -1427,7 +1427,7 @@ struct AppFeatureTests {
     // rebuild (#26) — a re-init would lose it.
     let reasoningID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
     chat.transcript = [
-      ChatRow(id: reasoningID, kind: .reasoning(text: "detached reasoning", isComplete: false))
+      ChatRow(id: reasoningID, kind: .reasoning(text: "detached reasoning"))
     ]
     chat.reasoningRowID = reasoningID
     chat.liveReasoningRowIDs = [reasoningID]
@@ -1481,7 +1481,7 @@ struct AppFeatureTests {
     #expect(store.state.liveChat?.model == "claude-opus-4-8")
     #expect(store.state.liveChat?.composerText == "unsent draft")
     #expect(store.state.liveChat?.transcript[id: reasoningID]?.kind
-      == .reasoning(text: "detached reasoning", isComplete: false))
+      == .reasoning(text: "detached reasoning"))
 
     await store.send(.liveChat(.teardown))
   }
@@ -2124,7 +2124,7 @@ struct AppFeatureTests {
     chat.composerText = "unsent draft"
     let reasoningID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
     chat.transcript = [
-      ChatRow(id: reasoningID, kind: .reasoning(text: "live reasoning", isComplete: false))
+      ChatRow(id: reasoningID, kind: .reasoning(text: "live reasoning"))
     ]
     chat.reasoningRowID = reasoningID
     chat.liveReasoningRowIDs = [reasoningID]

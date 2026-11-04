@@ -1510,7 +1510,7 @@ struct ChatInteractionTests {
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Pondering"))) {
       $0.transcript = [ChatRow(
-        id: self.uuid(0), kind: .reasoning(text: "Pondering", isComplete: false),
+        id: self.uuid(0), kind: .reasoning(text: "Pondering"),
         timestamp: Date(timeIntervalSince1970: 0)
       )]
       $0.reasoningRowID = self.uuid(0)
@@ -1523,7 +1523,7 @@ struct ChatInteractionTests {
     // session.interrupt is dispatched. A leaked tick loop would fail the test.
     await store.send(.interruptTapped) {
       $0.isSending = false
-      $0.transcript[id: self.uuid(0)]?.kind = .reasoning(text: "Pondering", isComplete: true)
+      $0.transcript[id: self.uuid(0)]?.kind = .reasoning(text: "Pondering")
       $0.reasoningRowID = nil
       $0.isTurnLive = false
       $0.turnSeconds = 0

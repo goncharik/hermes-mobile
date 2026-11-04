@@ -366,9 +366,6 @@ public struct ChatFeature {
     /// Number of completed final replies — what the auto-speak anchor counts.
     var completedReplyCount: Int { completedReplies.count }
 
-    /// The newest completed final reply (the auto-speak candidate), if any.
-    var lastCompletedReply: ChatRow? { completedReplies.last }
-
     static func isCompletedAssistantMessage(_ row: ChatRow) -> Bool {
       if case .message(.assistant, _, true) = row.kind { return true }
       return false
@@ -687,8 +684,8 @@ public struct ChatFeature {
     /// target can mirror `fillLiveChat`'s marker construction (demo mode).
     public var sessionKey: String? { storedSessionID ?? liveSessionID }
     var streamingRowID: ChatRow.ID?
-    /// The open reasoning burst (`.reasoning(isComplete: false)`) reasoning deltas append
-    /// to — only while it is still the LAST row; anything appended after it ends the burst.
+    /// The open reasoning burst reasoning deltas append to — only while it is still the LAST
+    /// row; anything appended after it ends the burst.
     var reasoningRowID: ChatRow.ID?
     /// A server turn is live on this slot: set at `message.start` and by a running hydrate,
     /// cleared at every turn terminal. The slash pipeline's "a REAL turn began while the
@@ -2990,7 +2987,7 @@ public struct ChatFeature {
       // it is a re-send — skip it; otherwise it lands like a delta (open burst or new row).
       let incoming = text.trimmingCharacters(in: .whitespacesAndNewlines)
       if let id = state.reasoningRowID, state.transcript.last?.id == id,
-         case let .reasoning(existing, _) = state.transcript[id: id]?.kind,
+         case let .reasoning(existing) = state.transcript[id: id]?.kind,
          !incoming.isEmpty, existing.contains(incoming) {
         return .none
       }
@@ -3842,41 +3839,30 @@ public struct ChatFeature {
   private func appendReasoning(_ text: String, into state: inout State) {
     guard !text.isEmpty else { return }
     if let id = state.reasoningRowID, state.transcript.last?.id == id,
-       case let .reasoning(existing, _) = state.transcript[id: id]?.kind {
-      state.transcript[id: id]?.kind = .reasoning(text: existing + text, isComplete: false)
+       case let .reasoning(existing) = state.transcript[id: id]?.kind {
+      state.transcript[id: id]?.kind = .reasoning(text: existing + text)
       return
     }
     closeReasoningBurst(into: &state)
     let id = uuid()
-    state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text, isComplete: false), timestamp: now))
+    state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text), timestamp: now))
     state.reasoningRowID = id
     state.liveReasoningRowIDs.insert(id)
   }
 
-  /// End the open reasoning burst (if any): mark its row complete (re-stamped at the close)
-  /// and drop the pointer, so the next reasoning text starts a fresh row. Idempotent.
+  /// End the open reasoning burst (if any): re-stamp its row at the close and drop the
+  /// pointer, so the next reasoning text starts a fresh row. Idempotent.
   private func closeReasoningBurst(into state: inout State) {
     guard let id = state.reasoningRowID else { return }
-    if case let .reasoning(text, false) = state.transcript[id: id]?.kind {
-      state.transcript[id: id]?.kind = .reasoning(text: text, isComplete: true)
-      state.transcript[id: id]?.timestamp = now
-    }
+    state.transcript[id: id]?.timestamp = now
     state.reasoningRowID = nil
   }
 
-  /// Freeze the live turn at its end (completion / error / interrupt / socket drop): mark
-  /// every still-open reasoning row complete and reset the turn-level state (`isTurnLive`,
-  /// `turnSeconds`, `turnActivityLabel`, `turnStatus`). Idempotent. The caller cancels
-  /// `CancelID.turnTimer`.
+  /// Freeze the live turn at its end (completion / error / interrupt / socket drop): close the
+  /// open reasoning burst and reset the turn-level state (`isTurnLive`, `turnSeconds`,
+  /// `turnActivityLabel`, `turnStatus`). Idempotent. The caller cancels `CancelID.turnTimer`.
   private func freezeTurn(into state: inout State) {
     closeReasoningBurst(into: &state)
-    // Belt-and-braces: a burst whose pointer was lost (a hydrate rebuilt around it) must not
-    // stay "open" forever either.
-    for row in state.transcript {
-      if case let .reasoning(text, false) = row.kind {
-        state.transcript[id: row.id]?.kind = .reasoning(text: text, isComplete: true)
-      }
-    }
     clearTurnState(into: &state)
   }
 

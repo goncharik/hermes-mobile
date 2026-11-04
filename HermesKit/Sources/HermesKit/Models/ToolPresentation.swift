@@ -15,9 +15,9 @@ public struct ToolPresentation: Equatable, Sendable {
     case terminal, file, edit, search, web, eye, skill, delegate, memory, generic
   }
 
-  /// Run-summary category. Declaration order IS the desktop's clause order
-  /// (`run-summary.ts` `CATEGORY_ORDER`), so `allCases` sorts clauses.
-  public enum RunCategory: String, Equatable, Sendable, CaseIterable {
+  /// Run-summary category: a run whose calls share one gets that category's icon (see
+  /// ``RunSummary/icon(calls:)``); ``RunSummary`` splits file reads off `explore` for its clauses.
+  public enum RunCategory: Equatable, Sendable {
     case edit, explore, search, read, browse, interact, analyze, run, delegate, other
   }
 
@@ -190,7 +190,7 @@ extension ToolPresentation {
     case "write_file", "patch", "edit_file":
       let path = firstString(args, ["path", "file", "filepath"])
         ?? firstString(resultRecord, ["path", "file", "filepath", "resolved_path"])
-        ?? diffPath(inlineDiff ?? firstString(resultRecord, ["inline_diff", "diff"]))
+        ?? ToolOutputFormatting.diffPath(inlineDiff ?? firstString(resultRecord, ["inline_diff", "diff"]))
       let target = path.map(basename) ?? context.map(displayPath)
       let patch = name == "patch"
       return titled(.edit, .edit, target: target, past: "Edited", present: "Editing",
@@ -719,11 +719,10 @@ extension ToolPresentation {
 extension ToolPresentation.Body {
   /// This body cut to the inline caps (`ToolOutputFormatting.inlineLineLimit` lines /
   /// `inlineCharacterLimit` characters across its text), with whether anything was cut.
-  public func inline(
-    lines: Int = ToolOutputFormatting.inlineLineLimit,
-    characters: Int = ToolOutputFormatting.inlineCharacterLimit
-  ) -> ToolPresentation.InlineBody {
-    var budget = Budget(lines: lines, characters: characters)
+  public func inline() -> ToolPresentation.InlineBody {
+    var budget = Budget(
+      lines: ToolOutputFormatting.inlineLineLimit, characters: ToolOutputFormatting.inlineCharacterLimit
+    )
     switch self {
     case let .terminal(command, exitCode, stdout, stderr):
       let out = budget.take(stdout)
@@ -808,12 +807,13 @@ extension ToolPresentation {
     return parseJSONLike(text) ?? .string(text)
   }
 
-  /// A string that looks like JSON (`{`, `[` or `"`) decoded; else nil.
+  /// A string that encodes a JSON object, array or string, decoded; else nil (a bare number
+  /// or boolean stays text).
   private static func parseJSONLike(_ text: String) -> JSONValue? {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let first = trimmed.first, first == "{" || first == "[" || first == "\"",
-          let data = trimmed.data(using: .utf8) else { return nil }
-    return try? JSONDecoder().decode(JSONValue.self, from: data)
+    switch JSONValue(parsing: text) {
+    case let value? where value.isObject || value.arrayValue != nil || value.stringValue != nil: value
+    default: nil
+    }
   }
 
   /// Desktop `norm`: a JSON-shaped string is read as the value it encodes.
@@ -906,11 +906,6 @@ extension ToolPresentation {
     return first == last ? "L\(first)" : "L\(first)-\(last)"
   }
 
-  /// The edited file's path from a diff's first file header — the rendered `a/x → b/x` line
-  /// or a raw `+++ b/x` (else `--- a/x`).
-  private static func diffPath(_ diff: String?) -> String? {
-    ToolOutputFormatting.diffPath(diff)
-  }
 
   private static let urlPattern = #"https?://[^\s'"<>)\]]+"#
 

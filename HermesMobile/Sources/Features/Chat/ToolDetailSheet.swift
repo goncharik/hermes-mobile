@@ -29,10 +29,7 @@ struct ToolDetailSheet: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 16) {
           header(presentation, isRunning: isRunning)
-          if let message = presentation.outcome.message?.trimmingCharacters(in: .whitespacesAndNewlines),
-             !message.isEmpty {
-            OutcomeMessageView(message: message, isFailure: presentation.outcome.isFailure)
-          }
+          OutcomeMessageView(outcome: presentation.outcome)
           ToolBodyContent(presentation.body, isRunning: isRunning)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)

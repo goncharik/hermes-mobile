@@ -538,7 +538,7 @@ struct HydrateTests {
     let tool1ID = uuid(101)
     let tool2ID = uuid(102)
     let reasoningID = uuid(103)
-    let reasoningRow = ChatRow(id: reasoningID, kind: .reasoning(text: "weighing options", isComplete: false))
+    let reasoningRow = ChatRow(id: reasoningID, kind: .reasoning(text: "weighing options"))
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = [
       ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
@@ -566,7 +566,7 @@ struct HydrateTests {
 
     // The two running tool rows and the open burst survived (same ids + content, original order).
     #expect(store.state.transcript.map(\.id) == [tool1ID, tool2ID, reasoningID])
-    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options", isComplete: false))
+    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options"))
     // The tracking pointers still point at the preserved rows so later events reconcile in place.
     #expect(store.state.reasoningRowID == reasoningID)
     #expect(store.state.toolRowIDs == ["t1": tool1ID, "t2": tool2ID])
@@ -577,7 +577,7 @@ struct HydrateTests {
 
     // The next reasoning delta extends the preserved burst in place (still the last row).
     await store.send(.gatewayEvent(.reasoningDelta(text: " more")))
-    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options more", isComplete: false))
+    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options more"))
     #expect(store.state.transcript.count == 3)
 
     await store.send(.teardown)
@@ -603,7 +603,7 @@ struct HydrateTests {
     initial.transcript = [
       ChatRow(id: toolID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
       ChatRow(id: reviewID, kind: .status(kind: "review", text: "💾 Self-improvement review: noted.")),
-      ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: false)),
+      ChatRow(id: reasoningID, kind: .reasoning(text: "weighing")),
     ]
     initial.toolRowIDs = ["t1": toolID]
     initial.reasoningRowID = reasoningID
@@ -644,7 +644,7 @@ struct HydrateTests {
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = [
       ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
-      ChatRow(id: reasoningID, kind: .reasoning(text: "still thinking", isComplete: false)),
+      ChatRow(id: reasoningID, kind: .reasoning(text: "still thinking")),
     ]
     initial.toolRowIDs = ["t1": tool1ID]
     initial.reasoningRowID = reasoningID
@@ -712,11 +712,11 @@ struct HydrateTests {
     let clock = TestClock()
     let r1 = uuid(401), t1 = uuid(402), r2 = uuid(403), t2 = uuid(404), r3 = uuid(405)
     let live: [ChatRow] = [
-      ChatRow(id: r1, kind: .reasoning(text: "first", isComplete: true)),
+      ChatRow(id: r1, kind: .reasoning(text: "first")),
       ChatRow(id: t1, kind: .tool(name: "grep", title: "Search", state: .complete, detail: nil, durationS: 1)),
-      ChatRow(id: r2, kind: .reasoning(text: "second", isComplete: true)),
+      ChatRow(id: r2, kind: .reasoning(text: "second")),
       ChatRow(id: t2, kind: .tool(name: "read", title: "Read", state: .running, detail: nil, durationS: nil)),
-      ChatRow(id: r3, kind: .reasoning(text: "third", isComplete: false)),
+      ChatRow(id: r3, kind: .reasoning(text: "third")),
     ]
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = IdentifiedArrayOf(uniqueElements: live)
@@ -748,7 +748,7 @@ struct HydrateTests {
     // History rows carry the cooked detail + server timestamps.
     #expect(rebuilt[1].kind == .tool(
       name: "terminal", title: "ls", state: .complete,
-      detail: ToolDetail(argsText: "ls", args: .object(["command": .string("ls")])), durationS: nil
+      detail: ToolDetail(args: .object(["command": .string("ls")])), durationS: nil
     ))
     #expect(rebuilt[1].timestamp == Date(timeIntervalSince1970: 901))
     // Tracking restored for every preserved live row.
@@ -764,7 +764,7 @@ struct HydrateTests {
 
     // The open burst still extends in place (it is the last row).
     await store.send(.gatewayEvent(.reasoningDelta(text: " more")))
-    #expect(store.state.transcript[id: r3]?.kind == .reasoning(text: "third more", isComplete: false))
+    #expect(store.state.transcript[id: r3]?.kind == .reasoning(text: "third more"))
     #expect(store.state.transcript.count == 10)
 
     await store.send(.teardown)
@@ -952,17 +952,17 @@ struct HydrateTests {
     #expect(store.state.liveReasoningRowIDs == [burst])
     await store.send(.gatewayClosed)
     #expect(store.state.reasoningRowID == nil)
-    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop", isComplete: true))
+    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop"))
 
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)
     #expect(store.state.transcript.map(\.id) == [burst])
-    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop", isComplete: true))
+    #expect(store.state.transcript[id: burst]?.kind == .reasoning(text: "before the drop"))
     // Closed, so not re-opened: the next reasoning is a new burst.
     #expect(store.state.reasoningRowID == nil)
     await store.send(.gatewayEvent(.reasoningDelta(text: "after")))
     #expect(store.state.transcript.count == 2)
-    #expect(store.state.transcript.last?.kind == .reasoning(text: "after", isComplete: false))
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "after"))
 
     await store.send(.teardown)
   }

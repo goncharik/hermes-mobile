@@ -52,11 +52,10 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
     case tool(ToolCall)
     /// One reasoning BURST: consecutive `reasoning.delta` / `reasoning.available` text with
     /// no tool or text row after it. A turn that reasons, calls a tool, then reasons again
-    /// gets two rows. `isComplete` is false while the burst is still open (the last row of
-    /// a live turn) and true once something follows it or the turn ends. The turn's timer,
-    /// status line and spinner label are NOT row data — they live on `ChatFeature.State`
-    /// (`turnSeconds` / `turnStatus` / `turnActivityLabel`).
-    case reasoning(text: String, isComplete: Bool)
+    /// gets two rows. Whether a burst is still open is reducer state (`reasoningRowID`), not
+    /// row data — as are the turn's timer, status line and spinner label (`ChatFeature.State`
+    /// `turnSeconds` / `turnStatus` / `turnActivityLabel`).
+    case reasoning(text: String)
     /// A transient status line (e.g. "searching…"); `kind` is an open string.
     case status(kind: String, text: String)
     /// The ephemeral output of a slash command (`slash.exec` / `command.dispatch`, #36).
@@ -106,7 +105,7 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
     case let .message(_, text, _): return text
     case let .tool(call):
       return call.detail?.resultText?.nonEmpty ?? call.title.nonEmpty ?? call.name
-    case let .reasoning(text, _): return text
+    case let .reasoning(text): return text
     case let .status(_, text): return text
     case let .commandOutput(text): return text
     }

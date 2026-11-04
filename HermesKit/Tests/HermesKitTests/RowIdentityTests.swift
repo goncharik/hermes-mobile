@@ -99,12 +99,12 @@ struct RowIdentityTests {
       $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan"), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
       $0.liveReasoningRowIDs = [uuid(0)]
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "ning"))) {
-      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Planning", isComplete: false)
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Planning")
     }
     await store.send(.gatewayEvent(.statusUpdate(kind: "context", text: "Context: 12%"))) {
       $0.turnStatus = "Context: 12%"
@@ -125,13 +125,13 @@ struct RowIdentityTests {
       $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan"), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
       $0.liveReasoningRowIDs = [uuid(0)]
     }
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
       $0.transcript = [
-        ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: true), timestamp: t0),
+        ChatRow(id: uuid(0), kind: .reasoning(text: "Plan"), timestamp: t0),
         ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil), timestamp: t0),
       ]
       $0.reasoningRowID = nil
@@ -327,7 +327,7 @@ struct RowIdentityTests {
     #expect(store.state.reasoningRowID == uuid(0))
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil)))
     // Closed reasoning row, still uuid(0).
-    #expect(store.state.transcript[id: uuid(0)]?.kind == .reasoning(text: "just reasoning", isComplete: true))
+    #expect(store.state.transcript[id: uuid(0)]?.kind == .reasoning(text: "just reasoning"))
 
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)

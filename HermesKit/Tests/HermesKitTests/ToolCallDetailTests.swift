@@ -67,20 +67,18 @@ struct ToolCallDetailTests {
     #expect(section(call, "Arguments (text)") == "path=foo.swift offset=10")
   }
 
-  @Test func hydratedArgsTextEqualToTheContextIsNotRepeated() {
-    // A cooked history row stores its `context` as both the title and `argsText`.
+  @Test func aHydratedContextIsSaidOnce() {
+    // A cooked history row's `context` is its title.
     let call = ToolCall(
       name: "patch", title: "src/app.py", state: .complete,
-      detail: ToolDetail(argsText: "src/app.py", args: json(#"{"path":"src/app.py"}"#))
+      detail: ToolDetail(args: json(#"{"path":"src/app.py"}"#))
     )
     #expect(labels(call) == ["Context", "Arguments"])
   }
 
   @Test func anOlderAgentsHydratedContextIsSaidOnce() {
-    // `{name, context}` only: the context is the title AND `argsText` — one Context section.
-    let call = ToolCall(
-      name: "terminal", title: "pytest -q", state: .complete, detail: ToolDetail(argsText: "pytest -q")
-    )
+    // `{name, context}` only: the context is the title and there is no detail.
+    let call = ToolCall(name: "terminal", title: "pytest -q", state: .complete)
     #expect(call.rawSections == [ToolCall.RawSection(label: "Context", text: "pytest -q")])
   }
 

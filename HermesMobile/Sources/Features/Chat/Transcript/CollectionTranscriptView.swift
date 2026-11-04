@@ -416,10 +416,13 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // Capture against the PRE-apply layout.
       let previousOffsetY = collectionView?.contentOffset.y ?? 0
       let previousContentHeight = collectionView?.contentSize.height ?? 0
-      // A fold expanding or collapsing (a tap, or a finished turn auto-collapsing) changes the
-      // items over unchanged rows; a scrolled-up reader keeps their place through it too.
-      let foldChanged = diff == .inPlace && newOrder != oldOrder && !isPinnedToBottom
-      let anchor = !jumps && (diff.holdsReaderAnchor || foldChanged)
+      // A row change that keeps old rows, or a fold expanding or collapsing (a tap, or a finished
+      // turn auto-collapsing) under a scrolled-up reader: hold the reader's place.
+      let holdsAnchor = TranscriptScrollMath.holdsReaderAnchor(
+        rowDiff: diff, didInitialJump: didInitialJump, isPinned: isPinnedToBottom,
+        itemOrderChanged: newOrder != oldOrder
+      )
+      let anchor = holdsAnchor
         ? captureReaderAnchor(oldOrder: oldOrder, survivors: Set(newOrder)) : nil
 
       var snapshot = NSDiffableDataSourceSnapshot<Section, TranscriptItem.ID>()

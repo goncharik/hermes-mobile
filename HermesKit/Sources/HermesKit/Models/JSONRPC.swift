@@ -62,8 +62,17 @@ public extension JSONValue {
   var intValue: Int? { if case .number(let d) = self { return Int(exactly: d.rounded(.towardZero)) }; return nil }
   var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
   var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
+  var isObject: Bool { if case .object = self { return true }; return false }
   /// `self`, or nil for JSON `null` — so an explicit `"result": null` reads as absent.
   var nonNull: JSONValue? { self == .null ? nil : self }
+
+  /// `text` (trimmed) decoded as a JSON value of any kind; nil when it isn't valid JSON.
+  init?(parsing text: String) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, let value = try? JSONDecoder().decode(JSONValue.self, from: Data(trimmed.utf8))
+    else { return nil }
+    self = value
+  }
 
   /// Re-decode this value into a concrete `Decodable` type. Returns nil on mismatch.
   func decoded<T: Decodable>(_ type: T.Type = T.self) -> T? {

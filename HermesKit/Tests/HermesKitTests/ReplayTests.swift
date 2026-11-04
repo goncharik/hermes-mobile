@@ -261,14 +261,14 @@ struct ReplayTests {
     initial.status = .ready
     initial.hasRequestedSession = true
     initial.isSending = true
-    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before", isComplete: false))]
+    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before"))]
     initial.reasoningRowID = uuid(900)
     let store = gateway.makeStore(initial)
 
     // The drop finalizes in-flight state: the pre-drop burst is closed.
     await store.send(.gatewayClosed)
     #expect(store.state.reasoningRowID == nil)
-    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before", isComplete: true))
+    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before"))
 
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
@@ -281,7 +281,7 @@ struct ReplayTests {
     #expect(store.state.reasoningRowID == uuid(0))
     #expect(store.state.transcript[id: uuid(900)] == nil)
     #expect(store.state.transcript.last?.id == uuid(0))
-    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning", isComplete: false))
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning"))
     await store.send(.teardown)
   }
 
@@ -294,7 +294,7 @@ struct ReplayTests {
     initial.status = .ready
     initial.hasRequestedSession = true
     initial.isSending = true
-    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before", isComplete: false))]
+    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before"))]
     initial.reasoningRowID = uuid(900)
     initial.liveReasoningRowIDs = [uuid(900)]
     let store = gateway.makeStore(initial)
@@ -303,13 +303,13 @@ struct ReplayTests {
     await store.send(.teardownSocketOnly)
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
-      $0.transcript[id: self.uuid(900)]?.kind = .reasoning(text: "before + gap", isComplete: false)
+      $0.transcript[id: self.uuid(900)]?.kind = .reasoning(text: "before + gap")
     }
     await store.receive(\.activateResult.success)
 
     #expect(store.state.reasoningRowID == uuid(900))
     #expect(store.state.transcript.last?.id == uuid(900))
-    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before + gap", isComplete: false))
+    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before + gap"))
     await store.send(.teardown)
   }
 
@@ -336,7 +336,7 @@ struct ReplayTests {
     #expect(store.state.reasoningRowID == uuid(0))
     #expect(store.state.turnActivityLabel == "ಠ_ಠ pondering…")
     #expect(store.state.turnStatus == "Compressing context")
-    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning", isComplete: false))
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning"))
     #expect(!store.state.transcript.contains { $0.copyText.contains("pondering") })
     await store.send(.teardown)
   }

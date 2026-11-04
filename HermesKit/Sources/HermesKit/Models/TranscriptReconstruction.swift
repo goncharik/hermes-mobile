@@ -62,7 +62,7 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
     case "assistant":
       // 1. Reasoning row (one completed burst per assistant message).
       if let reasoning = message.reasoningText {
-        append(.reasoning(text: reasoning, isComplete: true), timestamp: timestamp)
+        append(.reasoning(text: reasoning), timestamp: timestamp)
       }
       // 2. Assistant text row (the server omits empty/tool-only assistant turns, so a
       //    missing body here just means there's nothing to render for it).
@@ -84,15 +84,14 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
   return rows
 }
 
-/// The detail of a cooked `role:"tool"` history row: the `context` preview (as `argsText`),
-/// the structured `args` (newer agents), the stored result `content` (edit tools only), and
-/// the persisted `inline_diff`. The content mirrors the live `tool.complete` shape: always the
+/// The detail of a cooked `role:"tool"` history row: the structured `args` (newer agents), the
+/// stored result `content` (edit tools only), and the persisted `inline_diff` — the `context`
+/// preview is the row's title. The content mirrors the live `tool.complete` shape: always the
 /// raw text as `resultText`, plus the parsed JSON as `result` when it is a JSON object/array.
-/// An older agent's `{name, context}` row yields just the preview; nothing at all → `nil`.
+/// An older agent's `{name, context}` row carries no detail → `nil`.
 func cookedToolDetail(_ message: SessionMessage) -> ToolDetail? {
   let content = message.content?.nonEmpty
   let detail = ToolDetail(
-    argsText: message.context?.nonEmpty,
     args: message.args?.nonNull,
     result: content.flatMap(structuredJSON),
     resultText: content,
@@ -104,12 +103,8 @@ func cookedToolDetail(_ message: SessionMessage) -> ToolDetail? {
 /// `text` parsed as JSON when it is a JSON object or array; `nil` for anything else (plain
 /// text, a bare scalar, malformed JSON) — the caller keeps the raw text either way.
 private func structuredJSON(_ text: String) -> JSONValue? {
-  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard let first = trimmed.first, first == "{" || first == "[",
-        let value = try? JSONDecoder().decode(JSONValue.self, from: Data(trimmed.utf8))
-  else { return nil }
-  switch value {
-  case .object, .array: return value
-  default: return nil
+  switch JSONValue(parsing: text) {
+  case let value? where value.isObject || value.arrayValue != nil: value
+  default: nil
   }
 }

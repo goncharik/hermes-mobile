@@ -47,18 +47,18 @@ struct ChatReadAloudTests {
       id: uuid(6), kind: .tool(name: "t", title: "t", state: .complete, detail: nil, durationS: nil)
     ))
     state.transcript.append(ChatRow(
-      id: uuid(7), kind: .reasoning(text: "r", isComplete: true)
+      id: uuid(7), kind: .reasoning(text: "r")
     ))
     #expect(state.completedReplyCount == 2)
-    #expect(state.lastCompletedReply?.id == uuid(3)) // the streaming row never counts
+    #expect(state.completedReplies.last?.id == uuid(3)) // the streaming row never counts
   }
 
   @Test func helpersOnAnEmptyOrUserOnlyTranscript() {
     #expect(ChatFeature.State(connection: conn).completedReplyCount == 0)
-    #expect(ChatFeature.State(connection: conn).lastCompletedReply == nil)
+    #expect(ChatFeature.State(connection: conn).completedReplies.last == nil)
     let userOnly = ChatFeature.State(connection: conn, transcript: [user(0, "hi")])
     #expect(userOnly.completedReplyCount == 0)
-    #expect(userOnly.lastCompletedReply == nil)
+    #expect(userOnly.completedReplies.last == nil)
   }
 
   @Test func playbackIsActiveOnlyWhenNotIdle() {
@@ -345,7 +345,7 @@ struct ChatReadAloudTests {
     let store = await foregroundRehydrate(liveFoldedToolTurn(anchor: 1))
     #expect(store.state.completedReplyCount == 1)
     #expect(store.state.spokenAssistantCount == 1)
-    #expect(store.state.lastCompletedReply?.kind
+    #expect(store.state.completedReplies.last?.kind
       == .message(role: .assistant, text: "Found 3 files.", isComplete: true))
   }
 
@@ -372,7 +372,7 @@ struct ChatReadAloudTests {
     let store = await foregroundRehydrate(liveFoldedToolTurn(anchor: 0))
     #expect(store.state.completedReplyCount == 1)
     #expect(store.state.spokenAssistantCount == 0)
-    #expect(store.state.lastCompletedReply?.kind
+    #expect(store.state.completedReplies.last?.kind
       == .message(role: .assistant, text: "Found 3 files.", isComplete: true))
   }
 
@@ -546,7 +546,7 @@ struct ChatReadAloudTests {
     await store.send(.gatewayEvent(.messageStart))
     await store.send(.gatewayEvent(.messageDelta(text: "Next")))
     await store.send(.gatewayEvent(.messageComplete(text: "Next", usage: nil)))
-    let next = store.state.lastCompletedReply?.id
+    let next = store.state.completedReplies.last?.id
     #expect(next != nil && next != uuid(101))
     #expect(store.state.ttsPlayback == next.map(ChatFeature.State.TTSPlayback.preparing))
     await store.receive(\.ttsSpeaking)
@@ -1230,7 +1230,7 @@ struct ChatReadAloudTests {
       ],
       running: false
     ))))
-    let rebuilt = try #require(store.state.lastCompletedReply?.id)
+    let rebuilt = try #require(store.state.completedReplies.last?.id)
     #expect(rebuilt != uuid(101)) // the live id was rewritten to the history id
     #expect(store.state.ttsPlayback == (preparing ? .preparing(rebuilt) : .speaking(rebuilt)))
 
@@ -1277,7 +1277,7 @@ struct ChatReadAloudTests {
     let one = try #require(store.state.transcript.first {
       $0.kind == .message(role: .assistant, text: "One", isComplete: true)
     })
-    let two = try #require(store.state.lastCompletedReply)
+    let two = try #require(store.state.completedReplies.last)
     #expect(store.state.ttsPlayback == .speaking(one.id))
     #expect(store.state.readAloudState(for: one.id) == .speaking)
     #expect(store.state.readAloudState(for: two.id) == .disabled)
@@ -1313,7 +1313,7 @@ struct ChatReadAloudTests {
       ],
       running: false
     ))))
-    let one = try #require(store.state.lastCompletedReply)
+    let one = try #require(store.state.completedReplies.last)
     #expect(store.state.ttsPlayback == .speaking(uuid(103)))
     #expect(store.state.readAloudState(for: one.id) == .disabled)
   }
@@ -1482,7 +1482,7 @@ struct ChatReadAloudTests {
     await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
     await store.receive(\.eventReplayResult)
     await store.receive(\.activateResult.success)
-    #expect(store.state.lastCompletedReply?.kind
+    #expect(store.state.completedReplies.last?.kind
       == .message(role: .assistant, text: "Hello", isComplete: true))
     #expect(store.state.spokenAssistantCount == store.state.completedReplyCount)
     #expect(store.state.ttsPlayback == .idle)

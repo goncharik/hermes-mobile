@@ -35,15 +35,13 @@ final class TurnFoldSnapshotTests: SnapshotTestCase {
       ChatRow(id: id(0), kind: .message(role: .user, text: "Triage the new TestFlight crashes.",
                                         isComplete: true), timestamp: at(0)),
       ChatRow(id: id(1), kind: .reasoning(
-        text: "I'm going to bring up the asc-crash-triage skill now. It lists crashes per build.",
-        isComplete: true
+        text: "I'm going to bring up the asc-crash-triage skill now. It lists crashes per build."
       )),
       tool(2, "skill_view", "skill_view", args: ["name": .string("asc-crash-triage")]),
       tool(3, "terminal", "asc testflight crashes --app 6740 --limit 20 2>&1 | head -40",
            result: #"{"error": "unknown flag: --limit"}"#),
       ChatRow(id: id(4), kind: .reasoning(
-        text: "**Checking the newest items first**\n\nThe Nov 3 crashes, then feedback.",
-        isComplete: true
+        text: "**Checking the newest items first**\n\nThe Nov 3 crashes, then feedback."
       )),
       tool(5, "read_file", "/Users/eugene/Documents/Development/Personal/hermes-mobile/ChatFeature.swift"),
       ChatRow(id: id(6), kind: .message(

@@ -121,8 +121,8 @@ struct ChatSnapshotClientTests {
   @Test func snapshotRoundTripsReasoningRows() {
     let client = ChatSnapshotClient.inMemory()
     let rows = [
-      ChatRow(id: UUID(), kind: .reasoning(text: "weighing options", isComplete: true)),
-      ChatRow(id: UUID(), kind: .reasoning(text: "still going", isComplete: false)),
+      ChatRow(id: UUID(), kind: .reasoning(text: "weighing options")),
+      ChatRow(id: UUID(), kind: .reasoning(text: "still going")),
     ]
     client.saveSnapshot("s1", ChatSnapshot(rows: rows))
     #expect(client.loadSnapshot("s1")?.rows == rows)
@@ -150,6 +150,29 @@ struct ChatSnapshotClientTests {
     let loaded = try #require(try store.loadSnapshot("s1"))
     #expect(loaded.model == "m")
     #expect(loaded.rows == [before, after])
+  }
+
+  @Test(arguments: [
+    // The pre-`ToolCall` tool row shape: no longer decodes, skipped like the `.thinking` row.
+    (#"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"tool":{"name":"terminal","title":"ls","state":{"complete":{}},"durationS":1}}}"#, nil),
+    // A reasoning row cached with the retired `isComplete` flag still decodes.
+    (#"{"id":"00000000-0000-0000-0000-0000000000AC","kind":{"reasoning":{"text":"old","isComplete":true}}}"#,
+     ChatRow(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000AC")!, kind: .reasoning(text: "old"))),
+  ] as [(String, ChatRow?)])
+  func olderCachedRowShapesLoadPerRow(legacyJSON: String, expected: ChatRow?) throws {
+    let store = try ChatSnapshotStore.inMemory()
+    let before = messageRow("before")
+    let after = messageRow("after")
+    try store.saveSnapshot("s1", ChatSnapshot(model: "m", rows: [before, messageRow("placeholder"), after]))
+    try store.queue.write { db in
+      try db.execute(
+        sql: #"UPDATE "snapshot_rows" SET "row_json" = ? WHERE "session_id" = ? AND "idx" = 1"#,
+        arguments: [legacyJSON, "s1"]
+      )
+    }
+
+    let loaded = try #require(try store.loadSnapshot("s1"))
+    #expect(loaded.rows == [before] + [expected].compactMap { $0 } + [after])
   }
 
   @Test func attachmentImagesDoNotRoundTrip() throws {

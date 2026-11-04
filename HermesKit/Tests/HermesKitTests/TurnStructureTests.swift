@@ -36,8 +36,8 @@ struct TurnStructureTests {
     )
   }
 
-  private func reasoning(_ n: Int, complete: Bool = true, t: TimeInterval? = nil) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .reasoning(text: "hmm", isComplete: complete), timestamp: at(t))
+  private func reasoning(_ n: Int, t: TimeInterval? = nil) -> ChatRow {
+    ChatRow(id: uuid(n), kind: .reasoning(text: "hmm"), timestamp: at(t))
   }
 
   // MARK: turnSpans
@@ -179,7 +179,7 @@ struct TurnStructureTests {
     )
     #expect(state.finalReplyRowIDs == [uuid(1)])
     #expect(state.completedReplyCount == 0)
-    #expect(state.lastCompletedReply == nil)
+    #expect(state.completedReplies.last == nil)
   }
 
   @Test func aBranchSeedInThePreambleIsAFinalReply() {

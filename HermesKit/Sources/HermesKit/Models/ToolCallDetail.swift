@@ -21,8 +21,8 @@ extension ToolCall {
   /// - **Context**: the server's `context` / `summary` (the row title), unless it is just the
   ///   name fallback.
   /// - **Arguments**: the structured args pretty-printed, else the verbose `args_text`.
-  /// - **Arguments (text)**: `args_text` too when structured args exist and it says something
-  ///   neither they nor the context already say.
+  /// - **Arguments (text)**: `args_text` too when structured args exist and it isn't just them
+  ///   re-serialized.
   /// - **Result**: the structured result pretty-printed, else the result text.
   /// - **Result (text)**: the result text too when it isn't just the structured result
   ///   re-serialized (a separate `result_text`).
@@ -41,9 +41,8 @@ extension ToolCall {
 
     let args = detail?.args?.nonNull?.displayString
     let argsText = detail?.argsText?.trimmedNonEmpty
-    // A cooked history row stores its `context` as both the title and `argsText`: say it once.
-    add("Arguments", args ?? (argsText == context ? nil : argsText))
-    if args != nil, let argsText, argsText != context, !Self.sameJSON(argsText, detail?.args) {
+    add("Arguments", args ?? argsText)
+    if args != nil, let argsText, !Self.sameJSON(argsText, detail?.args) {
       add("Arguments (text)", argsText)
     }
 
@@ -66,8 +65,7 @@ extension ToolCall {
     guard let value = value?.nonNull else { return false }
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == value.displayString?.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
-    guard let parsed = try? JSONDecoder().decode(JSONValue.self, from: Data(trimmed.utf8)) else { return false }
-    return parsed == value
+    return JSONValue(parsing: trimmed) == value
   }
 }
 

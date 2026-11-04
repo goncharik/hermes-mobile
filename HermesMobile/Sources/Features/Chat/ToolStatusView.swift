@@ -12,8 +12,7 @@ struct ToolStatusView: View {
   /// The call is in flight in the running turn (`ToolCallItem.isLive`).
   var isLive: Bool = false
   /// Whether the body shows below the line (`ToolCallItem.isExpanded`): `›` folded, `⌄` open.
-  /// `nil` for a line that doesn't expand in place — its tap opens the detail sheet instead.
-  var isExpanded: Bool?
+  var isExpanded = false
   let onTap: () -> Void
 
   var body: some View {
@@ -23,7 +22,7 @@ struct ToolStatusView: View {
     FoldLine(
       systemImage: presentation.icon.systemImage,
       text: title,
-      chevron: isExpanded == true ? "chevron.down" : "chevron.right",
+      chevron: isExpanded ? "chevron.down" : "chevron.right",
       iconTint: failed ? .red : .secondary
     )
     .foldTap(isExpanded: isExpanded, action: onTap)

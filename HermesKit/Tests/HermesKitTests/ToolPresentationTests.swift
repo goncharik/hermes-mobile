@@ -535,12 +535,6 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.Outcome.unknown.isFailure == false)
   }
 
-  @Test func categoryOrderIsTheDesktopClauseOrder() {
-    #expect(ToolPresentation.RunCategory.allCases.map(\.rawValue) == [
-      "edit", "explore", "search", "read", "browse", "interact", "analyze", "run", "delegate", "other",
-    ])
-  }
-
   // MARK: - Shell command summary
 
   @Test(arguments: [

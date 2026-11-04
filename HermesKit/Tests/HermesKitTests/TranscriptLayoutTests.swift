@@ -35,8 +35,8 @@ struct TranscriptLayoutTests {
     )
   }
 
-  private func reasoning(_ n: Int, complete: Bool = true) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .reasoning(text: "hmm", isComplete: complete))
+  private func reasoning(_ n: Int) -> ChatRow {
+    ChatRow(id: uuid(n), kind: .reasoning(text: "hmm"))
   }
 
   private func status(_ n: Int) -> ChatRow {

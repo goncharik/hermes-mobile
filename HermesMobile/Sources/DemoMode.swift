@@ -282,8 +282,7 @@ enum DemoMode {
           name: "calendar", title: "Adding “Lisbon trip” to your calendar", state: .running,
           detail: nil, durationS: nil)),
         ChatRow(id: rowID(4), kind: .reasoning(
-          text: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.",
-          isComplete: false)),
+          text: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.")),
       ]),
       status: .ready
     )
