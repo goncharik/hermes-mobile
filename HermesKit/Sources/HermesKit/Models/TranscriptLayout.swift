@@ -61,6 +61,28 @@ public struct FoldExpansion: Equatable, Sendable {
     let choice = turnOverride[ordinal]
     return isRunning ? choice != .collapsed : choice == .expanded
   }
+
+  /// A header tap: flip what the turn currently shows and RECORD it as the user's last
+  /// choice — so expanding a running turn keeps it open past its finish, and collapsing it
+  /// (or never touching it) lets the finish fold it.
+  public mutating func toggleTurn(ordinal: Int, isRunning: Bool) {
+    turnOverride[ordinal] = isTurnExpanded(ordinal: ordinal, isRunning: isRunning)
+      ? .collapsed : .expanded
+  }
+
+  /// A run-summary tap: list the run's calls, or fold them back.
+  public mutating func toggleRun(_ key: RunKey) {
+    if expandedRuns.remove(key) == nil { expandedRuns.insert(key) }
+  }
+
+  /// Drop every choice keyed on a turn that no longer exists (ordinal ≥ `turnCount`) — after
+  /// a hydrate that removed turns (`/undo`), so a stale choice can't latch onto the NEXT turn
+  /// that reuses the ordinal.
+  public mutating func prune(turnCount: Int) {
+    turnOverride = turnOverride.filter { $0.key < turnCount }
+    expandedRuns = expandedRuns.filter { $0.turnOrdinal < turnCount }
+    expandedCalls = expandedCalls.filter { $0.turnOrdinal < turnCount }
+  }
 }
 
 // MARK: - Display items

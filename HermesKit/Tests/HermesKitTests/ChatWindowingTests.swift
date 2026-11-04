@@ -148,7 +148,10 @@ struct ChatWindowingTests {
     #expect(store.state.transcript.count == 201)
     #expect(store.state.windowStart == 201 - ChatFeature.State.initialWindow) // 151
     #expect(store.state.visibleRows.last?.id == store.state.transcript.last?.id)
-    #expect(store.state.visibleRows.count == ChatFeature.State.initialWindow)
+    // Row 151 is an assistant reply: the window snaps down to its turn's user row (150), so
+    // one row more than the raw window shows.
+    #expect(store.state.visibleRows.first?.id == uuid(150))
+    #expect(store.state.visibleRows.count == ChatFeature.State.initialWindow + 1)
 
     // A delta materialises the assistant row → still pinned to the bottom window.
     await store.send(.gatewayEvent(.messageDelta(text: "hi")))

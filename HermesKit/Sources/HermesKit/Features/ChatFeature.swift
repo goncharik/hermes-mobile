@@ -48,7 +48,15 @@ public struct ChatFeature {
     /// (`max(0, count - initialWindow)`), grows downward as the user pulls in older rows via
     /// `.loadOlderRequested`, and is reset to the bottom window on every wholesale transcript
     /// replace (hydrate). The view renders `visibleRows`, never `transcript` directly.
+    ///
+    /// This is the RAW start: `visibleRows` snaps it down to the containing turn's user row
+    /// (`snappedWindowStart`) so a turn's fold header is never orphaned. Kept raw so the
+    /// "parked at the bottom window" checks keep comparing like with like.
     public var windowStart: Int
+    /// The user's turn-fold / run-summary choices (tool-call display plan, Phase B). In memory
+    /// only, keyed by ordinals so a hydrate's id rewrite leaves them intact; a new slot (another
+    /// session, logout) starts empty and `.teardown` clears it.
+    public var fold: FoldExpansion
     public var composerText: String
     public var status: Status
     public var errorBanner: String?
@@ -893,6 +901,7 @@ public struct ChatFeature {
       // Open at the bottom window over whatever transcript we ended up with (instant-paint
       // snapshot or a caller-supplied one). Hydrate later resets this again — server wins.
       self.windowStart = State.bottomWindowStart(count: resolvedTranscript.count)
+      self.fold = FoldExpansion()
     }
 
     /// The bottom (newest) rendering window over a transcript of `count` rows.
@@ -900,15 +909,40 @@ public struct ChatFeature {
 
     /// True when older rows exist above the current window — drives the scroll-up "load more"
     /// sentinel in the view.
-    public var hasMoreAbove: Bool { windowStart > 0 }
+    public var hasMoreAbove: Bool { snappedWindowStart > 0 }
 
-    /// The view boundary: the windowed slice of `transcript` from `windowStart` to the end.
-    /// Newly appended (streaming) rows always fall after `windowStart`, so they stay visible.
+    /// `windowStart` (clamped) snapped DOWN to the user row of the turn it falls in, so the
+    /// window never starts mid-turn: a turn's header (which hangs off its user row) and its
+    /// ordinal are always in view together. A start inside the preamble (rows before the first
+    /// user row) snaps to 0.
+    var snappedWindowStart: Int {
+      let count = transcript.count
+      var start = min(max(0, windowStart), count)
+      guard start < count else { return start }
+      while start > 0, !Self.isUserMessage(transcript[start]) { start -= 1 }
+      return start
+    }
+
+    /// The view boundary: the windowed slice of `transcript` from `snappedWindowStart` to the
+    /// end. Newly appended (streaming) rows always fall after it, so they stay visible.
     public var visibleRows: ArraySlice<ChatRow> {
       let count = transcript.count
       guard count > 0 else { return [] }
-      let start = min(max(0, windowStart), count)
-      return transcript.elements[start..<count]
+      return transcript.elements[snappedWindowStart..<count]
+    }
+
+    /// The window laid out as display items — turn headers, run summaries, call lines and plain
+    /// rows (see ``TranscriptFold``). Turn ordinals are absolute (counted from the transcript
+    /// start, not the window's), so they match the `fold` keys and `runningTurnOrdinal`.
+    public var transcriptItems: [TranscriptItem] {
+      let start = snappedWindowStart
+      return TranscriptFold.items(
+        rows: transcript.elements[start..<transcript.count],
+        expansion: fold,
+        runningTurnOrdinal: runningTurnOrdinal,
+        liveLine: turnActivityLabel,
+        ordinalOffset: transcript.elements[..<start].count(where: Self.isUserMessage)
+      )
     }
 
     /// The fixed id of the live-turn indicator row (see `renderedRows`).
@@ -1026,6 +1060,10 @@ public struct ChatFeature {
     /// Scroll-up reached the top of the current window: reveal another `pageSize` of older
     /// rows from the in-memory transcript (client-side only — no network call).
     case loadOlderRequested
+    /// The user tapped turn `ordinal`'s fold header: show / hide its folded content.
+    case turnHeaderTapped(Int)
+    /// The user tapped a run's summary line: list / fold its calls.
+    case runSummaryTapped(RunKey)
     case turnTick
     /// One event to fold, bypassing the replay cursor. Sent by tests; the socket effect
     /// sends `.gatewayFrame` and the replay fold calls `reduceGatewayEvent` directly, so all
@@ -1416,6 +1454,7 @@ public struct ChatFeature {
 
       case .teardown:
         state.isReplayReadPending = false
+        state.fold = FoldExpansion()
         // `filePreview` (the `@Presents` child) is deliberately NOT in this list: its load and
         // download effects are wrapped by `.ifLet`, which cancels them when the sheet is
         // dismissed and when `AppFeature` nils the whole slot (`.clearLiveChat` — the
@@ -1464,8 +1503,17 @@ public struct ChatFeature {
 
       case .loadOlderRequested:
         // Reveal another page of older rows, clamped at the top of the transcript. Purely a
-        // window move over the already-fetched in-memory transcript (no network).
-        state.windowStart = max(0, state.windowStart - State.pageSize)
+        // window move over the already-fetched in-memory transcript (no network). Pages from
+        // the SNAPPED start — what is actually showing — so each request reveals a full page.
+        state.windowStart = max(0, state.snappedWindowStart - State.pageSize)
+        return .none
+
+      case let .turnHeaderTapped(ordinal):
+        state.fold.toggleTurn(ordinal: ordinal, isRunning: ordinal == state.runningTurnOrdinal)
+        return .none
+
+      case let .runSummaryTapped(key):
+        state.fold.toggleRun(key)
         return .none
 
       case .turnTick:
@@ -4322,6 +4370,11 @@ public struct ChatFeature {
     // scroll-up that revealed older history. Computed after every append above (inflight +
     // preserved live rows) so the count is final.
     state.windowStart = State.bottomWindowStart(count: state.transcript.count)
+
+    // Fold choices are ordinal-keyed, so they survive the id rewrite above untouched; only
+    // choices on turns the rebuilt history no longer has (`/undo`) are dropped, so they can't
+    // latch onto the next turn that reuses the ordinal.
+    state.fold.prune(turnCount: state.transcript.count(where: State.isUserMessage))
 
     // Persist the freshly-hydrated, server-authoritative state back to the cache so the next
     // cold open paints from it (debounced — coalesces with any immediately-following deltas).

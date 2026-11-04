@@ -418,11 +418,11 @@ public enum Body {
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift` (or new `ChatFoldTests.swift`)
 
-- [ ] `State.fold: FoldExpansion`; actions `turnHeaderTapped(ordinal)`, `runSummaryTapped(RunKey)`; a computed `transcriptItems` over `visibleRows`
-- [ ] snap `visibleRows` start down to the containing turn's user row; `loadOlderRequested` keeps paging
-- [ ] fold state survives a hydrate (ordinal keys) and resets on session switch / slot teardown; logout clears it with the slot
-- [ ] tests: tri-state toggle transitions; finish collapses unless last action was expand; survives hydrate id change; window snap never orphans a header
-- [ ] run tests — must pass before Task 8
+- [x] `State.fold: FoldExpansion`; actions `turnHeaderTapped(ordinal)`, `runSummaryTapped(RunKey)`; a computed `transcriptItems` over `visibleRows`
+- [x] snap `visibleRows` start down to the containing turn's user row; `loadOlderRequested` keeps paging (➕ `windowStart` stays raw, `snappedWindowStart` is derived; paging steps from the snapped start)
+- [x] fold state survives a hydrate (ordinal keys) and resets on session switch / slot teardown; logout clears it with the slot (➕ a hydrate prunes choices on turns the history no longer has, e.g. `/undo`)
+- [x] tests: tri-state toggle transitions; finish collapses unless last action was expand; survives hydrate id change; window snap never orphans a header
+- [x] run tests — must pass before Task 8
 
 ### Task 8: Render display items in the collection transcript
 
