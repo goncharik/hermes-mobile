@@ -523,7 +523,7 @@ response (`applyActivate`), in order:
    response (partial info only overwrites present fields) — fixing the blank-model and
    context-0 regressions.
 3. **`reconstructTranscript(messages)`** rebuilds the transcript wholesale from the
-   authoritative history — reasoning rows (`.reasoning(isComplete: true)`), assistant text, and
+   authoritative history — reasoning rows (`.reasoning`), assistant text, and
    tool-call rows (with backward-matched `role:"tool"` results), keyed identically to the live
    fold's `toolRowIDs`. Tool rows carry the cooked `args`, `display_metadata.tool_result_metadata
    .inline_diff`, and `content` (sent only for `write_file` / `patch` / `skill_manage`): kept as
@@ -533,13 +533,15 @@ response (`applyActivate`), in order:
    The cached tail is replaced, never merged.
 
    **#26 running-turn exception.** When `running` is true, the live turn's tool rows (tracked by
-   `toolRowIDs`) and reasoning bursts (tracked by `liveReasoningRowIDs`, the same lifecycle,
-   cleared at `message.complete` / `.error`) are re-appended after the rebuilt history and the
-   seeded inflight rows, in their original transcript order and under their original ids, since
-   `inflight` carries neither (a row whose id the rebuild already holds is skipped). `toolRowIDs`,
-   `liveReasoningRowIDs` and the open burst's `reasoningRowID` are restored, so a later
-   `tool.complete` / `reasoning.delta` reconciles in place and the next running hydrate drops and
-   doubles nothing. Stopped turns stay strict server-wins. The fold's expansion choices
+   `toolRowIDs`), reasoning bursts (`liveReasoningRowIDs`) and sealed interim commentary
+   (`liveCommentaryRowIDs`; all three cleared at `message.complete` / `.error`) are re-appended
+   after the rebuilt history and the seeded inflight rows, in their original transcript order
+   and under their original ids, since `inflight` carries none of them (a row whose id the
+   rebuild already holds is skipped). The three trackers and the open burst's `reasoningRowID`
+   are restored, so a later `tool.complete` / `reasoning.delta` reconciles in place and the next
+   running hydrate drops and doubles nothing. `inflight.assistant` is the whole turn's text, so
+   the seeded streaming row gets only what follows the sealed segments and goes back into the
+   client streaming row's slot. Stopped turns stay strict server-wins. The fold's expansion choices
    are ordinal-keyed, so they survive this id rewrite; `fold.prune` drops choices on turns the
    history no longer has (`docs/features/tool-calls.md`).
 4. **Working indicator + inflight seed.** `isSending` is set from the authoritative `running`
@@ -593,11 +595,11 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
   (arms the anchor), so the trailing hydrate's re-base keeps it consumed —
   `docs/features/read-aloud.md` → "Replay rule".
 - **Then the hydrate, unchanged.** `applyActivate` stays the authority. A running turn keeps the
-  tool rows and reasoning bursts the fold built or extended (#26); assistant text is the
-  hydrate's alone (the fold skips `message.delta`s and STREAMED `message.interim` seals and
-  materialises no `message.complete` row, so a reply never shows twice; an unstreamed seal, the
-  only delivery of its text, lands and then goes with the wholesale replace like any assistant
-  row); a completed turn is replaced wholesale. Replayed status rows (`review.summary`, a
+  tool rows, reasoning bursts and sealed commentary the fold built or extended (#26); streamed
+  assistant text is the hydrate's alone (the fold skips `message.delta`s and STREAMED
+  `message.interim` seals and materialises no `message.complete` row, so a reply never shows
+  twice; an unstreamed seal, the only delivery of its text, lands as commentary); a completed
+  turn is replaced wholesale. Replayed status rows (`review.summary`, a
   "Timed out" row) are wiped, as live ones are (accepted, #47). After a `.gatewayClosed` drop
   `finalizeInFlight` has closed the pre-drop reasoning burst, so replayed reasoning starts a new
   burst; the closed one is still in `liveReasoningRowIDs`, so the running hydrate KEEPS it next to

@@ -257,7 +257,7 @@ and `AppFeature` removes the finished download the effects can no longer reach (
   512 KB; Share still downloads it.
 - No inline images in the transcript (possible later feature; desktop parity).
 - Markdown files preview as plain monospaced text, not through `MarkdownText`.
-- Tool detail sheets and `preview.open` events are not scanned.
+- Tool call bodies (inline and in the detail sheet) and `preview.open` events are not scanned.
 - The text preview is the server's first 512 KB ("Showing first 512 KB" banner when `truncated`);
   Share downloads the whole file.
 - An image over 16 MB gets the too-large card, not a preview (Share still works).

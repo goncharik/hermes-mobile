@@ -32,8 +32,7 @@ per-burst lines inside the fold, the status line becomes a caption under the liv
 and the agent's spinner frames (`thinking.delta`) become the live header label instead of
 being appended to reasoning (a bug today — see Context).
 
-Shipped as **three PRs from this one plan** (Phase A → B → C); each phase leaves the app
-releasable.
+➕ Shipped as **one branch / PR** (`tool-call-display`) carrying all three phases (A → B → C).
 
 ## Context (from discovery)
 
@@ -538,4 +537,4 @@ public enum Body {
 **External**
 - Older agents without `message.interim` / tool `args`: confirm graceful degradation on the
   oldest agent version still in use.
-- TestFlight build after each phase PR (internal by default).
+- One TestFlight build after merge (internal by default).

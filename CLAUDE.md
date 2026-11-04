@@ -63,8 +63,9 @@ bullets below are the compressed rules.
   `inflight` from the response — rebuild rows wholesale, server wins, never merge; seed
   the streaming row from `inflight`. `open_requests` (v7 prompt replay) is reconciled, not
   rebuilt: absence authoritative, whatever `running` says. Exception (#26): a foreground re-hydrate of a
-  still-RUNNING turn preserves the client's live reasoning + tool rows (`liveReasoningRowIDs`
-  / `toolRowIDs`; server `inflight` carries neither); a completed turn still replaces wholesale. Details:
+  still-RUNNING turn preserves the client's live reasoning, tool and sealed-commentary rows
+  (server `inflight` carries none; the seed gets only the text after the sealed segments); a
+  completed turn still replaces wholesale. Details:
   `docs/architecture.md`.
 - **Elapsed-timer continuity**: client turn-start anchor persisted in
   `ChatSnapshotClient` (set on `prompt.submit`/`message.start`, cleared on terminals).
@@ -346,7 +347,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (312/312), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (313/313), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

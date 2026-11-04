@@ -9,7 +9,7 @@ changes. Design history: `docs/plans/completed/`.
 Chat Markdown renders block-level structure — pure classification in `MarkdownSegment`
 (headers / blockquotes / tables alongside prose + fenced code; fences take precedence, odd markup
 degrades to prose), rendered in `MarkdownText` (headings → scaled bold, blockquote → indented bar,
-table → `MarkdownTableView`). **Only USER messages have a bubble** — assistant / tool / thinking
+table → `MarkdownTableView`). **Only USER messages have a bubble** — assistant / tool / reasoning
 rows render bubble-less plain content, and the assistant Markdown is selectable: **prose is the
 only guaranteed part** (it renders through `SelectableText`, a real `UITextView`), while headings /
 blockquotes / table cells rely on `.textSelection(.enabled)`, which `SelectableText`'s doc comment

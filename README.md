@@ -52,7 +52,8 @@ away from your desk and still keep your agent moving.
   and interim commentary fold behind one "Worked for …" line above the reply. Expand it to
   see run summaries ("Ran 6 commands and read 5 files") and per-call lines that open in
   place to terminal output, diffs, file reads or search hits, with the full payload a tap
-  away. Sessions that are actively running get a subtle glow. When the agent's
+  away. A reopened session keeps each call's target and file edits; command output and
+  search results are shown for live turns only. Sessions that are actively running get a subtle glow. When the agent's
   background self-improvement review posts a summary, it shows up right in the chat as
   a system line (live sessions only).
 - **Compose hands-free or with files.** Dictate a message with voice input (a live
@@ -105,10 +106,10 @@ away from your desk and still keep your agent moving.
   approve/deny card, and the newer clarify forms are not available).
 - **Stays connected.** Automatic reconnect with backoff and a clear connection banner
   when the link drops. On current Hermes releases a reconnect also catches up on what a
-  running turn did while you were offline: the tool calls and thinking from the gap show up
+  running turn did while you were offline: the tool calls and reasoning from the gap show up
   right away instead of when the turn ends. Reopening a session — after navigating away,
   backgrounding the app, or a cold relaunch — restores its live state: the right model,
-  context usage, full tool/thinking history, and an in-progress turn that keeps streaming
+  context usage, its tool-call and reasoning history, and an in-progress turn that keeps streaming
   with its timer ticking.
   A running turn even keeps its live connection while you browse the session list, and for a
   short grace window after backgrounding — falling back to reconnect-and-restore beyond that.

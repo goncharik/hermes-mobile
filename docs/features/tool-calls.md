@@ -23,10 +23,10 @@ desktop (`apps/desktop/src/components/assistant-ui/tool/run-summary.ts`,
 - **`thinking.delta` is the agent's spinner, never reasoning.** Its frames (`ಠ_ಠ pondering…`,
   provider-wait diagnostics) are rewrites. They decode to `.spinnerFrame` and REPLACE
   `State.turnActivityLabel` (trimmed, empty → nil). The label is never appended, never written
-  into a row and never persisted. It is cleared on `tool.start`, `message.delta` and every turn
-  terminal. Desktop parity: `message-stream.ts` keeps it out of the transcript too.
+  into a row and never persisted. It is cleared on `tool.start`, `message.delta`,
+  `message.interim` and every turn terminal. Desktop parity: `message-stream.ts` keeps it out of the transcript too.
 - **Reasoning comes only from `reasoning.delta` (`.reasoningDelta`) and `reasoning.available`**,
-  as one `.reasoning(text:isComplete:)` row per BURST. Deltas append to the open burst
+  as one `.reasoning(text:)` row per BURST. Deltas append to the open burst
   (`reasoningRowID`) only while it is the last row. A `tool.start`, a new `tool.complete` row
   or a `message.delta` after it closes the burst (`closeReasoningBurst`, the single close
   path), so at most one burst is ever open. `reasoning.available` (sent only when reasoning was
@@ -55,7 +55,7 @@ desktop (`apps/desktop/src/components/assistant-ui/tool/run-summary.ts`,
 
 ## Row model
 
-`ChatRow.Kind` is `message` | `tool(ToolCall)` | `reasoning(text:isComplete:)` | `status` |
+`ChatRow.Kind` is `message` | `tool(ToolCall)` | `reasoning(text:)` | `status` |
 `commandOutput`. `.reasoning` replaced the old one-per-turn `.thinking` row (discriminator
 `"reasoning"`). Timer, frozen duration and status moved off the row into state.
 
@@ -90,8 +90,10 @@ Consumers: `State.finalReplyRowIDs` gates `MessageActionBar` and branch (the cel
 the set once per render, not a per-cell store read); `State.completedReplies` is the read-aloud
 anchor's scale (`docs/features/read-aloud.md`). Interim commentary gets no action bar and is
 never read aloud. Known limit: a turn another client started (a `message.start` with no user
-row of ours) merges into the previous span until the next hydrate, so the previous reply loses
-its action bar meanwhile.
+row of ours) merges into the previous span until the next hydrate. While it runs, the previous
+reply loses its action bar; once it finishes, its reply becomes the span's final reply and the
+previous reply folds behind the "Worked for …" header as interim commentary, with the duration
+spanning both turns.
 
 ## Display items (`TranscriptFold.items`)
 
@@ -115,7 +117,7 @@ id holds while the run grows.
 - **Header.** Emitted for the running turn always, and for a finished turn only when it has
   foldable content: a plain question and answer gets no header that expands to nothing. The
   running preamble gets no header; it ends the items with `.liveIndicator` instead, so a live
-  turn always shows its label and timer. Header title logic is `TurnHeader.title` /
+  turn always shows its label and timer. Header title logic is `TurnHeader.finishedTitle` /
   `liveLabel` in HermesKit; the view lays the timer beside the label so a long provider-wait
   line truncates, not the timer.
 - **Foldable rows** = tool, reasoning and assistant messages, minus the final reply and the
@@ -131,7 +133,8 @@ id holds while the run grows.
   so a run growing 1 → 2 keeps its key); `CallKey` counts every tool row in the turn whatever is
   showing. `ordinalOffset` = user rows before the window.
 - **Window snap.** `State.windowStart` stays RAW; `snappedWindowStart` (derived) snaps it down to
-  the containing turn's user row, so a header is never orphaned. `visibleRows`, `hasMoreAbove`
+  the containing turn's user row, walking back at most one page (a longer turn keeps the raw
+  start and shows headerless until older rows load). `visibleRows`, `hasMoreAbove`
   and `transcriptItems` read the snapped start; the many "parked at the bottom" checks keep
   comparing raw values, so a snap never reads as a scroll-up. Paging steps from the snapped
   start.
@@ -217,7 +220,8 @@ its separate diff card).
 **Outcome** (desktop `toolStatus`): no result → `.unknown` (neutral, no checkmark);
 `success`/`ok == true` wins → `.success`; an `error`/`errors`/`failure`/`exception` key (≤ 5
 levels), `success`/`ok == false`, or `status` matching error/failed/fatal → `.failure(message)`;
-a non-zero `exit_code` fails only when there is no output. Routine errors become
+a non-zero `exit_code` fails only when there is no output; any other result → `.success`.
+Routine errors become
 **`.notice(message)`**: the explanation is kept but never red (`read_file` "File not found:",
 `terminal` exit 1 with no output, `skill_manage` unless `ROLLBACK FAILED`, `memory` refusals).
 Only `.failure` turns the icon red and counts as failed.
@@ -274,8 +278,8 @@ parsed title, duration (`ToolPresentation.durationLabel`) and an outcome badge (
 Failed / Notice / Running; none for a reloaded call with no result, so no false success).
 Body = the same `ToolBodyContent`, UNCAPPED. A collapsed **Raw** disclosure lists
 `ToolCall.rawSections` (pure, unit-tested): Context, Arguments, Arguments (text), Result,
-Result (text), Diff. Each is deduped against the others and skipped when blank; a cooked
-history row's context, stored as both title and `argsText`, appears once.
+Result (text), Diff. Blank sections are skipped, and a "(text)" section appears only when it
+isn't just the structured value re-serialized.
 
 ## Data availability: live vs reloaded
 
@@ -286,14 +290,14 @@ history row's context, stored as both title and `argsText`, appears once.
 | Edit diff | `inline_diff` / result | `display_metadata…inline_diff` + `content` | live `inline_diff` only |
 | Skill / delegate body | `args` | `args` | context fallback |
 | Turn duration | client clock | server `timestamp` | header says "Worked" |
-| Reasoning | bursts | bursts (`isComplete: true`) | same |
+| Reasoning | bursts | bursts | same |
 
 Cooked history tool rows carry `content` only for `write_file` / `patch` / `skill_manage`.
 `reconstructTranscript` keeps it as `resultText` always, plus a structured `result` when it
 parses as a JSON object or array (the live `tool.complete` shape). The hydrated title is
 `context ?? name`, the live shape, so an older agent's reloaded call keeps its target. A
-`timestamp` of 0 maps to nil. Hydrate and the #26 running-turn preservation (live tool rows
-and `liveReasoningRowIDs`): `docs/architecture.md` → "Session re-hydration".
+`timestamp` of 0 maps to nil. Hydrate and the #26 running-turn preservation:
+`docs/architecture.md` → "Session re-hydration".
 
 ## Out of scope
 
