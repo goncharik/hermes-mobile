@@ -9,6 +9,8 @@
 Chat with sessions, watch the agent work in real time, and approve or clarify its
 actions — all on the go, while the real runtime stays on your Mac or server.
 
+**[Join the public TestFlight beta →](https://testflight.apple.com/join/SyHGvf9n)**
+
 <img src="app-store-preview.png" alt="Hermes Mobile screenshots" width="100%" />
 <br/>
 
@@ -121,6 +123,15 @@ away from your desk and still keep your agent moving.
   key can safely live), and the app deep-links you straight to the session. Privacy by
   design: only a generic title/body and the `session_id` ever transit the gateway — the
   real message content is fetched in-app over your private network, never through Apple.
+
+## Get the app
+
+Install it from the **[public TestFlight beta](https://testflight.apple.com/join/SyHGvf9n)**
+(iPhone and iPad, iOS 18+). The app is only the remote control: you still need a running
+Hermes Agent your device can reach over your network or VPN. Do step 1 of the quick start
+below on the agent machine (the app's built-in **Set Up Your Agent** guide walks you
+through the same recipe), then connect as in step 3. Building from source is only needed
+if you want to hack on the app.
 
 ## Quick start
 
