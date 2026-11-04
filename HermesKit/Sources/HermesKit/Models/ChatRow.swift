@@ -10,20 +10,29 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
   /// thumbnails in the bubble. Only set on the user's just-sent row — reloaded history
   /// has no local bytes.
   public var attachmentImages: [Data]
+  /// When the row last changed state: the server's `timestamp` on a hydrated row; on a live
+  /// row the client clock at append, re-stamped when it completes (a sealed segment, a
+  /// finished tool call, a closed reasoning burst). Feeds the turn duration ("Worked for
+  /// 4m 31s"); `nil` when unknown (older agents, a legacy cached snapshot). Never part of the
+  /// row's identity — the id is derived from position + kind only.
+  public var timestamp: Date?
 
-  public init(id: UUID, kind: Kind, attachmentImages: [Data] = []) {
+  public init(id: UUID, kind: Kind, attachmentImages: [Data] = [], timestamp: Date? = nil) {
     self.id = id
     self.kind = kind
     self.attachmentImages = attachmentImages
+    self.timestamp = timestamp
   }
 
   /// `attachmentImages` is intentionally omitted from `CodingKeys`, so attachment BYTES
   /// never round-trip through the snapshot cache — base64 blobs would bloat it and they
   /// can't be re-hydrated from the server anyway (`reconstructTranscript` never sets them).
   /// The rule lives in the type: decode defaults it to `[]`. (See `ChatSnapshotStore`.)
+  /// `timestamp` round-trips (synthesized encode writes it only when set).
   private enum CodingKeys: String, CodingKey {
     case id
     case kind
+    case timestamp
   }
 
   public init(from decoder: Decoder) throws {
@@ -31,14 +40,16 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
     self.id = try c.decode(UUID.self, forKey: .id)
     self.kind = try c.decode(Kind.self, forKey: .kind)
     self.attachmentImages = []
+    // Absent in snapshots cached before timestamps existed — and lenient on a bad value.
+    self.timestamp = (try? c.decodeIfPresent(Date.self, forKey: .timestamp)) ?? nil
   }
 
   public enum Kind: Equatable, Sendable, Codable {
     /// A user or assistant message. `isComplete` is false while it streams.
     case message(role: Role, text: String, isComplete: Bool)
-    /// A tool/skill invocation. `title` is the human label (server summary/context →
-    /// fallback to `name`); `detail` (args/result/diff) fills in over `tool.complete`.
-    case tool(name: String, title: String, state: ToolState, detail: ToolDetail?, durationS: Double?)
+    /// A tool/skill invocation (see ``ToolCall``); its detail (args/result/diff) fills in
+    /// over `tool.complete`.
+    case tool(ToolCall)
     /// One reasoning BURST: consecutive `reasoning.delta` / `reasoning.available` text with
     /// no tool or text row after it. A turn that reasons, calls a tool, then reasons again
     /// gets two rows. `isComplete` is false while the burst is still open (the last row of
@@ -78,6 +89,14 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
       if case let .message(role, _, _) = self { return role }
       return nil
     }
+
+    /// Convenience for building a `.tool` row from its fields (the payload is a
+    /// ``ToolCall``; pattern-match `.tool(let call)` to read it).
+    public static func tool(
+      name: String, title: String, state: ToolState, detail: ToolDetail?, durationS: Double?
+    ) -> Kind {
+      .tool(ToolCall(name: name, title: title, state: state, detail: detail, durationS: durationS))
+    }
   }
 
   /// Text put on the pasteboard when the user copies this row (Task 11). Tool rows
@@ -85,8 +104,8 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
   public var copyText: String {
     switch kind {
     case let .message(_, text, _): return text
-    case let .tool(name, title, _, detail, _):
-      return detail?.resultText?.nonEmpty ?? title.nonEmpty ?? name
+    case let .tool(call):
+      return call.detail?.resultText?.nonEmpty ?? call.title.nonEmpty ?? call.name
     case let .reasoning(text, _): return text
     case let .status(_, text): return text
     case let .commandOutput(text): return text
@@ -136,13 +155,42 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
   }
 }
 
+/// The payload of a `.tool` row: one tool/skill invocation, started by `tool.start` and
+/// completed in place by `tool.complete` (merged via the reducer's `toolRowIDs`), or rebuilt
+/// complete from a cooked history row.
+public struct ToolCall: Equatable, Sendable, Codable {
+  /// The tool's wire name (`terminal`, `read_file`, …).
+  public var name: String
+  /// The human label: the server's summary / context, falling back to `name`.
+  public var title: String
+  public var state: ChatRow.ToolState
+  /// Args / result / edit diff; `nil` when the call carried none.
+  public var detail: ToolDetail?
+  /// Wall-clock duration from `tool.complete` (`duration_s`); live-only.
+  public var durationS: Double?
+
+  public init(
+    name: String, title: String, state: ChatRow.ToolState,
+    detail: ToolDetail? = nil, durationS: Double? = nil
+  ) {
+    self.name = name
+    self.title = title
+    self.state = state
+    self.detail = detail
+    self.durationS = durationS
+  }
+}
+
 /// Expanded detail for a tool/skill row, shown in the detail sheet. Populated from the
 /// richer `tool.start`/`tool.complete` payloads (args, result, edit diff).
 public struct ToolDetail: Equatable, Sendable, Codable {
   /// Human-readable args (from `tool.start` `args_text`, verbose runs).
   public var argsText: String?
-  /// Structured call args (from `tool.complete`), rendered as pretty JSON.
+  /// Structured call args (`tool.start` `args`, else `tool.complete` `args`; a cooked
+  /// history row's `args`), rendered as pretty JSON.
   public var args: JSONValue?
+  /// The structured result (`tool.complete` `result` parsed as JSON); `nil` when absent.
+  public var result: JSONValue?
   /// Result text (`result_text`, or a stringified `result`).
   public var resultText: String?
   /// Unified edit diff for file-editing tools (`inline_diff`).
@@ -151,17 +199,20 @@ public struct ToolDetail: Equatable, Sendable, Codable {
   public init(
     argsText: String? = nil,
     args: JSONValue? = nil,
+    result: JSONValue? = nil,
     resultText: String? = nil,
     inlineDiff: String? = nil
   ) {
     self.argsText = argsText
     self.args = args
+    self.result = result
     self.resultText = resultText
     self.inlineDiff = inlineDiff
   }
 
   public var isEmpty: Bool {
-    argsText == nil && (args == nil || args == .null) && resultText == nil && inlineDiff == nil
+    argsText == nil && (args == nil || args == .null) && (result == nil || result == .null)
+      && resultText == nil && inlineDiff == nil
   }
 }
 

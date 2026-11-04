@@ -341,7 +341,10 @@ struct HydrateTests {
     ))) {
       $0.usage = Usage(contextUsed: 50, contextMax: 200_000, contextPercent: 0)
       $0.isSending = false
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .assistant, text: "hello there", isComplete: true))]
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .message(role: .assistant, text: "hello there", isComplete: true),
+        timestamp: Date(timeIntervalSince1970: 123)
+      )]
     }
     // message.complete clears this session's list glow (running:false).
     await store.receive(\.delegate.runningChanged)
@@ -356,7 +359,11 @@ struct HydrateTests {
     let saved = snapshotClient.loadSnapshot("stored123")
     #expect(saved?.model == "claude-opus-4-8")
     #expect(saved?.usage == Usage(contextUsed: 50, contextMax: 200_000, contextPercent: 0))
-    #expect(saved?.rows == [ChatRow(id: self.uuid(0), kind: .message(role: .assistant, text: "hello there", isComplete: true))])
+    // The row's live timestamp round-trips through the snapshot cache.
+    #expect(saved?.rows == [ChatRow(
+      id: self.uuid(0), kind: .message(role: .assistant, text: "hello there", isComplete: true),
+      timestamp: Date(timeIntervalSince1970: 123)
+    )])
     #expect(saved?.updatedAt == Date(timeIntervalSince1970: 123))
 
     await store.send(.teardown)

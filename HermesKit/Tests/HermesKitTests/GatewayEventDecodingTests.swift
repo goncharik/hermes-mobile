@@ -57,13 +57,22 @@ import Testing
 
   @Test func messageCompleteDecodesUsage() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"8680ce37","payload":{"text":"pong","status":"complete","usage":{"model":"gpt-5.5","input":6303,"output":31,"total":18622,"context_used":18591,"context_max":272000,"context_percent":7,"cost_usd":0.0}}}}"#)
-    guard case let (_, .messageComplete(text, usage))? = f.eventParts else {
+    guard case let (_, .messageComplete(text, usage, responseReused))? = f.eventParts else {
       Issue.record("expected messageComplete, got \(f)"); return
     }
     #expect(text == "pong")
+    #expect(responseReused == false) // absent → false (older agents)
     #expect(usage?.input == 6303)
     #expect(usage?.output == 31)
     #expect(usage?.contextMax == 272_000)
+  }
+
+  @Test func messageCompleteDecodesResponseReused() throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"s","payload":{"text":"Here is the answer.","response_previewed":true,"response_reused":true}}}"#)
+    #expect(f == .event(sessionID: "s", .messageComplete(text: "Here is the answer.", usage: nil, responseReused: true)))
+    // A non-bool value is lenient: treated as not reused.
+    let odd = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"s","payload":{"text":"x","response_reused":"yes"}}}"#)
+    #expect(odd == .event(sessionID: "s", .messageComplete(text: "x", usage: nil, responseReused: false)))
   }
 
   @Test func thinkingDeltaIsASpinnerFrameNotReasoning() throws {

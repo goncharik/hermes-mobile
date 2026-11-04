@@ -825,7 +825,10 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.delegate.runningChanged)
     await store.receive(\.home.setSessionRunning)
     await store.send(.liveChat(.gatewayEvent(.reasoningDelta(text: "weighing")))) {
-      $0.liveChat?.transcript = [ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: false))]
+      $0.liveChat?.transcript = [ChatRow(
+        id: reasoningID, kind: .reasoning(text: "weighing", isComplete: false),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
       $0.liveChat?.reasoningRowID = reasoningID
     }
 
@@ -857,8 +860,11 @@ struct AppFeatureTests {
     let assistantID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     await store.send(.liveChat(.gatewayEvent(.messageDelta(text: "still streaming")))) {
       $0.liveChat?.transcript = [
-        ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: true)),
-        ChatRow(id: assistantID, kind: .message(role: .assistant, text: "still streaming", isComplete: false)),
+        ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: true), timestamp: Date(timeIntervalSince1970: 0)),
+        ChatRow(
+          id: assistantID, kind: .message(role: .assistant, text: "still streaming", isComplete: false),
+          timestamp: Date(timeIntervalSince1970: 0)
+        ),
       ]
       $0.liveChat?.reasoningRowID = nil
       $0.liveChat?.streamingRowID = assistantID

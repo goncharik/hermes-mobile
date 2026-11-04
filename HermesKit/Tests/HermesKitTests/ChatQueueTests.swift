@@ -13,6 +13,8 @@ struct ChatQueueTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// The pinned `date` the stores use — what the fold stamps on echoed user rows.
+  private let t0 = Date(timeIntervalSince1970: 0)
 
   /// A chat mid-turn: live session bound, turn streaming (`isSending`).
   private func runningState(composerText: String = "") -> ChatFeature.State {
@@ -165,7 +167,7 @@ struct ChatQueueTests {
       $0.drainingEntry = QueuedPrompt(id: self.uuid(90), text: "first")
       $0.drainingRowID = self.uuid(0)
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "first", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "first", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.receive(\.delegate.runningChanged)
@@ -226,7 +228,7 @@ struct ChatQueueTests {
       $0.drainingEntry = QueuedPrompt(id: self.uuid(90), text: "doomed")
       $0.drainingRowID = self.uuid(0)
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "doomed", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "doomed", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.receive(\.delegate.runningChanged)
@@ -397,7 +399,7 @@ struct ChatQueueTests {
       $0.isSending = true
       $0.errorBanner = nil
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "fresh message", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "fresh message", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.finish()
@@ -480,7 +482,7 @@ struct ChatQueueTests {
       $0.drainingEntry = QueuedPrompt(id: self.uuid(91), text: "send me now")
       $0.drainingRowID = self.uuid(0)
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "send me now", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "send me now", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.finish()
@@ -519,7 +521,7 @@ struct ChatQueueTests {
       $0.drainingEntry = QueuedPrompt(id: self.uuid(90), text: "urgent")
       $0.drainingRowID = self.uuid(0)
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "urgent", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "urgent", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.finish()
@@ -562,7 +564,7 @@ struct ChatQueueTests {
       $0.drainingEntry = QueuedPrompt(id: self.uuid(90), text: "urgent")
       $0.drainingRowID = self.uuid(0)
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "urgent", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "urgent", isComplete: true), timestamp: self.t0)
       ]
     }
     await store.receive(\.delegate.runningChanged)

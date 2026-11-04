@@ -1439,7 +1439,10 @@ struct ChatInteractionTests {
     }
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
       $0.composerText = ""
       $0.errorBanner = nil
       $0.isSending = true // optimistic; cleared when the failure arrives
@@ -1466,7 +1469,10 @@ struct ChatInteractionTests {
     }
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
       $0.composerText = ""
       $0.errorBanner = nil
       $0.isSending = true
@@ -1503,7 +1509,10 @@ struct ChatInteractionTests {
       $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Pondering"))) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .reasoning(text: "Pondering", isComplete: false))]
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .reasoning(text: "Pondering", isComplete: false),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
       $0.reasoningRowID = self.uuid(0)
     }
     await clock.advance(by: .seconds(2))

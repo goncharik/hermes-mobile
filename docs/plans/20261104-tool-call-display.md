@@ -362,12 +362,12 @@ public enum Body {
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift`, `ReplayTests.swift`
 
-- [ ] wrap tool payload in a `ToolCall` struct (`.tool(ToolCall)`) and add `ToolDetail.result`; keep the start/complete merge via `toolRowIDs`, now merging `args` from start when complete omits them
-- [ ] `message.interim`: seal the streaming row (`already_streamed`) or append a sealed row; dedup a re-sent seal by `(turn_id, segment)`; inert-duplicate guard inside a #98 replay fold
-- [ ] check `message.complete` against the server contract (`response_reused`) so the final text lands on the final segment only — never overwrites a sealed interim row
-- [ ] add `ChatRow.timestamp` (`decodeIfPresent`, excluded from id derivation); stamp live rows from the `date` dependency on append and on completion
-- [ ] tests: interim → final produces two rows in order around tool rows; replayed seal not duplicated; complete-without-deltas; tool args from start survive complete; timestamps stamped
-- [ ] run tests — must pass before Task 4
+- [x] wrap tool payload in a `ToolCall` struct (`.tool(ToolCall)`) and add `ToolDetail.result`; keep the start/complete merge via `toolRowIDs`, now merging `args` from start when complete omits them
+- [x] `message.interim`: seal the streaming row (`already_streamed`) or append a sealed row; dedup a re-sent seal by `(turn_id, segment)`; inert-duplicate guard inside a #98 replay fold
+- [x] check `message.complete` against the server contract (`response_reused`) so the final text lands on the final segment only — never overwrites a sealed interim row (➕ `message.complete` now decodes `response_reused`)
+- [x] add `ChatRow.timestamp` (`decodeIfPresent`, excluded from id derivation); stamp live rows from the `date` dependency on append and on completion
+- [x] tests: interim → final produces two rows in order around tool rows; replayed seal not duplicated; complete-without-deltas; tool args from start survive complete; timestamps stamped
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Rebuild hydrate and the #26 preservation on the new rows
 

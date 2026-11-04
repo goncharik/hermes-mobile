@@ -59,12 +59,38 @@ struct ChatSnapshotClientTests {
         name: "bash",
         title: "Run command",
         state: .complete,
-        detail: ToolDetail(argsText: "ls", args: .object(["cmd": .string("ls")]), resultText: "file.txt"),
+        detail: ToolDetail(
+          argsText: "ls", args: .object(["cmd": .string("ls")]),
+          result: .object(["output": .string("file.txt"), "exit_code": .number(0)]),
+          resultText: "file.txt"
+        ),
         durationS: 1.5
-      )
+      ),
+      timestamp: Date(timeIntervalSince1970: 1_700_000_000)
     )
     client.saveSnapshot("s1", ChatSnapshot(rows: [toolRow]))
     #expect(client.loadSnapshot("s1")?.rows == [toolRow])
+  }
+
+  @Test func rowTimestampRoundTripsAndIsOptional() throws {
+    // A stamped row keeps its timestamp through Codable; an unstamped one writes no key.
+    let stamped = ChatRow(
+      id: UUID(), kind: .message(role: .user, text: "q", isComplete: true),
+      timestamp: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    #expect(try JSONDecoder().decode(ChatRow.self, from: JSONEncoder().encode(stamped)) == stamped)
+    let unstamped = ChatRow(id: UUID(), kind: .message(role: .user, text: "q", isComplete: true))
+    let json = try #require(String(data: JSONEncoder().encode(unstamped), encoding: .utf8))
+    #expect(!json.contains("timestamp"))
+
+    // A row cached before timestamps existed decodes with `timestamp == nil`; a malformed
+    // value is lenient too (the row still paints).
+    let legacy = #"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"message":{"role":{"user":{}},"text":"q","isComplete":true}}}"#
+    let decoded = try JSONDecoder().decode(ChatRow.self, from: Data(legacy.utf8))
+    #expect(decoded.timestamp == nil)
+    #expect(decoded.kind == .message(role: .user, text: "q", isComplete: true))
+    let malformed = #"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"message":{"role":{"user":{}},"text":"q","isComplete":true}},"timestamp":"soon"}"#
+    #expect(try JSONDecoder().decode(ChatRow.self, from: Data(malformed.utf8)).timestamp == nil)
   }
 
   @Test func snapshotRoundTripsCommandOutputRows() {

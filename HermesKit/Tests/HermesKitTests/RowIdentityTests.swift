@@ -15,6 +15,8 @@ struct RowIdentityTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// `makeStore`'s pinned `date` — what the fold stamps on live rows.
+  private let t0 = Date(timeIntervalSince1970: 0)
 
   private func makeStore() -> TestStore<ChatFeature.State, ChatFeature.Action> {
     TestStore(initialState: ChatFeature.State(connection: conn)) {
@@ -22,7 +24,7 @@ struct RowIdentityTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = TestClock()
-      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.date = .constant(t0)
     }
   }
 
@@ -64,7 +66,7 @@ struct RowIdentityTests {
     // First delta materialises the assistant row (uuid 0) — nothing was created eagerly.
     await store.send(.gatewayEvent(.messageDelta(text: "Hel"))) {
       $0.transcript = [
-        ChatRow(id: uuid(0), kind: .message(role: .assistant, text: "Hel", isComplete: false)),
+        ChatRow(id: uuid(0), kind: .message(role: .assistant, text: "Hel", isComplete: false), timestamp: t0),
       ]
       $0.streamingRowID = uuid(0)
     }
@@ -97,7 +99,7 @@ struct RowIdentityTests {
       $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false))]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "ning"))) {
@@ -122,13 +124,13 @@ struct RowIdentityTests {
       $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false))]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false), timestamp: t0)]
       $0.reasoningRowID = uuid(0)
     }
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
       $0.transcript = [
-        ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: true)),
-        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil)),
+        ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: true), timestamp: t0),
+        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil), timestamp: t0),
       ]
       $0.reasoningRowID = nil
       $0.toolRowIDs["t1"] = uuid(1)

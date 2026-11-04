@@ -122,8 +122,10 @@ struct ChatView: View {
     // the mic/voice cleanup (`.viewDisappeared`). Slot teardown is an `AppFeature` policy,
     // not a view event.
     .sheet(item: toolDetailBinding) { row in
-      if case let .tool(name, title, _, detail, durationS) = row.kind {
-        ToolDetailSheet(name: name, title: title, detail: detail ?? ToolDetail(), durationS: durationS)
+      if case let .tool(call) = row.kind {
+        ToolDetailSheet(
+          name: call.name, title: call.title, detail: call.detail ?? ToolDetail(), durationS: call.durationS
+        )
       }
     }
     .sheet(isPresented: modelPickerBinding) {
@@ -295,10 +297,10 @@ struct ChatView: View {
           )
         }
       }
-    case let .tool(name, title, state, detail, durationS):
+    case let .tool(call):
       ToolStatusView(
-        name: name, title: title, state: state, durationS: durationS,
-        hasDetail: detail?.isEmpty == false,
+        name: call.name, title: call.title, state: call.state, durationS: call.durationS,
+        hasDetail: call.detail?.isEmpty == false,
         onTap: { store.send(.toolTapped(id: row.id)) }
       )
     case let .reasoning(text, isComplete):

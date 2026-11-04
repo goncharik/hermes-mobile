@@ -237,16 +237,16 @@ struct ReplayTests {
     let transcript = store.state.transcript
     #expect(transcript.first?.kind == .message(role: .user, text: "run the tests", isComplete: true))
     #expect(store.state.toolRowIDs == ["t1": uuid(0), "t2": uuid(1)])
-    guard case let .tool(_, title, toolState, _, _) = transcript[id: uuid(0)]?.kind else {
+    guard case let .tool(first) = transcript[id: uuid(0)]?.kind else {
       Issue.record("expected the folded t1 tool row"); return
     }
-    #expect(title == "Run tests")
-    #expect(toolState == .complete)
-    guard case let .tool(name, _, secondState, _, _) = transcript[id: uuid(1)]?.kind else {
+    #expect(first.title == "Run tests")
+    #expect(first.state == .complete)
+    guard case let .tool(second) = transcript[id: uuid(1)]?.kind else {
       Issue.record("expected the folded t2 tool row"); return
     }
-    #expect(name == "read")
-    #expect(secondState == .running)
+    #expect(second.name == "read")
+    #expect(second.state == .running)
     // No eager row: the gap's last tool row stays last.
     #expect(transcript.last?.id == uuid(1))
     await store.send(.teardown)
@@ -807,7 +807,10 @@ struct ReplayTests {
     // The reply text is left to the hydrate (no materialised assistant row in the fold).
     await store.receive(\.eventReplayResult.success) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil)),
+        ChatRow(
+          id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
         ChatRow(id: self.uuid(1), kind: .status(kind: ChatRow.Kind.reviewStatusKind, text: "💾 Self-improvement review: noted.")),
       ]
     }
@@ -855,6 +858,57 @@ struct ReplayTests {
     ]))
     // Only the hydrate reports the turn's state.
     #expect(gateway.running.value == [false])
+    await store.send(.teardown)
+  }
+
+  /// `message.interim` in a #98 replay fold: a STREAMED seal is inert (its deltas were skipped
+  /// and the drop already finalized the pre-drop partial — an appended copy would show the
+  /// segment twice until the hydrate), while an UN-streamed seal is the only delivery of its
+  /// text and lands as a sealed row.
+  @Test func aReplayedStreamedSealIsInertButAnUnstreamedOneLands() async {
+    let gateway = ReplayHarness()
+    gateway.since.setValue(.success(Self.since([
+      Self.event("message.delta", 42, ["text": .string("lo, checking")]),
+      Self.event("message.interim", 43, [
+        "text": .string("Hello, checking"), "already_streamed": .bool(true),
+        "turn_id": .string("turn-1"), "segment": .number(0),
+      ]),
+      Self.event("tool.start", 44, ["tool_id": .string("t1"), "name": .string("terminal")]),
+      Self.event("message.interim", 45, [
+        "text": .string("Ran it."), "already_streamed": .bool(false),
+        "turn_id": .string("turn-1"), "segment": .number(1),
+      ]),
+    ])))
+    gateway.resume.setValue(Self.resume(running: false, messages: [Self.message(1, "user", "q")]))
+    var initial = droppedState()
+    initial.status = .ready
+    initial.hasRequestedSession = true
+    initial.isSending = true
+    initial.transcript = [ChatRow(id: uuid(900), kind: .message(role: .assistant, text: "Hel", isComplete: false))]
+    initial.streamingRowID = uuid(900)
+    let store = gateway.makeStore(initial)
+
+    await store.send(.gatewayClosed)
+    await store.send(.gatewayFrame(ready))
+    await store.receive(\.eventReplayResult.success) {
+      $0.transcript = [
+        // The finalized pre-drop partial — the streamed seal added no copy of it.
+        ChatRow(id: self.uuid(900), kind: .message(role: .assistant, text: "Hel", isComplete: true)),
+        ChatRow(
+          id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
+        ChatRow(
+          id: self.uuid(1), kind: .message(role: .assistant, text: "Ran it.", isComplete: true),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
+      ]
+      $0.replayCursor = .init(sessionID: "live1", seq: 45)
+      $0.toolRowIDs = ["t1": self.uuid(0)]
+      $0.sealedSegments = [.init(turnID: "turn-1", segment: 0), .init(turnID: "turn-1", segment: 1)]
+    }
+    await store.receive(\.activateResult.success)
+    await store.receive(\.delegate.runningChanged)
     await store.send(.teardown)
   }
 

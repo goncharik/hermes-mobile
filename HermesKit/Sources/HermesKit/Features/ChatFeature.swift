@@ -669,6 +669,16 @@ public struct ChatFeature {
     /// exec was in flight" guard reads it.
     var isTurnLive: Bool
     var toolRowIDs: [String: ChatRow.ID]
+    /// The wire identity of one sealed `message.interim` segment.
+    struct SealedSegment: Hashable, Sendable {
+      var turnID: String
+      var segment: Int
+    }
+    /// Segments this turn already sealed (stamped `message.interim`s only — both `turn_id`
+    /// and `segment` present, desktop parity). A re-sent seal (a superseded attempt
+    /// re-streaming, a second delivery) is a no-op instead of a second bubble. Reset at
+    /// `message.start`.
+    var sealedSegments: Set<SealedSegment>
     var reconnectAttempt: Int
     var hasRequestedSession: Bool
     /// Set by the first `.task` (the initial connect). The view's `.task` fires on EVERY
@@ -779,6 +789,7 @@ public struct ChatFeature {
       self.reasoningRowID = nil
       self.isTurnLive = false
       self.toolRowIDs = [:]
+      self.sealedSegments = []
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
       self.hasStarted = false
@@ -2349,7 +2360,8 @@ public struct ChatFeature {
         state.transcript.append(ChatRow(
           id: rowID,
           kind: .message(role: .user, text: displayText, isComplete: true),
-          attachmentImages: images
+          attachmentImages: images,
+          timestamp: now
         ))
         maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
         if fromQueue {
@@ -2760,6 +2772,7 @@ public struct ChatFeature {
       // the live elapsed timer (mirrors the voice-recording tick).
       freezeTurn(into: &state)
       state.isTurnLive = true
+      state.sealedSegments = []
       // Reaffirm the turn-start anchor at the authoritative turn start (the submit anchor is
       // optimistic; `message.start` is the agent's first beat). A hydrate mid-turn reconciles
       // the live elapsed timer against this instant. Tell the list this session is now
@@ -2777,15 +2790,29 @@ public struct ChatFeature {
       appendToStreamingMessage(text, into: &state)
       return .none
 
-    case let .messageComplete(text, usage):
+    case let .messageComplete(text, usage, responseReused):
       if let u = usage { state.usage = u }
+      // The final text lands on the CURRENT streaming segment only — a segment sealed by
+      // `message.interim` is no longer `streamingRowID`, so it is never overwritten.
       if let id = state.streamingRowID {
-        state.transcript[id: id]?.kind = .message(role: .assistant, text: text, isComplete: true)
-      } else if !text.isEmpty, !state.isFoldingReplay {
+        if case let .message(_, streamed, _) = state.transcript[id: id]?.kind {
+          // A reused final already on screen keeps the streamed text (desktop parity).
+          let kept = responseReused && Self.normalizedText(streamed).contains(Self.normalizedText(text))
+          state.transcript[id: id]?.kind = .message(
+            role: .assistant, text: kept ? streamed : text, isComplete: true
+          )
+          state.transcript[id: id]?.timestamp = now
+        }
+      } else if !text.isEmpty, !state.isFoldingReplay,
+                !Self.isFinalAlreadyShown(text, responseReused: responseReused, in: state.transcript) {
         // No deltas arrived (non-streamed reply) — materialise the row now. Not in a replay
         // fold (#98): a drop already finalized the pre-drop partial, so a second row would
-        // show the reply twice until the hydrate rebuilds it from history.
-        state.transcript.append(ChatRow(id: uuid(), kind: .message(role: .assistant, text: text, isComplete: true)))
+        // show the reply twice until the hydrate rebuilds it from history. Not when the
+        // final repeats a segment this turn already sealed (`response_reused`, or the same
+        // text as the turn's last assistant row): that sealed row IS the final reply.
+        state.transcript.append(ChatRow(
+          id: uuid(), kind: .message(role: .assistant, text: text, isComplete: true), timestamp: now
+        ))
       }
       // else: empty tool-only turn → no row at all.
       state.streamingRowID = nil
@@ -2828,9 +2855,10 @@ public struct ChatFeature {
       state.turnActivityLabel = text.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
       return .none
 
-    case .messageInterim:
-      // Decoded but not yet folded (tool-call display plan, Task 3) — inert, exactly as
-      // when `message.interim` decoded to `.unknown`.
+    case let .messageInterim(text, alreadyStreamed, turnID, segment):
+      sealInterimSegment(
+        text, alreadyStreamed: alreadyStreamed, turnID: turnID, segment: segment, into: &state
+      )
       return .none
 
     case let .reasoningAvailable(text):
@@ -2851,45 +2879,52 @@ public struct ChatFeature {
       state.turnStatus = text.nonEmpty
       return .none
 
-    case let .toolStart(toolID, name, title, argsText, _):
+    case let .toolStart(toolID, name, title, argsText, args):
       closeReasoningBurst(into: &state)
       state.turnActivityLabel = nil
       let id = uuid()
-      let detail = argsText.map { ToolDetail(argsText: $0) }
-      state.transcript.append(ChatRow(id: id, kind: .tool(
-        name: name, title: title?.nonEmpty ?? name, state: .running, detail: detail, durationS: nil
-      )))
+      let detail = ToolDetail(argsText: argsText, args: args?.nonNull)
+      state.transcript.append(ChatRow(id: id, kind: .tool(ToolCall(
+        name: name, title: title?.nonEmpty ?? name, state: .running,
+        detail: detail.isEmpty ? nil : detail
+      )), timestamp: now))
       if let toolID { state.toolRowIDs[toolID] = id }
       return .none
 
-    case let .toolComplete(toolID, name, title, args, resultText, inlineDiff, durationS, _):
-      let detail = ToolDetail(args: args, resultText: resultText?.nonEmpty, inlineDiff: inlineDiff?.nonEmpty)
+    case let .toolComplete(toolID, name, title, args, resultText, inlineDiff, durationS, result):
+      let detail = ToolDetail(
+        args: args?.nonNull, result: result?.nonNull,
+        resultText: resultText?.nonEmpty, inlineDiff: inlineDiff?.nonEmpty
+      )
       if let toolID, let id = state.toolRowIDs[toolID],
-         case let .tool(existingName, existingTitle, _, existingDetail, _) = state.transcript[id: id]?.kind {
-        // Merge: keep the start-time args_text; fill in result/diff/structured args.
+         case let .tool(existing) = state.transcript[id: id]?.kind {
+        // Merge: keep the start-time args_text, and the start-time structured args when the
+        // completion omits them; fill in result/diff.
         let merged = ToolDetail(
-          argsText: existingDetail?.argsText,
-          args: detail.args, resultText: detail.resultText, inlineDiff: detail.inlineDiff
+          argsText: existing.detail?.argsText,
+          args: detail.args ?? existing.detail?.args,
+          result: detail.result, resultText: detail.resultText, inlineDiff: detail.inlineDiff
         )
-        state.transcript[id: id]?.kind = .tool(
-          name: name ?? existingName,
-          title: title?.nonEmpty ?? existingTitle,
+        state.transcript[id: id]?.kind = .tool(ToolCall(
+          name: name ?? existing.name,
+          title: title?.nonEmpty ?? existing.title,
           state: .complete,
           detail: merged.isEmpty ? nil : merged,
           durationS: durationS
-        )
+        ))
+        state.transcript[id: id]?.timestamp = now
       } else {
         // tool.complete with no prior start — create the row directly (it ends the open
         // reasoning burst like any appended tool row).
         closeReasoningBurst(into: &state)
         let resolvedName = name ?? ""
-        state.transcript.append(ChatRow(id: uuid(), kind: .tool(
+        state.transcript.append(ChatRow(id: uuid(), kind: .tool(ToolCall(
           name: resolvedName,
           title: title?.nonEmpty ?? resolvedName,
           state: .complete,
           detail: detail.isEmpty ? nil : detail,
           durationS: durationS
-        )))
+        )), timestamp: now))
       }
       return .none
 
@@ -3042,11 +3077,87 @@ public struct ChatFeature {
        case let .message(role, existing, _) = state.transcript[id: id]?.kind {
       state.transcript[id: id]?.kind = .message(role: role, text: existing + text, isComplete: false)
     } else {
-      // First delta of the turn — create the assistant row lazily (see `.messageStart`).
+      // First delta of the segment — create the assistant row lazily (see `.messageStart`;
+      // after a `message.interim` seal the next delta opens a new segment row).
       let id = uuid()
-      state.transcript.append(ChatRow(id: id, kind: .message(role: .assistant, text: text, isComplete: false)))
+      state.transcript.append(ChatRow(
+        id: id, kind: .message(role: .assistant, text: text, isComplete: false), timestamp: now
+      ))
       state.streamingRowID = id
     }
+  }
+
+  /// Fold a `message.interim` seal (desktop `finalizeInterimAssistantMessage` parity): the
+  /// server closed a segment of interim commentary, so the next `message.delta` starts a new
+  /// row instead of appending to this one.
+  /// - A stamped seal (`turn_id` + `segment`) this turn already applied is a no-op.
+  /// - Blank text is a no-op.
+  /// - A streaming row → sealed in place with the authoritative text (`already_streamed` or
+  ///   not — a partial stream is completed by it).
+  /// - No streaming row → a completed assistant row is appended, unless the turn's newest
+  ///   assistant row already carries the same text (a duplicate delivery of the seal that
+  ///   just closed the stream), or this is a #98 replay fold of a STREAMED segment: its
+  ///   deltas were skipped and a drop already finalized any pre-drop partial, so an appended
+  ///   copy would show twice until the trailing hydrate rebuilds the turn from history.
+  private func sealInterimSegment(
+    _ text: String, alreadyStreamed: Bool, turnID: String?, segment: Int?,
+    into state: inout State
+  ) {
+    let key = turnID.flatMap { id in segment.map { State.SealedSegment(turnID: id, segment: $0) } }
+    if let key, state.sealedSegments.contains(key) { return }
+    guard text.trimmedNonEmpty != nil else { return }
+    if let key { state.sealedSegments.insert(key) }
+    // Text supersedes the spinner label and ends an open reasoning burst, like a delta.
+    closeReasoningBurst(into: &state)
+    state.turnActivityLabel = nil
+    if let id = state.streamingRowID {
+      if case .message = state.transcript[id: id]?.kind {
+        state.transcript[id: id]?.kind = .message(role: .assistant, text: text, isComplete: true)
+        state.transcript[id: id]?.timestamp = now
+      }
+      state.streamingRowID = nil
+      return
+    }
+    if Self.lastTurnAssistantText(in: state.transcript).map(Self.normalizedText) == Self.normalizedText(text) {
+      return
+    }
+    if state.isFoldingReplay, alreadyStreamed { return }
+    state.transcript.append(ChatRow(
+      id: uuid(), kind: .message(role: .assistant, text: text, isComplete: true), timestamp: now
+    ))
+  }
+
+  /// Whitespace-collapsed, trimmed text — the comparison key for "the same reply text".
+  static func normalizedText(_ text: String) -> String {
+    text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  }
+
+  /// The assistant `.message` texts of the CURRENT turn (rows after the last user row).
+  private static func turnAssistantTexts(in transcript: IdentifiedArrayOf<ChatRow>) -> [String] {
+    var texts: [String] = []
+    for row in transcript.reversed() {
+      guard case let .message(role, text, _) = row.kind else { continue }
+      if role == .user { break }
+      texts.append(text)
+    }
+    return texts.reversed()
+  }
+
+  /// The current turn's newest assistant `.message` text, if any.
+  private static func lastTurnAssistantText(in transcript: IdentifiedArrayOf<ChatRow>) -> String? {
+    turnAssistantTexts(in: transcript).last
+  }
+
+  /// Whether a `message.complete` final with no streaming row is already on screen as a
+  /// sealed segment of this turn: with `response_reused` any of the turn's assistant rows
+  /// carrying it counts (a reconnect that missed it still appends); without the flag (older
+  /// agents) only an identical newest assistant row does.
+  private static func isFinalAlreadyShown(
+    _ text: String, responseReused: Bool, in transcript: IdentifiedArrayOf<ChatRow>
+  ) -> Bool {
+    let final = normalizedText(text)
+    let texts = turnAssistantTexts(in: transcript).map(normalizedText)
+    return responseReused ? texts.contains { $0.contains(final) } : texts.last == final
   }
 
   /// Drop every stale prompt + the push-tap recovery hint when the turn is known to be over
@@ -3567,16 +3678,17 @@ public struct ChatFeature {
     }
     closeReasoningBurst(into: &state)
     let id = uuid()
-    state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text, isComplete: false)))
+    state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text, isComplete: false), timestamp: now))
     state.reasoningRowID = id
   }
 
-  /// End the open reasoning burst (if any): mark its row complete and drop the pointer, so
-  /// the next reasoning text starts a fresh row. Idempotent.
+  /// End the open reasoning burst (if any): mark its row complete (re-stamped at the close)
+  /// and drop the pointer, so the next reasoning text starts a fresh row. Idempotent.
   private func closeReasoningBurst(into state: inout State) {
     guard let id = state.reasoningRowID else { return }
     if case let .reasoning(text, false) = state.transcript[id: id]?.kind {
       state.transcript[id: id]?.kind = .reasoning(text: text, isComplete: true)
+      state.transcript[id: id]?.timestamp = now
     }
     state.reasoningRowID = nil
   }
@@ -4544,7 +4656,9 @@ public struct ChatFeature {
        compressCommandNames.contains(parseSlashCommand(text).name.lowercased()) {
       let rowID = uuid()
       let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
-      state.transcript.append(ChatRow(id: rowID, kind: .message(role: .user, text: text, isComplete: true)))
+      state.transcript.append(ChatRow(
+        id: rowID, kind: .message(role: .user, text: text, isComplete: true), timestamp: now
+      ))
       maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
       if fromQueue { state.drainingRowID = rowID } else { state.composerText = "" }
       state.errorBanner = nil
@@ -4582,7 +4696,9 @@ public struct ChatFeature {
        catalog.resolvesCommand(named: parseSlashCommand(text).name) {
       let rowID = uuid()
       let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
-      state.transcript.append(ChatRow(id: rowID, kind: .message(role: .user, text: text, isComplete: true)))
+      state.transcript.append(ChatRow(
+        id: rowID, kind: .message(role: .user, text: text, isComplete: true), timestamp: now
+      ))
       maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
       if fromQueue { state.drainingRowID = rowID } else { state.composerText = "" }
       state.errorBanner = nil
@@ -4609,7 +4725,9 @@ public struct ChatFeature {
 
     let rowID = uuid()
     let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
-    state.transcript.append(ChatRow(id: rowID, kind: .message(role: .user, text: text, isComplete: true)))
+    state.transcript.append(ChatRow(
+      id: rowID, kind: .message(role: .user, text: text, isComplete: true), timestamp: now
+    ))
     maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
     if fromQueue { state.drainingRowID = rowID } else { state.composerText = "" }
     state.errorBanner = nil
@@ -4727,7 +4845,7 @@ public struct ChatFeature {
   /// snapshot refresh. (`.unknown`, blocking-request prompts, and bare status lines don't.)
   private func persistRelevant(_ event: GatewayEvent) -> Bool {
     switch event {
-    case .messageStart, .messageDelta, .messageComplete,
+    case .messageStart, .messageDelta, .messageComplete, .messageInterim,
          .reasoningDelta, .reasoningAvailable,
          .toolStart, .toolComplete, .sessionInfo:
       return true
@@ -4740,8 +4858,7 @@ public struct ChatFeature {
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
     case .ready, .error, .serverRequestFailed, .serverRequestsUnavailable, .authExpired, .approvalRequest,
-         .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest, .unknown,
-         .messageInterim:
+         .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest, .unknown:
       return false
     }
   }

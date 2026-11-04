@@ -674,7 +674,8 @@ struct ChatBranchTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [ChatRow(
-        id: self.uuid(0), kind: .message(role: .user, text: "follow-up", isComplete: true)
+        id: self.uuid(0), kind: .message(role: .user, text: "follow-up", isComplete: true),
+        timestamp: Date(timeIntervalSince1970: 0)
       )]
       $0.composerText = ""
       $0.isSending = true

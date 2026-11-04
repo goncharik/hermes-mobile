@@ -13,12 +13,16 @@ struct ChatReadAloudTests {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
 
+  /// The pinned `date` (`makeStore`) — fixture rows carry it too, so the fold's completion
+  /// re-stamp of a seeded row is not a state change.
+  private let t0 = Date(timeIntervalSince1970: 0)
+
   private func user(_ n: Int, _ text: String) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .message(role: .user, text: text, isComplete: true))
+    ChatRow(id: uuid(n), kind: .message(role: .user, text: text, isComplete: true), timestamp: t0)
   }
 
   private func assistant(_ n: Int, _ text: String, complete: Bool = true) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .message(role: .assistant, text: text, isComplete: complete))
+    ChatRow(id: uuid(n), kind: .message(role: .assistant, text: text, isComplete: complete), timestamp: t0)
   }
 
   /// Two completed replies and one still streaming — the anchor counts only the two.
@@ -489,6 +493,7 @@ struct ChatReadAloudTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
       $0.preferences = .inMemory()
       recorder.install(into: &$0)
     }

@@ -61,7 +61,7 @@ public extension GatewayEvent {
     case .ready, .messageStart: return ""
     case let .sessionInfo(info): return info.model ?? ""
     case let .messageDelta(text): return Self.truncate(text)
-    case let .messageComplete(text, _): return Self.truncate(text)
+    case let .messageComplete(text, _, reused): return (reused ? "(reused) " : "") + Self.truncate(text)
     case let .messageInterim(text, alreadyStreamed, _, segment):
       let seg = segment.map { "#\($0) " } ?? ""
       return seg + (alreadyStreamed ? "(streamed) " : "") + Self.truncate(text)
