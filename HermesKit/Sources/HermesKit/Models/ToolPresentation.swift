@@ -64,6 +64,14 @@ public struct ToolPresentation: Equatable, Sendable {
   /// The call line's text in the tense the caller needs.
   public func title(live: Bool) -> String { live ? liveTitle : settledTitle }
 
+  // The classified inputs, kept so `body` is built only when a call is expanded (a run
+  // summary classifies every call on each layout pass and never needs one).
+  private let args: [String: JSONValue]
+  private let resultValue: JSONValue?
+  private let inlineDiff: String?
+  private let context: String?
+  private let isRunning: Bool
+
   /// Classifies a transcript tool row. `call.title` doubles as the context (server
   /// `context` / `summary`) unless it is just the name fallback.
   public init(call: ToolCall) {
@@ -74,17 +82,21 @@ public struct ToolPresentation: Equatable, Sendable {
       result: call.detail?.result,
       resultText: call.detail?.resultText,
       inlineDiff: call.detail?.inlineDiff,
-      context: context
+      context: context,
+      isRunning: call.state == .running
     )
   }
 
+  /// `isRunning` only shapes the body: a call still in flight has no result YET, while a
+  /// settled one without a result is a reloaded call whose output isn't kept.
   public init(
     name: String,
     args: JSONValue?,
     result: JSONValue?,
     resultText: String?,
     inlineDiff: String?,
-    context: String?
+    context: String?,
+    isRunning: Bool = false
   ) {
     let args = Self.object(args) ?? [:]
     let resultValue = Self.resultValue(result: result, resultText: resultText)
@@ -103,6 +115,11 @@ public struct ToolPresentation: Equatable, Sendable {
     self.outcome = outcome
     self.settledTitle = spec.settled
     self.liveTitle = spec.live
+    self.args = args
+    self.resultValue = resultValue
+    self.inlineDiff = inlineDiff?.trimmedNonEmpty
+    self.context = context
+    self.isRunning = isRunning
   }
 }
 
@@ -434,6 +451,339 @@ extension ToolPresentation {
   }
 }
 
+// MARK: - Body (what an expanded call shows)
+
+extension ToolPresentation {
+  /// One search result: a web hit (title + link + snippet) or a file match (`path:line` +
+  /// the matched line).
+  public struct SearchHit: Equatable, Sendable {
+    public let title: String
+    public let url: String?
+    public let snippet: String?
+
+    public init(title: String, url: String? = nil, snippet: String? = nil) {
+      self.title = title
+      self.url = url
+      self.snippet = snippet
+    }
+  }
+
+  /// The purpose-built body an expanded call renders. Texts are display-clean (ANSI stripped,
+  /// see `ToolOutputFormatting.clean`) and FULL — the sheet shows them as is, the inline body
+  /// goes through `inline()` for the capped head.
+  public enum Body: Equatable, Sendable {
+    /// `$ command` + exit badge + output. `command` is nil for `execute_code` (a script, not a
+    /// shell line — the sheet's raw args carry it).
+    case terminal(command: String?, exitCode: Int?, stdout: String?, stderr: String?)
+    /// An edit diff (`inline_diff`, else a `patch` result's `diff`).
+    case diff(path: String?, lines: [DiffLine])
+    /// The file read, its `L10-40` range, and the returned (line-numbered) content.
+    case fileRead(path: String, range: String?, content: String?)
+    /// The query, the first `maxSearchHits` hits, and the server's total when it reports one.
+    case search(query: String?, hits: [SearchHit], totalCount: Int?)
+    case webPage(url: String, content: String?)
+    case skill(name: String, file: String?, description: String?)
+    case delegate(goals: [String])
+    /// Anything without a dedicated body: a headline summary plus the pretty-printed result
+    /// (or, while running, the args) — never hides data.
+    case generic(summary: String?, raw: String?)
+    /// A settled call carrying no result — a reloaded session keeps only edit-tool output.
+    case unavailable(note: String)
+  }
+
+  /// A body cut to the inline caps, with whether anything was cut.
+  public struct InlineBody: Equatable, Sendable {
+    public let body: Body
+    public let isTruncated: Bool
+  }
+
+  public static let maxSearchHits = 6
+  public static let unavailableNote = "Output isn't kept in history"
+
+  /// The expanded call's body, built on demand. Lenient: a call whose shape doesn't match its
+  /// tool's body falls back to `.generic` with whatever it carries.
+  public var body: Body {
+    Self.body(
+      name: name, args: args, result: resultValue, inlineDiff: inlineDiff,
+      context: context, isRunning: isRunning
+    )
+  }
+
+  // swiftlint:disable:next cyclomatic_complexity function_body_length
+  private static func body(
+    name: String, args: [String: JSONValue], result: JSONValue?, inlineDiff: String?,
+    context: String?, isRunning: Bool
+  ) -> Body {
+    let record = object(result) ?? [:]
+    // Edit diffs, skill and delegate bodies come from what a reloaded call still carries
+    // (inline_diff, args); everything else is output-only.
+    let hasOutput = result != nil || isRunning
+    let unavailable = Body.unavailable(note: unavailableNote)
+    let generic = { genericBody(args: args, result: result, record: record, context: context) }
+
+    switch name {
+    case "terminal", "execute_code":
+      guard hasOutput else { return unavailable }
+      let command = name == "terminal" ? firstString(args, ["command", "code"]) ?? context : nil
+      let streams = outputStreams(result: result, record: record)
+      return .terminal(
+        command: command, exitCode: number(record["exit_code"]).map { Int($0) },
+        stdout: streams.stdout, stderr: streams.stderr
+      )
+
+    case "read_file":
+      guard hasOutput else { return unavailable }
+      guard let path = firstString(args, ["path", "file", "filepath"]) ?? context else { return generic() }
+      let content = result?.stringValue.flatMap { parseJSONLike($0) == nil ? $0 : nil }
+        ?? rawString(record, ["content", "text", "data", "body"])
+      return .fileRead(
+        path: path, range: readFileLineLabel(args: args, result: record),
+        content: ToolOutputFormatting.clean(content)
+      )
+
+    case "write_file", "patch", "edit_file":
+      let diff = [inlineDiff, rawString(record, ["inline_diff", "diff"])]
+        .lazy.compactMap { $0 }.map(ToolOutputFormatting.diffLines).first { !$0.isEmpty }
+      if let diff {
+        let path = diff.first { $0.kind == .file }?.text
+          ?? firstString(args, ["path", "file", "filepath"])
+          ?? firstString(record, ["path", "file", "filepath", "resolved_path"])
+        return .diff(path: path, lines: diff)
+      }
+      return hasOutput ? generic() : unavailable
+
+    case "search_files":
+      guard hasOutput else { return unavailable }
+      return .search(
+        query: firstString(args, ["pattern", "query"]) ?? context,
+        hits: fileSearchHits(record), totalCount: number(record["total_count"]).map { Int($0) }
+      )
+
+    case "web_search":
+      guard hasOutput else { return unavailable }
+      return .search(
+        query: firstString(args, ["query", "search_term"]) ?? context,
+        hits: webSearchHits(result), totalCount: nil
+      )
+
+    case "web_extract", "browser_navigate":
+      guard hasOutput else { return unavailable }
+      guard let url = firstURL(.object(args)) ?? firstString(record, ["url"])
+        ?? context.flatMap({ firstURL(.string($0)) }) else { return generic() }
+      return .webPage(url: url, content: ToolOutputFormatting.clean(pageContent(record)))
+
+    case "skill_view":
+      guard let skill = firstString(args, ["name"]) ?? firstString(record, ["name"]) ?? context else {
+        return hasOutput ? generic() : unavailable
+      }
+      return .skill(
+        name: skill, file: firstString(args, ["file_path"]),
+        description: firstString(record, ["description"])
+      )
+
+    case "delegate_task":
+      let goals = delegateGoals(args)
+      if !goals.isEmpty { return .delegate(goals: goals) }
+      return hasOutput ? generic() : unavailable
+
+    default:
+      return hasOutput ? generic() : unavailable
+    }
+  }
+
+  /// `stdout` / `stderr` when the backend splits them, else `output` (`terminal`,
+  /// `execute_code`) or `lines`; a non-JSON result is the output itself.
+  private static func outputStreams(
+    result: JSONValue?, record: [String: JSONValue]
+  ) -> (stdout: String?, stderr: String?) {
+    if case let .string(text)? = result, parseJSONLike(text) == nil {
+      return (ToolOutputFormatting.clean(text), nil)
+    }
+    let lines = record["lines"]?.arrayValue?.compactMap(\.stringValue).joined(separator: "\n")
+    let stdout = rawString(record, ["stdout", "output"]) ?? lines
+    return (ToolOutputFormatting.clean(stdout), ToolOutputFormatting.clean(rawString(record, ["stderr"])))
+  }
+
+  /// `web_extract`'s page text: a direct field, else every `results[]` page joined.
+  private static func pageContent(_ record: [String: JSONValue]) -> String? {
+    if let direct = rawString(record, ["content", "text", "markdown", "body"]) { return direct }
+    let pages = (record["results"]?.arrayValue ?? []).compactMap { item in
+      object(item).flatMap { rawString($0, ["content", "text", "markdown", "body"]) }
+    }
+    return pages.isEmpty ? nil : pages.joined(separator: "\n\n---\n\n")
+  }
+
+  /// `search_files` hits: `matches[]` (`path`, `line`, `content`), the path-grouped
+  /// `matches_text` the server sends for larger result sets, `files[]`, or `counts`.
+  private static func fileSearchHits(_ record: [String: JSONValue]) -> [SearchHit] {
+    var hits: [SearchHit] = []
+    if let matches = record["matches"]?.arrayValue {
+      hits = matches.compactMap { item in
+        guard let match = object(item), let path = firstString(match, ["path", "file"]) else { return nil }
+        let line = number(match["line"] ?? match["line_number"]).map { ":\(Int($0))" } ?? ""
+        return SearchHit(title: path + line, snippet: firstString(match, ["content", "text"]).map { compact($0, 300) })
+      }
+    } else if let dense = record["matches_text"]?.stringValue {
+      hits = denseMatchHits(dense)
+    } else if let files = record["files"]?.arrayValue {
+      hits = files.compactMap { $0.stringValue?.trimmedNonEmpty }.map { SearchHit(title: $0) }
+    } else if case let .object(counts)? = record["counts"] {
+      hits = counts.keys.sorted().map { path in
+        let count = number(counts[path]).map { Int($0) } ?? 0
+        return SearchHit(title: path, snippet: "\(count) \(count == 1 ? "match" : "matches")")
+      }
+    }
+    return Array(hits.prefix(maxSearchHits))
+  }
+
+  /// `matches_text`: a path on its own line, then indented `<line>: <content>` rows.
+  private static func denseMatchHits(_ text: String) -> [SearchHit] {
+    var hits: [SearchHit] = []
+    var path: String?
+    for line in text.components(separatedBy: "\n") where !line.trimmingCharacters(in: .whitespaces).isEmpty {
+      guard line.first?.isWhitespace == true else {
+        path = line.trimmingCharacters(in: .whitespaces)
+        continue
+      }
+      guard let path else { continue }
+      let row = line.trimmingCharacters(in: .whitespaces)
+      if let colon = row.firstIndex(of: ":"), let number = Int(row[..<colon]) {
+        let content = row[row.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        hits.append(SearchHit(title: "\(path):\(number)", snippet: content.nonEmpty.map { compact($0, 300) }))
+      } else {
+        hits.append(SearchHit(title: path, snippet: compact(row, 300)))
+      }
+      if hits.count == maxSearchHits { break }
+    }
+    return hits
+  }
+
+  /// `web_search` hits, found where the desktop looks (`extractSearchResults`): a top-level
+  /// list, a known list key (`web`, `results`, …), else inside a `data`-style wrapper.
+  private static func webSearchHits(_ result: JSONValue?) -> [SearchHit] {
+    let hits = collectResultItems(result, depth: 0).lazy.compactMap { item -> SearchHit? in
+      guard let hit = object(item) else { return nil }
+      let title = firstString(hit, ["title", "name"]).map { compact($0, 160) }
+      let url = firstString(hit, ["url", "href", "link"])
+      guard let shown = title ?? url else { return nil }
+      return SearchHit(
+        title: shown, url: url,
+        snippet: firstString(hit, ["snippet", "description", "body"]).map { compact($0, 300) }
+      )
+    }
+    return Array(hits.prefix(maxSearchHits))
+  }
+
+  private static let resultListKeys = [
+    "web", "results", "search_results", "sources", "web_sources", "items", "organic_results",
+    "organic", "matches", "documents",
+  ]
+
+  private static func collectResultItems(_ value: JSONValue?, depth: Int) -> [JSONValue] {
+    guard depth <= 5, let value = value.map(normalized) else { return [] }
+    if case let .array(items) = value { return items }
+    guard case let .object(record) = value else { return [] }
+    for key in resultListKeys {
+      switch record[key] {
+      case let .array(items)?: return items
+      case let .object(nested)?:
+        let items = collectResultItems(.object(nested), depth: depth + 1)
+        if !items.isEmpty { return items }
+      default: continue
+      }
+    }
+    for key in wrapperKeys {
+      if let payload = record[key], payload != .null { return collectResultItems(payload, depth: depth + 1) }
+    }
+    return []
+  }
+
+  /// The generic body: a headline from the result's message-like field and the pretty
+  /// result — or, with no result yet, the pretty args; the context when there is nothing else.
+  private static func genericBody(
+    args: [String: JSONValue], result: JSONValue?, record: [String: JSONValue], context: String?
+  ) -> Body {
+    let summary = firstString(record, ["message", "summary", "analysis", "answer", "description"])
+    let raw: String?
+    if let result, result != .object([:]), result != .array([]) {
+      raw = ToolOutputFormatting.clean(result.displayString)
+    } else if !args.isEmpty {
+      raw = JSONValue.object(args).displayString
+    } else {
+      raw = nil
+    }
+    return .generic(summary: summary ?? (raw == nil ? context : nil), raw: raw)
+  }
+}
+
+extension ToolPresentation.Body {
+  /// This body cut to the inline caps (`ToolOutputFormatting.inlineLineLimit` lines /
+  /// `inlineCharacterLimit` characters across its text), with whether anything was cut.
+  public func inline(
+    lines: Int = ToolOutputFormatting.inlineLineLimit,
+    characters: Int = ToolOutputFormatting.inlineCharacterLimit
+  ) -> ToolPresentation.InlineBody {
+    var budget = Budget(lines: lines, characters: characters)
+    switch self {
+    case let .terminal(command, exitCode, stdout, stderr):
+      let out = budget.take(stdout)
+      let err = budget.take(stderr)
+      return .init(
+        body: .terminal(command: command, exitCode: exitCode, stdout: out, stderr: err),
+        isTruncated: budget.truncated
+      )
+    case let .diff(path, diffLines):
+      return .init(body: .diff(path: path, lines: budget.take(diffLines)), isTruncated: budget.truncated)
+    case let .fileRead(path, range, content):
+      return .init(body: .fileRead(path: path, range: range, content: budget.take(content)), isTruncated: budget.truncated)
+    case let .webPage(url, content):
+      return .init(body: .webPage(url: url, content: budget.take(content)), isTruncated: budget.truncated)
+    case let .generic(summary, raw):
+      let headline = budget.take(summary)
+      let detail = budget.take(raw)
+      return .init(body: .generic(summary: headline, raw: detail), isTruncated: budget.truncated)
+    case .search, .skill, .delegate, .unavailable:
+      return .init(body: self, isTruncated: false)
+    }
+  }
+
+  /// A shared line / character budget spent across a body's texts in order.
+  private struct Budget {
+    var lines: Int
+    var characters: Int
+    var truncated = false
+
+    mutating func take(_ text: String?) -> String? {
+      guard let text, !text.isEmpty else { return text }
+      guard lines > 0, characters > 0 else {
+        truncated = true
+        return nil
+      }
+      let capped = ToolOutputFormatting.cap(text, lines: lines, characters: characters)
+      truncated = truncated || capped.isTruncated
+      lines -= capped.text.split(separator: "\n", omittingEmptySubsequences: false).count
+      characters -= capped.text.count
+      return capped.text.isEmpty ? nil : capped.text
+    }
+
+    mutating func take(_ diffLines: [DiffLine]) -> [DiffLine] {
+      var kept: [DiffLine] = []
+      for line in diffLines {
+        guard lines > 0, characters > 0 else {
+          truncated = true
+          break
+        }
+        let text = line.text.count > characters ? String(line.text.prefix(characters)) : line.text
+        if text.count < line.text.count { truncated = true }
+        kept.append(DiffLine(kind: line.kind, text: text))
+        lines -= 1
+        characters -= max(text.count, 1)
+      }
+      return kept
+    }
+  }
+}
+
 // MARK: - Value helpers
 
 extension ToolPresentation {
@@ -476,6 +826,15 @@ extension ToolPresentation {
   static func firstString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
     for key in keys {
       if let text = record[key]?.stringValue?.trimmedNonEmpty { return text }
+    }
+    return nil
+  }
+
+  /// First non-blank string among `keys`, UNtrimmed — output and file content keep their
+  /// leading indentation.
+  static func rawString(_ record: [String: JSONValue], _ keys: [String]) -> String? {
+    for key in keys {
+      if let text = record[key]?.stringValue, text.trimmedNonEmpty != nil { return text }
     }
     return nil
   }
@@ -538,20 +897,10 @@ extension ToolPresentation {
     return first == last ? "L\(first)" : "L\(first)-\(last)"
   }
 
-  /// The edited file's path from a unified diff header (`+++ b/path`, else `--- a/path`).
+  /// The edited file's path from a diff's first file header — the rendered `a/x → b/x` line
+  /// or a raw `+++ b/x` (else `--- a/x`).
   private static func diffPath(_ diff: String?) -> String? {
-    guard let diff = diff?.strippingANSI else { return nil }
-    let lines = diff.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-    for marker in ["+++ ", "--- "] {
-      for line in lines where line.hasPrefix(marker) {
-        var path = String(line.dropFirst(marker.count))
-        if let tab = path.firstIndex(of: "\t") { path = String(path[..<tab]) }
-        path = path.trimmingCharacters(in: .whitespaces)
-        if path.hasPrefix("a/") || path.hasPrefix("b/") { path = String(path.dropFirst(2)) }
-        if !path.isEmpty, path != "/dev/null" { return path }
-      }
-    }
-    return nil
+    ToolOutputFormatting.diffPath(diff)
   }
 
   private static let urlPattern = #"https?://[^\s'"<>)\]]+"#

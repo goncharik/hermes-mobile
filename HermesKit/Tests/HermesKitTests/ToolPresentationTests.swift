@@ -595,3 +595,434 @@ struct ToolPresentationTests {
     #expect(ToolPresentation.hostAndPath(url) == expected)
   }
 }
+
+// MARK: - Bodies (Task 10)
+
+extension ToolPresentationTests {
+  private static func presentation(
+    _ name: String, args: String? = nil, result: String? = nil, resultText: String? = nil,
+    inlineDiff: String? = nil, context: String? = nil, running: Bool = false
+  ) -> ToolPresentation {
+    ToolPresentation(
+      name: name, args: args.map(json), result: result.map(json), resultText: resultText,
+      inlineDiff: inlineDiff, context: context, isRunning: running
+    )
+  }
+
+  private static let unavailable = ToolPresentation.Body.unavailable(note: ToolPresentation.unavailableNote)
+
+  // terminal / execute_code
+
+  @Test func terminalBodyShowsTheFullCommandExitCodeAndOutput() {
+    let presentation = Self.presentation(
+      "terminal", args: #"{"command": "cd /repo && pytest -q 2>&1 | tail -20"}"#,
+      result: #"{"output": "....\n12 passed in 0.4s\n", "exit_code": 0, "error": null}"#
+    )
+    #expect(presentation.body == .terminal(
+      command: "cd /repo && pytest -q 2>&1 | tail -20", exitCode: 0,
+      stdout: "....\n12 passed in 0.4s", stderr: nil
+    ))
+  }
+
+  @Test func terminalBodySplitsStdoutAndStderrWhenTheBackendDoes() {
+    let presentation = Self.presentation(
+      "terminal", args: #"{"command": "npm i"}"#,
+      result: #"{"stdout": "added 3 packages", "stderr": "npm warn deprecated", "exit_code": 0}"#
+    )
+    #expect(presentation.body == .terminal(
+      command: "npm i", exitCode: 0, stdout: "added 3 packages", stderr: "npm warn deprecated"
+    ))
+  }
+
+  @Test func terminalBodyStripsANSIHeavyOutput() {
+    let output = "\u{1B}[1m\u{1B}[32m✓\u{1B}[0m builds\r\n\u{1B}[33m50%\u{1B}[0m\r\u{1B}[33m100%\u{1B}[0m"
+    let presentation = ToolPresentation(
+      name: "terminal", args: .object(["command": .string("make")]),
+      result: .object(["output": .string(output), "exit_code": .number(0)]),
+      resultText: nil, inlineDiff: nil, context: nil
+    )
+    #expect(presentation.body == .terminal(command: "make", exitCode: 0, stdout: "✓ builds\n100%", stderr: nil))
+  }
+
+  @Test func terminalErrorEnvelopeKeepsTheExitCodeAndFails() {
+    let presentation = Self.presentation(
+      "terminal", args: #"{"command": "rm -rf /"}"#,
+      result: #"{"output": "", "exit_code": -1, "error": "Blocked by guard"}"#
+    )
+    #expect(presentation.body == .terminal(command: "rm -rf /", exitCode: -1, stdout: nil, stderr: nil))
+    #expect(presentation.outcome == .failure("Blocked by guard"))
+  }
+
+  @Test func terminalHugeOutputKeepsTheFullTextAndCapsInline() {
+    let output = (1...5_000).map { "line \($0)" }.joined(separator: "\n")
+    let presentation = ToolPresentation(
+      name: "terminal", args: .object(["command": .string("seq 5000")]),
+      result: .object(["output": .string(output), "exit_code": .number(0)]),
+      resultText: nil, inlineDiff: nil, context: nil
+    )
+    #expect(presentation.body == .terminal(command: "seq 5000", exitCode: 0, stdout: output, stderr: nil))
+    let inline = presentation.body.inline()
+    #expect(inline.isTruncated)
+    #expect(inline.body == .terminal(
+      command: "seq 5000", exitCode: 0,
+      stdout: (1...12).map { "line \($0)" }.joined(separator: "\n"), stderr: nil
+    ))
+  }
+
+  @Test func terminalOlderAgentPlainResultTextIsTheOutput() {
+    let presentation = Self.presentation("terminal", resultText: "hello\n", context: "echo hello")
+    #expect(presentation.body == .terminal(command: "echo hello", exitCode: nil, stdout: "hello", stderr: nil))
+  }
+
+  @Test func terminalEmptyResultShowsJustTheCommand() {
+    let presentation = Self.presentation("terminal", args: #"{"command": "true"}"#, result: "{}")
+    #expect(presentation.body == .terminal(command: "true", exitCode: nil, stdout: nil, stderr: nil))
+  }
+
+  @Test func runningTerminalShowsTheCommandWithNoOutputYet() {
+    let presentation = Self.presentation("terminal", args: #"{"command": "sleep 5"}"#, running: true)
+    #expect(presentation.body == .terminal(command: "sleep 5", exitCode: nil, stdout: nil, stderr: nil))
+  }
+
+  @Test func hydratedTerminalIsUnavailable() {
+    // Cooked history keeps `content` only for edit tools: a reloaded command has no output.
+    let presentation = Self.presentation("terminal", args: #"{"command": "ls"}"#, context: "ls")
+    #expect(presentation.body == Self.unavailable)
+  }
+
+  @Test func executeCodeBodyHasOutputButNoShellLine() {
+    let presentation = Self.presentation(
+      "execute_code", args: #"{"code": "print(1)"}"#,
+      result: #"{"status": "success", "output": "1\n", "tool_calls_made": 0}"#
+    )
+    #expect(presentation.body == .terminal(command: nil, exitCode: nil, stdout: "1", stderr: nil))
+  }
+
+  @Test func terminalWithAMalformedResultFallsBackToNoOutput() {
+    let presentation = Self.presentation("terminal", args: #"{"command": "x"}"#, result: #"[1, 2]"#)
+    #expect(presentation.body == .terminal(command: "x", exitCode: nil, stdout: nil, stderr: nil))
+  }
+
+  // diff
+
+  private static let renderedDiff = [
+    "  ┊ review diff",
+    "\u{1B}[38;5;250ma/src/App.swift → b/src/App.swift\u{1B}[0m",
+    "\u{1B}[36m@@ -1 +1 @@\u{1B}[0m",
+    "\u{1B}[31m-let a = 1\u{1B}[0m",
+    "\u{1B}[32m+let a = 2\u{1B}[0m",
+  ].joined(separator: "\n")
+
+  private static let renderedDiffLines = [
+    DiffLine(kind: .file, text: "src/App.swift"),
+    DiffLine(kind: .hunk, text: "@@ -1 +1 @@"),
+    DiffLine(kind: .removed, text: "let a = 1"),
+    DiffLine(kind: .added, text: "let a = 2"),
+  ]
+
+  @Test func liveEditBodyIsTheParsedInlineDiff() {
+    let presentation = Self.presentation(
+      "patch", args: #"{"path": "/repo/src/App.swift", "old_string": "1", "new_string": "2"}"#,
+      result: #"{"success": true, "diff": "--- a/src/App.swift\n+++ b/src/App.swift"}"#,
+      inlineDiff: Self.renderedDiff
+    )
+    #expect(presentation.body == .diff(path: "src/App.swift", lines: Self.renderedDiffLines))
+    #expect(presentation.title(live: false) == "Edited App.swift")
+  }
+
+  @Test func hydratedEditWithContentAndDiffRendersTheDiff() {
+    // `cookedToolDetail`: raw content as resultText (+ parsed result), inline diff from
+    // `display_metadata.tool_result_metadata`.
+    let call = ToolCall(
+      name: "write_file", title: "/repo/src/App.swift", state: .complete,
+      detail: ToolDetail(
+        argsText: "/repo/src/App.swift",
+        args: Self.json(#"{"path": "/repo/src/App.swift", "content": "let a = 2"}"#),
+        result: Self.json(#"{"bytes_written": 9}"#),
+        resultText: #"{"bytes_written": 9}"#,
+        inlineDiff: Self.renderedDiff
+      )
+    )
+    #expect(ToolPresentation(call: call).body == .diff(path: "src/App.swift", lines: Self.renderedDiffLines))
+  }
+
+  @Test func patchResultDiffIsUsedWithoutAnInlineDiff() {
+    let presentation = Self.presentation(
+      "patch", args: #"{"path": "/r/x.py"}"#,
+      result: #"{"success": true, "diff": "--- a/r/x.py\n+++ b/r/x.py\n@@ -1 +1 @@\n-a\n+b"}"#
+    )
+    #expect(presentation.body == .diff(path: "r/x.py", lines: [
+      DiffLine(kind: .file, text: "r/x.py"),
+      DiffLine(kind: .hunk, text: "@@ -1 +1 @@"),
+      DiffLine(kind: .removed, text: "a"),
+      DiffLine(kind: .added, text: "b"),
+    ]))
+  }
+
+  @Test func headerlessDiffTakesThePathFromTheArgs() {
+    let presentation = Self.presentation(
+      "edit_file", args: #"{"path": "/r/y.swift"}"#, inlineDiff: "@@ -1 +1 @@\n-a\n+b"
+    )
+    #expect(presentation.body == .diff(path: "/r/y.swift", lines: [
+      DiffLine(kind: .hunk, text: "@@ -1 +1 @@"),
+      DiffLine(kind: .removed, text: "a"),
+      DiffLine(kind: .added, text: "b"),
+    ]))
+  }
+
+  @Test func editWithoutADiff() {
+    // A failed write: no diff, the result explains.
+    let failed = Self.presentation(
+      "write_file", args: #"{"path": "/r/z"}"#, result: #"{"error": "Permission denied"}"#
+    )
+    #expect(failed.body == .generic(summary: nil, raw: "{\n  \"error\" : \"Permission denied\"\n}"))
+    #expect(failed.outcome == .failure("Permission denied"))
+    // A reloaded create keeps no diff and no content.
+    #expect(Self.presentation("write_file", args: #"{"path": "/r/z"}"#).body == Self.unavailable)
+  }
+
+  // read_file
+
+  @Test func readFileBodyShowsPathRangeAndContent() {
+    let presentation = Self.presentation(
+      "read_file", args: #"{"path": "/repo/Sources/App.swift", "offset": 10, "limit": 3}"#,
+      result: #"{"content": "    10|  let a = 1\n    11|  let b = 2\n    12|}", "total_lines": 40}"#
+    )
+    #expect(presentation.body == .fileRead(
+      path: "/repo/Sources/App.swift", range: "L10-12",
+      content: "    10|  let a = 1\n    11|  let b = 2\n    12|}"
+    ))
+  }
+
+  @Test func readFileNotFoundHasNoContentAndANotice() {
+    let presentation = Self.presentation(
+      "read_file", args: #"{"path": "/nope.txt"}"#,
+      result: #"{"error": "File not found: /nope.txt", "not_found": true}"#
+    )
+    #expect(presentation.body == .fileRead(path: "/nope.txt", range: nil, content: nil))
+    #expect(presentation.outcome == .notice("File not found: /nope.txt"))
+  }
+
+  @Test func hydratedReadFileIsUnavailable() {
+    #expect(Self.presentation("read_file", args: #"{"path": "/a"}"#).body == Self.unavailable)
+  }
+
+  @Test func readFileWithoutAnyPathFallsBackToGeneric() {
+    let presentation = Self.presentation("read_file", args: #""not an object""#, result: #"{"content": "x"}"#)
+    #expect(presentation.body == .generic(summary: nil, raw: "{\n  \"content\" : \"x\"\n}"))
+  }
+
+  // search
+
+  @Test func searchFilesBodyListsMatches() {
+    let presentation = Self.presentation(
+      "search_files", args: #"{"pattern": "TODO", "path": "."}"#,
+      result: #"""
+        {"total_count": 2, "matches": [
+          {"path": "a.swift", "line": 3, "content": "  // TODO: one"},
+          {"path": "b.swift", "line": 9, "content": "// TODO two"}
+        ]}
+        """#
+    )
+    #expect(presentation.body == .search(query: "TODO", hits: [
+      .init(title: "a.swift:3", snippet: "// TODO: one"),
+      .init(title: "b.swift:9", snippet: "// TODO two"),
+    ], totalCount: 2))
+  }
+
+  @Test func searchFilesReadsThePathGroupedMatchesText() {
+    let presentation = Self.presentation(
+      "search_files", args: #"{"pattern": "foo"}"#,
+      result: #"{"total_count": 9, "matches_text": "src/a.py\n  1: foo()\n  7: foo = 2\nsrc/b.py\n  4:   return foo"}"#
+    )
+    #expect(presentation.body == .search(query: "foo", hits: [
+      .init(title: "src/a.py:1", snippet: "foo()"),
+      .init(title: "src/a.py:7", snippet: "foo = 2"),
+      .init(title: "src/b.py:4", snippet: "return foo"),
+    ], totalCount: 9))
+  }
+
+  @Test func searchFilesFileListIsCappedAtSixHits() {
+    let files = (1...20).map { "\"f\($0).txt\"" }.joined(separator: ", ")
+    let presentation = Self.presentation(
+      "search_files", args: #"{"pattern": "*.txt", "target": "files"}"#,
+      result: #"{"total_count": 20, "files": [\#(files)]}"#
+    )
+    guard case let .search(query, hits, total) = presentation.body else {
+      Issue.record("expected a search body")
+      return
+    }
+    #expect(query == "*.txt")
+    #expect(hits.map(\.title) == (1...6).map { "f\($0).txt" })
+    #expect(total == 20)
+  }
+
+  @Test func webSearchBodyListsAtMostSixHitsWithLinks() {
+    let items = (1...8).map {
+      #"{"title": "Result \#($0)", "url": "https://e.com/\#($0)", "description": "Snippet \#($0)", "position": \#($0)}"#
+    }.joined(separator: ", ")
+    let presentation = Self.presentation(
+      "web_search", args: #"{"query": "swift testing"}"#,
+      result: #"{"success": true, "data": {"web": [\#(items)]}}"#
+    )
+    #expect(presentation.body == .search(
+      query: "swift testing",
+      hits: (1...6).map { .init(title: "Result \($0)", url: "https://e.com/\($0)", snippet: "Snippet \($0)") },
+      totalCount: nil
+    ))
+  }
+
+  @Test func webSearchWithNoHitsIsAnEmptySearch() {
+    let presentation = Self.presentation(
+      "web_search", args: #"{"query": "q"}"#, result: #"{"success": true, "data": {"web": []}}"#
+    )
+    #expect(presentation.body == .search(query: "q", hits: [], totalCount: nil))
+  }
+
+  @Test func hydratedSearchesAreUnavailable() {
+    #expect(Self.presentation("web_search", args: #"{"query": "q"}"#).body == Self.unavailable)
+    #expect(Self.presentation("search_files", args: #"{"pattern": "q"}"#).body == Self.unavailable)
+  }
+
+  // web page
+
+  @Test func webExtractBodyShowsTheURLAndPageText() {
+    let presentation = Self.presentation(
+      "web_extract", args: #"{"urls": ["https://docs.swift.org/x"]}"#,
+      result: ##"{"results": [{"url": "https://docs.swift.org/x", "title": "X", "content": "# X\nBody"}]}"##
+    )
+    #expect(presentation.body == .webPage(url: "https://docs.swift.org/x", content: "# X\nBody"))
+  }
+
+  @Test func browserNavigateBodyAndItsHydratedShape() {
+    let live = Self.presentation(
+      "browser_navigate", args: #"{"url": "https://e.com"}"#, result: #"{"success": true, "title": "E"}"#
+    )
+    #expect(live.body == .webPage(url: "https://e.com", content: nil))
+    #expect(Self.presentation("browser_navigate", args: #"{"url": "https://e.com"}"#).body == Self.unavailable)
+  }
+
+  // skill / delegate
+
+  @Test func skillBodyNeedsOnlyTheArgs() {
+    let hydrated = Self.presentation("skill_view", args: #"{"name": "pdf", "file_path": "forms.md"}"#)
+    #expect(hydrated.body == .skill(name: "pdf", file: "forms.md", description: nil))
+    let live = Self.presentation(
+      "skill_view", args: #"{"name": "pdf"}"#,
+      result: #"{"success": true, "name": "pdf", "description": "Work with PDFs", "content": "..."}"#
+    )
+    #expect(live.body == .skill(name: "pdf", file: nil, description: "Work with PDFs"))
+  }
+
+  @Test func delegateBodyListsTheGoals() {
+    let presentation = Self.presentation(
+      "delegate_task", args: #"{"tasks": [{"goal": "Audit auth"}, {"goal": "Write tests"}]}"#
+    )
+    #expect(presentation.body == .delegate(goals: ["Audit auth", "Write tests"]))
+    #expect(Self.presentation("delegate_task", args: #"{"goal": "One"}"#).body == .delegate(goals: ["One"]))
+    #expect(Self.presentation("delegate_task").body == Self.unavailable)
+  }
+
+  // generic / unknown
+
+  @Test func unknownToolBodyIsGenericWithTheRawResult() {
+    let presentation = Self.presentation(
+      "mcp_github_create_issue", args: #"{"title": "Bug"}"#,
+      result: #"{"message": "Created #12", "number": 12}"#
+    )
+    #expect(presentation.body == .generic(
+      summary: "Created #12", raw: "{\n  \"message\" : \"Created #12\",\n  \"number\" : 12\n}"
+    ))
+  }
+
+  @Test func unknownToolStringResultIsTheRawText() {
+    let presentation = Self.presentation("foo", resultText: "\u{1B}[1mdone\u{1B}[0m\n")
+    #expect(presentation.body == .generic(summary: nil, raw: "done"))
+  }
+
+  @Test func unknownToolEmptyResultFallsBackToTheContext() {
+    let presentation = Self.presentation("foo", result: "{}", context: "ctx")
+    #expect(presentation.body == .generic(summary: "ctx", raw: nil))
+  }
+
+  @Test func runningUnknownToolShowsItsArgs() {
+    let withArgs = Self.presentation("foo", args: #"{"q": 1}"#, running: true)
+    #expect(withArgs.body == .generic(summary: nil, raw: "{\n  \"q\" : 1\n}"))
+    let bare = Self.presentation("foo", context: "working", running: true)
+    #expect(bare.body == .generic(summary: "working", raw: nil))
+  }
+
+  @Test func hydratedUnknownToolIsUnavailable() {
+    #expect(Self.presentation("foo", args: #"{"q": 1}"#, context: "q").body == Self.unavailable)
+  }
+
+  @Test func callStateDrivesTheRunningBody() {
+    let args = Self.json(#"{"command": "make"}"#)
+    let running = ToolCall(name: "terminal", title: "make", state: .running, detail: ToolDetail(args: args))
+    #expect(ToolPresentation(call: running).body == .terminal(command: "make", exitCode: nil, stdout: nil, stderr: nil))
+    let settled = ToolCall(name: "terminal", title: "make", state: .complete, detail: ToolDetail(args: args))
+    #expect(ToolPresentation(call: settled).body == Self.unavailable)
+  }
+
+  // inline caps
+
+  @Test func inlineTerminalSharesOneBudgetAcrossStdoutAndStderr() {
+    let stdout = (1...10).map { "out \($0)" }.joined(separator: "\n")
+    let stderr = (1...5).map { "err \($0)" }.joined(separator: "\n")
+    let body = ToolPresentation.Body.terminal(command: "x", exitCode: 1, stdout: stdout, stderr: stderr)
+    let inline = body.inline()
+    #expect(inline.isTruncated)
+    #expect(inline.body == .terminal(command: "x", exitCode: 1, stdout: stdout, stderr: "err 1\nerr 2"))
+  }
+
+  @Test func inlineDropsStderrOnceStdoutSpentTheBudget() {
+    let stdout = (1...12).map { "out \($0)" }.joined(separator: "\n")
+    let body = ToolPresentation.Body.terminal(command: nil, exitCode: 0, stdout: stdout, stderr: "warn")
+    #expect(body.inline() == .init(
+      body: .terminal(command: nil, exitCode: 0, stdout: stdout, stderr: nil), isTruncated: true
+    ))
+  }
+
+  @Test func inlineDiffKeepsTwelveLines() {
+    let lines = (1...30).map { DiffLine(kind: .added, text: "line \($0)") }
+    let inline = ToolPresentation.Body.diff(path: "a", lines: lines).inline()
+    #expect(inline == .init(body: .diff(path: "a", lines: Array(lines.prefix(12))), isTruncated: true))
+  }
+
+  @Test func inlineDiffCutsAHugeLine() {
+    let lines = [DiffLine(kind: .added, text: String(repeating: "x", count: 5_000))]
+    let inline = ToolPresentation.Body.diff(path: nil, lines: lines).inline()
+    #expect(inline.isTruncated)
+    #expect(inline.body == .diff(path: nil, lines: [DiffLine(kind: .added, text: String(repeating: "x", count: 2_000))]))
+  }
+
+  @Test func inlineLeavesShortAndListBodiesAlone() {
+    let bodies: [ToolPresentation.Body] = [
+      .fileRead(path: "/a", range: "L1", content: "    1|x"),
+      .webPage(url: "https://e.com", content: "short"),
+      .generic(summary: "s", raw: "r"),
+      .search(query: "q", hits: [.init(title: "t")], totalCount: 1),
+      .skill(name: "pdf", file: nil, description: nil),
+      .delegate(goals: ["g"]),
+      Self.unavailable,
+    ]
+    for body in bodies {
+      #expect(body.inline() == .init(body: body, isTruncated: false))
+    }
+  }
+
+  @Test func inlineGenericCapsTheRawAfterTheSummary() {
+    let raw = (1...20).map { "r\($0)" }.joined(separator: "\n")
+    let inline = ToolPresentation.Body.generic(summary: "headline", raw: raw).inline()
+    #expect(inline == .init(
+      body: .generic(summary: "headline", raw: (1...11).map { "r\($0)" }.joined(separator: "\n")),
+      isTruncated: true
+    ))
+  }
+
+  @Test func renderedInlineDiffNamesTheEditTarget() {
+    // The live wire `inline_diff` is the rendered shape (`a/x → b/x`), not `+++ b/x`.
+    let presentation = Self.presentation("patch", inlineDiff: Self.renderedDiff)
+    #expect(presentation.target == "App.swift")
+  }
+}

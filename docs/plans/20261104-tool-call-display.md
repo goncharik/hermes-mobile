@@ -461,10 +461,10 @@ public enum Body {
 - Create: `HermesKit/Sources/HermesKit/Models/ToolOutputFormatting.swift` (ANSI strip, caps, diff line parse)
 - Modify: `HermesKit/Tests/HermesKitTests/ToolPresentationTests.swift`; Create `ToolOutputFormattingTests.swift`
 
-- [ ] bodies: terminal (stdout/stderr/exit code from `result` JSON or `result_text`), diff (`inline_diff` → lines), fileRead, search hits (≤ 6), webPage, skill, delegate, generic, unavailable (reloaded call without stored result)
-- [ ] pure formatting: strip ANSI, cap 12 lines / 2 000 chars with a truncated flag, parse diff `+`/`-`/context
-- [ ] tests per body incl. huge output, ANSI-heavy output, empty result, hydrated edit with content + diff, hydrated terminal → unavailable
-- [ ] run tests — must pass before Task 11
+- [x] bodies: terminal (stdout/stderr/exit code from `result` JSON or `result_text`), diff (`inline_diff` → lines), fileRead, search hits (≤ 6), webPage, skill, delegate, generic, unavailable (reloaded call without stored result) (➕ `body` is computed on demand from stored inputs; `isRunning` init param separates "no result yet" from "not kept"; terminal `command` is optional — nil for `execute_code`; `search` gains `totalCount`, `skill` gains `description`; `Body.inline()` applies the caps with one shared budget)
+- [x] pure formatting: strip ANSI, cap 12 lines / 2 000 chars with a truncated flag, parse diff `+`/`-`/context (➕ parser reads the rendered wire `inline_diff` — `┊ review diff` header, `a/x → b/x` file lines, omitted footer — and raw unified diffs; `diffPath` now uses it)
+- [x] tests per body incl. huge output, ANSI-heavy output, empty result, hydrated edit with content + diff, hydrated terminal → unavailable
+- [x] run tests — must pass before Task 11
 
 ### Task 11: Categorized run summaries and failure-aware call lines
 
