@@ -143,7 +143,8 @@ struct ChatFoldTests {
     await store.send(.turnHeaderTapped(0)) { $0.fold.turnOverride[0] = .collapsed }
     let collapsed = header(store.state.transcriptItems)
     #expect(collapsed?.isExpanded == false)
-    #expect(collapsed?.liveLine == "terminal")
+    // The running call's present-tense title (a bare name has no target: "Running command").
+    #expect(collapsed?.liveLine == "Running command")
   }
 
   // MARK: Finish collapses unless the last action was expand

@@ -117,10 +117,10 @@ struct TranscriptLayoutTests {
 
   @Test func aCollapsedRunningTurnShowsTheLiveLineAndTheStreamingRow() {
     let collapsed = FoldExpansion(turnOverride: [0: .collapsed])
-    // A call is running: the live line names it.
+    // A call is running: the live line names it in the present tense.
     let calling = [user(0), assistant(1), tool(2), tool(3, "read_file", running: true)]
     #expect(shape(items(calling, collapsed, running: 0, liveLine: "ಠ_ಠ pondering…")) == [
-      "row #0", "header 0 running closed [read_file #3]",
+      "row #0", "header 0 running closed [Reading read_file #3]",
     ])
     // No call running: the spinner label; the streaming row (maybe the answer) stays visible.
     let streaming = [user(0), tool(1), reasoning(2), assistant(3, complete: false)]
@@ -319,26 +319,5 @@ struct TranscriptLayoutTests {
     #expect(expanded.isTurnExpanded(ordinal: 0, isRunning: true))
     #expect(expanded.isTurnExpanded(ordinal: 0, isRunning: false))
     #expect(!expanded.isTurnExpanded(ordinal: 1, isRunning: false))
-  }
-
-  // MARK: Placeholder summary text
-
-  @Test func placeholderSummaryNamesToolsByWireName() {
-    func call(_ name: String, running: Bool = false) -> ToolCall {
-      ToolCall(name: name, title: name, state: running ? .running : .complete)
-    }
-    #expect(RunSummary.text(calls: [call("terminal"), call("read_file"), call("terminal")], live: false)
-      == "Used 3 tools: terminal, read_file")
-    #expect(RunSummary.text(calls: [call("terminal"), call("terminal")], live: true)
-      == "Using 2 tools: terminal")
-    #expect(RunSummary.text(
-      calls: ["a", "b", "c", "d", "e"].map { call($0) }, live: false
-    ) == "Used 5 tools: a, b, c, and 2 more")
-    let summary = RunSummary(
-      id: uuid(1), key: RunKey(turnOrdinal: 0, runOrdinal: 0),
-      calls: [call("terminal"), call("read_file", running: true)], isExpanded: false
-    )
-    #expect(summary.isLive)
-    #expect(summary.text == "Using 2 tools: terminal, read_file")
   }
 }

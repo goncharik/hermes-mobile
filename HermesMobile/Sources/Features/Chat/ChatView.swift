@@ -263,17 +263,17 @@ struct ChatView: View {
     case let .runSummary(summary):
       RunSummaryView(summary: summary) { store.send(.runSummaryTapped(summary.key)) }
     case let .toolCall(call):
-      toolLine(call.row)
+      toolLine(call.row, isLive: call.isLive)
     case .liveIndicator:
       TurnHeaderCell(store: store, header: nil)
     }
   }
 
   @ViewBuilder
-  private func toolLine(_ row: ChatRow) -> some View {
+  private func toolLine(_ row: ChatRow, isLive: Bool = false) -> some View {
     if case let .tool(call) = row.kind {
       ToolStatusView(
-        name: call.name, title: call.title,
+        call: call, isLive: isLive,
         hasDetail: call.detail?.isEmpty == false,
         onTap: { store.send(.toolTapped(id: row.id)) }
       )

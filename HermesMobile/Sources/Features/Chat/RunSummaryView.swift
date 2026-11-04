@@ -35,16 +35,16 @@ struct FoldLine: View {
   }
 }
 
-/// A run of ≥ 2 consecutive tool calls folded into one line ("Used 3 tools: terminal,
-/// read_file" — the categorized wording arrives with the per-tool presentations). A tap lists
-/// the run's calls below it, or folds them back.
+/// A run of ≥ 2 consecutive tool calls folded into one line ("Read 1 file, ran 4 commands,
+/// and performed 1 other action" — `RunSummary.text`), led by the run's kind icon, or a hammer
+/// when it mixes kinds. A tap lists the run's calls below it, or folds them back.
 struct RunSummaryView: View {
   let summary: RunSummary
   let onTap: () -> Void
 
   var body: some View {
     FoldLine(
-      systemImage: "hammer",
+      systemImage: summary.icon.systemImage,
       text: summary.text,
       chevron: summary.isExpanded ? "chevron.up" : "chevron.down"
     )

@@ -131,44 +131,6 @@ public struct TurnHeader: Equatable, Sendable, Identifiable {
   }
 }
 
-/// A run of ≥ 2 consecutive tool calls folded into one summary line.
-public struct RunSummary: Equatable, Sendable, Identifiable {
-  /// Derived from the run's FIRST tool row id (`"run|<id>"`), so it holds while the run grows.
-  public var id: UUID
-  /// What a summary tap reports.
-  public var key: RunKey
-  /// The run's calls, in order.
-  public var calls: [ToolCall]
-  /// Whether the run's call lines are listed below the summary.
-  public var isExpanded: Bool
-
-  public init(id: UUID, key: RunKey, calls: [ToolCall], isExpanded: Bool) {
-    self.id = id
-    self.key = key
-    self.calls = calls
-    self.isExpanded = isExpanded
-  }
-
-  /// A call in the run is still running — the summary reads in the present tense.
-  public var isLive: Bool { calls.contains { $0.state == .running } }
-
-  /// The summary line.
-  public var text: String { Self.text(calls: calls, live: isLive) }
-
-  /// Placeholder summary naming the run's tools by wire name — "Used 4 tools: terminal,
-  /// read_file" / "Using 2 tools: …" while live. The categorized desktop vocabulary
-  /// ("Read 1 file, ran 4 commands, …") replaces it (tool-call display plan, Task 11).
-  public static func text(calls: [ToolCall], live: Bool) -> String {
-    var names: [String] = []
-    for call in calls where !names.contains(call.name) { names.append(call.name) }
-    let shown = names.prefix(3).joined(separator: ", ")
-    let more = names.count > 3 ? ", and \(names.count - 3) more" : ""
-    let verb = live ? "Using" : "Used"
-    let noun = calls.count == 1 ? "tool" : "tools"
-    return "\(verb) \(calls.count) \(noun): \(shown)\(more)"
-  }
-}
-
 /// A tool call's line in the transcript.
 public struct ToolCallItem: Equatable, Sendable, Identifiable {
   /// The `.tool` row.
@@ -177,13 +139,17 @@ public struct ToolCallItem: Equatable, Sendable, Identifiable {
   public var key: CallKey
   /// Whether the call's body is expanded in place (Phase C; always `false` until then).
   public var isExpanded: Bool
+  /// The call is in flight: running in the RUNNING turn — its line reads in the present
+  /// tense. A call a stopped turn left `running` reads settled.
+  public var isLive: Bool
 
   public var id: UUID { row.id }
 
-  public init(row: ChatRow, key: CallKey, isExpanded: Bool) {
+  public init(row: ChatRow, key: CallKey, isExpanded: Bool, isLive: Bool = false) {
     self.row = row
     self.key = key
     self.isExpanded = isExpanded
+    self.isLive = isLive
   }
 }
 
@@ -277,7 +243,7 @@ public enum TranscriptFold {
         var callOrdinal = 0
         for index in span.rowRange {
           items.append(plainItem(rows[index], turnOrdinal: ordinal, callOrdinal: &callOrdinal,
-                                 expansion: expansion))
+                                 expansion: expansion, isTurnRunning: span.isRunning))
         }
         continue
       }
@@ -307,7 +273,8 @@ public enum TranscriptFold {
       )))
 
       if isExpanded {
-        appendExpandedBody(rows, body: body, turnOrdinal: ordinal, expansion: expansion, into: &items)
+        appendExpandedBody(rows, body: body, turnOrdinal: ordinal, isRunning: span.isRunning,
+                           expansion: expansion, into: &items)
       } else {
         for index in body where !isFolded(index) { items.append(.row(rows[index])) }
       }
@@ -352,12 +319,12 @@ public enum TranscriptFold {
     }
   }
 
-  /// A collapsed running turn's live line: the newest running call's title, else `fallback`
-  /// (the spinner label), else nothing.
+  /// A collapsed running turn's live line: the newest running call's present-tense title
+  /// ("Running pytest -q"), else `fallback` (the spinner label), else nothing.
   static func liveLine(_ rows: ArraySlice<ChatRow>, fallback: String?) -> String? {
     for row in rows.reversed() {
       if case let .tool(call) = row.kind, call.state == .running {
-        return call.title.nonEmpty ?? call.name
+        return ToolPresentation(call: call).liveTitle
       }
     }
     return fallback?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
@@ -373,19 +340,28 @@ public enum TranscriptFold {
     return false
   }
 
+  private static func isRunningCall(_ row: ChatRow) -> Bool {
+    if case let .tool(call) = row.kind { return call.state == .running }
+    return false
+  }
+
   private static func plainItem(
-    _ row: ChatRow, turnOrdinal: Int, callOrdinal: inout Int, expansion: FoldExpansion
+    _ row: ChatRow, turnOrdinal: Int, callOrdinal: inout Int, expansion: FoldExpansion,
+    isTurnRunning: Bool
   ) -> TranscriptItem {
     guard isTool(row) else { return .row(row) }
     let key = CallKey(turnOrdinal: turnOrdinal, callOrdinal: callOrdinal)
     callOrdinal += 1
-    return .toolCall(ToolCallItem(row: row, key: key, isExpanded: expansion.expandedCalls.contains(key)))
+    return .toolCall(ToolCallItem(
+      row: row, key: key, isExpanded: expansion.expandedCalls.contains(key),
+      isLive: isTurnRunning && isRunningCall(row)
+    ))
   }
 
   /// An expanded turn's body, grouping tool calls into runs.
   private static func appendExpandedBody(
-    _ rows: [ChatRow], body: Range<Int>, turnOrdinal: Int, expansion: FoldExpansion,
-    into items: inout [TranscriptItem]
+    _ rows: [ChatRow], body: Range<Int>, turnOrdinal: Int, isRunning: Bool,
+    expansion: FoldExpansion, into items: inout [TranscriptItem]
   ) {
     var runOrdinal = 0
     var callOrdinal = 0
@@ -416,7 +392,8 @@ public enum TranscriptFold {
         let isExpanded = expansion.expandedRuns.contains(key)
         items.append(.runSummary(RunSummary(
           id: TranscriptItem.runSummaryID(firstToolRowID: rows[index].id),
-          key: key, calls: calls, isExpanded: isExpanded
+          key: key, calls: calls, isExpanded: isExpanded,
+          isLive: isRunning && calls.contains { $0.state == .running }
         )))
         showsCalls = isExpanded
       } else {
@@ -425,7 +402,7 @@ public enum TranscriptFold {
       for runIndex in run {
         // Count every call so call ordinals don't depend on what's showing.
         let item = plainItem(rows[runIndex], turnOrdinal: turnOrdinal, callOrdinal: &callOrdinal,
-                             expansion: expansion)
+                             expansion: expansion, isTurnRunning: isRunning)
         if showsCalls { items.append(item) }
       }
       index = lastCall + 1

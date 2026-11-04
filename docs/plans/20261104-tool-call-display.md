@@ -474,11 +474,11 @@ public enum Body {
 - Create: `HermesKit/Tests/HermesKitTests/RunSummaryTests.swift`
 - Modify: `HermesMobile/Sources/Features/Chat/RunSummaryView.swift`, `ToolStatusView.swift`
 
-- [ ] `RunSummary.text(calls:live:)` — desktop category order, single-item target naming, Oxford join, failure clause, present tense while live; run icon = category icon when uniform, hammer when mixed
-- [ ] call line uses `ToolPresentation.title(live:)` + icon; failure → red icon; live line in the collapsed header uses the present-tense title
-- [ ] tests: the reference strings ("Read 1 file, ran 4 commands, and performed 1 other action", "Ran 6 commands and read 5 files"), single-target clauses, failure clause, live tense
-- [ ] snapshot updates for summary + call lines; `make snapshot` clean
-- [ ] run tests — must pass before Task 12
+- [x] `RunSummary.text(calls:live:)` — desktop category order, single-item target naming, Oxford join, failure clause, present tense while live; run icon = category icon when uniform, hammer when mixed (➕ clauses follow FIRST APPEARANCE with "other" last — the only order that yields both T3 references and still never reorders as a run grows; `read_file` is its own "read N files" clause, list/search stay "explored"; a settled lone item names its target only for edit / web search / page read / navigation — commands, file reads and "other" count, per the T3 reference; failures append as "; N tool call(s) failed"; `isLive` is set by the layout = running turn AND a running call, and only the narrating call's clause is present tense)
+- [x] call line uses `ToolPresentation.title(live:)` + icon; failure → red icon; live line in the collapsed header uses the present-tense title (➕ `ToolCallItem.isLive`, same running-turn rule)
+- [x] tests: the reference strings ("Read 1 file, ran 4 commands, and performed 1 other action", "Ran 6 commands and read 5 files"), single-target clauses, failure clause, live tense
+- [x] snapshot updates for summary + call lines; `make snapshot` clean (289/289: new `testRunSummaries`; 5 baselines re-recorded in their own commit)
+- [x] run tests — must pass before Task 12
 
 ### Task 12: Expand calls in place
 
