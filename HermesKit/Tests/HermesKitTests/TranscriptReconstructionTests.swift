@@ -35,7 +35,7 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "hi", isComplete: true),
-      .thinking(reasoning: "let me think", status: nil, elapsedSeconds: 0, isComplete: true),
+      .reasoning(text: "let me think", isComplete: true),
       .message(role: .assistant, text: "hello", isComplete: true),
     ]))
   }
@@ -44,28 +44,27 @@ struct TranscriptReconstructionTests {
     let fromContent = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoningContent: "via content")]
     )
-    #expect(fromContent.first?.kind == .thinking(reasoning: "via content", status: nil, elapsedSeconds: 0, isComplete: true))
+    #expect(fromContent.first?.kind == .reasoning(text: "via content", isComplete: true))
 
     let fromDetails = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoningDetails: "via details")]
     )
-    #expect(fromDetails.first?.kind == .thinking(reasoning: "via details", status: nil, elapsedSeconds: 0, isComplete: true))
+    #expect(fromDetails.first?.kind == .reasoning(text: "via details", isComplete: true))
 
     // First-non-empty wins.
     let priority = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoning: "primary", reasoningContent: "secondary")]
     )
-    #expect(priority.first?.kind == .thinking(reasoning: "primary", status: nil, elapsedSeconds: 0, isComplete: true))
+    #expect(priority.first?.kind == .reasoning(text: "primary", isComplete: true))
   }
 
-  @Test func reasoningElapsedIsZeroSoTheViewShowsBareThought() {
-    // Re-hydration has no client-measured duration → elapsedSeconds 0; the view renders a
-    // bare "Thought" (never "Thought · 0s"). The reconstruction simply emits 0.
+  @Test func reasoningRowIsAlwaysAClosedBurst() {
+    // A reconstructed burst is history — never an open (live) one.
     let rows = reconstructTranscript([msg(1, "assistant", text: "x", reasoning: "r")])
-    guard case let .thinking(_, _, elapsed, isComplete) = rows.first?.kind else {
-      Issue.record("expected a thinking row"); return
+    guard case let .reasoning(text, isComplete) = rows.first?.kind else {
+      Issue.record("expected a reasoning row"); return
     }
-    #expect(elapsed == 0)
+    #expect(text == "r")
     #expect(isComplete)
   }
 
@@ -126,7 +125,7 @@ struct TranscriptReconstructionTests {
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "What's in /etc/hosts?", isComplete: true),
       .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil),
-      .thinking(reasoning: "thinking…", status: nil, elapsedSeconds: 0, isComplete: true),
+      .reasoning(text: "thinking…", isComplete: true),
       .message(role: .assistant, text: "It maps localhost.", isComplete: true),
     ]))
   }
@@ -169,7 +168,7 @@ struct TranscriptReconstructionTests {
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "hi", isComplete: true),
       .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/x"), durationS: nil),
-      .thinking(reasoning: "ponder", status: nil, elapsedSeconds: 0, isComplete: true),
+      .reasoning(text: "ponder", isComplete: true),
       .message(role: .assistant, text: "done", isComplete: true),
     ]))
   }
@@ -209,7 +208,7 @@ struct TranscriptReconstructionTests {
       msg(1, "assistant", text: "answer", reasoning: "ponder"),
     ])
     #expect(rows.count == 2)
-    #expect(rows[0].kindDiscriminator == "thinking")
+    #expect(rows[0].kindDiscriminator == "reasoning")
     #expect(rows[1].kindDiscriminator == "message")
     #expect(rows[0].id != rows[1].id)
   }
@@ -267,7 +266,7 @@ struct TranscriptReconstructionTests {
     // kindDiscriminator) combination a long session could produce and assert all ids are
     // distinct — 1000 indices × 3 roles × 5 discriminators = 15000 seeds.
     let roles: [ChatRow.Role?] = [.user, .assistant, nil]
-    let discriminators = ["message", "tool", "thinking", "status", "commandOutput"]
+    let discriminators = ["message", "tool", "reasoning", "status", "commandOutput"]
     var ids = Set<UUID>()
     var count = 0
     for index in 0..<1000 {
@@ -289,8 +288,8 @@ struct TranscriptReconstructionTests {
   @Test func deterministicIDStableAcrossRecomputation() {
     // Re-running the same seed yields the byte-identical UUID (no per-call randomness).
     for index in 0..<200 {
-      let a = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
-      let b = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
+      let a = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "reasoning")
+      let b = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "reasoning")
       #expect(a == b)
     }
   }
@@ -312,7 +311,7 @@ struct TranscriptReconstructionTests {
     // Deterministic across rebuilds.
     #expect(id == ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: "commandOutput"))
     // Distinct from every other kind at the same ordinal.
-    for other in ["message", "tool", "thinking", "status"] {
+    for other in ["message", "tool", "reasoning", "status"] {
       #expect(id != ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: other))
     }
     #expect(id != ChatRow.deterministicID(sequenceIndex: 3, role: .user, kindDiscriminator: "message"))
@@ -335,7 +334,7 @@ struct TranscriptReconstructionTests {
     // Same ids as before the kind existed — derived only from the emitted kinds.
     #expect(rows.map(\.id) == [
       ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message"),
-      ChatRow.deterministicID(sequenceIndex: 1, role: nil, kindDiscriminator: "thinking"),
+      ChatRow.deterministicID(sequenceIndex: 1, role: nil, kindDiscriminator: "reasoning"),
       ChatRow.deterministicID(sequenceIndex: 2, role: .assistant, kindDiscriminator: "message"),
       ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: "tool"),
     ])

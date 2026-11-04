@@ -1479,10 +1479,10 @@ struct ChatInteractionTests {
     await store.receive(\.delegate.runningChanged)
   }
 
-  // Interrupting mid-turn freezes the live thinking row (bakes the elapsed, isComplete=true)
-  // and cancels the timer (no further ticks; TestStore fails on a leaked effect) while still
-  // firing session.interrupt.
-  @Test func interruptFreezesThinkingRowAndCancelsTimer() async {
+  // Interrupting mid-turn closes the open reasoning burst (isComplete=true), resets the turn
+  // state, and cancels the timer (no further ticks; TestStore fails on a leaked effect) while
+  // still firing session.interrupt.
+  @Test func interruptFreezesTurnAndCancelsTimer() async {
     let clock = TestClock()
     let sent = LockIsolated<String?>(nil)
     let store = TestStore(initialState: readyState()) { ChatFeature() } withDependencies: {
@@ -1500,23 +1500,24 @@ struct ChatInteractionTests {
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = self.uuid(0)
+      $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Pondering"))) {
-      $0.transcript[id: self.uuid(0)]?.kind = .thinking(reasoning: "Pondering", status: nil, elapsedSeconds: 0, isComplete: false)
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .reasoning(text: "Pondering", isComplete: false))]
+      $0.reasoningRowID = self.uuid(0)
     }
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
 
-    // Interrupt: the row freezes (2s baked in, isComplete=true), the timer is cancelled, and
+    // Interrupt: the burst closes, the turn state resets, the timer is cancelled, and
     // session.interrupt is dispatched. A leaked tick loop would fail the test.
     await store.send(.interruptTapped) {
       $0.isSending = false
-      $0.transcript[id: self.uuid(0)]?.kind = .thinking(reasoning: "Pondering", status: nil, elapsedSeconds: 2, isComplete: true)
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.transcript[id: self.uuid(0)]?.kind = .reasoning(text: "Pondering", isComplete: true)
+      $0.reasoningRowID = nil
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
     }
     await clock.advance(by: .seconds(5)) // no further ticks — timer was cancelled
     await store.finish()

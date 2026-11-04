@@ -3,8 +3,8 @@ import Testing
 
 @testable import HermesKit
 
-/// Pure-logic tests for the Thinking indicator model: the `formatElapsed` formatter and
-/// the `ChatRow.copyText` thinking branch.
+/// Pure-logic tests for the turn-timer formatter (`formatElapsed`) and the
+/// `ChatRow.copyText` reasoning branch.
 @Suite struct ThinkingModelTests {
   @Test func formatElapsedBoundaries() {
     #expect(formatElapsed(0) == "0s")
@@ -23,40 +23,19 @@ import Testing
     #expect(formatElapsed(-1000) == "0s")
   }
 
-  @Test func copyTextReasoningOnly() {
-    let row = ChatRow(
-      id: UUID(),
-      kind: .thinking(reasoning: "weighing options", status: nil, elapsedSeconds: 12, isComplete: true)
-    )
+  @Test func copyTextIsTheBurstText() {
+    let row = ChatRow(id: UUID(), kind: .reasoning(text: "weighing options", isComplete: true))
     #expect(row.copyText == "weighing options")
   }
 
-  @Test func copyTextReasoningPlusStatus() {
-    let row = ChatRow(
-      id: UUID(),
-      kind: .thinking(
-        reasoning: "weighing options",
-        status: "Context: 42% used",
-        elapsedSeconds: 12,
-        isComplete: true
-      )
-    )
-    #expect(row.copyText == "weighing options\n\nContext: 42% used")
+  @Test func copyTextOfAnOpenBurstIsItsTextSoFar() {
+    let row = ChatRow(id: UUID(), kind: .reasoning(text: "still weighing", isComplete: false))
+    #expect(row.copyText == "still weighing")
   }
 
-  @Test func copyTextStatusOnly() {
-    let row = ChatRow(
-      id: UUID(),
-      kind: .thinking(reasoning: "", status: "Context: 42% used", elapsedSeconds: 0, isComplete: true)
-    )
-    #expect(row.copyText == "Context: 42% used")
-  }
-
-  @Test func copyTextEmptyStatusIgnored() {
-    let row = ChatRow(
-      id: UUID(),
-      kind: .thinking(reasoning: "reasoning", status: "", elapsedSeconds: 0, isComplete: true)
-    )
-    #expect(row.copyText == "reasoning")
+  @Test func reasoningDiscriminatorIsStable() {
+    #expect(ChatRow.Kind.reasoning(text: "a", isComplete: false).discriminator == "reasoning")
+    #expect(ChatRow.Kind.reasoning(text: "b", isComplete: true).discriminator == "reasoning")
+    #expect(ChatRow.Kind.reasoning(text: "a", isComplete: true).role == nil)
   }
 }

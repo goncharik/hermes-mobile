@@ -13,11 +13,6 @@ struct HydrateTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
-  /// The deterministic id the hydrate path assigns to the recreated live thinking row when it is
-  /// the only seeded in-flight row (transcript index 0, role nil, "thinking" discriminator).
-  private let resumedThinkingID = ChatRow.deterministicID(
-    sequenceIndex: 0, role: nil, kindDiscriminator: "thinking"
-  )
 
   // MARK: Instant paint
 
@@ -405,7 +400,7 @@ struct HydrateTests {
   // MARK: Task 6 — turn-start anchor + timer continuity
 
   /// Build an activate-shaped response with the given `running` flag, empty messages and no
-  /// inflight, so the only row applyActivate adds is the reconciled live thinking row.
+  /// inflight, so applyActivate adds no rows at all (the turn timer is turn-level state).
   nonisolated private static func activateResponse(running: Bool) -> JSONValue {
     .object([
       "session_id": .string("live123"),
@@ -420,8 +415,8 @@ struct HydrateTests {
   }
 
   @Test func hydrateResumesTimerSeededAtElapsedAndTicksOn() async {
-    // running == true with a persisted anchor at `now − 7s` → the live thinking row resumes
-    // seeded at 7s and keeps ticking (8s, 9s, …) rather than restarting at 0.
+    // running == true with a persisted anchor at `now − 7s` → the turn timer resumes seeded
+    // at 7s and keeps ticking (8s, 9s, …) rather than restarting at 0.
     let snapshotClient = ChatSnapshotClient.inMemory()
     let clock = TestClock()
     let nowDate = Date(timeIntervalSince1970: 1_000)
@@ -441,25 +436,22 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success) {
       $0.isSending = true
-      // Live thinking row recreated, seeded at 7s elapsed, still in flight.
-      $0.thinkingSeconds = 7
-      $0.thinkingRowID = self.resumedThinkingID
-      $0.transcript = [ChatRow(
-        id: self.resumedThinkingID,
-        kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 7, isComplete: false)
-      )]
+      // The turn is live, its timer seeded at 7s elapsed. No row is created for it.
+      $0.isTurnLive = true
+      $0.turnSeconds = 7
     }
+    #expect(store.state.transcript.isEmpty)
     // The resumed tick continues from 7 (not 0): two more seconds → 8, 9.
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 8 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 9 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 8 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 9 }
 
     await store.send(.teardown)
   }
 
   @Test func hydrateRunningWithNoAnchorTicksFromZero() async {
-    // running == true but no persisted anchor → the timer anchors at `now`, seeding the row
-    // at 0s and ticking 1, 2 from there.
+    // running == true but no persisted anchor → the timer anchors at `now`, seeding it at 0s
+    // and ticking 1, 2 from there.
     let snapshotClient = ChatSnapshotClient.inMemory() // no anchor seeded
     let clock = TestClock()
 
@@ -477,23 +469,19 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success) {
       $0.isSending = true
-      $0.thinkingSeconds = 0
-      $0.thinkingRowID = self.resumedThinkingID
-      $0.transcript = [ChatRow(
-        id: self.resumedThinkingID,
-        kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
-      )]
+      $0.isTurnLive = true
+      $0.turnSeconds = 0
     }
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
 
     await store.send(.teardown)
   }
 
   @Test func hydrateNotRunningWithStaleAnchorFreezesAndDiscardsAnchor() async {
     // The phantom-timer bug: running == false but a stale anchor lingers. The timer must NOT
-    // resume (no live thinking row, no tick); the stale anchor is discarded from the cache so
+    // resume (no live turn, no tick); the stale anchor is discarded from the cache so
     // a later hydrate can't resurrect it.
     let snapshotClient = ChatSnapshotClient.inMemory()
     let clock = TestClock()
@@ -514,10 +502,10 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success) {
       $0.isSending = false
-      $0.thinkingSeconds = 0
+      $0.turnSeconds = 0
     }
-    // No live thinking row was created and no tick fires (a leaked tick loop would fail here).
-    #expect(store.state.thinkingRowID == nil)
+    // No live turn and no tick fires (a leaked tick loop would fail here).
+    #expect(!store.state.isTurnLive)
     #expect(store.state.transcript.isEmpty)
     await clock.advance(by: .seconds(5))
     // The stale anchor was discarded from the cache.
@@ -526,15 +514,15 @@ struct HydrateTests {
     await store.send(.teardown)
   }
 
-  // MARK: #26 — preserve in-flight thinking + tool rows across foreground hydrate
+  // MARK: #26 — preserve in-flight reasoning + tool rows across foreground hydrate
 
-  @Test func hydrateRunningPreservesLiveThinkingAndToolRows() async {
-    // Bug #26: the agent is mid-turn (thinking + streaming tool calls) when the app is
+  @Test func hydrateRunningPreservesOpenBurstAndToolRows() async {
+    // Bug #26: the agent is mid-turn (reasoning + streaming tool calls) when the app is
     // backgrounded. On foreground, the hydrate reports `running == true` but its payload carries
-    // no reasoning/tools (SessionInflight has none). The client's own live thinking row (with
-    // accumulated reasoning) and tool rows must SURVIVE the wholesale transcript replace — same
-    // ids + content — and their tracking maps must still point at them so the next
-    // `thinking.delta`/`tool.complete` reconciles in place. Thinking row stays last.
+    // no reasoning/tools (SessionInflight has none). The client's own open reasoning burst and
+    // tool rows must SURVIVE the wholesale transcript replace — same ids + content, original
+    // order — and their tracking pointers must still point at them so the next
+    // `reasoning.delta` / `tool.complete` reconciles in place. The turn status survives too.
     let snapshotClient = ChatSnapshotClient.inMemory()
     let clock = TestClock()
     let nowDate = Date(timeIntervalSince1970: 1_000)
@@ -542,19 +530,17 @@ struct HydrateTests {
 
     let tool1ID = uuid(101)
     let tool2ID = uuid(102)
-    let thinkingID = uuid(103)
-    let thinkingRow = ChatRow(
-      id: thinkingID,
-      kind: .thinking(reasoning: "weighing options", status: "compacting", elapsedSeconds: 4, isComplete: false)
-    )
+    let reasoningID = uuid(103)
+    let reasoningRow = ChatRow(id: reasoningID, kind: .reasoning(text: "weighing options", isComplete: false))
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = [
       ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
       ChatRow(id: tool2ID, kind: .tool(name: "read", title: "Read", state: .running, detail: nil, durationS: nil)),
-      thinkingRow,
+      reasoningRow,
     ]
     initial.toolRowIDs = ["t1": tool1ID, "t2": tool2ID]
-    initial.thinkingRowID = thinkingID
+    initial.reasoningRowID = reasoningID
+    initial.turnStatus = "compacting"
 
     let store = TestStore(initialState: initial) {
       ChatFeature()
@@ -570,28 +556,30 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)
 
-    // The two running tool rows survived (same ids + content, original order), the thinking row
-    // survived with its accumulated reasoning intact and renders LAST.
-    #expect(store.state.transcript.count == 3)
-    #expect(store.state.transcript[0].id == tool1ID)
-    #expect(store.state.transcript[1].id == tool2ID)
-    #expect(store.state.transcript.last?.id == thinkingID)
-    #expect(store.state.transcript[id: thinkingID]?.kind
-      == .thinking(reasoning: "weighing options", status: "compacting", elapsedSeconds: 4, isComplete: false))
-    // The tracking maps still point at the preserved rows so later events reconcile in place.
-    #expect(store.state.thinkingRowID == thinkingID)
+    // The two running tool rows and the open burst survived (same ids + content, original order).
+    #expect(store.state.transcript.map(\.id) == [tool1ID, tool2ID, reasoningID])
+    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options", isComplete: false))
+    // The tracking pointers still point at the preserved rows so later events reconcile in place.
+    #expect(store.state.reasoningRowID == reasoningID)
     #expect(store.state.toolRowIDs == ["t1": tool1ID, "t2": tool2ID])
-    // Timer continuity: the preserved row's elapsed/reasoning did NOT reset; the tick resumes at 7.
-    #expect(store.state.thinkingSeconds == 7)
+    // Turn-level state: status kept, timer resumed at 7.
+    #expect(store.state.turnStatus == "compacting")
+    #expect(store.state.isTurnLive)
+    #expect(store.state.turnSeconds == 7)
+
+    // The next reasoning delta extends the preserved burst in place (still the last row).
+    await store.send(.gatewayEvent(.reasoningDelta(text: " more")))
+    #expect(store.state.transcript[id: reasoningID]?.kind == .reasoning(text: "weighing options more", isComplete: false))
+    #expect(store.state.transcript.count == 3)
 
     await store.send(.teardown)
   }
 
-  @Test func hydrateRunningDropsLiveReviewRowButPreservesToolAndThinkingRows() async {
+  @Test func hydrateRunningDropsLiveReviewRowButPreservesToolAndReasoningRows() async {
     // Pins the ACCEPTED #47 limitation (and its asymmetry with #26): the running-turn
-    // preservation re-appends only TOOL + THINKING rows, and `review.summary` is never
+    // preservation re-appends only TOOL + open REASONING rows, and `review.summary` is never
     // written to session history, so a review row that arrived mid-turn is dropped by a
-    // foreground re-hydrate even while the turn still runs — while the tool/thinking rows
+    // foreground re-hydrate even while the turn still runs — while the tool/reasoning rows
     // survive. If a future change starts preserving it (e.g. once the upstream
     // hermes-agent persist lands and `reconstructTranscript` maps it), update this test
     // deliberately — it exists so the behavior can't change silently.
@@ -602,15 +590,15 @@ struct HydrateTests {
 
     let toolID = uuid(301)
     let reviewID = uuid(302)
-    let thinkingID = uuid(303)
+    let reasoningID = uuid(303)
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = [
       ChatRow(id: toolID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
       ChatRow(id: reviewID, kind: .status(kind: "review", text: "💾 Self-improvement review: noted.")),
-      ChatRow(id: thinkingID, kind: .thinking(reasoning: "weighing", status: nil, elapsedSeconds: 4, isComplete: false)),
+      ChatRow(id: reasoningID, kind: .reasoning(text: "weighing", isComplete: false)),
     ]
     initial.toolRowIDs = ["t1": toolID]
-    initial.thinkingRowID = thinkingID
+    initial.reasoningRowID = reasoningID
 
     let store = TestStore(initialState: initial) {
       ChatFeature()
@@ -626,32 +614,35 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)
 
-    // Tool + thinking rows survived (#26); the ephemeral review row is gone.
-    #expect(store.state.transcript.map(\.id) == [toolID, thinkingID])
+    // Tool + reasoning rows survived (#26); the ephemeral review row is gone.
+    #expect(store.state.transcript.map(\.id) == [toolID, reasoningID])
     #expect(store.state.transcript[id: reviewID] == nil)
     #expect(store.state.toolRowIDs == ["t1": toolID])
-    #expect(store.state.thinkingRowID == thinkingID)
+    #expect(store.state.reasoningRowID == reasoningID)
 
     await store.send(.teardown)
   }
 
-  @Test func hydrateNotRunningWipesLiveThinkingAndToolRows() async {
+  @Test func hydrateNotRunningWipesLiveReasoningAndToolRows() async {
     // A COMPLETED turn (`running == false`) keeps the strict server-wins behavior: the prior
-    // live thinking/tool rows are GONE and their tracking ids reset — no live rows leak into a
-    // finished transcript.
+    // live reasoning/tool rows are GONE and their tracking ids reset — no live rows leak into a
+    // finished transcript — and the transient turn label/status are cleared.
     let snapshotClient = ChatSnapshotClient.inMemory()
     let clock = TestClock()
 
     let tool1ID = uuid(201)
-    let thinkingID = uuid(202)
+    let reasoningID = uuid(202)
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
     initial.transcript = [
       ChatRow(id: tool1ID, kind: .tool(name: "grep", title: "Search", state: .running, detail: nil, durationS: nil)),
-      ChatRow(id: thinkingID, kind: .thinking(reasoning: "still thinking", status: nil, elapsedSeconds: 2, isComplete: false)),
+      ChatRow(id: reasoningID, kind: .reasoning(text: "still thinking", isComplete: false)),
     ]
     initial.toolRowIDs = ["t1": tool1ID]
-    initial.thinkingRowID = thinkingID
+    initial.reasoningRowID = reasoningID
     initial.streamingRowID = uuid(203)
+    initial.isTurnLive = true
+    initial.turnActivityLabel = "ಠ_ಠ pondering…"
+    initial.turnStatus = "compacting"
 
     let store = TestStore(initialState: initial) {
       ChatFeature()
@@ -669,9 +660,12 @@ struct HydrateTests {
 
     // Wholesale replace: empty server history → empty transcript; live rows discarded.
     #expect(store.state.transcript.isEmpty)
-    #expect(store.state.thinkingRowID == nil)
+    #expect(store.state.reasoningRowID == nil)
     #expect(store.state.toolRowIDs.isEmpty)
     #expect(store.state.streamingRowID == nil)
+    #expect(!store.state.isTurnLive)
+    #expect(store.state.turnActivityLabel == nil)
+    #expect(store.state.turnStatus == nil)
 
     await store.send(.teardown)
   }
@@ -1275,8 +1269,7 @@ struct HydrateTests {
 
   // MARK: Stable in-flight row identity across repeated hydrates (review finding #4)
 
-  // A running turn's seeded in-flight rows (echoed user, eager streaming assistant, recreated
-  // live thinking row) must carry DETERMINISTIC, position-derived ids — not fresh `uuid()` —
+  // A running turn's seeded in-flight rows (echoed user, eager streaming assistant) must carry DETERMINISTIC, position-derived ids — not fresh `uuid()` —
   // so repeated hydrates of the SAME running turn yield byte-identical ids. Otherwise the
   // unchanged in-flight content diffs as delete/insert (identity churn) instead of a stable
   // update, defeating the deterministic-identity goal. This hydrates twice and asserts the row

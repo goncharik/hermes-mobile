@@ -191,10 +191,18 @@ public struct ChatFeature {
     public var waveformLevels: [Float]
     /// Seconds elapsed while recording, for the composer's mm:ss readout.
     public var recordingSeconds: Int
-    /// Seconds elapsed in the in-flight turn's live "Thinking" indicator. Ticked by a
-    /// cancellable `continuousClock` loop while a turn runs; baked into the row's
-    /// `elapsedSeconds` and reset to 0 on completion. The active row's view renders this.
-    public var thinkingSeconds: Int
+    /// Seconds elapsed in the in-flight turn. Ticked by a cancellable `continuousClock` loop
+    /// while a turn runs (seeded from the persisted turn anchor on a running hydrate); reset
+    /// to 0 at every turn terminal. Turn-level, never row data.
+    public var turnSeconds: Int
+    /// The agent's latest spinner frame (`thinking.delta` — `ಠ_ಠ pondering…`, or a
+    /// provider-wait line), trimmed; `nil` when empty. REPLACED by every frame, never
+    /// appended, never persisted, never written into a row (it is not reasoning). Cleared on
+    /// `tool.start`, `message.delta` and every turn terminal.
+    public var turnActivityLabel: String?
+    /// The latest `status.update` line (context-size / compaction notices) for the live
+    /// turn. Transient: cleared at `message.start` and every turn terminal.
+    public var turnStatus: String?
     /// Files staged for the next message (#8), uploaded on submit.
     public var attachments: [ComposerAttachment]
     /// Set once the agent rejects an attach RPC as unknown (`-32601`) — too old to support
@@ -653,7 +661,13 @@ public struct ChatFeature {
     /// target can mirror `fillLiveChat`'s marker construction (demo mode).
     public var sessionKey: String? { storedSessionID ?? liveSessionID }
     var streamingRowID: ChatRow.ID?
-    var thinkingRowID: ChatRow.ID?
+    /// The open reasoning burst (`.reasoning(isComplete: false)`) reasoning deltas append
+    /// to — only while it is still the LAST row; anything appended after it ends the burst.
+    var reasoningRowID: ChatRow.ID?
+    /// A server turn is live on this slot: set at `message.start` and by a running hydrate,
+    /// cleared at every turn terminal. The slash pipeline's "a REAL turn began while the
+    /// exec was in flight" guard reads it.
+    var isTurnLive: Bool
     var toolRowIDs: [String: ChatRow.ID]
     var reconnectAttempt: Int
     var hasRequestedSession: Bool
@@ -762,7 +776,8 @@ public struct ChatFeature {
       self.hasReplayedBranchSeed = false
       self.pendingBranchSeed = nil
       self.streamingRowID = nil
-      self.thinkingRowID = nil
+      self.reasoningRowID = nil
+      self.isTurnLive = false
       self.toolRowIDs = [:]
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
@@ -796,7 +811,9 @@ public struct ChatFeature {
       self.recording = .idle
       self.waveformLevels = []
       self.recordingSeconds = 0
-      self.thinkingSeconds = 0
+      self.turnSeconds = 0
+      self.turnActivityLabel = nil
+      self.turnStatus = nil
       self.attachments = []
       self.attachmentsUnsupported = false
       self.commandCatalog = nil
@@ -938,13 +955,13 @@ public struct ChatFeature {
     /// `.teardown` (an `AppFeature` policy).
     case viewDisappeared
     /// Full slot teardown (sent by `AppFeature`, never the view): cancel every
-    /// long-running effect — socket, reconnect backoff, voice, thinking ticker, debounced
+    /// long-running effect — socket, reconnect backoff, voice, turn ticker, debounced
     /// persist — and release the mic. `AppFeature` flushes the snapshot (`.persistNow`)
     /// before this where the pending debounce matters.
     case teardown
     /// Background-grace expiry (sent by `AppFeature`, never the view): the finite
     /// background window ran out while still backgrounded — cancel the socket + reconnect
-    /// backoff CLEANLY but keep ALL chat state in memory (transcript, live thinking/tool
+    /// backoff CLEANLY but keep ALL chat state in memory (transcript, live reasoning/tool
     /// row pointers, composer draft), so the next `.foreground` reconnect re-hydrates with
     /// the #26 live-row preservation intact. Status flips to `.reconnecting` (the socket
     /// is genuinely gone), so a later `.reattached` reconnects instead of hydrating a
@@ -953,7 +970,7 @@ public struct ChatFeature {
     /// Scroll-up reached the top of the current window: reveal another `pageSize` of older
     /// rows from the in-memory transcript (client-side only — no network call).
     case loadOlderRequested
-    case thinkingTick
+    case turnTick
     /// One event to fold, bypassing the replay cursor. Sent by tests; the socket effect
     /// sends `.gatewayFrame` and the replay fold calls `reduceGatewayEvent` directly, so all
     /// three reduce through the same path.
@@ -984,7 +1001,7 @@ public struct ChatFeature {
     /// The slot's own session was re-opened over LIVE, surviving chat state (`AppFeature`'s
     /// re-open policy — a re-pushed marker in compact, a plain sidebar tap on the detail
     /// column's session in regular): always re-hydrate (server authority; `applyActivate`'s
-    /// #26 path preserves a still-running turn's live thinking/tool rows), but do NOT
+    /// #26 path preserves a still-running turn's live reasoning/tool rows), but do NOT
     /// cancel-and-redial a healthy socket — the dial gap would drop streamed events.
     /// Only a dead/dialing socket reconnects (then `.ready` re-hydrates). Shares its
     /// handler with `.foreground`.
@@ -1253,7 +1270,7 @@ public struct ChatFeature {
 
   private enum CancelID: Hashable {
     case socket, reconnect, hydrate, copyFeedback, copyIDToast, voiceLevels, voiceTimer,
-         thinkingTimer, persist
+         turnTimer, persist
     /// The reconnect `session.events.since` read (#98): one outstanding; a deliberate
     /// teardown or a socket drop cancels it (the next `.ready` re-runs it).
     case eventReplay
@@ -1336,7 +1353,7 @@ public struct ChatFeature {
 
       case .viewDisappeared:
         // View-only cleanup: the screen left, but the slot (socket, streaming fold,
-        // thinking ticker, persist debounce) lives on — `AppFeature` decides teardown. Off
+        // turn ticker, persist debounce) lives on — `AppFeature` decides teardown. Off
         // screen, a detached slot never starts reading (#74).
         state.isOnScreen = false
         return releaseVoiceResources(&state)
@@ -1356,7 +1373,7 @@ public struct ChatFeature {
           .cancel(id: CancelID.reconnect),
           .cancel(id: CancelID.hydrate),
           .cancel(id: CancelID.eventReplay),
-          .cancel(id: CancelID.thinkingTimer),
+          .cancel(id: CancelID.turnTimer),
           .cancel(id: CancelID.persist)
         )
 
@@ -1364,9 +1381,9 @@ public struct ChatFeature {
         // Cancelling the socket effect drops its trailing `await send(.gatewayClosed)`
         // (TCA discards sends from a cancelled task), so no backoff reconnect is
         // scheduled while suspended — `.foreground` owns the redial. Everything else
-        // (streaming fold pointers, thinking ticker, debounced persist) stays untouched:
+        // (streaming fold pointers, turn ticker, debounced persist) stays untouched:
         // the state must survive intact for the foreground hydrate's #26 preservation of
-        // a still-running turn's live thinking/tool rows.
+        // a still-running turn's live reasoning/tool rows.
         //
         // Also cancel any pending hydrate: socket cancellation resumes its RPC with
         // `.disconnected`, and a stale `.activateResult` reducing AFTER this deliberate
@@ -1395,8 +1412,8 @@ public struct ChatFeature {
         state.windowStart = max(0, state.windowStart - State.pageSize)
         return .none
 
-      case .thinkingTick:
-        state.thinkingSeconds += 1
+      case .turnTick:
+        state.turnSeconds += 1
         return .none
 
       case let .gatewayEvent(event):
@@ -1423,13 +1440,13 @@ public struct ChatFeature {
         // A dead session already paused us (see `.authExpired`): the stream finishing is just
         // the tail of that — don't schedule a backoff reconnect, wait for re-auth.
         guard !state.awaitingReauth else {
-          return .merge(.cancel(id: CancelID.thinkingTimer), .cancel(id: CancelID.eventReplay))
+          return .merge(.cancel(id: CancelID.turnTimer), .cancel(id: CancelID.eventReplay))
         }
         state.status = .reconnecting
         state.reconnectAttempt += 1
         let delay = backoffDelay(attempt: state.reconnectAttempt)
         return .merge(
-          .cancel(id: CancelID.thinkingTimer),
+          .cancel(id: CancelID.turnTimer),
           .cancel(id: CancelID.eventReplay),
           .run { [clock] send in
             try await clock.sleep(for: delay)
@@ -1677,11 +1694,11 @@ public struct ChatFeature {
         // parity). Stop intent also wins over a not-yet-consumed Send-now arm.
         state.sendNowArmed = false
         if !state.queuedPrompts.isEmpty { state.isQueueParked = true }
-        // Freeze the live thinking row + stop the elapsed timer (mirrors the `.error` /
+        // Freeze the live turn + stop the elapsed timer (mirrors the `.error` /
         // socket-drop turn-ending paths) so an interrupt doesn't leave it shimmering forever.
-        freezeThinking(into: &state)
+        freezeTurn(into: &state)
         return .merge(
-          .cancel(id: CancelID.thinkingTimer),
+          .cancel(id: CancelID.turnTimer),
           // Interrupt ends the turn — drop the anchor so it can't resurrect on hydrate.
           clearTurnAnchor(state),
           .run { [gateway] _ in
@@ -1729,9 +1746,9 @@ public struct ChatFeature {
         // head — plus a deterministic re-check once the interrupt RPC resolves, covering
         // a turn that was already over or whose terminal was lost on a dropping socket.
         state.isSending = false
-        freezeThinking(into: &state)
+        freezeTurn(into: &state)
         return .merge(
-          .cancel(id: CancelID.thinkingTimer),
+          .cancel(id: CancelID.turnTimer),
           clearTurnAnchor(state),
           .run { [gateway] send in
             _ = try? await gateway.send("session.interrupt", .object(["session_id": .string(sessionID)]))
@@ -2446,8 +2463,8 @@ public struct ChatFeature {
         // streaming rows and resetting `isSending`, unlocking or erasing a genuinely-running
         // turn. Drop it; the new turn's own lifecycle (and any later real hydrate) is
         // authoritative. `isSending` catches both a fresh `prompt.submit` and a live
-        // `message.start`; `slashExecInFlight`/`thinkingRowID` are belt-and-suspenders.
-        guard !state.isSending, !state.slashExecInFlight, state.thinkingRowID == nil
+        // `message.start`; `slashExecInFlight`/`isTurnLive` are belt-and-suspenders.
+        guard !state.isSending, !state.slashExecInFlight, !state.isTurnLive
         else { return .none }
         // The post-command refresh landed. It is the FULL server-authoritative hydrate,
         // not a runtime-only patch: slash commands MUTATE server history — `/undo` rewinds
@@ -2736,31 +2753,28 @@ public struct ChatFeature {
       state.branchSeed = nil
       state.hasReplayedBranchSeed = false
       // Defensive: a second message.start without an intervening message.complete would
-      // otherwise orphan the prior live thinking row (shimmering forever). Freeze/clear it
-      // first (idempotent; removes the row if it carried no reasoning/status) before
-      // creating the fresh one. Also resets `thinkingSeconds = 0` for the new turn.
-      freezeThinking(into: &state)
-      // Unlike the assistant bubble, the thinking row is created eagerly so an immediate
-      // "Thinking 0s" indicator appears even before any reasoning text arrives. Start the
-      // live elapsed timer (mirrors the voice-recording tick).
-      let thinkingID = uuid()
-      state.transcript.append(ChatRow(
-        id: thinkingID, kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
-      ))
-      state.thinkingRowID = thinkingID
-      state.thinkingSeconds = 0
+      // otherwise leave the prior turn's open reasoning burst live forever. Freeze it first
+      // (idempotent) — this also resets `turnSeconds = 0` and the label/status for the new
+      // turn. No row is created eagerly: reasoning rows appear per burst as text arrives;
+      // the turn's live indicator is turn-level state (`isTurnLive` + `turnSeconds`). Start
+      // the live elapsed timer (mirrors the voice-recording tick).
+      freezeTurn(into: &state)
+      state.isTurnLive = true
       // Reaffirm the turn-start anchor at the authoritative turn start (the submit anchor is
       // optimistic; `message.start` is the agent's first beat). A hydrate mid-turn reconciles
       // the live elapsed timer against this instant. Tell the list this session is now
       // working so its row glow lights up immediately (server-confirmed).
       // A replay fold (#98) leaves the timer to its trailing hydrate (`reconcileTurnTimer`):
       // only the authoritative `running` may start it.
-      let timer: Effect<Action> = state.isFoldingReplay ? .none : startThinkingTimer()
+      let timer: Effect<Action> = state.isFoldingReplay ? .none : startTurnTimer()
       return .merge(setTurnAnchor(state), timer, runningChanged(true, state))
 
     case let .messageDelta(text):
+      // Text ends the open reasoning burst (the next reasoning starts a new row) and
+      // supersedes the spinner label.
+      closeReasoningBurst(into: &state)
+      state.turnActivityLabel = nil
       appendToStreamingMessage(text, into: &state)
-      keepThinkingLast(into: &state)
       return .none
 
     case let .messageComplete(text, usage):
@@ -2778,10 +2792,8 @@ public struct ChatFeature {
       // The turn's tool rows are history now: a later running hydrate (#26) must not
       // re-append them next to their cooked history rows.
       state.toolRowIDs = [:]
-      // Move the thinking row below the answer, then freeze it in place so the turn ends as
-      // […answer][Thought · <elapsed>].
-      keepThinkingLast(into: &state)
-      freezeThinking(into: &state)
+      // Close every open reasoning burst and reset the turn-level timer/label/status.
+      freezeTurn(into: &state)
       state.isSending = false
       // A turn can never legitimately COMPLETE with an approval still queued (the server
       // blocks on the queue), so a standing approval card here is stale — most visibly a
@@ -2802,14 +2814,18 @@ public struct ChatFeature {
       // replay fold — a replayed completion is a past turn boundary, never read.
       let speak = autoSpeakIfReady(&state)
       return .merge(
-        .cancel(id: CancelID.thinkingTimer), clearTurnAnchor(state), runningChanged(false, state),
+        .cancel(id: CancelID.turnTimer), clearTurnAnchor(state), runningChanged(false, state),
         drainQueueIfReady(into: &state), speak
       )
 
-    case let .reasoningDelta(text), let .spinnerFrame(text):
-      // Spinner frames still append here until the turn-activity label lands (tool-call
-      // display plan, Task 2) — decode-only split for now, behavior unchanged.
-      appendToThinking(text, into: &state)
+    case let .reasoningDelta(text):
+      appendReasoning(text, into: &state)
+      return .none
+
+    case let .spinnerFrame(text):
+      // The agent's kawaii spinner / provider-wait line — NOT reasoning (desktop keeps it
+      // out of the transcript too). Each frame is a rewrite: replace, never append.
+      state.turnActivityLabel = text.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
       return .none
 
     case .messageInterim:
@@ -2818,21 +2834,32 @@ public struct ChatFeature {
       return .none
 
     case let .reasoningAvailable(text):
-      appendToThinking(text, into: &state)
+      // The whole (≤ 500-char) reasoning of a model response the server did NOT stream as
+      // `reasoning.delta`. Scoped to the burst: if the open burst already carries this text
+      // it is a re-send — skip it; otherwise it lands like a delta (open burst or new row).
+      let incoming = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let id = state.reasoningRowID, state.transcript.last?.id == id,
+         case let .reasoning(existing, _) = state.transcript[id: id]?.kind,
+         !incoming.isEmpty, existing.contains(incoming) {
+        return .none
+      }
+      appendReasoning(text, into: &state)
       return .none
 
     case let .statusUpdate(_, text):
-      setThinkingStatus(text, into: &state)
+      // Turn-level, not row data: the latest context-size / compaction line.
+      state.turnStatus = text.nonEmpty
       return .none
 
     case let .toolStart(toolID, name, title, argsText, _):
+      closeReasoningBurst(into: &state)
+      state.turnActivityLabel = nil
       let id = uuid()
       let detail = argsText.map { ToolDetail(argsText: $0) }
       state.transcript.append(ChatRow(id: id, kind: .tool(
         name: name, title: title?.nonEmpty ?? name, state: .running, detail: detail, durationS: nil
       )))
       if let toolID { state.toolRowIDs[toolID] = id }
-      keepThinkingLast(into: &state)
       return .none
 
     case let .toolComplete(toolID, name, title, args, resultText, inlineDiff, durationS, _):
@@ -2852,7 +2879,9 @@ public struct ChatFeature {
           durationS: durationS
         )
       } else {
-        // tool.complete with no prior start — create the row directly.
+        // tool.complete with no prior start — create the row directly (it ends the open
+        // reasoning burst like any appended tool row).
+        closeReasoningBurst(into: &state)
         let resolvedName = name ?? ""
         state.transcript.append(ChatRow(id: uuid(), kind: .tool(
           name: resolvedName,
@@ -2862,7 +2891,6 @@ public struct ChatFeature {
           durationS: durationS
         )))
       }
-      keepThinkingLast(into: &state)
       return .none
 
     case let .serverRequestFailed(message):
@@ -2881,7 +2909,7 @@ public struct ChatFeature {
       state.errorBanner = message
       state.isSending = false
       state.toolRowIDs = [:]
-      freezeThinking(into: &state)
+      freezeTurn(into: &state)
       // Same staleness rule as `message.complete`: an errored turn is over, so any
       // standing approval card (real or recovered), the server request queue and the
       // recovery hint are moot.
@@ -2902,7 +2930,7 @@ public struct ChatFeature {
       }
       // Turn ended in error — drop the anchor (prevents a phantom timer on the next hydrate)
       // and clear the list's working glow for this session immediately.
-      return .merge(.cancel(id: CancelID.thinkingTimer), clearTurnAnchor(state), runningChanged(false, state), drain)
+      return .merge(.cancel(id: CancelID.turnTimer), clearTurnAnchor(state), runningChanged(false, state), drain)
 
     case .authExpired:
       // The gated session is fully dead (ws-ticket 401). Pause reconnect — do NOT back off —
@@ -2913,7 +2941,7 @@ public struct ChatFeature {
       finalizeInFlight(into: &state)
       return .merge(
         .cancel(id: CancelID.reconnect),
-        .cancel(id: CancelID.thinkingTimer),
+        .cancel(id: CancelID.turnTimer),
         .send(.delegate(.sessionExpired))
       )
 
@@ -2944,7 +2972,7 @@ public struct ChatFeature {
       return drainQueueIfReady(into: &state)
 
     case let .approvalRequest(request):
-      // Nice-to-have skipped: the thinking timer keeps running while a blocking card is the
+      // Nice-to-have skipped: the turn timer keeps running while a blocking card is the
       // focus rather than pausing — simpler reducer, and wall-clock still reflects the turn.
       // The real event overwrites any push-tap-synthesized card unconditionally and clears
       // the recovery hint so a later hydrate can't re-synthesize (#30 workaround).
@@ -2982,7 +3010,6 @@ public struct ChatFeature {
       state.transcript.append(
         ChatRow(id: uuid(), kind: .status(kind: ChatRow.Kind.reviewStatusKind, text: text))
       )
-      keepThinkingLast(into: &state)
       return .none
 
     case .unknown:
@@ -3318,7 +3345,7 @@ public struct ChatFeature {
     // suspended still self-heals: the hydrate RPC fails, the receive loop finishes →
     // `.gatewayClosed` → backoff reconnect. `applyActivate` is the same
     // server-authoritative path as `.ready`, with the #26 preservation of a
-    // still-running turn's live thinking/tool rows.
+    // still-running turn's live reasoning/tool rows.
     // An unpersisted branch (#34) re-attaches by LIVE id (`session.activate`) — its
     // stored id has no DB row until the first prompt, so `session.resume` would 4007.
     if let live = state.attachLiveSessionID {
@@ -3338,8 +3365,8 @@ public struct ChatFeature {
   }
 
   /// Close out any row that was still streaming when the socket dropped: mark the
-  /// in-flight assistant message complete and freeze the in-flight thinking row so a
-  /// dropped socket leaves a static `Thinking · <elapsed>` rather than a live one.
+  /// in-flight assistant message complete and freeze the live turn (open reasoning bursts
+  /// close, the timer/label/status reset) so a dropped socket leaves nothing live.
   /// Idempotent.
   private func finalizeInFlight(into state: inout State) {
     if let id = state.streamingRowID,
@@ -3350,7 +3377,7 @@ public struct ChatFeature {
       arm(&state)
     }
     state.streamingRowID = nil
-    freezeThinking(into: &state)
+    freezeTurn(into: &state)
     state.isSending = false
   }
 
@@ -3515,83 +3542,59 @@ public struct ChatFeature {
     )
   }
 
-  /// 1s `continuousClock` loop that drives the live "Thinking" elapsed timer. Mirrors the
+  /// 1s `continuousClock` loop that drives the live turn elapsed timer. Mirrors the
   /// voice-recording tick. Cancel any prior loop first so a fresh turn starts at 0.
-  private func startThinkingTimer() -> Effect<Action> {
+  private func startTurnTimer() -> Effect<Action> {
     .run { [clock] send in
       while true {
         try await clock.sleep(for: .seconds(1))
-        await send(.thinkingTick)
+        await send(.turnTick)
       }
     }
-    .cancellable(id: CancelID.thinkingTimer, cancelInFlight: true)
+    .cancellable(id: CancelID.turnTimer, cancelInFlight: true)
   }
 
-  /// Append reasoning text into the active thinking row, creating it defensively (with the
-  /// current `thinkingSeconds`) if `.messageStart` was missed so reasoning never drops.
-  private func appendToThinking(_ text: String, into state: inout State) {
-    if let id = state.thinkingRowID,
-       case let .thinking(reasoning, status, elapsed, isComplete) = state.transcript[id: id]?.kind {
-      state.transcript[id: id]?.kind = .thinking(
-        reasoning: reasoning + text, status: status, elapsedSeconds: elapsed, isComplete: isComplete
-      )
-    } else {
-      let id = uuid()
-      state.transcript.append(ChatRow(
-        id: id, kind: .thinking(reasoning: text, status: nil, elapsedSeconds: 0, isComplete: false)
-      ))
-      state.thinkingRowID = id
+  /// Append reasoning text to the open burst when it is still the LAST row; otherwise the
+  /// burst has ended (a tool / text / status row landed after it) — close it and start a
+  /// new `.reasoning` row. Works without a `message.start` too, so reasoning never drops.
+  /// Empty text never creates a row.
+  private func appendReasoning(_ text: String, into state: inout State) {
+    guard !text.isEmpty else { return }
+    if let id = state.reasoningRowID, state.transcript.last?.id == id,
+       case let .reasoning(existing, _) = state.transcript[id: id]?.kind {
+      state.transcript[id: id]?.kind = .reasoning(text: existing + text, isComplete: false)
+      return
     }
+    closeReasoningBurst(into: &state)
+    let id = uuid()
+    state.transcript.append(ChatRow(id: id, kind: .reasoning(text: text, isComplete: false)))
+    state.reasoningRowID = id
   }
 
-  /// Set the latest `status.update` line on the active thinking row, creating it
-  /// defensively if `.messageStart` was missed so status never drops.
-  private func setThinkingStatus(_ text: String, into state: inout State) {
-    if let id = state.thinkingRowID,
-       case let .thinking(reasoning, _, elapsed, isComplete) = state.transcript[id: id]?.kind {
-      state.transcript[id: id]?.kind = .thinking(
-        reasoning: reasoning, status: text, elapsedSeconds: elapsed, isComplete: isComplete
-      )
-    } else {
-      let id = uuid()
-      state.transcript.append(ChatRow(
-        id: id, kind: .thinking(reasoning: "", status: text, elapsedSeconds: 0, isComplete: false)
-      ))
-      state.thinkingRowID = id
+  /// End the open reasoning burst (if any): mark its row complete and drop the pointer, so
+  /// the next reasoning text starts a fresh row. Idempotent.
+  private func closeReasoningBurst(into state: inout State) {
+    guard let id = state.reasoningRowID else { return }
+    if case let .reasoning(text, false) = state.transcript[id: id]?.kind {
+      state.transcript[id: id]?.kind = .reasoning(text: text, isComplete: true)
     }
+    state.reasoningRowID = nil
   }
 
-  /// Freeze the in-flight thinking row at turn end (completion / error / socket drop): bake
-  /// the live `thinkingSeconds` into `elapsedSeconds`, flip `isComplete = true`, and remove
-  /// the row entirely if it carried neither reasoning nor status. Resets the timer counter
-  /// and clears the pointer. Idempotent. The caller cancels `CancelID.thinkingTimer`.
-  private func freezeThinking(into state: inout State) {
-    let elapsed = state.thinkingSeconds
-    if let id = state.thinkingRowID,
-       case let .thinking(reasoning, status, _, _) = state.transcript[id: id]?.kind {
-      if reasoning.isEmpty, status == nil {
-        state.transcript.remove(id: id)
-      } else {
-        state.transcript[id: id]?.kind = .thinking(
-          reasoning: reasoning, status: status,
-          elapsedSeconds: elapsed, isComplete: true
-        )
+  /// Freeze the live turn at its end (completion / error / interrupt / socket drop): mark
+  /// every still-open reasoning row complete and reset the turn-level state (`isTurnLive`,
+  /// `turnSeconds`, `turnActivityLabel`, `turnStatus`). Idempotent. The caller cancels
+  /// `CancelID.turnTimer`.
+  private func freezeTurn(into state: inout State) {
+    closeReasoningBurst(into: &state)
+    // Belt-and-braces: a burst whose pointer was lost (a hydrate rebuilt around it) must not
+    // stay "open" forever either.
+    for row in state.transcript {
+      if case let .reasoning(text, false) = row.kind {
+        state.transcript[id: row.id]?.kind = .reasoning(text: text, isComplete: true)
       }
     }
-    state.thinkingRowID = nil
-    state.thinkingSeconds = 0
-  }
-
-  /// Keep the active thinking row pinned to the bottom of the transcript so the live
-  /// "Thinking …" indicator (and the frozen "Thought" row it becomes) always sits below the
-  /// turn's answer and tool rows, even as they stream in. Called after every row append
-  /// during a turn; a no-op when no thinking row is active or it is already last.
-  private func keepThinkingLast(into state: inout State) {
-    guard let id = state.thinkingRowID,
-          state.transcript.last?.id != id,
-          let row = state.transcript.remove(id: id)
-    else { return }
-    state.transcript.append(row)
+    clearTurnState(into: &state)
   }
 
   /// Keep the client-side rendering window sensible as rows append live (streaming deltas, a
@@ -3674,7 +3677,7 @@ public struct ChatFeature {
   ///   gap would stand forever), `message.delta`s skipped (the hydrate re-seeds the streaming
   ///   text) and the past turn boundaries' present-tense side effects suppressed
   ///   (`isFoldingReplay`); the turn anchor gets one write, for the last boundary folded, and
-  ///   the thinking timer is left to the hydrate's `running`.
+  ///   the turn timer is left to the hydrate's `running`.
   ///   `open_requests` on the reply is ignored on purpose: the hydrate carries the same list.
   /// - a failure folds nothing; `-32601` latches replay off for the slot, and a timeout spends
   ///   the hydrate's same-socket timeout retry (a half-open socket redials after one more).
@@ -3716,7 +3719,7 @@ public struct ChatFeature {
 
   /// The success-path fold of `applyEventReplayResult`: the seq gate, the legacy-prompt and
   /// `message.delta` skips, and one turn-anchor write for the last boundary folded (the
-  /// thinking timer is the trailing hydrate's).
+  /// turn timer is the trailing hydrate's).
   private func foldReplayedEvents(
     _ events: [GatewayFrame], into state: inout State
   ) -> Effect<Action> {
@@ -4035,30 +4038,29 @@ public struct ChatFeature {
     }
 
     // #26: when the hydrate reports a STILL-RUNNING turn, the agent is mid-turn and the
-    // client's own live thinking + tool rows are not in the server payload (`SessionInflight`
+    // client's own live reasoning + tool rows are not in the server payload (`SessionInflight`
     // carries only user/assistant/streaming — no reasoning, no tools). Capture those live rows
-    // (in transcript order, tools then thinking) BEFORE the wholesale replace so they survive
-    // the round-trip; we re-append them after the authoritative history is rebuilt and restore
-    // their tracking ids so subsequent `tool.*`/`message.delta` events reconcile in place.
-    // A COMPLETED turn (`running == false`) keeps the strict server-wins behavior: no preserved
-    // live rows leak into a finished transcript.
-    var preservedToolRows: [(toolKey: String, row: ChatRow)] = []
-    var preservedThinkingRow: ChatRow?
+    // (in transcript order) BEFORE the wholesale replace so they survive the round-trip; we
+    // re-append them after the authoritative history is rebuilt and restore their tracking ids
+    // so subsequent `tool.*` / `reasoning.delta` events reconcile in place. A COMPLETED turn
+    // (`running == false`) keeps the strict server-wins behavior: no preserved live rows leak
+    // into a finished transcript.
+    var preservedLiveRows: [(toolKey: String?, row: ChatRow)] = []
+    let openReasoningID = state.reasoningRowID
     if running {
-      // Tool rows in transcript order (so re-append preserves the original ordering).
-      preservedToolRows = state.transcript.compactMap { row -> (String, ChatRow)? in
-        guard let entry = state.toolRowIDs.first(where: { $0.value == row.id }) else { return nil }
-        return (entry.key, row)
-      }
-      if let thinkingID = state.thinkingRowID {
-        preservedThinkingRow = state.transcript[id: thinkingID]
+      // Tracked tool rows + the open reasoning burst, in transcript order (so re-append
+      // preserves the original ordering).
+      preservedLiveRows = state.transcript.compactMap { row -> (String?, ChatRow)? in
+        if let entry = state.toolRowIDs.first(where: { $0.value == row.id }) { return (entry.key, row) }
+        if row.id == openReasoningID { return (nil, row) }
+        return nil
       }
     }
 
     // Rebuild the transcript wholesale from the authoritative history (server wins).
     state.transcript = IdentifiedArrayOf(uniqueElements: reconstructTranscript(response.messages))
     state.streamingRowID = nil
-    state.thinkingRowID = nil
+    state.reasoningRowID = nil
     state.toolRowIDs = [:]
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
@@ -4092,14 +4094,18 @@ public struct ChatFeature {
       }
     }
 
-    // #26: re-append the preserved live tool rows (in their original transcript order) after the
+    // #26: re-append the preserved live rows (in their original transcript order) after the
     // rebuilt history + seeded inflight rows, restoring `toolRowIDs` so a later `tool.complete`
-    // for the same tool key reconciles the same row in place. Keep the ORIGINAL row ids (the
-    // running tool calls already exist client-side under those ids) — no UUID churn, no diff
-    // delete/insert. The thinking row is handled by `reconcileTurnTimer` so it can stay last.
-    for (toolKey, row) in preservedToolRows where state.transcript[id: row.id] == nil {
+    // for the same tool key reconciles the same row in place, and `reasoningRowID` so the next
+    // `reasoning.delta` keeps extending the open burst. Keep the ORIGINAL row ids (the rows
+    // already exist client-side under those ids) — no UUID churn, no diff delete/insert.
+    for (toolKey, row) in preservedLiveRows where state.transcript[id: row.id] == nil {
       state.transcript.append(row)
-      state.toolRowIDs[toolKey] = row.id
+      if let toolKey {
+        state.toolRowIDs[toolKey] = row.id
+      } else {
+        state.reasoningRowID = row.id
+      }
     }
 
     rebaseSpokenAnchor(
@@ -4107,19 +4113,17 @@ public struct ChatFeature {
     )
     repointPlaybackAfterRebuild(playbackTurn: playbackTurn, into: &state)
 
-    // Reconcile the live "Thinking" elapsed timer from the client-persisted turn-start anchor
+    // Reconcile the live turn elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;
     // the anchor only supplies the *start instant*. A `!running` + stale anchor must DISCARD
     // the anchor (no phantom timer); a `running` turn resumes the tick seeded at the elapsed
     // offset rather than restarting at 0.
-    let timerEffect = reconcileTurnTimer(
-      running: running, preservedThinkingRow: preservedThinkingRow, into: &state
-    )
+    let timerEffect = reconcileTurnTimer(running: running, into: &state)
 
     // Server wins: a wholesale transcript replace resets the client-side window to the bottom
     // (newest) so the chat opens/re-hydrates parked at the latest rows, discarding any prior
     // scroll-up that revealed older history. Computed after every append above (inflight +
-    // reconciled thinking row) so the count is final.
+    // preserved live rows) so the count is final.
     state.windowStart = State.bottomWindowStart(count: state.transcript.count)
 
     // Persist the freshly-hydrated, server-authoritative state back to the cache so the next
@@ -4262,62 +4266,42 @@ public struct ChatFeature {
     return .none
   }
 
-  /// Reconcile the live "Thinking" elapsed timer on hydrate from the persisted turn-start
-  /// anchor and the authoritative `running` flag (`reconcileTimer`):
-  ///   - `.running(elapsed:)` → seed `thinkingSeconds` to the elapsed offset, recreate the
-  ///     live thinking row eagerly (so a "Thinking <n>s" indicator appears immediately even
-  ///     before more reasoning arrives), and resume the `continuousClock` tick from there;
+  /// Reconcile the live turn elapsed timer on hydrate from the persisted turn-start anchor
+  /// and the authoritative `running` flag (`reconcileTimer`):
+  ///   - `.running(elapsed:)` → mark the turn live, seed `turnSeconds` to the elapsed offset
+  ///     and resume the `continuousClock` tick from there (no row is created — the timer is
+  ///     turn-level state);
   ///   - `.frozen` → no live tick; **discard** the stale anchor so it can't resurrect a
-  ///     phantom timer; the reconstructed (complete) reasoning row stands as a static
-  ///     `Thought · <elapsed>` disclosure;
+  ///     phantom timer;
   ///   - `.none` → no in-flight turn; nothing to do.
-  private func reconcileTurnTimer(
-    running: Bool, preservedThinkingRow: ChatRow? = nil, into state: inout State
-  ) -> Effect<Action> {
+  /// A non-running verdict also clears the transient turn label/status.
+  private func reconcileTurnTimer(running: Bool, into state: inout State) -> Effect<Action> {
     // Read the anchor under the same key the submit path wrote it (`storedSessionID ??
     // liveSessionID`), NOT `response.sessionID` (the live id) — they differ for a resumed
     // session keyed by its stored id.
     let anchor = anchorKey(state).flatMap { chatSnapshot.turnAnchor($0) }
     switch reconcileTimer(running: running, anchor: anchor, now: now) {
     case let .running(elapsed):
-      let seconds = Int(elapsed)
-      state.thinkingSeconds = seconds
-      // #26: if a live thinking row was preserved from before the wholesale replace, re-use it
-      // (same id + accumulated reasoning + latest status) so the thinking block does NOT restart
-      // — its content survives the background→foreground round-trip and the next `thinking.delta`
-      // mutates it in place. Otherwise recreate an empty live thinking row (the in-flight one was
-      // dropped by the wholesale rebuild) with a deterministic, position-derived id so repeated
-      // hydrates of the same running turn don't churn its identity. Either way it renders as a
-      // live shimmering "Thinking <n>s" (the view reads the live `thinkingSeconds`) while the
-      // tick continues.
-      let thinkingID: ChatRow.ID
-      if let preserved = preservedThinkingRow {
-        thinkingID = preserved.id
-        if state.transcript[id: preserved.id] == nil {
-          state.transcript.append(preserved)
-        }
-      } else {
-        let thinkingKind = ChatRow.Kind.thinking(
-          reasoning: "", status: nil, elapsedSeconds: seconds, isComplete: false
-        )
-        thinkingID = ChatRow.deterministicID(
-          sequenceIndex: state.transcript.count, role: thinkingKind.role,
-          kindDiscriminator: thinkingKind.discriminator
-        )
-        state.transcript.append(ChatRow(id: thinkingID, kind: thinkingKind))
-      }
-      state.thinkingRowID = thinkingID
-      keepThinkingLast(into: &state)
-      // Resume the tick (seeded `thinkingSeconds` continues incrementing from `elapsed`).
-      return startThinkingTimer()
+      state.isTurnLive = true
+      state.turnSeconds = Int(elapsed)
+      // Resume the tick (seeded `turnSeconds` continues incrementing from `elapsed`).
+      return startTurnTimer()
     case .frozen:
       // Stale anchor on a stopped turn — discard it so it never starts a phantom timer.
-      state.thinkingSeconds = 0
+      clearTurnState(into: &state)
       return clearTurnAnchor(state)
     case .none:
-      state.thinkingSeconds = 0
+      clearTurnState(into: &state)
       return .none
     }
+  }
+
+  /// The authoritative "not running" verdict: no live turn, no timer, no label/status.
+  private func clearTurnState(into state: inout State) {
+    state.isTurnLive = false
+    state.turnSeconds = 0
+    state.turnActivityLabel = nil
+    state.turnStatus = nil
   }
 
   /// Pull current context-window usage right after a session resolves. `session.info` /
@@ -4409,7 +4393,7 @@ public struct ChatFeature {
   /// (`.slashCommandOutput` / `.slashCommandPrefill` / `.slashCommandFailed`). The exec
   /// round-trip is over: release the mid-exec composer lock (a hydrate may now set
   /// `isSending` from the authoritative `running` again). Then — UNLESS a REAL server turn
-  /// began while the exec was in flight (`message.start` set the thinking row + `isSending`),
+  /// began while the exec was in flight (`message.start` set `isTurnLive` + `isSending`),
   /// in which case the lock and running state belong to that turn's own lifecycle and
   /// `runningChanged` must stay server-confirmed — end the client-side "turn": no server
   /// event follows an exec-style command, so emit `runningChanged(false)` like
@@ -4426,7 +4410,7 @@ public struct ChatFeature {
     // clobbered by an immediately-started queued turn; the no-refresh path (a failure)
     // is parked anyway.
     clearDrainingEntry(into: &state)
-    guard state.thinkingRowID == nil else { return .none }
+    guard !state.isTurnLive else { return .none }
     state.isSending = false
     guard refresh, let sessionID = state.liveSessionID else { return runningChanged(false, state) }
     return .merge(
@@ -4744,9 +4728,13 @@ public struct ChatFeature {
   private func persistRelevant(_ event: GatewayEvent) -> Bool {
     switch event {
     case .messageStart, .messageDelta, .messageComplete,
-         .spinnerFrame, .reasoningDelta, .reasoningAvailable, .statusUpdate,
+         .reasoningDelta, .reasoningAvailable,
          .toolStart, .toolComplete, .sessionInfo:
       return true
+    case .spinnerFrame, .statusUpdate:
+      // Turn-level transient state (`turnActivityLabel` / `turnStatus`) — never row data,
+      // never persisted.
+      return false
     case let .reviewSummary(text):
       // Blank text is dropped by the fold with zero state change — don't schedule a
       // pointless snapshot write for it.
@@ -5326,7 +5314,7 @@ private func executeSlashCommand(
 /// like the slash / prompt paths.
 ///
 /// Terminal handling reuses the SLASH pipeline's own actions so the composer-lock,
-/// `runningChanged`, cross-client `thinkingRowID` guard, and post-command server-authoritative
+/// `runningChanged`, cross-client `isTurnLive` guard, and post-command server-authoritative
 /// refresh (`session.resume` → context-usage pill + rewritten transcript) all behave
 /// identically: success → `.slashCommandOutput(confirmation)` (`finishSlashExec(refresh:true)`),
 /// failure → `.slashCommandFailed` (`finishSlashExec(refresh:false)`). Never a swallowed `try?`.

@@ -17,7 +17,7 @@ struct ChatWindowingTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
 
   /// Seed-row ids live in a high range so they never collide with the `.incrementing` uuids the
-  /// reducer mints for live thinking/streaming rows (which start at 0).
+  /// reducer mints for live reasoning/streaming rows (which start at 0).
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0001-\(String(format: "%012x", n))")!
   }
@@ -142,8 +142,9 @@ struct ChatWindowingTests {
     store.exhaustivity = .off
     #expect(store.state.windowStart == 150)
 
-    // message.start appends a thinking row → window slides to keep the bottom window.
+    // A reasoning burst appends a row → window slides to keep the bottom window.
     await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "hmm")))
     #expect(store.state.transcript.count == 201)
     #expect(store.state.windowStart == 201 - ChatFeature.State.initialWindow) // 151
     #expect(store.state.visibleRows.last?.id == store.state.transcript.last?.id)

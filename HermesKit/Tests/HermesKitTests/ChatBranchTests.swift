@@ -387,10 +387,7 @@ struct ChatBranchTests {
       $0.attachLiveSessionID = nil
       $0.branchSeed = nil
       $0.hasReplayedBranchSeed = false
-      $0.transcript = [ChatRow(
-        id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
-      )]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     await store.receive(\.delegate.runningChanged)
     await store.send(.teardown)

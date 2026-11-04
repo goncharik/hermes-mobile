@@ -12,8 +12,8 @@ import Foundation
 ///
 /// Mirrors the desktop TUI's `toTranscriptMessages` (`ui-tui/src/domain/messages.ts`).
 /// For each message, in order:
-///   1. an assistant **reasoning** row (from `reasoningText`), emitted collapsed/complete
-///      as a `.thinking` row with unknown elapsed (`0` → the view shows a bare "Thought");
+///   1. an assistant **reasoning** row (from `reasoningText`), emitted as a completed
+///      `.reasoning` burst;
 ///   2. an assistant / user **text** row from `displayText` (skipped when empty);
 ///   3. a completed **tool** row for each `role: "tool"` entry (title = `name`, the
 ///      `context` preview surfaced in the detail sheet).
@@ -53,12 +53,9 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
       ))
 
     case "assistant":
-      // 1. Reasoning row (collapsed + complete). Elapsed is unknown on re-hydration — `0`
-      //    renders as a bare "Thought" disclosure (no misleading "· 0s").
+      // 1. Reasoning row (one completed burst per assistant message).
       if let reasoning = message.reasoningText {
-        append(.thinking(
-          reasoning: reasoning, status: nil, elapsedSeconds: 0, isComplete: true
-        ))
+        append(.reasoning(text: reasoning, isComplete: true))
       }
       // 2. Assistant text row (the server omits empty/tool-only assistant turns, so a
       //    missing body here just means there's nothing to render for it).

@@ -14,7 +14,7 @@ public struct AppFeature {
     /// destroys the chat's state or effects by itself.
     public var path: StackState<ChatScreen.State>
     /// The app-owned "live chat slot": the one open (or detached-but-live) chat. Composed
-    /// via `.ifLet`, so its socket, reconnect backoff, thinking ticker, and debounced
+    /// via `.ifLet`, so its socket, reconnect backoff, turn ticker, and debounced
     /// persist are slot-rooted and survive navigation pops. One live session at a time —
     /// opening a different session replaces the slot.
     public var liveChat: ChatFeature.State?
@@ -483,7 +483,7 @@ public struct AppFeature {
       case .backgroundGraceExpired:
         // The background window ran out while still backgrounded. Final flush, then cancel
         // the socket ONLY — `liveChat` stays in memory so the foreground re-hydrate can
-        // preserve the live thinking/tool rows (#26). No explicit `end()` here: the client
+        // preserve the live reasoning/tool rows (#26). No explicit `end()` here: the client
         // performed the mandatory end bookkeeping inside its expiration handler before
         // yielding. Guards: an expiry whose send escaped just as `.active` cancelled the
         // listener must be a no-op — `.active` already redialed, and tearing that fresh
@@ -523,7 +523,7 @@ public struct AppFeature {
         let badge = setBadge(state)
         // Re-opening the slot's OWN session (e.g. tapping the glowing row of a detached
         // running turn): the accumulated live state must survive — a fresh
-        // `ChatFeature.State` would discard the detached thinking/tool/streaming rows.
+        // `ChatFeature.State` would discard the detached reasoning/tool/streaming rows.
         // Push the marker back (the path is empty when coming from the list) and
         // re-attach: hydrate against the live socket, reconnecting only if it died.
         if let chat = state.liveChat, chat.sessionKey == session.id {

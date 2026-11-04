@@ -279,13 +279,14 @@ enum DemoMode {
         ChatRow(id: rowID(3), kind: .tool(
           name: "calendar", title: "Adding “Lisbon trip” to your calendar", state: .running,
           detail: nil, durationS: nil)),
-        ChatRow(id: rowID(4), kind: .thinking(
-          reasoning: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.",
-          status: "Updating calendar…", elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: rowID(4), kind: .reasoning(
+          text: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.",
+          isComplete: false)),
       ]),
       status: .ready
     )
-    state.thinkingSeconds = 7
+    state.turnSeconds = 7
+    state.turnStatus = "Updating calendar…"
     state.model = "claude-opus-4-8"
     state.usage = .init(contextUsed: 96_000, contextMax: 200_000, contextPercent: 48)
     return state

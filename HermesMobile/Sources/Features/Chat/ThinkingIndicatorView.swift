@@ -5,12 +5,12 @@ import SwiftUI
 ///
 /// While the turn is in flight (`isComplete == false`) it shows a shimmering
 /// "Thinking" label with a live `1h 1m 1s` elapsed timer (read from
-/// `store.thinkingSeconds` via `liveSeconds`); its disclosed area accumulates the
+/// `store.turnSeconds` via `liveSeconds`); its disclosed area accumulates the
 /// reasoning text and the latest `status.update` line and shimmers alongside the label.
 /// On completion it freezes into a static, collapsed `Thought · <elapsed>` disclosure kept
 /// in the transcript so past reasoning + status stay reviewable.
 struct ThinkingIndicatorView: View {
-  /// Live elapsed seconds while active (`store.thinkingSeconds`); ignored once complete.
+  /// Live elapsed seconds while active (`store.turnSeconds`); ignored once complete.
   let liveSeconds: Int
   /// Accumulated reasoning/thinking text (may be empty while only status has arrived).
   let reasoning: String

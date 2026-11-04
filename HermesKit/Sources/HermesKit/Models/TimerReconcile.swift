@@ -1,20 +1,18 @@
 import Foundation
 
-/// The reconciled state of a turn's "Thinking" elapsed timer, derived purely from the
+/// The reconciled state of a turn's elapsed timer, derived purely from the
 /// server-authoritative `running` flag and a client-persisted turn-start `anchor`.
 ///
 /// `ChatFeature` models the live timer as a cancellable `continuousClock` tick driving
-/// `State.thinkingSeconds` (read by the active `.thinking` row's view) and a frozen
-/// `elapsedSeconds` baked into the row on completion. This enum maps cleanly onto that:
+/// `State.turnSeconds`. This enum maps cleanly onto that:
 ///   - `.running(elapsed:)` — resume the live tick seeded at `elapsed` seconds (the
-///     reducer can start its `continuousClock` loop and pre-set `thinkingSeconds`);
-///   - `.frozen` — no live tick; show the static `Thinking · <elapsed>` disclosure from
-///     the row's already-frozen `elapsedSeconds` (any stale anchor is discarded);
+///     reducer can start its `continuousClock` loop and pre-set `turnSeconds`);
+///   - `.frozen` — no live tick (any stale anchor is discarded);
 ///   - `.none` — no in-flight turn and no timer at all.
 public enum TimerState: Equatable, Sendable {
   /// A turn is running; the live tick should resume seeded at `elapsed` seconds.
   case running(elapsed: TimeInterval)
-  /// No live tick; the row's frozen `elapsedSeconds` stands. A stale anchor is discarded.
+  /// No live tick. A stale anchor is discarded.
   case frozen
   /// No in-flight turn and no timer.
   case none

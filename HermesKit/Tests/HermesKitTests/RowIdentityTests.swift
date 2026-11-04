@@ -7,8 +7,8 @@ import Testing
 /// Task 2: row identity is preserved across streaming deltas, and live (random-id) streaming
 /// rows reconcile to the deterministic, content-derived history ids on the next hydrate —
 /// without duplicating rows or flickering. The streaming fold helpers
-/// (`appendToStreamingMessage`, `appendToThinking`, `setThinkingStatus`, `keepThinkingLast`)
-/// must mutate the in-place row, never churn its id.
+/// (`appendToStreamingMessage`, `appendReasoning`, `closeReasoningBurst`) must mutate the
+/// in-place row, never churn its id.
 @MainActor
 struct RowIdentityTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
@@ -59,84 +59,82 @@ struct RowIdentityTests {
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    // First delta materialises the assistant row (uuid 1).
+    // First delta materialises the assistant row (uuid 0) — nothing was created eagerly.
     await store.send(.gatewayEvent(.messageDelta(text: "Hel"))) {
       $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Hel", isComplete: false)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: uuid(0), kind: .message(role: .assistant, text: "Hel", isComplete: false)),
       ]
-      $0.streamingRowID = uuid(1)
+      $0.streamingRowID = uuid(0)
     }
-    // Subsequent deltas only mutate the text — the id stays uuid(1).
+    // Subsequent deltas only mutate the text — the id stays uuid(0).
     await store.send(.gatewayEvent(.messageDelta(text: "lo"))) {
-      $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "Hello", isComplete: false)
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Hello", isComplete: false)
     }
     await store.send(.gatewayEvent(.messageDelta(text: " world"))) {
-      $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "Hello world", isComplete: false)
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Hello world", isComplete: false)
     }
-    #expect(store.state.streamingRowID == uuid(1))
-    #expect(store.state.transcript[id: uuid(1)] != nil)
+    #expect(store.state.streamingRowID == uuid(0))
+    #expect(store.state.transcript[id: uuid(0)] != nil)
     // Completion still mutates the same row in place (no new id).
     await store.send(.gatewayEvent(.messageComplete(text: "Hello world", usage: nil))) {
-      $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "Hello world", isComplete: true)
-      $0.transcript.remove(id: self.uuid(0))
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Hello world", isComplete: true)
       $0.streamingRowID = nil
-      $0.thinkingRowID = nil
+      $0.isTurnLive = false
       $0.isSending = false
     }
-    #expect(store.state.transcript[id: uuid(1)] != nil)
+    #expect(store.state.transcript[id: uuid(0)] != nil)
   }
 
-  /// Reasoning deltas accumulate into the one thinking row created at `message.start`; its id
-  /// (uuid 0) never changes across deltas or the status update.
-  @Test func thinkingDeltasPreserveThinkingRowID() async {
+  /// Reasoning deltas accumulate into the open burst row (created by the first delta); its id
+  /// (uuid 0) never changes across deltas, and a status update never touches it.
+  @Test func reasoningDeltasPreserveBurstRowID() async {
     let store = makeStore()
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Plan", status: nil, elapsedSeconds: 0, isComplete: false)
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false))]
+      $0.reasoningRowID = uuid(0)
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "ning"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Planning", status: nil, elapsedSeconds: 0, isComplete: false)
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Planning", isComplete: false)
     }
     await store.send(.gatewayEvent(.statusUpdate(kind: "context", text: "Context: 12%"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Planning", status: "Context: 12%", elapsedSeconds: 0, isComplete: false)
+      $0.turnStatus = "Context: 12%"
     }
-    #expect(store.state.thinkingRowID == uuid(0))
+    #expect(store.state.reasoningRowID == uuid(0))
     await store.send(.teardown)
   }
 
-  // MARK: keepThinkingLast reordering preserves ids
+  // MARK: Burst close preserves ids
 
-  /// Pinning the thinking row to the bottom reorders the array but must keep every row's id —
-  /// it removes-and-re-appends the *same* row instance.
-  @Test func keepThinkingLastReorderingPreservesIDs() async {
+  /// A tool row ends the open burst: the reasoning row is marked complete IN PLACE (same id,
+  /// same position — no reorder), and the tool row lands after it.
+  @Test func toolStartClosesBurstInPlace() async {
     let store = makeStore()
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    // A tool starts: it slots above the thinking row, which is removed-and-re-appended last.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: false))]
+      $0.reasoningRowID = uuid(0)
+    }
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
       $0.transcript = [
+        ChatRow(id: uuid(0), kind: .reasoning(text: "Plan", isComplete: true)),
         ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
       ]
+      $0.reasoningRowID = nil
       $0.toolRowIDs["t1"] = uuid(1)
     }
-    // The thinking row id survived the reorder unchanged.
-    #expect(store.state.transcript.last?.id == uuid(0))
-    #expect(store.state.transcript.first?.id == uuid(1))
-    #expect(store.state.thinkingRowID == uuid(0))
+    #expect(store.state.transcript.first?.id == uuid(0))
+    #expect(store.state.transcript.last?.id == uuid(1))
     await store.send(.teardown)
   }
 
@@ -301,8 +299,8 @@ struct RowIdentityTests {
     await store.send(.teardown)
   }
 
-  /// A reasoning-only turn (thinking text, no assistant message) keeps the thinking row id
-  /// stable across deltas and reconciles to the deterministic `.thinking` id on hydrate.
+  /// A reasoning-only turn (reasoning text, no assistant message) keeps the burst row id
+  /// stable across deltas and reconciles to the deterministic `.reasoning` id on hydrate.
   @Test func reasoningOnlyTurnPreservesIDAndReconciles() async {
     let store = makeHydratingStore { @Sendable _, _ in
       .object([
@@ -322,18 +320,18 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.reasoningDelta(text: "just ")))
     await store.send(.gatewayEvent(.reasoningDelta(text: "reasoning")))
     // The reasoning row kept its id (uuid 0) across both deltas.
-    #expect(store.state.thinkingRowID == uuid(0))
+    #expect(store.state.reasoningRowID == uuid(0))
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil)))
-    // Frozen reasoning row (kept — it carried reasoning), still uuid(0).
-    #expect(store.state.transcript[id: uuid(0)] != nil)
+    // Closed reasoning row, still uuid(0).
+    #expect(store.state.transcript[id: uuid(0)]?.kind == .reasoning(text: "just reasoning", isComplete: true))
 
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)
-    // Reconciled to the deterministic .thinking id at sequence index 0.
-    let deterministicThinkingID = ChatRow.deterministicID(
-      sequenceIndex: 0, role: nil, kindDiscriminator: "thinking"
+    // Reconciled to the deterministic .reasoning id at sequence index 0.
+    let deterministicReasoningID = ChatRow.deterministicID(
+      sequenceIndex: 0, role: nil, kindDiscriminator: "reasoning"
     )
-    #expect(store.state.transcript[id: deterministicThinkingID] != nil)
+    #expect(store.state.transcript[id: deterministicReasoningID] != nil)
     #expect(store.state.transcript[id: uuid(0)] == nil)
 
     await store.send(.teardown)

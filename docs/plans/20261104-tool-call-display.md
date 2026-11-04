@@ -348,12 +348,12 @@ public enum Body {
 - Modify: `HermesKit/Sources/HermesKit/Clients/ChatSnapshotStore.swift` (if the miss path needs work)
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift`, `RowIdentityTests.swift`, `ChatSnapshotClientTests.swift`
 
-- [ ] `ChatRow.Kind.thinking` → `.reasoning(text:isComplete:)`; discriminator `"reasoning"`; update `copyText`
-- [ ] add `turnActivityLabel` (spinner frame, replace semantics, cleared on `tool.start` / `message.delta` / terminals) and `turnStatus` to `ChatFeature.State`; rename `thinkingSeconds` → `turnSeconds` keeping the clock + turn-anchor behavior
-- [ ] reasoning deltas append to the current burst row when it is the last row of the turn, else start a new row; `reasoning.available` keeps today's dedup semantics scoped to the burst; remove `keepThinkingLast` / eager thinking-row creation; `freezeThinking` → mark open reasoning rows complete
-- [ ] verify an old cached snapshot holding `.thinking` decodes as a cache miss (no crash)
-- [ ] update existing thinking-row tests to the new model; add tests: spinner frames never reach a row, label replace/clear, multi-burst reasoning around tools, timer start/freeze/discard-stale-anchor unchanged
-- [ ] run tests — must pass before Task 3
+- [x] `ChatRow.Kind.thinking` → `.reasoning(text:isComplete:)`; discriminator `"reasoning"`; update `copyText`
+- [x] add `turnActivityLabel` (spinner frame, replace semantics, cleared on `tool.start` / `message.delta` / terminals) and `turnStatus` to `ChatFeature.State`; rename `thinkingSeconds` → `turnSeconds` keeping the clock + turn-anchor behavior
+- [x] reasoning deltas append to the current burst row when it is the last row of the turn, else start a new row; `reasoning.available` keeps today's dedup semantics scoped to the burst; remove `keepThinkingLast` / eager thinking-row creation; `freezeThinking` → mark open reasoning rows complete
+- [x] verify an old cached snapshot holding `.thinking` decodes as a cache miss (no crash) — per-row miss: the legacy row is skipped, the rest of the snapshot still paints
+- [x] update existing thinking-row tests to the new model; add tests: spinner frames never reach a row, label replace/clear, multi-burst reasoning around tools, timer start/freeze/discard-stale-anchor unchanged
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Segment interim commentary and carry structured tool data live
 

@@ -301,12 +301,15 @@ struct ChatView: View {
         hasDetail: detail?.isEmpty == false,
         onTap: { store.send(.toolTapped(id: row.id)) }
       )
-    case let .thinking(reasoning, status, elapsedSeconds, isComplete):
+    case let .reasoning(text, isComplete):
+      // Interim rendering of a reasoning burst with the existing disclosure look (the turn
+      // header replaces it in Phase B of the tool-call display plan). The open burst shows
+      // the live turn timer + status; a closed one is a static "Thought" disclosure.
       ThinkingIndicatorView(
-        liveSeconds: store.thinkingSeconds,
-        reasoning: reasoning,
-        status: status,
-        elapsedSeconds: elapsedSeconds,
+        liveSeconds: store.turnSeconds,
+        reasoning: text,
+        status: isComplete ? nil : store.turnStatus,
+        elapsedSeconds: 0,
         isComplete: isComplete
       )
     case let .status(kind, text):

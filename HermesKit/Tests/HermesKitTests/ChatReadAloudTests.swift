@@ -43,7 +43,7 @@ struct ChatReadAloudTests {
       id: uuid(6), kind: .tool(name: "t", title: "t", state: .complete, detail: nil, durationS: nil)
     ))
     state.transcript.append(ChatRow(
-      id: uuid(7), kind: .thinking(reasoning: "r", status: nil, elapsedSeconds: 1, isComplete: true)
+      id: uuid(7), kind: .reasoning(text: "r", isComplete: true)
     ))
     #expect(state.completedAssistantCount == 2)
     #expect(state.lastCompletedAssistantRow?.id == uuid(3)) // the streaming row never counts

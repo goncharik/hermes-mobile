@@ -92,6 +92,40 @@ struct ChatSnapshotClientTests {
     #expect(client.loadSnapshot("s1")?.rows == [statusRow])
   }
 
+  @Test func snapshotRoundTripsReasoningRows() {
+    let client = ChatSnapshotClient.inMemory()
+    let rows = [
+      ChatRow(id: UUID(), kind: .reasoning(text: "weighing options", isComplete: true)),
+      ChatRow(id: UUID(), kind: .reasoning(text: "still going", isComplete: false)),
+    ]
+    client.saveSnapshot("s1", ChatSnapshot(rows: rows))
+    #expect(client.loadSnapshot("s1")?.rows == rows)
+  }
+
+  @Test func legacyThinkingRowInACachedSnapshotIsSkippedNotACrash() throws {
+    // A snapshot written before the tool-call display plan holds the retired `.thinking`
+    // kind. It no longer decodes — that row is a cache miss (the cache is non-authoritative;
+    // the next hydrate rebuilds the transcript), every other row still paints, and nothing
+    // crashes.
+    let store = try ChatSnapshotStore.inMemory()
+    let before = messageRow("before")
+    let after = messageRow("after")
+    try store.saveSnapshot("s1", ChatSnapshot(model: "m", rows: [before, messageRow("placeholder"), after]))
+    let legacyJSON = #"""
+      {"id":"00000000-0000-0000-0000-0000000000AA","kind":{"thinking":{"reasoning":"old","status":"Context: 42% used","elapsedSeconds":12,"isComplete":true}}}
+      """#
+    try store.queue.write { db in
+      try db.execute(
+        sql: #"UPDATE "snapshot_rows" SET "row_json" = ? WHERE "session_id" = ? AND "idx" = 1"#,
+        arguments: [legacyJSON, "s1"]
+      )
+    }
+
+    let loaded = try #require(try store.loadSnapshot("s1"))
+    #expect(loaded.model == "m")
+    #expect(loaded.rows == [before, after])
+  }
+
   @Test func attachmentImagesDoNotRoundTrip() throws {
     // Attachment BYTES are stripped by `ChatRow`'s `Codable` (omitted from `CodingKeys`),
     // so they never reach — or come back from — the cache, regardless of the reducer.
