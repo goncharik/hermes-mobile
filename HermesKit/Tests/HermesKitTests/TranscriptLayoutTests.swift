@@ -67,6 +67,8 @@ struct TranscriptLayoutTests {
         return "call \(call.key.callOrdinal) #\(Int(call.row.id.uuidString.suffix(12), radix: 16)!)"
       case let .row(row):
         return "row #\(Int(row.id.uuidString.suffix(12), radix: 16)!)"
+      case .liveIndicator:
+        return "live"
       }
     }
   }
@@ -138,6 +140,8 @@ struct TranscriptLayoutTests {
     #expect(header.title(activityLabel: "ಠ_ಠ pondering…", elapsedSeconds: 19) == "ಠ_ಠ pondering… · 19s")
     #expect(header.title(activityLabel: nil, elapsedSeconds: 19) == "Working · 19s")
     #expect(header.title(activityLabel: "  ", elapsedSeconds: 61) == "Working · 1m 1s")
+    #expect(TurnHeader.liveLabel(" ಠ_ಠ pondering… ") == "ಠ_ಠ pondering…")
+    #expect(TurnHeader.liveLabel(nil) == "Working")
   }
 
   @Test func aTurnWithNothingToFoldHasNoHeader() {
@@ -180,6 +184,32 @@ struct TranscriptLayoutTests {
   @Test func thePreambleIsNeverFolded() {
     let rows = [assistant(0), tool(1), tool(2), user(3), assistant(4)]
     #expect(shape(items(rows)) == ["row #0", "call 0 #1", "call 1 #2", "row #3", "row #4"])
+  }
+
+  @Test func aRunningPreambleEndsWithTheLiveIndicator() {
+    // No user row to hang a header off: the indicator carries the live label instead.
+    #expect(shape(items([assistant(0), tool(1, running: true)], running: -1)) == [
+      "row #0", "call 0 #1", "live",
+    ])
+    #expect(shape(items([], running: -1)) == ["live"])
+    // Idle preamble, or a running turn WITH a header: no indicator.
+    #expect(shape(items([assistant(0), tool(1)])) == ["row #0", "call 0 #1"])
+    #expect(!items([assistant(0), user(1), tool(2)], running: 0).contains(.liveIndicator))
+    #expect(TranscriptItem.liveIndicator.id == TranscriptItem.liveIndicatorID)
+  }
+
+  @Test(arguments: [
+    ("I'm going to bring up the skill now. Then I'll read it.", "I'm going to bring up the skill now."),
+    ("  Checking the logs!  Next up", "Checking the logs!"),
+    ("Is it 3.5 or 4? Let me see.", "Is it 3.5 or 4?"),
+    ("**Planning the fix**\n\nI need to look at the reducer.", "Planning the fix"),
+    ("First line without a period\nsecond line", "First line without a period"),
+    ("No terminator at all", "No terminator at all"),
+    ("Ends with a period.", "Ends with a period."),
+    ("   ", ""),
+  ])
+  func reasoningPreviewIsTheFirstSentence(text: String, preview: String) {
+    #expect(TranscriptFold.reasoningPreview(text) == preview)
   }
 
   @Test func ordinalOffsetMakesWindowOrdinalsAbsolute() {

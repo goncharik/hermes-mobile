@@ -118,11 +118,16 @@ public struct TurnHeader: Equatable, Sendable, Identifiable {
   /// finished: "Worked for <duration>", or a bare "Worked" when the duration is unknown.
   public func title(activityLabel: String?, elapsedSeconds: Int) -> String {
     if isRunning {
-      let label = activityLabel?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "Working"
-      return "\(label) · \(formatElapsed(elapsedSeconds))"
+      return "\(Self.liveLabel(activityLabel)) · \(formatElapsed(elapsedSeconds))"
     }
     guard let duration else { return "Worked" }
     return "Worked for \(formatElapsed(Int(duration)))"
+  }
+
+  /// A running turn's label without its timer: the spinner line (trimmed), else "Working".
+  /// The view lays the timer beside it so a long provider-wait line truncates, not the timer.
+  public static func liveLabel(_ activityLabel: String?) -> String {
+    activityLabel?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "Working"
   }
 }
 
@@ -193,6 +198,10 @@ public enum TranscriptItem: Equatable, Sendable, Identifiable {
   case toolCall(ToolCallItem)
   /// A message, reasoning, status or command-output row, rendered as itself.
   case row(ChatRow)
+  /// The live label + timer for a running turn that has NO header — one with no user row of
+  /// ours (the preamble: a branch seed's turn, or a turn another client started in an empty
+  /// session). Always the last item; never stored, never persisted.
+  case liveIndicator
 
   /// Deterministic: row-backed items use their row's id; a header / summary derives its id
   /// from the row it hangs off, so a re-layout of the same rows yields the same ids.
@@ -202,8 +211,12 @@ public enum TranscriptItem: Equatable, Sendable, Identifiable {
     case let .runSummary(summary): return summary.id
     case let .toolCall(item): return item.id
     case let .row(row): return row.id
+    case .liveIndicator: return Self.liveIndicatorID
     }
   }
+
+  /// The fixed id of ``liveIndicator``.
+  public static let liveIndicatorID = UUID.deterministic(from: "liveTurnIndicator")
 
   /// The derived id of the header hanging off the user row `userRowID`.
   public static func turnHeaderID(userRowID: UUID) -> UUID {
@@ -234,7 +247,9 @@ public enum TranscriptFold {
   /// form RUNS (broken only by assistant text or a never-folded row; reasoning between two
   /// calls stays in the run): a run of ≥ 2 calls shows a summary line, listing its calls only
   /// when the user expanded it; a run of one shows the call line directly. Rows before the
-  /// first user row (the preamble) are never folded.
+  /// first user row (the preamble) are never folded. A running turn that gets no header (the
+  /// running preamble) ends the items with ``TranscriptItem/liveIndicator`` instead, so a live
+  /// turn always shows its label and timer.
   ///
   /// - Parameters:
   ///   - expansion: the slot's fold choices.
@@ -253,6 +268,7 @@ public enum TranscriptFold {
     let rows = Array(rows)
     var items: [TranscriptItem] = []
     let localRunning = runningTurnOrdinal.map { $0 - ordinalOffset }
+    var hasRunningHeader = false
 
     for span in turnSpans(rows, runningTurnOrdinal: localRunning) {
       let ordinal = span.ordinal + ordinalOffset
@@ -279,6 +295,7 @@ public enum TranscriptFold {
       }
 
       let isExpanded = expansion.isTurnExpanded(ordinal: ordinal, isRunning: span.isRunning)
+      if span.isRunning { hasRunningHeader = true }
       items.append(.turnHeader(TurnHeader(
         id: TranscriptItem.turnHeaderID(userRowID: rows[userIndex].id),
         ordinal: ordinal,
@@ -295,7 +312,31 @@ public enum TranscriptFold {
         for index in body where !isFolded(index) { items.append(.row(rows[index])) }
       }
     }
+    if runningTurnOrdinal != nil, !hasRunningHeader { items.append(.liveIndicator) }
     return items
+  }
+
+  /// A reasoning burst's one-line preview: its first sentence (or first line), with markdown
+  /// bold markers dropped — "**Planning the fix**\n\nI need to…" previews as "Planning the
+  /// fix". The view truncates whatever is left to one line; the full text is a tap away.
+  public static func reasoningPreview(_ text: String) -> String {
+    var line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let newline = line.firstIndex(where: \.isNewline) {
+      line = String(line[..<newline])
+    }
+    line = line.replacingOccurrences(of: "**", with: "")
+    // Cut after the first sentence terminator that is followed by whitespace (so "3.5" and
+    // "e.g.x" don't end a sentence).
+    var index = line.startIndex
+    while index < line.endIndex {
+      let next = line.index(after: index)
+      if ".!?".contains(line[index]), next < line.endIndex, line[next].isWhitespace {
+        line = String(line[...index])
+        break
+      }
+      index = next
+    }
+    return line.trimmingCharacters(in: .whitespaces)
   }
 
   /// Whether `row` folds behind its turn's header.

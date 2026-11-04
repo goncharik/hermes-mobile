@@ -173,6 +173,41 @@ import Testing
     #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 0, distanceFromBottom: 0))
   }
 
+  // MARK: - Anchor choice (window slide, fold expand / collapse while scrolled up)
+
+  @Test func anchorIsTheFirstVisibleSurvivor() {
+    // A run above the viewport folded away (items 1, 2): the first visible item (3) holds still.
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [3, 4, 5], oldOrder: [0, 1, 2, 3, 4, 5, 6], surviving: [0, 3, 4, 5, 6]
+    ) == 3)
+    // The first visible item folded away: the next visible survivor.
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3, 4], oldOrder: [0, 1, 2, 3, 4], surviving: [0, 3, 4]
+    ) == 3)
+  }
+
+  @Test func anchorFallsToTheFinalReplyWhenEverythingVisibleFolded() {
+    // The reader was looking at the turn's tool lines (2...4) when it finished and collapsed:
+    // hold the first survivor after them — the final reply (5).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3, 4], oldOrder: [0, 1, 2, 3, 4, 5], surviving: [0, 1, 5]
+    ) == 5)
+    // Nothing after them survives: the last survivor before them (the header).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3], oldOrder: [0, 1, 2, 3], surviving: [0, 1]
+    ) == 1)
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [Int](), oldOrder: [0, 1], surviving: [0, 1]
+    ) == nil)
+  }
+
+  @Test func anchorInsideATallDroppedHeadRowIsTheFirstSurvivorBelowIt() {
+    // A slide dropped the head row the reader was inside (0): hold the next row (1).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [0], oldOrder: [0, 1, 2, 3], surviving: [1, 2, 3, 4]
+    ) == 1)
+  }
+
   // MARK: - TranscriptDiffKind.classify
 
   private func ids(_ count: Int) -> [ChatRow.ID] {

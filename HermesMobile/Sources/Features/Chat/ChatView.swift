@@ -214,7 +214,8 @@ struct ChatView: View {
     if store.showsEmptyHero {
       ChatEmptyHeroView()
     } else {
-      let rows = store.renderedRows
+      let items = store.transcriptItems
+      let rowIDs = store.visibleRows.map(\.id)
       let turnState: TurnState = store.isSending ? .streaming : .idle
       let canLoadOlder = store.hasMoreAbove
       let onLoadOlder = { _ = store.send(.loadOlderRequested) }
@@ -223,14 +224,16 @@ struct ChatView: View {
       let finalReplyIDs = store.finalReplyRowIDs
 
       // The transcript is rendered by the `UICollectionView`-backed engine (the only engine):
-      // a diffable data source keyed on the deterministic row id gives stable diffing, scroll
-      // restoration, and prepend-preservation that the pure-SwiftUI `ScrollView` couldn't.
+      // a diffable data source keyed on the deterministic display-item id (the turn fold —
+      // `TranscriptFold`) gives stable diffing, scroll restoration, and prepend / fold-change
+      // preservation that the pure-SwiftUI `ScrollView` couldn't.
       CollectionTranscriptView(
-        rows: rows,
+        items: items,
+        rowIDs: rowIDs,
         turnState: turnState,
         canLoadOlder: canLoadOlder,
         onLoadOlder: onLoadOlder,
-        cell: { row in transcriptCell(row, isFinalReply: finalReplyIDs.contains(row.id)) }
+        cell: { item in transcriptCell(item, finalReplyIDs: finalReplyIDs) }
       )
       // Keyboard dismissal is drag-driven (`.interactively`). We intentionally do NOT add a
       // `.simultaneousGesture(TapGesture())` here: it would swallow the hosted
@@ -243,15 +246,44 @@ struct ChatView: View {
   /// on `ChatView`'s body reaches it — the `openURL` hook has to be installed HERE, on the
   /// content the builder hands to the collection view, or a `hermes-file:` tap in a message
   /// would fall through to the system (which has no handler for the scheme) and do nothing.
-  private func transcriptCell(_ row: ChatRow, isFinalReply: Bool) -> some View {
-    transcriptCellContent(row, isFinalReply: isFinalReply)
+  private func transcriptCell(_ item: TranscriptItem, finalReplyIDs: Set<ChatRow.ID>) -> some View {
+    itemView(item, finalReplyIDs: finalReplyIDs)
       .environment(\.openURL, openFileReference)
+  }
+
+  /// One display item of the turn fold (`TranscriptFold`). Internal (not `private`) so the
+  /// snapshot suite can lay a whole fold out cell by cell without the collection view.
+  @ViewBuilder
+  func itemView(_ item: TranscriptItem, finalReplyIDs: Set<ChatRow.ID>) -> some View {
+    switch item {
+    case let .row(row):
+      transcriptCellContent(row, isFinalReply: finalReplyIDs.contains(row.id))
+    case let .turnHeader(header):
+      TurnHeaderCell(store: store, header: header)
+    case let .runSummary(summary):
+      RunSummaryView(summary: summary) { store.send(.runSummaryTapped(summary.key)) }
+    case let .toolCall(call):
+      toolLine(call.row)
+    case .liveIndicator:
+      TurnHeaderCell(store: store, header: nil)
+    }
+  }
+
+  @ViewBuilder
+  private func toolLine(_ row: ChatRow) -> some View {
+    if case let .tool(call) = row.kind {
+      ToolStatusView(
+        name: call.name, title: call.title,
+        hasDetail: call.detail?.isEmpty == false,
+        onTap: { store.send(.toolTapped(id: row.id)) }
+      )
+    }
   }
 
   @ViewBuilder
   private func transcriptCellContent(_ row: ChatRow, isFinalReply: Bool) -> some View {
     // Only user messages get the long-press "Copy whole message" menu (mirrors their bubble).
-    // Assistant/tool/thinking rows render bubble-less plain text — no context menu, so a
+    // Assistant/tool/reasoning rows render bubble-less plain text — no context menu, so a
     // long-press starts native text selection (select any range → system Copy/Share) instead
     // of grabbing the entire row. The menu's long-press gesture would otherwise pre-empt
     // `.textSelection`.
@@ -309,26 +341,15 @@ struct ChatView: View {
           )
         }
       }
-    case let .tool(call):
-      ToolStatusView(
-        name: call.name, title: call.title, state: call.state, durationS: call.durationS,
-        hasDetail: call.detail?.isEmpty == false,
-        onTap: { store.send(.toolTapped(id: row.id)) }
-      )
-    case let .reasoning(text, isComplete):
-      // Interim rendering of a reasoning burst with the existing disclosure look (the turn
-      // header replaces it in Phase B of the tool-call display plan). The open burst — or
-      // the live-turn placeholder row (`State.renderedRows`) — shows the live label
-      // (spinner line, else "Thinking"), the turn timer and status; a closed burst is a
-      // static "Thought" disclosure.
-      ThinkingIndicatorView(
-        liveLabel: store.turnActivityLabel ?? "Thinking",
-        liveSeconds: store.turnSeconds,
-        reasoning: text,
-        status: isComplete ? nil : store.turnStatus,
-        elapsedSeconds: 0,
-        isComplete: isComplete
-      )
+    case .tool:
+      // The fold lays tool rows out as `.toolCall` items; this branch keeps `rowView` total.
+      toolLine(row)
+    case let .reasoning(text, _):
+      // One line per reasoning burst (first sentence, tap to disclose). The turn's live label,
+      // timer and status live on its header, not here. `.id` so a reused cell's disclosure
+      // state never carries over to another burst.
+      ReasoningLineView(text: text)
+        .id(row.id)
     case let .status(kind, text):
       // Review summaries (#47) are multi-sentence system lines — render them a step
       // larger (`.footnote`) and selectable so they stay readable/copyable. Other
@@ -466,6 +487,35 @@ struct ChatView: View {
         .font(.caption).foregroundStyle(.red)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
+    }
+  }
+}
+
+/// A turn header cell wired to the store: a running header reads the live label, timer and
+/// status HERE — in the hosted cell's own body — so the per-second tick re-renders this one
+/// cell through observation instead of re-laying the whole transcript out. `header == nil` is
+/// the headerless live indicator (`TranscriptItem.liveIndicator`): the running look, no tap.
+private struct TurnHeaderCell: View {
+  let store: StoreOf<ChatFeature>
+  let header: TurnHeader?
+
+  var body: some View {
+    if let header, !header.isRunning {
+      TurnHeaderView(
+        label: header.title(activityLabel: nil, elapsedSeconds: 0),
+        elapsedSeconds: nil,
+        isExpanded: header.isExpanded,
+        onTap: { store.send(.turnHeaderTapped(header.ordinal)) }
+      )
+    } else {
+      TurnHeaderView(
+        label: TurnHeader.liveLabel(store.turnActivityLabel),
+        elapsedSeconds: store.turnSeconds,
+        isExpanded: header?.isExpanded,
+        status: store.turnStatus,
+        liveLine: header?.liveLine,
+        onTap: header.map { header in { store.send(.turnHeaderTapped(header.ordinal)) } }
+      )
     }
   }
 }

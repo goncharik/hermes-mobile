@@ -816,14 +816,17 @@ final class ChatSnapshotTests: SnapshotTestCase {
 
   // MARK: Tool/skill rows + detail sheet
 
+  /// Call lines (the T3 look): icon + one truncating line, a chevron only with detail to open.
   func testToolRows() {
     let view = VStack(spacing: 10) {
-      ToolStatusView(name: "read_file", title: "Reading server.py", state: .running,
-                     durationS: nil, hasDetail: true, onTap: {})
-      ToolStatusView(name: "edit_file", title: "Edited 3 lines in ChatView.swift", state: .complete,
-                     durationS: 1.4, hasDetail: true, onTap: {})
-      ToolStatusView(name: "todo", title: "todo", state: .complete,
-                     durationS: 0.1, hasDetail: false, onTap: {})
+      ToolStatusView(name: "read_file", title: "Reading server.py", hasDetail: true, onTap: {})
+      ToolStatusView(name: "edit_file", title: "Edited 3 lines in ChatView.swift", hasDetail: true, onTap: {})
+      ToolStatusView(name: "todo", title: "todo", hasDetail: false, onTap: {})
+      ToolStatusView(
+        name: "terminal",
+        title: "cd /private/tmp/claude-501/-Users-eugene-Documents-Development && asc testflight crashes",
+        hasDetail: true, onTap: {}
+      )
     }
     .padding()
     .frame(width: device.size?.width ?? 390)

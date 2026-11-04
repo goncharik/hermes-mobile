@@ -327,7 +327,7 @@ final class TranscriptSlidePreservationTests: XCTestCase {
   // MARK: - Hosting
 
   /// The real `CollectionTranscriptView`, rendered into a hosting controller whose root view the
-  /// test swaps to deliver a new `rows` slice — the same `updateUIView` → `apply(rows:)` path
+  /// test swaps to deliver a new `rows` slice — the same `updateUIView` → `apply(items:rowIDs:)` path
   /// the store drives in the app.
   @MainActor
   private struct Hosted {
@@ -504,12 +504,13 @@ private struct TranscriptHarnessView: View {
 
   var body: some View {
     CollectionTranscriptView(
-      rows: rows,
+      items: rows.map(TranscriptItem.row),
+      rowIDs: rows.map(\.id),
       turnState: .streaming,
       canLoadOlder: olderPages != nil,
       onLoadOlder: { olderPages?.count += 1 }
-    ) { row in
-      FixedHeightRow(row: row, height: tallRows[row.id] ?? Self.rowHeight)
+    ) { item in
+      FixedHeightRow(item: item, height: tallRows[item.id] ?? Self.rowHeight)
     }
     .dynamicTypeSize(.large)
   }
@@ -521,7 +522,7 @@ private final class OlderPageRequests {
 }
 
 private struct FixedHeightRow: View {
-  let row: ChatRow
+  let item: TranscriptItem
   let height: CGFloat
 
   var body: some View {
@@ -530,7 +531,7 @@ private struct FixedHeightRow: View {
   }
 
   private var label: String {
-    if case let .message(_, text, _) = row.kind { return text }
+    if case let .row(row) = item, case let .message(_, text, _) = row.kind { return text }
     return ""
   }
 }

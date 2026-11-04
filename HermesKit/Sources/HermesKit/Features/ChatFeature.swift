@@ -932,8 +932,10 @@ public struct ChatFeature {
     }
 
     /// The window laid out as display items — turn headers, run summaries, call lines and plain
-    /// rows (see ``TranscriptFold``). Turn ordinals are absolute (counted from the transcript
-    /// start, not the window's), so they match the `fold` keys and `runningTurnOrdinal`.
+    /// rows (see ``TranscriptFold``) — what the transcript renders. Turn ordinals are absolute
+    /// (counted from the transcript start, not the window's), so they match the `fold` keys and
+    /// `runningTurnOrdinal`. A live turn shows its label + timer on its header, or — when it
+    /// has no header (no user row of ours) — on a trailing ``TranscriptItem/liveIndicator``.
     public var transcriptItems: [TranscriptItem] {
       let start = snappedWindowStart
       return TranscriptFold.items(
@@ -943,28 +945,6 @@ public struct ChatFeature {
         liveLine: turnActivityLabel,
         ordinalOffset: transcript.elements[..<start].count(where: Self.isUserMessage)
       )
-    }
-
-    /// The fixed id of the live-turn indicator row (see `renderedRows`).
-    public static let liveTurnIndicatorRowID = ChatRow.deterministicID(
-      sequenceIndex: -1, role: nil, kindDiscriminator: "liveTurnIndicator"
-    )
-
-    /// What the transcript renders: `visibleRows`, plus — while a turn is live and no open
-    /// reasoning burst carries the live indicator — a placeholder open reasoning row
-    /// (`liveTurnIndicatorRowID`) at the bottom, so the turn shows its live label + timer from
-    /// `message.start` on (before the first reasoning text, and between bursts). Never stored
-    /// in `transcript` (not persisted, never hydrated, never read aloud). Interim until the
-    /// turn header replaces it (tool-call display plan, Phase B).
-    public var renderedRows: [ChatRow] {
-      var rows = Array(visibleRows)
-      let hasOpenBurst = reasoningRowID.flatMap { transcript[id: $0] } != nil
-      if isTurnLive, !hasOpenBurst {
-        rows.append(ChatRow(
-          id: Self.liveTurnIndicatorRowID, kind: .reasoning(text: "", isComplete: false)
-        ))
-      }
-      return rows
     }
 
     public var canSend: Bool {

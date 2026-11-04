@@ -6,7 +6,7 @@ import Testing
 
 /// Turn structure (tool-call display plan, Phase A): `turnSpans` splits a transcript into
 /// user-delimited turns with their final reply and duration, and `ChatFeature.State` derives
-/// the final-reply consumers (action bar, read aloud) and the live-turn indicator row from it.
+/// the final-reply consumers (action bar, read aloud) and the live-turn indicator from it.
 struct TurnStructureTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
   private func uuid(_ n: Int) -> UUID {
@@ -187,33 +187,41 @@ struct TurnStructureTests {
     #expect(state.finalReplyRowIDs == [uuid(0)])
   }
 
-  // MARK: Live-turn indicator row
+  // MARK: Live-turn indicator
 
-  @Test func aLiveTurnWithoutAnOpenBurstGetsTheIndicatorRow() {
+  @Test func aLiveTurnWithAUserRowShowsItsHeaderNotTheIndicator() {
     var state = ChatFeature.State(connection: conn, transcript: [user(0), tool(1)])
-    #expect(state.renderedRows.map(\.id) == [uuid(0), uuid(1)]) // idle: none
+    #expect(!state.transcriptItems.contains(.liveIndicator)) // idle: none
 
     state.isTurnLive = true
-    let rows = state.renderedRows
-    #expect(rows.map(\.id) == [uuid(0), uuid(1), ChatFeature.State.liveTurnIndicatorRowID])
-    #expect(rows.last?.kind == .reasoning(text: "", isComplete: false))
+    let items = state.transcriptItems
+    #expect(!items.contains(.liveIndicator))
+    #expect(items.contains { if case let .turnHeader(header) = $0 { header.isRunning } else { false } })
+  }
+
+  @Test func aLiveTurnWithNoUserRowEndsWithTheIndicator() {
+    // A branch seed's turn (or another client's turn in an empty session): no header to carry
+    // the live label, so the indicator does.
+    var state = ChatFeature.State(connection: conn, transcript: [assistant(0, "seed"), tool(1)])
+    #expect(state.transcriptItems.map(\.id) == [uuid(0), uuid(1)]) // idle: none
+
+    state.isTurnLive = true
+    #expect(state.transcriptItems.map(\.id) == [uuid(0), uuid(1), TranscriptItem.liveIndicatorID])
     #expect(state.transcript.count == 2) // never stored
   }
 
-  @Test func theOpenBurstCarriesTheIndicatorItself() {
-    var state = ChatFeature.State(
-      connection: conn, transcript: [user(0), reasoning(1, complete: false)]
-    )
+  @Test func aLiveTurnInAnEmptyTranscriptIsJustTheIndicator() {
+    var state = ChatFeature.State(connection: conn, transcript: [])
     state.isTurnLive = true
-    state.reasoningRowID = uuid(1)
-    #expect(state.renderedRows.map(\.id) == [uuid(0), uuid(1)])
+    #expect(state.transcriptItems == [.liveIndicator])
   }
 
-  @Test func indicatorFollowsTheWindow() {
+  @Test func theLiveHeaderFollowsTheWindow() {
     var state = ChatFeature.State(connection: conn, transcript: toolTurn)
     state.isTurnLive = true
     state.windowStart = 4
-    #expect(state.renderedRows.map(\.id)
-      == [uuid(4), uuid(5), uuid(6), ChatFeature.State.liveTurnIndicatorRowID])
+    #expect(state.transcriptItems.map(\.id) == [
+      uuid(4), TranscriptItem.turnHeaderID(userRowID: uuid(4)), uuid(5), uuid(6),
+    ])
   }
 }

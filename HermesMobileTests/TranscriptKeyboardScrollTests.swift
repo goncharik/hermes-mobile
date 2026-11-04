@@ -145,14 +145,17 @@ private struct Harness: View {
   let rows: [ChatRow]
 
   var body: some View {
-    CollectionTranscriptView(rows: rows, turnState: .streaming, canLoadOlder: true, onLoadOlder: {}) { row in
-      Text(Self.text(row)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+    CollectionTranscriptView(
+      items: rows.map(TranscriptItem.row), rowIDs: rows.map(\.id),
+      turnState: .streaming, canLoadOlder: true, onLoadOlder: {}
+    ) { item in
+      Text(Self.text(item)).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
     }
     .dynamicTypeSize(.large)
   }
 
-  private static func text(_ row: ChatRow) -> String {
-    if case let .message(_, text, _) = row.kind { return text }
+  private static func text(_ item: TranscriptItem) -> String {
+    if case let .row(row) = item, case let .message(_, text, _) = row.kind { return text }
     return ""
   }
 }

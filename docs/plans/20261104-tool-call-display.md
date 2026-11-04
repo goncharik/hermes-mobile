@@ -434,11 +434,11 @@ public enum Body {
 - Delete: `HermesMobile/Sources/Features/Chat/ThinkingIndicatorView.swift` (logic folded into the header + reasoning line)
 - Modify: `HermesMobileTests/ChatSnapshotTests.swift`, `HydrationSnapshotTests.swift`
 
-- [ ] make `CollectionTranscriptView` key on `TranscriptItem.ID`; keep stick-to-bottom, prepend preservation, reconfigure-on-change
-- [ ] auto-collapse while NOT pinned preserves the final reply's on-screen offset (reuse `preserveOffsetAfterPrepend` math); pinned re-pins
-- [ ] `TurnHeaderView` (live label + timer + status caption, chevron, collapsed live line), `RunSummaryView`, reasoning line (first sentence, tap to disclose); `onTapGesture` + button a11y traits; call lines keep `ToolStatusView` restyled to the T3 line (icon + title, no green seal)
-- [ ] `tuist generate`; snapshot tests: live expanded / live collapsed / finished collapsed / finished expanded / run summary / reasoning line, light + dark; re-record legitimately changed baselines
-- [ ] `make snapshot` clean (two runs for new tests) and `make test` pass before Task 9
+- [x] make `CollectionTranscriptView` key on `TranscriptItem.ID`; keep stick-to-bottom, prepend preservation, reconfigure-on-change (➕ open/hydrate/prepend classification still runs on the window's ROW ids, so a fold change never reads as a reset)
+- [x] auto-collapse while NOT pinned preserves the final reply's on-screen offset (reuse `preserveOffsetAfterPrepend` math); pinned re-pins (➕ generalized: any fold change while scrolled up holds the first visible surviving item, falling to the final reply when everything visible folded — pure `TranscriptScrollMath.preservationAnchor` / `offsetPreservingAnchor`)
+- [x] `TurnHeaderView` (live label + timer + status caption, chevron, collapsed live line), `RunSummaryView`, reasoning line (first sentence, tap to disclose); `onTapGesture` + button a11y traits; call lines keep `ToolStatusView` restyled to the T3 line (icon + title, no green seal) (➕ `TranscriptItem.liveIndicator` for a running turn with no user row; `TranscriptFold.reasoningPreview`)
+- [x] `tuist generate`; snapshot tests: live expanded / live collapsed / finished collapsed / finished expanded / run summary / reasoning line, light + dark; re-record legitimately changed baselines (new `TurnFoldSnapshotTests`; `ThinkingIndicatorSnapshotTests` removed with the view)
+- [x] `make snapshot` clean (two runs for new tests) and `make test` pass before Task 9 (288/288; 2132 tests)
 
 ### Phase C — per-tool views & expand in place (PR 3, closes #45)
 

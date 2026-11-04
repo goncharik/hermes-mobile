@@ -78,6 +78,27 @@ public enum TranscriptScrollMath {
     )
     return min(max(target, -topInset), maxY)
   }
+
+  /// The item to hold still across a structural change (a window `.slide`, or a fold expanding
+  /// or collapsing while the reader is scrolled up): the first VISIBLE item that survives the
+  /// change. When every visible item goes away (the reader is inside a tall row the slide drops,
+  /// or was looking at a turn's tool lines as it finished and collapsed), the first surviving
+  /// item after them — the turn's final reply — else the last one before.
+  ///
+  /// - Parameters:
+  ///   - visible: the on-screen item ids, top to bottom.
+  ///   - oldOrder: every item id before the change, in order.
+  ///   - surviving: the item ids after the change.
+  public static func preservationAnchor<ID: Hashable>(
+    visible: [ID], oldOrder: [ID], surviving: Set<ID>
+  ) -> ID? {
+    if let first = visible.first(where: surviving.contains) { return first }
+    guard let lastVisible = visible.last, let index = oldOrder.firstIndex(of: lastVisible) else {
+      return nil
+    }
+    if let after = oldOrder[(index + 1)...].first(where: surviving.contains) { return after }
+    return oldOrder[..<index].last(where: surviving.contains)
+  }
 }
 
 /// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
