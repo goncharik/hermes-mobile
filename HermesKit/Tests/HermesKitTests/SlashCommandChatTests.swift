@@ -30,6 +30,8 @@ struct SlashCommandChatTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// The pinned `date` the stores use — what the fold stamps on echoed user rows.
+  private let t0 = Date(timeIntervalSince1970: 0)
 
   /// A realistic `commands.catalog` payload: two categorized built-ins (one with
   /// subcommands + an alias) and one uncategorized skill route appended last.
@@ -524,7 +526,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -604,7 +606,7 @@ struct SlashCommandChatTests {
     await store.send(.composerSubmitted) {
       // The RAW typed alias is echoed as the user row — only the WIRE command is canonical.
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/st here 5", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/st here 5", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -714,7 +716,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1171,7 +1173,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compress", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compress", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1253,7 +1255,7 @@ struct SlashCommandChatTests {
     await store.send(.composerSubmitted) {
       // The RAW typed alias is echoed as the user row.
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compact", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compact", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1334,7 +1336,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compress", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/compress", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1667,7 +1669,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/deploy tidy the API", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/deploy tidy the API", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1807,7 +1809,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/goal ship the feature", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/goal ship the feature", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -1876,7 +1878,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/undo", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/undo", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true
@@ -2005,7 +2007,7 @@ struct SlashCommandChatTests {
 
     await store.send(.composerSubmitted) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true)),
+        ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "/status", isComplete: true), timestamp: self.t0),
       ]
       $0.composerText = ""
       $0.isSending = true

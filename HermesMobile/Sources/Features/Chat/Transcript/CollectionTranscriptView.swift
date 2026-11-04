@@ -103,43 +103,52 @@ extension TranscriptLayout {
   }
 }
 
-/// Renderer A: a `UICollectionView`-backed transcript engine, drop-in interchangeable with
-/// `SwiftUITranscriptView`. **Same initializer shape** so `ChatView` can swap between the two
-/// behind a single call site (Task 8 wires the toggle).
+/// The transcript renderer (the only one): a `UICollectionView` whose diffable data source is
+/// keyed on `TranscriptItem.ID` — the turn fold's display items (headers, run summaries, call
+/// lines, rows), each id deterministic so a re-layout reconfigures cells instead of recreating
+/// them.
 ///
 /// Why UIKit: the list owns scroll/pin behaviour imperatively, which lets us re-pin
 /// `contentOffset` the instant a streaming delta resizes the last cell (the primary
-/// streaming-jank mitigation) and preserve the on-screen anchor across a top prepend — both
-/// of which are awkward to do reliably in pure SwiftUI scroll APIs.
+/// streaming-jank mitigation) and preserve the on-screen anchor across a top prepend, a window
+/// slide, or a fold change — all of which are awkward to do reliably in pure SwiftUI scroll APIs.
 ///
-/// - `rows` — the windowed slice (`store.visibleRows`); never the full transcript.
+/// - `items` — the window laid out as display items (`store.transcriptItems`); never the full
+///   transcript.
+/// - `rowIDs` — the raw window's ROW ids (`store.windowRowIDs`), what the open/hydrate/prepend/
+///   slide classification runs on: a fold expanding or collapsing changes the items but not the
+///   rows, so it can never read as a hydrate (jump to bottom) or a prepend; and the raw window,
+///   unlike the snapped one the items are built from, keeps its size across a live append.
 /// - `turnState` — `.idle` / `.streaming`, drives the follow-to-bottom decision.
 /// - `canLoadOlder` — whether older history exists above the window (`store.hasMoreAbove`).
 ///   When `false` the top sentinel does NOT fire `onLoadOlder` nor arm prepend preservation,
 ///   so a transcript scrolled to its true top never gets stuck with `pendingPrependPreservation`.
 /// - `onLoadOlder` — fired when the top sentinel is reached (older page requested).
-/// - `cell` — builds the row content; reused verbatim via `UIHostingConfiguration` so the
-///   bubble subviews render identically across engines.
+/// - `cell` — builds an item's content, hosted via `UIHostingConfiguration`.
 ///
 /// Scroll/pin behavior is **renderer-local**: the reducer issues no imperative scroll
-/// commands. Mirrors the shared stick-to-bottom contract documented on `SwiftUITranscriptView`.
+/// commands. Pinned → follow the bottom; scrolled up → never yanked, and a window slide or a
+/// fold change keeps the first visible surviving item where it was on screen.
 struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
-  let rows: [ChatRow]
+  let items: [TranscriptItem]
+  let rowIDs: [ChatRow.ID]
   let turnState: TurnState
   let canLoadOlder: Bool
   let onLoadOlder: () -> Void
-  let cell: (ChatRow) -> Cell
+  let cell: (TranscriptItem) -> Cell
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(
-    rows: [ChatRow],
+    items: [TranscriptItem],
+    rowIDs: [ChatRow.ID],
     turnState: TurnState,
     canLoadOlder: Bool,
     onLoadOlder: @escaping () -> Void,
-    @ViewBuilder cell: @escaping (ChatRow) -> Cell
+    @ViewBuilder cell: @escaping (TranscriptItem) -> Cell
   ) {
-    self.rows = rows
+    self.items = items
+    self.rowIDs = rowIDs
     self.turnState = turnState
     self.canLoadOlder = canLoadOlder
     self.onLoadOlder = onLoadOlder
@@ -181,7 +190,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     context.coordinator.reduceMotion = reduceMotion
     context.coordinator.turnState = turnState
     context.coordinator.canLoadOlder = canLoadOlder
-    context.coordinator.apply(rows: rows)
+    context.coordinator.apply(items: items, rowIDs: rowIDs)
   }
 
   // MARK: - Coordinator
@@ -196,7 +205,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private static var minimumOffsetChange: CGFloat { 0.5 }
 
     var onLoadOlder: () -> Void
-    var cell: (ChatRow) -> Cell
+    var cell: (TranscriptItem) -> Cell
     var reduceMotion = false
     var turnState: TurnState = .idle
     /// Whether older history exists above the window. Gates the top-sentinel load trigger so
@@ -204,13 +213,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     var canLoadOlder = false
 
     private weak var collectionView: UICollectionView?
-    private var dataSource: UICollectionViewDiffableDataSource<Section, ChatRow.ID>!
+    private var dataSource: UICollectionViewDiffableDataSource<Section, TranscriptItem.ID>!
 
-    /// The full row payload, keyed by id, so the diffable data source (which carries only ids)
-    /// can resolve the `ChatRow` to host. Rows are content-mutated in place across deltas; the
-    /// id is stable (deterministic identity) so the cell is reconfigured, not re-created.
-    private var rowsByID: [ChatRow.ID: ChatRow] = [:]
-    private var currentOrder: [ChatRow.ID] = []
+    /// The full item payload, keyed by id, so the diffable data source (which carries only ids)
+    /// can resolve the `TranscriptItem` to host. Items are content-mutated in place across
+    /// deltas; the id is stable (deterministic identity) so the cell is reconfigured, not
+    /// re-created.
+    private var itemsByID: [TranscriptItem.ID: TranscriptItem] = [:]
+    private var currentOrder: [TranscriptItem.ID] = []
+    /// The window's row ids at the last apply — the open/hydrate/prepend classification input.
+    private var currentRowIDs: [ChatRow.ID] = []
 
     /// Renderer-local pin state. Never lives in the reducer. Starts pinned so the first
     /// population follows the open-at-bottom contract; afterwards only the user's own scrolling
@@ -271,7 +283,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
 
     init(
       onLoadOlder: @escaping () -> Void,
-      cell: @escaping (ChatRow) -> Cell
+      cell: @escaping (TranscriptItem) -> Cell
     ) {
       self.onLoadOlder = onLoadOlder
       self.cell = cell
@@ -304,16 +316,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         self.scrollToBottom(animated: false)
       }
 
-      let registration = UICollectionView.CellRegistration<UICollectionViewCell, ChatRow.ID> {
+      let registration = UICollectionView.CellRegistration<UICollectionViewCell, TranscriptItem.ID> {
         [weak self] cell, _, id in
-        guard let self, let row = self.rowsByID[id] else { return }
+        guard let self, let item = self.itemsByID[id] else { return }
         let builder = self.cell
-        cell.contentConfiguration = UIHostingConfiguration { builder(row) }
+        cell.contentConfiguration = UIHostingConfiguration { builder(item) }
           .margins(.all, 0)
         cell.backgroundConfiguration = .clear()
       }
 
-      dataSource = UICollectionViewDiffableDataSource<Section, ChatRow.ID>(
+      dataSource = UICollectionViewDiffableDataSource<Section, TranscriptItem.ID>(
         collectionView: collectionView
       ) { collectionView, indexPath, id in
         collectionView.dequeueConfiguredReusableCell(
@@ -359,16 +371,18 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
 
     // MARK: Diff application
 
-    /// Apply a new `rows` slice: classify the structural change, refresh the payload, snapshot
-    /// the diff, then honour the stick-to-bottom contract:
+    /// Apply new display `items` over the window's `rowIDs`: classify the structural change (on
+    /// the ROWS — see the type doc), refresh the payload, snapshot the diff, then honour the
+    /// stick-to-bottom contract:
     /// - **jump** — first population, or a `.reset` (hydrate / wholesale replace): to the bottom,
     ///   regardless of pin state.
     /// - **preserve** — a `.prepend` armed by the top sentinel keeps the on-screen anchor.
     /// - **hold** — any change that keeps old rows (`holdsReaderAnchor`: `.slide`, e.g. #125's
-    ///   live window dropping its head, or an append/mutate) keeps the reader's anchor row at the
-    ///   same on-screen y; a shift that carries them to the window top pages older rows in.
+    ///   live window dropping its head, or an append/mutate), or a fold expanding or collapsing
+    ///   over unchanged rows, keeps the reader's anchor item at the same on-screen y; a shift
+    ///   that carries them to the window top pages older rows in.
     /// - **follow** — then, if pinned, go to the new bottom: an animated scroll for an
-    ///   append/mutate, the jump-and-settle for a `.slide`.
+    ///   append/mutate or a fold change, the jump-and-settle for a `.slide`.
     ///
     /// The preserve and the hold run right after the (non-animated, synchronous) apply, in the same
     /// pass; the jump and the follow run in the apply's completion, which UIKit calls on a later
@@ -377,20 +391,20 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// A hydrate is classified like any other update, so it jumps a scrolled-up reader only when
     /// their rows are gone (`.reset`: nothing survives, or the window shrank and lost its head — a
     /// paged-up window re-trimmed to the bottom). A hydrate whose rows survive keeps their place.
-    func apply(rows: [ChatRow]) {
-      let newOrder = rows.map(\.id)
+    func apply(items: [TranscriptItem], rowIDs: [ChatRow.ID]) {
+      let newOrder = items.map(\.id)
       let oldOrder = currentOrder
-      let diff = TranscriptDiffKind.classify(old: oldOrder, new: newOrder)
+      let diff = TranscriptDiffKind.classify(old: currentRowIDs, new: rowIDs)
+      currentRowIDs = rowIDs
 
       // Refresh the payload first so cell reconfiguration sees mutated content.
-      rowsByID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+      itemsByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
       currentOrder = newOrder
 
       // Determine which existing items need a *content* reconfigure (same id, changed body) —
       // streaming deltas mutate text without changing the id, so the snapshot must reconfigure.
-      let changedIDs = newOrder.filter { id in
-        oldOrder.contains(id)
-      }
+      let oldIDs = Set(oldOrder)
+      let changedIDs = newOrder.filter(oldIDs.contains)
 
       let preservePrepend = pendingPrependPreservation && diff.isPrepend
       pendingPrependPreservation = false
@@ -403,10 +417,16 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // Capture against the PRE-apply layout.
       let previousOffsetY = collectionView?.contentOffset.y ?? 0
       let previousContentHeight = collectionView?.contentSize.height ?? 0
-      let anchor = !jumps && diff.holdsReaderAnchor
-        ? captureReaderAnchor(survivors: Set(newOrder)) : nil
+      // A row change that keeps old rows, or a fold expanding or collapsing (a tap, or a finished
+      // turn auto-collapsing) under a scrolled-up reader: hold the reader's place.
+      let holdsAnchor = TranscriptScrollMath.holdsReaderAnchor(
+        rowDiff: diff, didInitialJump: didInitialJump, isPinned: isPinnedToBottom,
+        itemOrderChanged: newOrder != oldOrder
+      )
+      let anchor = holdsAnchor
+        ? captureReaderAnchor(oldOrder: oldOrder, survivors: Set(newOrder)) : nil
 
-      var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
+      var snapshot = NSDiffableDataSourceSnapshot<Section, TranscriptItem.ID>()
       snapshot.appendSections([.main])
       snapshot.appendItems(newOrder, toSection: .main)
       if !changedIDs.isEmpty {
@@ -427,7 +447,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           // estimated heights, which an animated follow would stop short of): jump and settle.
           self.jumpToBottomAndSettle()
         } else if !preservePrepend, self.isPinnedToBottom {
-          // Appended row or streaming delta grew the last cell: follow only if pinned.
+          // Appended row, streaming delta grew the last cell, or a fold changed while at the
+          // bottom: follow only if pinned.
           self.scrollToBottom(animated: !self.reduceMotion)
         }
         // Scrolled-up reader: no yank, the jump button stays.
@@ -447,40 +468,40 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       }
     }
 
-    /// The reader's reference row: its id and its content-space `frame.minY` before the apply.
+    /// The reader's reference item: its id and its content-space `frame.minY` before the apply.
     private struct ReaderAnchor {
-      let id: ChatRow.ID
+      let id: TranscriptItem.ID
       let minY: CGFloat
     }
 
-    /// The topmost on-screen row (below the top inset) that survives into the new order — or,
-    /// when every on-screen row is going away (the reader is inside a tall row the slide drops),
-    /// the surviving row nearest the viewport. Measured against the current (pre-apply) layout;
-    /// `nil` only when no row survives.
-    private func captureReaderAnchor(survivors: Set<ChatRow.ID>) -> ReaderAnchor? {
+    /// The reader's anchor (`TranscriptScrollMath.preservationAnchor`): the topmost on-screen
+    /// item (below the top inset) that survives into the new order — or, when every on-screen
+    /// item is going away (the reader is inside a tall row the slide drops, or looking at a
+    /// turn's tool lines as it collapses), the first survivor after them, else the last one
+    /// before. Measured against the current (pre-apply) layout; `nil` only when no item survives.
+    private func captureReaderAnchor(
+      oldOrder: [TranscriptItem.ID], survivors: Set<TranscriptItem.ID>
+    ) -> ReaderAnchor? {
       guard let collectionView else { return nil }
       let visibleTop = collectionView.bounds.minY + collectionView.adjustedContentInset.top
-      let visibleBottom = collectionView.bounds.maxY
-      func anchor(at indexPath: IndexPath) -> (anchor: ReaderAnchor, frame: CGRect)? {
-        guard
-          let id = dataSource.itemIdentifier(for: indexPath), survivors.contains(id),
-          let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
-        else { return nil }
-        return (ReaderAnchor(id: id, minY: frame.minY), frame)
-      }
       let onScreen = collectionView.indexPathsForVisibleItems
-        .compactMap(anchor(at:))
-        .filter { $0.frame.maxY > visibleTop }
-      if let topmost = onScreen.min(by: { $0.frame.minY < $1.frame.minY }) {
-        return topmost.anchor
-      }
-      func distance(_ frame: CGRect) -> CGFloat {
-        max(visibleTop - frame.maxY, frame.minY - visibleBottom, 0)
-      }
-      return (0..<dataSource.snapshot().numberOfItems)
-        .compactMap { anchor(at: IndexPath(item: $0, section: 0)) }
-        .min { distance($0.frame) < distance($1.frame) }?
-        .anchor
+        .compactMap { indexPath -> (id: TranscriptItem.ID, frame: CGRect)? in
+          guard
+            let id = dataSource.itemIdentifier(for: indexPath),
+            let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame,
+            frame.maxY > visibleTop
+          else { return nil }
+          return (id, frame)
+        }
+        .sorted { $0.frame.minY < $1.frame.minY }
+      guard
+        let id = TranscriptScrollMath.preservationAnchor(
+          visible: onScreen.map(\.id), oldOrder: oldOrder, surviving: survivors
+        ),
+        let indexPath = dataSource.indexPath(for: id),
+        let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+      else { return nil }
+      return ReaderAnchor(id: id, minY: frame.minY)
     }
 
     /// Keep `anchor` where it was on screen: lay out the new snapshot, measure how far the row

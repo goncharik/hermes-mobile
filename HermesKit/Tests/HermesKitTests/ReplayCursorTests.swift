@@ -25,6 +25,7 @@ struct ReplayCursorTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
   }
 
@@ -57,7 +58,10 @@ struct ReplayCursorTests {
     let store = makeStore(initial)
     // seq 2 after 3: the cursor holds, the delta still folds into a streaming row.
     await store.send(.gatewayFrame(GatewayFrame(.messageDelta(text: "Hi"), sessionID: "live1", seq: 2))) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .assistant, text: "Hi", isComplete: false))]
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .message(role: .assistant, text: "Hi", isComplete: false),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
       $0.streamingRowID = self.uuid(0)
     }
     // An equal seq is not an advance either.

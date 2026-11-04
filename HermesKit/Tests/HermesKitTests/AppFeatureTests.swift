@@ -817,16 +817,21 @@ struct AppFeatureTests {
       $0.date = .constant(Date(timeIntervalSince1970: 0))
     }
 
-    // The turn's live thinking row + elapsed ticker start before the pop.
-    let thinkingID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+    // The turn goes live (elapsed ticker starts) and its reasoning burst lands before the pop.
+    let reasoningID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
     await store.send(.liveChat(.gatewayEvent(.messageStart))) {
-      $0.liveChat?.transcript = [ChatRow(
-        id: thinkingID, kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
-      )]
-      $0.liveChat?.thinkingRowID = thinkingID
+      $0.liveChat?.isTurnLive = true
     }
     await store.receive(\.liveChat.delegate.runningChanged)
     await store.receive(\.home.setSessionRunning)
+    await store.send(.liveChat(.gatewayEvent(.reasoningDelta(text: "weighing")))) {
+      $0.liveChat?.transcript = [ChatRow(
+        id: reasoningID, kind: .reasoning(text: "weighing"),
+        timestamp: Date(timeIntervalSince1970: 0)
+      )]
+      $0.liveChat?.reasoningRowID = reasoningID
+      $0.liveChat?.liveReasoningRowIDs = [reasoningID]
+    }
 
     // Exhaustive: the pop only empties the path — the running slot is untouched.
     await store.send(.path(.popFrom(id: store.state.path.ids.last!))) {
@@ -843,22 +848,26 @@ struct AppFeatureTests {
 
     // The elapsed ticker keeps ticking while detached — the timer is continuous across the
     // pop (no freeze, no restart from zero on re-open). The 1s advance also fires the
-    // debounced snapshot persist `messageStart`'s content change scheduled (same 1s window)
-    // — both effects living on after the pop is exactly the point.
+    // debounced snapshot persist the reasoning delta's content change (re)scheduled (same 1s
+    // window, queued after the ticker) — both effects living on after the pop is the point.
     await clock.advance(by: .seconds(1))
-    await store.receive(\.liveChat.persistSnapshotTick)
-    await store.receive(\.liveChat.thinkingTick) {
-      $0.liveChat?.thinkingSeconds = 1
+    await store.receive(\.liveChat.turnTick) {
+      $0.liveChat?.turnSeconds = 1
     }
+    await store.receive(\.liveChat.persistSnapshotTick)
 
     // A streaming delta arriving after the pop still mutates the detached slot's transcript
-    // (the socket fold is slot-rooted, not screen-rooted) — the thinking row is not lost.
+    // (the socket fold is slot-rooted, not screen-rooted) — the reasoning row is not lost.
     let assistantID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     await store.send(.liveChat(.gatewayEvent(.messageDelta(text: "still streaming")))) {
       $0.liveChat?.transcript = [
-        ChatRow(id: assistantID, kind: .message(role: .assistant, text: "still streaming", isComplete: false)),
-        ChatRow(id: thinkingID, kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: reasoningID, kind: .reasoning(text: "weighing"), timestamp: Date(timeIntervalSince1970: 0)),
+        ChatRow(
+          id: assistantID, kind: .message(role: .assistant, text: "still streaming", isComplete: false),
+          timestamp: Date(timeIntervalSince1970: 0)
+        ),
       ]
+      $0.liveChat?.reasoningRowID = nil
       $0.liveChat?.streamingRowID = assistantID
     }
     // The delta's debounced persist + the live ticker are still pending — living proof the
@@ -1414,15 +1423,14 @@ struct AppFeatureTests {
     chat.hasStarted = true
     chat.isSending = true
     chat.composerText = "unsent draft"
-    // Rows accumulated while detached: the live thinking row the server's payload can't
+    // Rows accumulated while detached: the open reasoning burst the server's payload can't
     // rebuild (#26) — a re-init would lose it.
-    let thinkingID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
+    let reasoningID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
     chat.transcript = [
-      ChatRow(id: thinkingID, kind: .thinking(
-        reasoning: "detached reasoning", status: nil, elapsedSeconds: 3, isComplete: false
-      ))
+      ChatRow(id: reasoningID, kind: .reasoning(text: "detached reasoning"))
     ]
-    chat.thinkingRowID = thinkingID
+    chat.reasoningRowID = reasoningID
+    chat.liveReasoningRowIDs = [reasoningID]
 
     let store = TestStore(
       initialState: AppFeature.State(
@@ -1468,16 +1476,12 @@ struct AppFeatureTests {
     await store.receive(\.liveChat.activateResult.success)
 
     // The healthy socket was never redialed, the hydrate landed, and the detached live
-    // thinking row survived the server-authoritative rebuild (#26 preservation).
+    // reasoning burst survived the server-authoritative rebuild (#26 preservation).
     #expect(connectCalls.value == 0)
     #expect(store.state.liveChat?.model == "claude-opus-4-8")
     #expect(store.state.liveChat?.composerText == "unsent draft")
-    #expect(store.state.liveChat?.transcript.contains { row in
-      if case let .thinking(reasoning, _, _, isComplete) = row.kind {
-        return reasoning == "detached reasoning" && !isComplete
-      }
-      return false
-    } == true)
+    #expect(store.state.liveChat?.transcript[id: reasoningID]?.kind
+      == .reasoning(text: "detached reasoning"))
 
     await store.send(.liveChat(.teardown))
   }
@@ -2107,7 +2111,7 @@ struct AppFeatureTests {
   /// The window expiring while still backgrounded flushes the snapshot one final time,
   /// disconnects the socket cleanly (`.teardownSocketOnly` — cancelled, so no trailing
   /// `.gatewayClosed` backoff), ends the task, and RETAINS the chat state in memory —
-  /// transcript, live thinking-row pointer, composer draft — so the foreground hydrate's
+  /// transcript, open reasoning-burst pointer, composer draft — so the foreground hydrate's
   /// #26 preservation still applies.
   @Test func graceExpiryDisconnectsSocketAndRetainsChatState() async {
     let background = BackgroundTaskClient.inMemory()
@@ -2118,13 +2122,12 @@ struct AppFeatureTests {
     chat.isSending = true
     chat.model = "claude-opus-4-8"
     chat.composerText = "unsent draft"
-    let thinkingID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
+    let reasoningID = UUID(uuidString: "00000000-0000-0000-0000-00000000AAAA")!
     chat.transcript = [
-      ChatRow(id: thinkingID, kind: .thinking(
-        reasoning: "live reasoning", status: nil, elapsedSeconds: 3, isComplete: false
-      ))
+      ChatRow(id: reasoningID, kind: .reasoning(text: "live reasoning"))
     ]
-    chat.thinkingRowID = thinkingID
+    chat.reasoningRowID = reasoningID
+    chat.liveReasoningRowIDs = [reasoningID]
 
     let store = TestStore(
       initialState: AppFeature.State(
@@ -2169,8 +2172,8 @@ struct AppFeatureTests {
     #expect(background.activeTaskName == nil)
     #expect(store.state.liveChat != nil)
     #expect(store.state.liveChat?.composerText == "unsent draft")
-    #expect(store.state.liveChat?.thinkingRowID == thinkingID)
-    #expect(store.state.liveChat?.transcript[id: thinkingID] != nil)
+    #expect(store.state.liveChat?.reasoningRowID == reasoningID)
+    #expect(store.state.liveChat?.transcript[id: reasoningID] != nil)
     // The final flush landed before the disconnect.
     #expect(snapshotClient.loadSnapshot("s1")?.model == "claude-opus-4-8")
   }

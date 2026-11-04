@@ -13,12 +13,16 @@ struct ChatReadAloudTests {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
 
+  /// The pinned `date` (`makeStore`) — fixture rows carry it too, so the fold's completion
+  /// re-stamp of a seeded row is not a state change.
+  private let t0 = Date(timeIntervalSince1970: 0)
+
   private func user(_ n: Int, _ text: String) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .message(role: .user, text: text, isComplete: true))
+    ChatRow(id: uuid(n), kind: .message(role: .user, text: text, isComplete: true), timestamp: t0)
   }
 
   private func assistant(_ n: Int, _ text: String, complete: Bool = true) -> ChatRow {
-    ChatRow(id: uuid(n), kind: .message(role: .assistant, text: text, isComplete: complete))
+    ChatRow(id: uuid(n), kind: .message(role: .assistant, text: text, isComplete: complete), timestamp: t0)
   }
 
   /// Two completed replies and one still streaming — the anchor counts only the two.
@@ -37,24 +41,24 @@ struct ChatReadAloudTests {
 
   // MARK: Pure helpers
 
-  @Test func completedAssistantCountIgnoresStreamingUserAndNonMessageRows() {
+  @Test func completedReplyCountIgnoresStreamingUserAndNonMessageRows() {
     var state = ChatFeature.State(connection: conn, transcript: twoRepliesAndAStream)
     state.transcript.append(ChatRow(
       id: uuid(6), kind: .tool(name: "t", title: "t", state: .complete, detail: nil, durationS: nil)
     ))
     state.transcript.append(ChatRow(
-      id: uuid(7), kind: .thinking(reasoning: "r", status: nil, elapsedSeconds: 1, isComplete: true)
+      id: uuid(7), kind: .reasoning(text: "r")
     ))
-    #expect(state.completedAssistantCount == 2)
-    #expect(state.lastCompletedAssistantRow?.id == uuid(3)) // the streaming row never counts
+    #expect(state.completedReplyCount == 2)
+    #expect(state.completedReplies.last?.id == uuid(3)) // the streaming row never counts
   }
 
   @Test func helpersOnAnEmptyOrUserOnlyTranscript() {
-    #expect(ChatFeature.State(connection: conn).completedAssistantCount == 0)
-    #expect(ChatFeature.State(connection: conn).lastCompletedAssistantRow == nil)
+    #expect(ChatFeature.State(connection: conn).completedReplyCount == 0)
+    #expect(ChatFeature.State(connection: conn).completedReplies.last == nil)
     let userOnly = ChatFeature.State(connection: conn, transcript: [user(0, "hi")])
-    #expect(userOnly.completedAssistantCount == 0)
-    #expect(userOnly.lastCompletedAssistantRow == nil)
+    #expect(userOnly.completedReplyCount == 0)
+    #expect(userOnly.completedReplies.last == nil)
   }
 
   @Test func playbackIsActiveOnlyWhenNotIdle() {
@@ -336,11 +340,13 @@ struct ChatReadAloudTests {
 
   @Test func rehydrateSplittingASpokenTurnIntoTwoRowsLeavesNothingPending() async {
     // The live reply was already spoken (anchor 1 of 1). History now has TWO completed
-    // assistant rows for that turn; keeping the old count would make the final answer look
-    // pending and re-read it at the next speak edge.
+    // assistant rows for that turn — the first is interim commentary, so the turn still has
+    // exactly one (final) reply, and it stays consumed.
     let store = await foregroundRehydrate(liveFoldedToolTurn(anchor: 1))
-    #expect(store.state.completedAssistantCount == 2)
-    #expect(store.state.spokenAssistantCount == 2)
+    #expect(store.state.completedReplyCount == 1)
+    #expect(store.state.spokenAssistantCount == 1)
+    #expect(store.state.completedReplies.last?.kind
+      == .message(role: .assistant, text: "Found 3 files.", isComplete: true))
   }
 
   @Test func foregroundRehydrateAfterASpokenToolTurnNeverRereadsItsReply() async {
@@ -351,7 +357,7 @@ struct ChatReadAloudTests {
     var initial = liveFoldedToolTurn(anchor: 1)
     initial.isOnScreen = true
     let store = await foregroundRehydrate(initial, recorder: recorder)
-    #expect(store.state.completedAssistantCount == 2)
+    #expect(store.state.completedReplyCount == 1)
 
     await store.send(.ttsFinished)
     await store.send(.foreground)
@@ -364,9 +370,9 @@ struct ChatReadAloudTests {
     // The reply completed LIVE while backgrounded (anchor 0 of 1 — held for `.foreground`).
     // The re-hydrate keeps exactly one reply pending: the turn's final answer.
     let store = await foregroundRehydrate(liveFoldedToolTurn(anchor: 0))
-    #expect(store.state.completedAssistantCount == 2)
-    #expect(store.state.spokenAssistantCount == 1)
-    #expect(store.state.lastCompletedAssistantRow?.kind
+    #expect(store.state.completedReplyCount == 1)
+    #expect(store.state.spokenAssistantCount == 0)
+    #expect(store.state.completedReplies.last?.kind
       == .message(role: .assistant, text: "Found 3 files.", isComplete: true))
   }
 
@@ -377,7 +383,7 @@ struct ChatReadAloudTests {
     initial.transcript = [user(0, "list files")]
     initial.spokenAssistantCount = 0
     let store = await foregroundRehydrate(initial)
-    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(store.state.spokenAssistantCount == store.state.completedReplyCount)
   }
 
   // MARK: A dropped partial is consumed
@@ -489,6 +495,7 @@ struct ChatReadAloudTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
       $0.preferences = .inMemory()
       recorder.install(into: &$0)
     }
@@ -539,7 +546,7 @@ struct ChatReadAloudTests {
     await store.send(.gatewayEvent(.messageStart))
     await store.send(.gatewayEvent(.messageDelta(text: "Next")))
     await store.send(.gatewayEvent(.messageComplete(text: "Next", usage: nil)))
-    let next = store.state.lastCompletedAssistantRow?.id
+    let next = store.state.completedReplies.last?.id
     #expect(next != nil && next != uuid(101))
     #expect(store.state.ttsPlayback == next.map(ChatFeature.State.TTSPlayback.preparing))
     await store.receive(\.ttsSpeaking)
@@ -588,11 +595,28 @@ struct ChatReadAloudTests {
     #expect(recorder.speaks.value.isEmpty)
   }
 
+  /// `streamingSlot` with two prompts queued behind the turn: each completion drains the next
+  /// one (its user row opens the next turn — the drain never barges in on a clip).
+  private func streamingSlotWithQueuedTurns() -> ChatFeature.State {
+    var state = streamingSlot()
+    state.liveSessionID = "live1"
+    state.queuedPrompts = [
+      QueuedPrompt(id: uuid(900), text: "q2"), QueuedPrompt(id: uuid(901), text: "q3"),
+    ]
+    return state
+  }
+
+  private func queuedTurnsStore(_ recorder: TTSRecorder) -> TestStoreOf<ChatFeature> {
+    let store = makeStore(streamingSlotWithQueuedTurns(), recorder)
+    store.dependencies.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    return store
+  }
+
   @Test func completionsDuringPlaybackWaitAndTheIdleEdgeReadsOnlyTheNewest() async {
     let playClock = TestClock()
     let recorder = TTSRecorder(holdingPlaybackOn: playClock)
-    let store = makeStore(streamingSlot(), recorder)
-    store.exhaustivity = .off(showSkippedAssertions: false)
+    let store = queuedTurnsStore(recorder)
 
     await store.send(.gatewayEvent(.messageComplete(text: "First", usage: nil)))
     await store.receive(\.ttsSpeaking)
@@ -703,6 +727,133 @@ struct ChatReadAloudTests {
     let store = makeStore(initial, recorder)
 
     await store.send(.reattached)
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  // MARK: Only the final reply is read (tool-call display)
+
+  /// `streamingSlot` with the turn live (`message.start` already folded).
+  private func liveStreamingSlot() -> ChatFeature.State {
+    var state = streamingSlot()
+    state.isTurnLive = true
+    return state
+  }
+
+  @Test func interimCommentaryIsNeverReadOnlyTheFinalReplyIs() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(liveStreamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    // The streamed segment is sealed as commentary, a tool runs — speak edges in between
+    // read nothing: the running turn has no final reply yet.
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me check.", alreadyStreamed: true, turnID: nil, segment: nil
+    )))
+    await store.send(.ttsFinished) // a playback-idle edge
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "ls", argsText: nil)))
+    await store.send(.ttsFinished)
+    #expect(recorder.speaks.value.isEmpty)
+    #expect(store.state.completedReplyCount == 0)
+
+    await store.send(.gatewayEvent(.messageDelta(text: "Found 3 files.")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Found 3 files.", usage: nil)))
+    await store.receive(\.ttsSpeaking)
+    await store.receive(\.ttsFinished)
+    #expect(recorder.spokenTexts == ["Found 3 files."])
+    #expect(store.state.spokenAssistantCount == 1)
+  }
+
+  @Test func anErroredTurnsSealedCommentaryIsNeverRead() async {
+    let recorder = TTSRecorder()
+    let store = makeStore(liveStreamingSlot(), recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me check.", alreadyStreamed: true, turnID: nil, segment: nil
+    )))
+    // The error ends the turn: its sealed segment becomes the turn's final reply — consumed.
+    await store.send(.gatewayEvent(.error(message: "boom")))
+    #expect(store.state.completedReplyCount == 1)
+    #expect(store.state.spokenAssistantCount == 1)
+    await store.send(.ttsFinished)
+    #expect(recorder.speaks.value.isEmpty)
+  }
+
+  @Test func anInterruptedTurnReadsItsFinalReplyNotItsCommentary() async {
+    let recorder = TTSRecorder()
+    var initial = liveStreamingSlot()
+    initial.liveSessionID = "live1"
+    let store = makeStore(initial, recorder)
+    store.dependencies.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me check.", alreadyStreamed: true, turnID: nil, segment: nil
+    )))
+    await store.send(.interruptTapped)
+    // The interrupted turn's `message.complete` carries its reply — that one is read.
+    await store.send(.gatewayEvent(.messageComplete(text: "Stopped early: 2 files.", usage: nil)))
+    await store.receive(\.ttsSpeaking)
+    #expect(recorder.spokenTexts == ["Stopped early: 2 files."])
+  }
+
+  @Test func aSocketDropAfterASealedSegmentConsumesIt() async {
+    var initial = ChatFeature.State(
+      connection: conn, transcript: [user(0, "q"), assistant(1, "Let me check.")]
+    )
+    initial.isTurnLive = true
+    initial.isSending = true
+    initial.status = .ready
+    initial.autoSpeakReplies = true
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.continuousClock = TestClock()
+    }
+
+    await store.send(.gatewayClosed) {
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.status = .reconnecting
+      $0.reconnectAttempt = 1
+      $0.spokenAssistantCount = 1 // the drop made the commentary "final": consumed, not read
+    }
+    await store.send(.teardown)
+  }
+
+  @Test func aTurnStartedElsewhereReopensTheNewestTurnAndItsReplyIsRead() async {
+    // Another client's prompt on a shared session: `message.start` with no user row of ours
+    // — the newest turn re-opens, and its eventual final reply is pending like a fresh one.
+    let recorder = TTSRecorder()
+    var initial = twoReplies(anchor: 2)
+    initial.autoSpeakReplies = true
+    let store = makeStore(initial, recorder)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    #expect(store.state.completedReplyCount == 1)
+    #expect(store.state.spokenAssistantCount == 1)
+    await store.send(.gatewayEvent(.messageDelta(text: "Three")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Three", usage: nil)))
+    await store.receive(\.ttsSpeaking)
+    #expect(recorder.spokenTexts == ["Three"])
+  }
+
+  @Test func aHydrateThatEndsALiveTurnNeverCreatesAPendingReply() async {
+    // The turn was live (commentary sealed) and finished while the socket was gone: the
+    // hydrate's `running: false` turns history's last segment into the final reply — after
+    // the running verdict is applied, so the re-base sees it and nothing becomes pending.
+    let recorder = TTSRecorder()
+    var initial = liveFoldedToolTurn(anchor: 0)
+    initial.transcript = [user(0, "list files"), assistant(1, "Let me check.")]
+    initial.isTurnLive = true
+    initial.isSending = true
+    initial.isOnScreen = true
+    let store = await foregroundRehydrate(initial, recorder: recorder)
+    #expect(store.state.isTurnLive == false)
+    #expect(store.state.completedReplyCount == 1)
+    #expect(store.state.spokenAssistantCount == 1)
+    await store.send(.ttsFinished)
     #expect(recorder.speaks.value.isEmpty)
   }
 
@@ -825,11 +976,15 @@ struct ChatReadAloudTests {
     let playClock = TestClock()
     let recorder = TTSRecorder(holdingPlaybackOn: playClock)
     var initial = twoReplies(anchor: 2)
-    initial.transcript.append(assistant(104, "streaming", complete: false))
+    initial.transcript.append(user(104, "q3"))
+    initial.transcript.append(assistant(105, "Checking.")) // sealed interim commentary
+    initial.transcript.append(assistant(106, "streaming", complete: false))
+    initial.isTurnLive = true
     let store = makeStore(initial, recorder)
 
     await store.send(.readAloudTapped(id: uuid(100))) // a user row
-    await store.send(.readAloudTapped(id: uuid(104))) // still streaming
+    await store.send(.readAloudTapped(id: uuid(105))) // interim commentary of the live turn
+    await store.send(.readAloudTapped(id: uuid(106))) // still streaming
     await store.send(.readAloudTapped(id: uuid(999))) // unknown row
     #expect(recorder.speaks.value.isEmpty)
 
@@ -861,8 +1016,7 @@ struct ChatReadAloudTests {
   @Test func stopConsumesAReplyThatCompletedDuringTheClip() async {
     let playClock = TestClock()
     let recorder = TTSRecorder(holdingPlaybackOn: playClock)
-    let store = makeStore(streamingSlot(), recorder)
-    store.exhaustivity = .off(showSkippedAssertions: false)
+    let store = queuedTurnsStore(recorder)
 
     await store.send(.gatewayEvent(.messageComplete(text: "First", usage: nil)))
     await store.receive(\.ttsSpeaking)
@@ -1010,7 +1164,7 @@ struct ChatReadAloudTests {
     await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
     await store.receive(\.ttsFailed) { $0.ttsPlayback = .idle }
     #expect(recorder.spokenTexts == ["One"])
-    #expect(store.state.completedAssistantCount > store.state.spokenAssistantCount)
+    #expect(store.state.completedReplyCount > store.state.spokenAssistantCount)
   }
 
   @Test func anOggClipBannersWithoutReachingThePlayer() async {
@@ -1076,7 +1230,7 @@ struct ChatReadAloudTests {
       ],
       running: false
     ))))
-    let rebuilt = try #require(store.state.lastCompletedAssistantRow?.id)
+    let rebuilt = try #require(store.state.completedReplies.last?.id)
     #expect(rebuilt != uuid(101)) // the live id was rewritten to the history id
     #expect(store.state.ttsPlayback == (preparing ? .preparing(rebuilt) : .speaking(rebuilt)))
 
@@ -1123,7 +1277,7 @@ struct ChatReadAloudTests {
     let one = try #require(store.state.transcript.first {
       $0.kind == .message(role: .assistant, text: "One", isComplete: true)
     })
-    let two = try #require(store.state.lastCompletedAssistantRow)
+    let two = try #require(store.state.completedReplies.last)
     #expect(store.state.ttsPlayback == .speaking(one.id))
     #expect(store.state.readAloudState(for: one.id) == .speaking)
     #expect(store.state.readAloudState(for: two.id) == .disabled)
@@ -1159,7 +1313,7 @@ struct ChatReadAloudTests {
       ],
       running: false
     ))))
-    let one = try #require(store.state.lastCompletedAssistantRow)
+    let one = try #require(store.state.completedReplies.last)
     #expect(store.state.ttsPlayback == .speaking(uuid(103)))
     #expect(store.state.readAloudState(for: one.id) == .disabled)
   }
@@ -1229,10 +1383,10 @@ struct ChatReadAloudTests {
         == .message(role: .assistant, text: "Hello", isComplete: true))
     }
     #expect(store.state.ttsPlayback == .idle) // never `.preparing`
-    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(store.state.spokenAssistantCount == store.state.completedReplyCount)
     await store.receive(\.activateResult.success)
     #expect(store.state.ttsPlayback == .idle)
-    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(store.state.spokenAssistantCount == store.state.completedReplyCount)
     #expect(recorder.speaks.value.isEmpty)
 
     // Later speak edges do not pick the replayed reply up: returning to the app (healthy
@@ -1282,7 +1436,7 @@ struct ChatReadAloudTests {
 
     await dropAndReplay(.socketClosed, store)
     await store.receive(\.activateResult.success)
-    #expect(store.state.completedAssistantCount == 2)
+    #expect(store.state.completedReplyCount == 2)
     #expect(store.state.spokenAssistantCount == 1) // "Done" still pending
     #expect(recorder.speaks.value.isEmpty)
 
@@ -1328,9 +1482,9 @@ struct ChatReadAloudTests {
     await store.send(.gatewayFrame(GatewayFrame(.ready, replayEpoch: "e1")))
     await store.receive(\.eventReplayResult)
     await store.receive(\.activateResult.success)
-    #expect(store.state.lastCompletedAssistantRow?.kind
+    #expect(store.state.completedReplies.last?.kind
       == .message(role: .assistant, text: "Hello", isComplete: true))
-    #expect(store.state.spokenAssistantCount == store.state.completedAssistantCount)
+    #expect(store.state.spokenAssistantCount == store.state.completedReplyCount)
     #expect(store.state.ttsPlayback == .idle)
 
     await store.send(.foreground)

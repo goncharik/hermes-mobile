@@ -78,23 +78,57 @@ public enum TranscriptScrollMath {
     )
     return min(max(target, -topInset), maxY)
   }
+
+  /// Whether an apply holds the reader's place with a ``preservationAnchor(visible:oldOrder:surviving:)``:
+  /// after the initial jump, on any row change that keeps old rows
+  /// (``TranscriptDiffKind/holdsReaderAnchor``: a `.slide` or an append/mutate), or — for a
+  /// reader scrolled up — on a fold expanding or collapsing over unchanged rows (`.inPlace` rows,
+  /// a changed item order). The first population and a `.reset` jump and a `.prepend` has its
+  /// own offset path, so none of those holds.
+  public static func holdsReaderAnchor(
+    rowDiff: TranscriptDiffKind, didInitialJump: Bool, isPinned: Bool, itemOrderChanged: Bool
+  ) -> Bool {
+    guard didInitialJump else { return false }
+    if rowDiff.holdsReaderAnchor { return true }
+    return rowDiff == .inPlace && itemOrderChanged && !isPinned
+  }
+
+  /// The item to hold still across a structural change (a window `.slide`, or a fold expanding
+  /// or collapsing while the reader is scrolled up): the first VISIBLE item that survives the
+  /// change. When every visible item goes away (the reader is inside a tall row the slide drops,
+  /// or was looking at a turn's tool lines as it finished and collapsed), the first surviving
+  /// item after them — the turn's final reply — else the last one before.
+  ///
+  /// - Parameters:
+  ///   - visible: the on-screen item ids, top to bottom.
+  ///   - oldOrder: every item id before the change, in order.
+  ///   - surviving: the item ids after the change.
+  public static func preservationAnchor<ID: Hashable>(
+    visible: [ID], oldOrder: [ID], surviving: Set<ID>
+  ) -> ID? {
+    if let first = visible.first(where: surviving.contains) { return first }
+    guard let lastVisible = visible.last, let index = oldOrder.firstIndex(of: lastVisible) else {
+      return nil
+    }
+    if let after = oldOrder[(index + 1)...].first(where: surviving.contains) { return after }
+    return oldOrder[..<index].last(where: surviving.contains)
+  }
 }
 
-/// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
-/// append/in-place mutation (streaming / new turn / live-turn reorder), a *slide* (the reducer's
-/// fixed bottom window moving under the reader as live rows come and go), or a *reset* (a
-/// genuine wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A
-/// prepend requires offset preservation; a slide or an append/mutate holds the reader's anchor
-/// row and follows if pinned (`holdsReaderAnchor`); a reset forces a jump-to-bottom (the
-/// open/hydrate contract). Pure over the row id sequences so it is testable.
+/// Detect whether a window's row-id update (the renderer passes `visibleRows` ids, not display
+/// item ids, so a fold change is never misread) is a *prepend* (older page loaded at the top),
+/// an append/in-place mutation (streaming / new turn / rows inserted mid-window), a *slide* (the
+/// reducer's fixed bottom window moving under the reader as live rows come and go), or a *reset*
+/// (a genuine wholesale replacement of the visible slice, e.g. a server-authoritative
+/// re-hydrate). A prepend requires offset preservation; a slide or an append/mutate holds the
+/// reader's anchor row and follows if pinned (`holdsReaderAnchor`); a reset forces a
+/// jump-to-bottom (the open/hydrate contract). Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
   /// Newer rows appended at the bottom, trailing rows mutated in place, or the same logical rows
-  /// reordered/inserted-in-the-middle (a live-turn `keepThinkingLast` reorder). The follow-the-
-  /// bottom case: follow only if pinned, **never yank a scrolled-up reader** (the no-yank
-  /// contract). Crucially this — NOT `.reset` — is what a live-turn reorder maps to, so a user
-  /// who scrolled up mid-turn is not yanked back to the bottom.
+  /// reordered / with rows inserted in the middle. The follow-the-bottom case: follow only if
+  /// pinned, **never yank a scrolled-up reader** (the no-yank contract).
   case appendOrMutate
   /// No structural change to the id sequence (pure content mutation, e.g. a delta).
   case inPlace
@@ -108,19 +142,18 @@ public enum TranscriptDiffKind: Equatable, Sendable {
   /// A *genuine* wholesale replacement of the visible slice: no old id survives, or the window
   /// shrank AND lost its head (a hydrate re-trimming a paged-up window to the bottom) — the
   /// reader's rows are gone. Also first population. Per the open/hydrate contract the renderer
-  /// forces a jump-to-bottom on a reset, regardless of pin state. A live-turn reorder is
-  /// explicitly NOT a reset, and neither is a `.slide`.
+  /// forces a jump-to-bottom on a reset, regardless of pin state. A reorder or a mid-window
+  /// insert is NOT a reset, and neither is a `.slide`.
   case reset
 
   /// Classify the transition from `old` row ids to `new` row ids.
   ///
-  /// The ordering of the checks below is deliberate. We must distinguish a live-turn reorder
-  /// (the `keepThinkingLast` insert-then-move-thinking-to-the-end pattern — which is neither a
-  /// contiguous prefix nor suffix match, yet preserves all the old logical rows) from a genuine
-  /// hydrate (`reconstructTranscript` mints fresh ids when the messages changed, so the old ids
-  /// largely disappear). `.reset` is therefore reserved for the case where no old row survives,
-  /// or the window shrank and lost its head — i.e. the reader's rows were actually replaced, not
-  /// shuffled, added to, or slid past.
+  /// The ordering of the checks below is deliberate. A sequence that is neither a contiguous
+  /// prefix nor suffix match yet keeps every old row (shuffled, or with rows inserted in the
+  /// middle) must not read as a genuine hydrate (`reconstructTranscript` mints fresh ids when the
+  /// messages changed, so the old ids largely disappear). `.reset` is therefore reserved for the
+  /// case where no old row survives, or the window shrank and lost its head — i.e. the reader's
+  /// rows were actually replaced, not shuffled, added to, or slid past.
   public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
       // First population (empty → rows): treat as a reset so the renderer performs the
@@ -142,14 +175,11 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     if new.count >= old.count, Array(new.prefix(old.count)) == old {
       return .appendOrMutate
     }
-    // Neither a contiguous prefix nor suffix — but it may still be a live-turn reorder rather
-    // than a wholesale replace. Two non-reset shapes (both preserve the old logical rows, so a
-    // scrolled-up reader must NOT be yanked):
-    //   1. A permutation: the new and old id sets are the same multiset (e.g. `keepThinkingLast`
-    //      moving the thinking row to the end with no row added).
-    //   2. A superset: every old id survives in the new sequence (the usual live-turn case where
-    //      a tool/answer row is inserted *above* the thinking row, then thinking is moved last —
-    //      counts grow and the insert lands in the middle, so it's neither prefix nor suffix).
+    // Neither a contiguous prefix nor suffix — but not necessarily a wholesale replace. Two
+    // defensive non-reset shapes (both preserve the old logical rows, so a scrolled-up reader
+    // must NOT be yanked):
+    //   1. A permutation: the new and old id sets are the same.
+    //   2. A superset: every old id survives, with rows inserted mid-window.
     // When neither holds, some old rows are gone; the slide/reset split below decides.
     let oldSet = Set(old)
     let newSet = Set(new)
@@ -161,8 +191,8 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     // bottom: the reader's rows are gone, so it keeps the jump-to-bottom contract.
     if new.count < old.count, firstSurvivor > 0 { return .reset }
     // Slide (#125): anything else that keeps old rows is the window moving under the reader —
-    // the head dropping on a live append, or a turn-end row removal (`freezeThinking`'s empty
-    // thinking row, `reparkDrainingEntry`'s echo) re-admitting an older row at the head.
+    // the head dropping on a live append, or a turn-end row removal (e.g. `reparkDrainingEntry`'s
+    // echo) re-admitting an older row at the head.
     return .slide(droppedHeadCount: firstSurvivor)
   }
 

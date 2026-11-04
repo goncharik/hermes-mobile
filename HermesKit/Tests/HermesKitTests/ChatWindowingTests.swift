@@ -17,7 +17,7 @@ struct ChatWindowingTests {
   private let conn = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "t")
 
   /// Seed-row ids live in a high range so they never collide with the `.incrementing` uuids the
-  /// reducer mints for live thinking/streaming rows (which start at 0).
+  /// reducer mints for live reasoning/streaming rows (which start at 0).
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0001-\(String(format: "%012x", n))")!
   }
@@ -142,12 +142,16 @@ struct ChatWindowingTests {
     store.exhaustivity = .off
     #expect(store.state.windowStart == 150)
 
-    // message.start appends a thinking row → window slides to keep the bottom window.
+    // A reasoning burst appends a row → window slides to keep the bottom window.
     await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "hmm")))
     #expect(store.state.transcript.count == 201)
     #expect(store.state.windowStart == 201 - ChatFeature.State.initialWindow) // 151
     #expect(store.state.visibleRows.last?.id == store.state.transcript.last?.id)
-    #expect(store.state.visibleRows.count == ChatFeature.State.initialWindow)
+    // Row 151 is an assistant reply: the window snaps down to its turn's user row (150), so
+    // one row more than the raw window shows.
+    #expect(store.state.visibleRows.first?.id == uuid(150))
+    #expect(store.state.visibleRows.count == ChatFeature.State.initialWindow + 1)
 
     // A delta materialises the assistant row → still pinned to the bottom window.
     await store.send(.gatewayEvent(.messageDelta(text: "hi")))
@@ -177,36 +181,39 @@ struct ChatWindowingTests {
     await store.send(.teardown)
   }
 
-  /// #125 regression: on a 50+ row transcript parked at the bottom window, each live row (the
-  /// thinking row at `message.start`, a tool row at `tool.start`) slides the fixed window — the
-  /// head row drops off. The renderer must see that as a `.slide`, never a `.reset` (which jumps
-  /// a scrolled-up reader to the bottom).
+  /// #125 regression: on a 50+ row transcript parked at the bottom window, each live tool row
+  /// slides the fixed raw window — its head row drops off. The renderer classifies on that raw
+  /// window (`windowRowIDs`) and must see a `.slide`, never a `.reset` (which jumps a scrolled-up
+  /// reader to the bottom) — even when the SNAPPED window shrinks as its start passes a user row.
   @Test func liveToolCallSlidesWindowNotReset() async {
     let store = makeStore(transcript: rows(200))
     store.exhaustivity = .off
-    let initial = store.state.visibleRows.map(\.id)
-
     await store.send(.gatewayEvent(.messageStart))
-    let afterStart = store.state.visibleRows.map(\.id)
-    #expect(TranscriptDiffKind.classify(old: initial, new: afterStart) == .slide(droppedHeadCount: 1))
+    var previous = store.state.windowRowIDs
+    var visible: [[ChatRow.ID]] = []
 
-    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: nil, argsText: nil)))
-    let afterTool = store.state.visibleRows.map(\.id)
-    #expect(afterTool.count == ChatFeature.State.initialWindow)
-    #expect(afterTool.last == store.state.thinkingRowID) // tool row landed above thinking
-    #expect(TranscriptDiffKind.classify(old: afterStart, new: afterTool) == .slide(droppedHeadCount: 1))
+    for toolID in ["t1", "t2"] {
+      await store.send(.gatewayEvent(.toolStart(toolID: toolID, name: "terminal", title: nil, argsText: nil)))
+      let current = store.state.windowRowIDs
+      #expect(current.count == ChatFeature.State.initialWindow)
+      #expect(TranscriptDiffKind.classify(old: previous, new: current) == .slide(droppedHeadCount: 1))
+      previous = current
+      visible.append(store.state.visibleRows.map(\.id))
+    }
+    // The snapped window shrank on the second tool row; classified on its own ids that would be
+    // a hydrate re-trim — the yank the raw window avoids.
+    #expect(visible[1].count < visible[0].count)
+    #expect(TranscriptDiffKind.classify(old: visible[0], new: visible[1]) == .reset)
 
     await store.send(.teardown)
   }
 
-  /// #125 at turn end: a turn with no reasoning or status ends by removing its empty thinking row
-  /// (`freezeThinking`), so the bottom window re-admits an older head row. Every step of the turn
-  /// — including the end — must keep a scrolled-up reader's rows, never `.reset`.
-  @Test func turnEndRemovingEmptyThinkingRowSlidesWindowNotReset() async {
+  /// #125 at turn end: every step of a turn on a 50+ row chat — including the end — must keep a
+  /// scrolled-up reader's rows, never `.reset`.
+  @Test func turnEndKeepsWindowRowsNotReset() async {
     let store = makeStore(transcript: rows(200))
     store.exhaustivity = .off
-    var previous = store.state.visibleRows.map(\.id)
-    var lastKind: TranscriptDiffKind?
+    var previous = store.state.windowRowIDs
 
     for event: GatewayEvent in [
       .messageStart,
@@ -214,16 +221,12 @@ struct ChatWindowingTests {
       .messageComplete(text: "Hello", usage: nil),
     ] {
       await store.send(.gatewayEvent(event))
-      let current = store.state.visibleRows.map(\.id)
-      #expect(current.count == ChatFeature.State.initialWindow)
+      let current = store.state.windowRowIDs
       let kind = TranscriptDiffKind.classify(old: previous, new: current)
       #expect(kind != .reset, "\(event)")
-      lastKind = kind
       previous = current
     }
-    #expect(lastKind == .slide(droppedHeadCount: 0))
-    #expect(store.state.thinkingRowID == nil)
-    #expect(store.state.transcript.count == 201) // the thinking row is gone, the answer stays
+    #expect(store.state.transcript.count == 201) // the answer row
 
     await store.send(.teardown)
   }
@@ -281,7 +284,7 @@ struct ChatWindowingTests {
     // Scroll up.
     await store.send(.loadOlderRequested)
     #expect(store.state.windowStart < ChatFeature.State.bottomWindowStart(count: 80))
-    let pagedUp = store.state.visibleRows.map(\.id)
+    let pagedUp = store.state.windowRowIDs
 
     // A second hydrate (e.g. a foreground re-resume) snaps the window back to the bottom even
     // though the user had scrolled up — server wins on every wholesale replace.
@@ -289,7 +292,7 @@ struct ChatWindowingTests {
     await store.send(.activateResult(.success(response)))
     #expect(store.state.windowStart == ChatFeature.State.bottomWindowStart(count: store.state.transcript.count))
     // The re-trim removed the paged-up rows, so the renderer jumps.
-    #expect(TranscriptDiffKind.classify(old: pagedUp, new: store.state.visibleRows.map(\.id)) == .reset)
+    #expect(TranscriptDiffKind.classify(old: pagedUp, new: store.state.windowRowIDs) == .reset)
 
     await store.send(.teardown)
   }
@@ -312,11 +315,11 @@ struct ChatWindowingTests {
 
     await store.send(.gatewayEvent(.ready))
     await store.receive(\.activateResult.success)
-    let before = store.state.visibleRows.map(\.id)
+    let before = store.state.windowRowIDs
 
     let response = ActivateResponse(sessionID: "live123", messages: messages, running: false)
     await store.send(.activateResult(.success(response)))
-    let after = store.state.visibleRows.map(\.id)
+    let after = store.state.windowRowIDs
     #expect(after.count == ChatFeature.State.initialWindow)
     #expect(TranscriptDiffKind.classify(old: before, new: after) == .slide(droppedHeadCount: 1))
 

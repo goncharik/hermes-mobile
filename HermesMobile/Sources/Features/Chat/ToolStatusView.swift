@@ -1,42 +1,60 @@
 import HermesKit
 import SwiftUI
 
-/// A tool/skill activity row: icon + human title (with the raw tool name beneath when
-/// they differ), running spinner / duration, and a chevron that opens the detail sheet.
+/// A tool call's line inside a turn's fold (the T3 Code look): the tool's icon and its parsed
+/// one-line title (`ToolPresentation` — "Ran pytest -q", "Read ChatView.swift L10-40"; the
+/// present tense while the call is live) in secondary grey, with a disclosure chevron. A failed
+/// call turns its icon red. No status seal and no spinner — the turn header carries the live
+/// state. A tap expands the call's body in place below the line (`ToolBodyView`), or folds it
+/// back.
 struct ToolStatusView: View {
-  let name: String
-  let title: String
-  let state: ChatRow.ToolState
-  let durationS: Double?
-  let hasDetail: Bool
+  let call: ToolCall
+  /// The call is in flight in the running turn (`ToolCallItem.isLive`).
+  var isLive: Bool = false
+  /// Whether the body shows below the line (`ToolCallItem.isExpanded`): `›` folded, `⌄` open.
+  var isExpanded = false
   let onTap: () -> Void
 
   var body: some View {
-    Button(action: onTap) {
-      HStack(spacing: 10) {
-        Image(systemName: state == .running ? "wrench.and.screwdriver" : "checkmark.seal")
-          .foregroundStyle(state == .running ? Color.secondary : Color.green)
-        VStack(alignment: .leading, spacing: 1) {
-          Text(title.isEmpty ? name : title)
-            .font(.callout.weight(.medium))
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          if !title.isEmpty, title != name {
-            Text(name).font(.caption2.monospaced()).foregroundStyle(.secondary)
-          }
-        }
-        if state == .running { ProgressView().controlSize(.mini) }
-        if let durationS {
-          Text(String(format: "%.1fs", durationS)).font(.caption).foregroundStyle(.secondary)
-        }
-        if hasDetail {
-          Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-        }
-      }
-      .padding(.vertical, 6)
-      .frame(maxWidth: .infinity, alignment: .leading)
+    let presentation = ToolPresentation(call: call)
+    let title = presentation.title(live: isLive)
+    let failed = presentation.outcome.isFailure
+    FoldLine(
+      systemImage: presentation.icon.systemImage,
+      text: title,
+      chevron: isExpanded ? "chevron.down" : "chevron.right",
+      iconTint: failed ? .red : .secondary
+    )
+    .foldTap(isExpanded: isExpanded, action: onTap)
+    .accessibilityLabel(failed ? "\(title), failed" : title)
+  }
+}
+
+extension ToolPresentation.Icon {
+  /// The SF Symbol for a call line / uniform run summary.
+  var systemImage: String {
+    switch self {
+    case .terminal: "apple.terminal"
+    case .file: "doc.text"
+    case .edit: "pencil"
+    case .search: "magnifyingglass"
+    case .web: "globe"
+    case .eye: "eye"
+    case .skill: "wrench.adjustable"
+    case .delegate: "person.2"
+    case .memory: "memorychip"
+    case .generic: "wrench.and.screwdriver"
     }
-    .buttonStyle(.plain)
-    .disabled(!hasDetail)
+  }
+}
+
+extension RunSummary.Icon {
+  /// A run of one kind of work shows that kind's icon (a terminal for commands); a mixed run
+  /// shows a hammer (the T3 reference).
+  var systemImage: String {
+    switch self {
+    case let .uniform(icon): icon.systemImage
+    case .mixed: "hammer"
+    }
   }
 }

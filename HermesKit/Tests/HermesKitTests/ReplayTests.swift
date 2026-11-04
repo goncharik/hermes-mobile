@@ -237,115 +237,107 @@ struct ReplayTests {
     let transcript = store.state.transcript
     #expect(transcript.first?.kind == .message(role: .user, text: "run the tests", isComplete: true))
     #expect(store.state.toolRowIDs == ["t1": uuid(0), "t2": uuid(1)])
-    guard case let .tool(_, title, toolState, _, _) = transcript[id: uuid(0)]?.kind else {
+    guard case let .tool(first) = transcript[id: uuid(0)]?.kind else {
       Issue.record("expected the folded t1 tool row"); return
     }
-    #expect(title == "Run tests")
-    #expect(toolState == .complete)
-    guard case let .tool(name, _, secondState, _, _) = transcript[id: uuid(1)]?.kind else {
+    #expect(first.title == "Run tests")
+    #expect(first.state == .complete)
+    guard case let .tool(second) = transcript[id: uuid(1)]?.kind else {
       Issue.record("expected the folded t2 tool row"); return
     }
-    #expect(name == "read")
-    #expect(secondState == .running)
-    // The running turn's thinking row stays last.
-    #expect(transcript.last?.id == store.state.thinkingRowID)
+    #expect(second.name == "read")
+    #expect(second.state == .running)
+    // No eager row: the gap's last tool row stays last.
+    #expect(transcript.last?.id == uuid(1))
     await store.send(.teardown)
   }
 
-  @Test func replayedReasoningAfterADropLandsInAFreshLiveThinkingRow() async {
+  @Test func replayedReasoningAfterADropLandsInAFreshBurst() async {
     let gateway = ReplayHarness()
     gateway.since.setValue(.success(Self.since([
-      Self.event("thinking.delta", 42, ["text": .string("gap reasoning")]),
+      Self.event("reasoning.delta", 42, ["text": .string("gap reasoning")]),
     ])))
     var initial = droppedState()
     initial.status = .ready
     initial.hasRequestedSession = true
     initial.isSending = true
-    initial.transcript = [ChatRow(
-      id: uuid(900), kind: .thinking(reasoning: "before", status: nil, elapsedSeconds: 3, isComplete: false)
-    )]
-    initial.thinkingRowID = uuid(900)
+    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before"))]
+    initial.reasoningRowID = uuid(900)
     let store = gateway.makeStore(initial)
 
-    // The drop finalizes in-flight state: the pre-drop thinking row is frozen.
+    // The drop finalizes in-flight state: the pre-drop burst is closed.
     await store.send(.gatewayClosed)
-    #expect(store.state.thinkingRowID == nil)
+    #expect(store.state.reasoningRowID == nil)
+    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before"))
 
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
-      $0.thinkingRowID = self.uuid(0)
+      $0.reasoningRowID = self.uuid(0)
       $0.replayCursor = .init(sessionID: "live1", seq: 42)
     }
     await store.receive(\.activateResult.success)
 
-    // The running hydrate keeps the fresh live row; the frozen pre-drop row is wiped.
-    #expect(store.state.thinkingRowID == uuid(0))
+    // The running hydrate keeps the fresh open burst; the closed pre-drop row is wiped.
+    #expect(store.state.reasoningRowID == uuid(0))
     #expect(store.state.transcript[id: uuid(900)] == nil)
-    guard case let .thinking(reasoning, _, _, isComplete) = store.state.transcript.last?.kind else {
-      Issue.record("expected the live thinking row last"); return
-    }
     #expect(store.state.transcript.last?.id == uuid(0))
-    #expect(reasoning == "gap reasoning")
-    #expect(!isComplete)
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning"))
     await store.send(.teardown)
   }
 
-  @Test func replayedReasoningAfterGraceExpiryExtendsTheLiveThinkingRow() async {
+  @Test func replayedReasoningAfterGraceExpiryExtendsTheOpenBurst() async {
     let gateway = ReplayHarness()
     gateway.since.setValue(.success(Self.since([
-      Self.event("thinking.delta", 42, ["text": .string(" + gap")]),
+      Self.event("reasoning.delta", 42, ["text": .string(" + gap")]),
     ])))
     var initial = droppedState()
     initial.status = .ready
     initial.hasRequestedSession = true
     initial.isSending = true
-    initial.transcript = [ChatRow(
-      id: uuid(900), kind: .thinking(reasoning: "before", status: nil, elapsedSeconds: 3, isComplete: false)
-    )]
-    initial.thinkingRowID = uuid(900)
+    initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before"))]
+    initial.reasoningRowID = uuid(900)
+    initial.liveReasoningRowIDs = [uuid(900)]
     let store = gateway.makeStore(initial)
 
     // Grace expiry keeps every live pointer (nothing is finalized).
     await store.send(.teardownSocketOnly)
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
-      $0.transcript[id: self.uuid(900)]?.kind =
-        .thinking(reasoning: "before + gap", status: nil, elapsedSeconds: 3, isComplete: false)
+      $0.transcript[id: self.uuid(900)]?.kind = .reasoning(text: "before + gap")
     }
     await store.receive(\.activateResult.success)
 
-    #expect(store.state.thinkingRowID == uuid(900))
+    #expect(store.state.reasoningRowID == uuid(900))
     #expect(store.state.transcript.last?.id == uuid(900))
-    guard case let .thinking(reasoning, _, _, _) = store.state.transcript[id: uuid(900)]?.kind else {
-      Issue.record("expected the preserved thinking row"); return
-    }
-    #expect(reasoning == "before + gap")
+    #expect(store.state.transcript[id: uuid(900)]?.kind == .reasoning(text: "before + gap"))
     await store.send(.teardown)
   }
 
-  @Test func replayedStatusUpdateRidesTheLiveThinkingRowThroughTheRunningHydrate() async {
+  @Test func replayedSpinnerAndStatusRideTheTurnStateThroughTheRunningHydrate() async {
     let gateway = ReplayHarness()
     gateway.since.setValue(.success(Self.since([
-      Self.event("thinking.delta", 42, ["text": .string("gap reasoning")]),
-      Self.event("status.update", 43, ["kind": .string("compress"), "text": .string("Compressing context")]),
-    ])))
+      Self.event("reasoning.delta", 42, ["text": .string("gap reasoning")]),
+      Self.event("thinking.delta", 43, ["text": .string("ಠ_ಠ pondering…")]),
+      Self.event("status.update", 44, ["kind": .string("compress"), "text": .string("Compressing context")]),
+    ], latest: 44)))
     let store = gateway.makeStore(droppedState())
 
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
-      $0.thinkingRowID = self.uuid(0)
-      $0.replayCursor = .init(sessionID: "live1", seq: 43)
+      $0.reasoningRowID = self.uuid(0)
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+      $0.turnStatus = "Compressing context"
+      $0.replayCursor = .init(sessionID: "live1", seq: 44)
     }
     await store.receive(\.activateResult.success)
 
-    // The gap's status lives in the thinking row, which the running hydrate keeps (#26).
-    #expect(store.state.thinkingRowID == uuid(0))
-    guard case let .thinking(reasoning, status, _, isComplete) = store.state.transcript.last?.kind else {
-      Issue.record("expected the live thinking row last"); return
-    }
-    #expect(reasoning == "gap reasoning")
-    #expect(status == "Compressing context")
-    #expect(!isComplete)
+    // The spinner frame never reached a row; the label + status are turn-level state the
+    // running hydrate keeps, and the open burst survives (#26).
+    #expect(store.state.reasoningRowID == uuid(0))
+    #expect(store.state.turnActivityLabel == "ಠ_ಠ pondering…")
+    #expect(store.state.turnStatus == "Compressing context")
+    #expect(store.state.transcript.last?.kind == .reasoning(text: "gap reasoning"))
+    #expect(!store.state.transcript.contains { $0.copyText.contains("pondering") })
     await store.send(.teardown)
   }
 
@@ -816,7 +808,10 @@ struct ReplayTests {
     // The reply text is left to the hydrate (no materialised assistant row in the fold).
     await store.receive(\.eventReplayResult.success) {
       $0.transcript = [
-        ChatRow(id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil)),
+        ChatRow(
+          id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
         ChatRow(id: self.uuid(1), kind: .status(kind: ChatRow.Kind.reviewStatusKind, text: "💾 Self-improvement review: noted.")),
       ]
     }
@@ -867,6 +862,57 @@ struct ReplayTests {
     await store.send(.teardown)
   }
 
+  /// `message.interim` in a #98 replay fold: a STREAMED seal is inert (its deltas were skipped
+  /// and the drop already finalized the pre-drop partial — an appended copy would show the
+  /// segment twice until the hydrate), while an UN-streamed seal is the only delivery of its
+  /// text and lands as a sealed row.
+  @Test func aReplayedStreamedSealIsInertButAnUnstreamedOneLands() async {
+    let gateway = ReplayHarness()
+    gateway.since.setValue(.success(Self.since([
+      Self.event("message.delta", 42, ["text": .string("lo, checking")]),
+      Self.event("message.interim", 43, [
+        "text": .string("Hello, checking"), "already_streamed": .bool(true),
+        "turn_id": .string("turn-1"), "segment": .number(0),
+      ]),
+      Self.event("tool.start", 44, ["tool_id": .string("t1"), "name": .string("terminal")]),
+      Self.event("message.interim", 45, [
+        "text": .string("Ran it."), "already_streamed": .bool(false),
+        "turn_id": .string("turn-1"), "segment": .number(1),
+      ]),
+    ])))
+    gateway.resume.setValue(Self.resume(running: false, messages: [Self.message(1, "user", "q")]))
+    var initial = droppedState()
+    initial.status = .ready
+    initial.hasRequestedSession = true
+    initial.isSending = true
+    initial.transcript = [ChatRow(id: uuid(900), kind: .message(role: .assistant, text: "Hel", isComplete: false))]
+    initial.streamingRowID = uuid(900)
+    let store = gateway.makeStore(initial)
+
+    await store.send(.gatewayClosed)
+    await store.send(.gatewayFrame(ready))
+    await store.receive(\.eventReplayResult.success) {
+      $0.transcript = [
+        // The finalized pre-drop partial — the streamed seal added no copy of it.
+        ChatRow(id: self.uuid(900), kind: .message(role: .assistant, text: "Hel", isComplete: true)),
+        ChatRow(
+          id: self.uuid(0), kind: .tool(name: "terminal", title: "terminal", state: .running, detail: nil, durationS: nil),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
+        ChatRow(
+          id: self.uuid(1), kind: .message(role: .assistant, text: "Ran it.", isComplete: true),
+          timestamp: Date(timeIntervalSince1970: 1_000)
+        ),
+      ]
+      $0.replayCursor = .init(sessionID: "live1", seq: 45)
+      $0.toolRowIDs = ["t1": self.uuid(0)]
+      $0.sealedSegments = [.init(turnID: "turn-1", segment: 0), .init(turnID: "turn-1", segment: 1)]
+    }
+    await store.receive(\.activateResult.success)
+    await store.receive(\.delegate.runningChanged)
+    await store.send(.teardown)
+  }
+
   @Test func aGapAcrossATurnBoundaryWritesOneAnchorAndNoRunningEdge() async {
     let gateway = ReplayHarness()
     gateway.since.setValue(.success(Self.since([
@@ -880,15 +926,15 @@ struct ReplayTests {
 
     await store.send(.gatewayFrame(ready))
     await store.receive(\.eventReplayResult.success) {
-      $0.toolRowIDs = ["t2": self.uuid(2)]
+      $0.toolRowIDs = ["t2": self.uuid(1)]
       $0.replayCursor = .init(sessionID: "live1", seq: 45)
     }
     await store.receive(\.activateResult.success)
     await store.receive(\.delegate.runningChanged)
     // Turn A's tool row is history: the running hydrate keeps only turn B's.
-    #expect(store.state.toolRowIDs == ["t2": uuid(2)])
+    #expect(store.state.toolRowIDs == ["t2": uuid(1)])
     #expect(store.state.transcript[id: uuid(0)] == nil)
-    #expect(store.state.transcript[id: uuid(2)] != nil)
+    #expect(store.state.transcript[id: uuid(1)] != nil)
     await store.send(.teardown)
     await store.finish()
     // No glow flicker from the past boundaries, and one anchor write (B started) instead of
@@ -919,7 +965,7 @@ struct ReplayTests {
     await store.send(.teardown)
   }
 
-  @Test func aGapThatStartsAndEndsATurnLeavesNoThinkingTimer() async {
+  @Test func aGapThatStartsAndEndsATurnLeavesNoTurnTimer() async {
     let gateway = ReplayHarness()
     gateway.since.setValue(.success(Self.since([
       Self.event("message.start", 42),
@@ -935,7 +981,7 @@ struct ReplayTests {
     // The batch's start never outlives its own complete, even with no hydrate to settle it.
     await clock.advance(by: .seconds(3))
     await store.skipReceivedActions()
-    #expect(store.state.thinkingSeconds == 0)
+    #expect(store.state.turnSeconds == 0)
     await store.send(.teardown)
   }
 
@@ -952,7 +998,7 @@ struct ReplayTests {
     // The turn finished in the gap: the stopped hydrate leaves no tick and no anchor behind.
     await clock.advance(by: .seconds(3))
     await store.skipReceivedActions()
-    #expect(store.state.thinkingSeconds == 0)
+    #expect(store.state.turnSeconds == 0)
     #expect(!store.state.isSending)
     await store.send(.teardown)
     await store.finish()
@@ -971,7 +1017,7 @@ struct ReplayTests {
     await store.receive(\.activateResult.success)
     await clock.advance(by: .seconds(3))
     await store.skipReceivedActions()
-    #expect(store.state.thinkingSeconds == 3)
+    #expect(store.state.turnSeconds == 3)
     await store.send(.teardown)
   }
 

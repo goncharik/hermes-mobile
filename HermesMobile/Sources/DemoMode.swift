@@ -260,8 +260,9 @@ enum DemoMode {
     return state
   }
 
-  /// Panel 3 — "watch it work": the agent researching + acting across tools, live.
-  private static var workChat: ChatFeature.State {
+  /// Panel 3 — "watch it work": the agent researching + acting across tools, live. Internal
+  /// so a snapshot pins the panel.
+  static var workChat: ChatFeature.State {
     var state = ChatFeature.State(
       connection: connection,
       title: "Lisbon trip",
@@ -271,21 +272,24 @@ enum DemoMode {
           text: "Find 3 well-rated hotels in Lisbon under €150 and add the trip to my calendar.",
           isComplete: true)),
         ChatRow(id: rowID(1), kind: .tool(
-          name: "web_search", title: "Searched hotels in Lisbon", state: .complete,
-          detail: ToolDetail(resultText: "hotels"), durationS: 0.9)),
+          name: "web_search", title: "hotels in Lisbon under €150", state: .complete,
+          detail: ToolDetail(args: .object(["query": .string("hotels in Lisbon under €150")]), resultText: "hotels"),
+          durationS: 0.9)),
         ChatRow(id: rowID(2), kind: .tool(
           name: "web_fetch", title: "Compared 12 options by rating & price", state: .complete,
           detail: ToolDetail(resultText: "compared"), durationS: 1.6)),
         ChatRow(id: rowID(3), kind: .tool(
           name: "calendar", title: "Adding “Lisbon trip” to your calendar", state: .running,
           detail: nil, durationS: nil)),
-        ChatRow(id: rowID(4), kind: .thinking(
-          reasoning: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.",
-          status: "Updating calendar…", elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: rowID(4), kind: .reasoning(
+          text: "Shortlisting three places under €150 with the best reviews, then blocking the dates on your calendar.")),
       ]),
       status: .ready
     )
-    state.thinkingSeconds = 7
+    state.isTurnLive = true
+    state.fold.expandedRuns = [RunKey(turnOrdinal: 0, runOrdinal: 0)]
+    state.turnSeconds = 7
+    state.turnStatus = "Updating calendar…"
     state.model = "claude-opus-4-8"
     state.usage = .init(contextUsed: 96_000, contextMax: 200_000, contextPercent: 48)
     return state

@@ -59,12 +59,38 @@ struct ChatSnapshotClientTests {
         name: "bash",
         title: "Run command",
         state: .complete,
-        detail: ToolDetail(argsText: "ls", args: .object(["cmd": .string("ls")]), resultText: "file.txt"),
+        detail: ToolDetail(
+          argsText: "ls", args: .object(["cmd": .string("ls")]),
+          result: .object(["output": .string("file.txt"), "exit_code": .number(0)]),
+          resultText: "file.txt"
+        ),
         durationS: 1.5
-      )
+      ),
+      timestamp: Date(timeIntervalSince1970: 1_700_000_000)
     )
     client.saveSnapshot("s1", ChatSnapshot(rows: [toolRow]))
     #expect(client.loadSnapshot("s1")?.rows == [toolRow])
+  }
+
+  @Test func rowTimestampRoundTripsAndIsOptional() throws {
+    // A stamped row keeps its timestamp through Codable; an unstamped one writes no key.
+    let stamped = ChatRow(
+      id: UUID(), kind: .message(role: .user, text: "q", isComplete: true),
+      timestamp: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    #expect(try JSONDecoder().decode(ChatRow.self, from: JSONEncoder().encode(stamped)) == stamped)
+    let unstamped = ChatRow(id: UUID(), kind: .message(role: .user, text: "q", isComplete: true))
+    let json = try #require(String(data: JSONEncoder().encode(unstamped), encoding: .utf8))
+    #expect(!json.contains("timestamp"))
+
+    // A row cached before timestamps existed decodes with `timestamp == nil`; a malformed
+    // value is lenient too (the row still paints).
+    let legacy = #"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"message":{"role":{"user":{}},"text":"q","isComplete":true}}}"#
+    let decoded = try JSONDecoder().decode(ChatRow.self, from: Data(legacy.utf8))
+    #expect(decoded.timestamp == nil)
+    #expect(decoded.kind == .message(role: .user, text: "q", isComplete: true))
+    let malformed = #"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"message":{"role":{"user":{}},"text":"q","isComplete":true}},"timestamp":"soon"}"#
+    #expect(try JSONDecoder().decode(ChatRow.self, from: Data(malformed.utf8)).timestamp == nil)
   }
 
   @Test func snapshotRoundTripsCommandOutputRows() {
@@ -90,6 +116,63 @@ struct ChatSnapshotClientTests {
     )
     client.saveSnapshot("s1", ChatSnapshot(rows: [statusRow]))
     #expect(client.loadSnapshot("s1")?.rows == [statusRow])
+  }
+
+  @Test func snapshotRoundTripsReasoningRows() {
+    let client = ChatSnapshotClient.inMemory()
+    let rows = [
+      ChatRow(id: UUID(), kind: .reasoning(text: "weighing options")),
+      ChatRow(id: UUID(), kind: .reasoning(text: "still going")),
+    ]
+    client.saveSnapshot("s1", ChatSnapshot(rows: rows))
+    #expect(client.loadSnapshot("s1")?.rows == rows)
+  }
+
+  @Test func legacyThinkingRowInACachedSnapshotIsSkippedNotACrash() throws {
+    // A snapshot written before the tool-call display plan holds the retired `.thinking`
+    // kind. It no longer decodes — that row is a cache miss (the cache is non-authoritative;
+    // the next hydrate rebuilds the transcript), every other row still paints, and nothing
+    // crashes.
+    let store = try ChatSnapshotStore.inMemory()
+    let before = messageRow("before")
+    let after = messageRow("after")
+    try store.saveSnapshot("s1", ChatSnapshot(model: "m", rows: [before, messageRow("placeholder"), after]))
+    let legacyJSON = #"""
+      {"id":"00000000-0000-0000-0000-0000000000AA","kind":{"thinking":{"reasoning":"old","status":"Context: 42% used","elapsedSeconds":12,"isComplete":true}}}
+      """#
+    try store.queue.write { db in
+      try db.execute(
+        sql: #"UPDATE "snapshot_rows" SET "row_json" = ? WHERE "session_id" = ? AND "idx" = 1"#,
+        arguments: [legacyJSON, "s1"]
+      )
+    }
+
+    let loaded = try #require(try store.loadSnapshot("s1"))
+    #expect(loaded.model == "m")
+    #expect(loaded.rows == [before, after])
+  }
+
+  @Test(arguments: [
+    // The pre-`ToolCall` tool row shape: no longer decodes, skipped like the `.thinking` row.
+    (#"{"id":"00000000-0000-0000-0000-0000000000AB","kind":{"tool":{"name":"terminal","title":"ls","state":{"complete":{}},"durationS":1}}}"#, nil),
+    // A reasoning row cached with the retired `isComplete` flag still decodes.
+    (#"{"id":"00000000-0000-0000-0000-0000000000AC","kind":{"reasoning":{"text":"old","isComplete":true}}}"#,
+     ChatRow(id: UUID(uuidString: "00000000-0000-0000-0000-0000000000AC")!, kind: .reasoning(text: "old"))),
+  ] as [(String, ChatRow?)])
+  func olderCachedRowShapesLoadPerRow(legacyJSON: String, expected: ChatRow?) throws {
+    let store = try ChatSnapshotStore.inMemory()
+    let before = messageRow("before")
+    let after = messageRow("after")
+    try store.saveSnapshot("s1", ChatSnapshot(model: "m", rows: [before, messageRow("placeholder"), after]))
+    try store.queue.write { db in
+      try db.execute(
+        sql: #"UPDATE "snapshot_rows" SET "row_json" = ? WHERE "session_id" = ? AND "idx" = 1"#,
+        arguments: [legacyJSON, "s1"]
+      )
+    }
+
+    let loaded = try #require(try store.loadSnapshot("s1"))
+    #expect(loaded.rows == [before] + [expected].compactMap { $0 } + [after])
   }
 
   @Test func attachmentImagesDoNotRoundTrip() throws {

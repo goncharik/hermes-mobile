@@ -19,6 +19,9 @@ struct ChatReductionTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// The pinned `date` for stores whose fold stamps live rows (`ChatRow.timestamp`).
+  private let t0 = Date(timeIntervalSince1970: 0)
+  private nonisolated static func at(_ seconds: TimeInterval) -> Date { Date(timeIntervalSince1970: seconds) }
 
   // MARK: Streaming fold (no message id — single in-flight row)
 
@@ -29,87 +32,90 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
-    // message.start no longer creates the assistant row (would render as an empty bubble),
-    // but it eagerly creates the live thinking row (uuid 0) and starts the timer.
+    // message.start creates NO row (an empty assistant row would render as a blank bubble,
+    // and the turn timer is turn-level state) — it marks the turn live and starts the timer.
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.messageDelta(text: "Hel"))) {
-      // The assistant row streams in; the live thinking row stays pinned below it.
       $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Hel", isComplete: false)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: uuid(0), kind: .message(role: .assistant, text: "Hel", isComplete: false), timestamp: t0),
       ]
-      $0.streamingRowID = uuid(1)
+      $0.streamingRowID = uuid(0)
     }
     await store.send(.gatewayEvent(.messageDelta(text: "lo"))) {
-      $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "Hello", isComplete: false)
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Hello", isComplete: false)
     }
-    // No reasoning/status arrived → the empty thinking row is removed on completion.
     await store.send(.gatewayEvent(.messageComplete(text: "Hello", usage: nil))) {
-      $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
-      $0.transcript.remove(id: self.uuid(0))
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Hello", isComplete: true)
       $0.streamingRowID = nil
-      $0.thinkingRowID = nil
+      $0.isTurnLive = false
       $0.isSending = false
     }
   }
 
-  // The live thinking row is pinned to the bottom of the transcript: tool rows and the
-  // streaming answer slot in above it, and on completion it freezes (as the "Thought" row)
-  // still below the answer.
-  @Test func thinkingRowStaysLastAsToolsAndAnswerStreamIn() async {
+  // Reasoning is one row per BURST, in arrival order: a tool or text row after a burst ends
+  // it (marked complete in place), and the next reasoning starts a fresh row. Nothing is
+  // reordered — there is no "keep last" pinning.
+  @Test func reasoningBurstsSplitAroundToolsAndText() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Hmm"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: false)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
-    // A tool starts mid-turn: it slots in above the thinking row, which stays last.
+    // A tool starts: it closes the burst and lands after it.
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
       $0.transcript = [
-        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0),
+        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil), timestamp: t0),
       ]
+      $0.reasoningRowID = nil
       $0.toolRowIDs["t1"] = uuid(1)
     }
-    // The answer streams in below the tool, still above the pinned thinking row.
+    // Reasoning after the tool is a NEW burst (a new row), not appended to the first.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Again"))) {
+      $0.transcript.append(ChatRow(id: uuid(2), kind: .reasoning(text: "Again"), timestamp: t0))
+      $0.reasoningRowID = uuid(2)
+      $0.liveReasoningRowIDs.insert(uuid(2))
+    }
+    await store.send(.gatewayEvent(.reasoningDelta(text: "!"))) {
+      $0.transcript[id: uuid(2)]?.kind = .reasoning(text: "Again!")
+    }
+    // The answer streams in: it closes the second burst and lands last.
     await store.send(.gatewayEvent(.messageDelta(text: "Answer"))) {
-      $0.transcript = [
-        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil)),
-        ChatRow(id: uuid(2), kind: .message(role: .assistant, text: "Answer", isComplete: false)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: false)),
-      ]
-      $0.streamingRowID = uuid(2)
+      $0.transcript[id: uuid(2)]?.kind = .reasoning(text: "Again!")
+      $0.transcript.append(ChatRow(id: uuid(3), kind: .message(role: .assistant, text: "Answer", isComplete: false), timestamp: t0))
+      $0.reasoningRowID = nil
+      $0.streamingRowID = uuid(3)
     }
-    // Completion: answer finalizes, thinking freezes into the "Thought" row — still last.
     await store.send(.gatewayEvent(.messageComplete(text: "Answer", usage: nil))) {
-      $0.transcript = [
-        ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil)),
-        ChatRow(id: uuid(2), kind: .message(role: .assistant, text: "Answer", isComplete: true)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: true)),
-      ]
+      $0.transcript[id: uuid(3)]?.kind = .message(role: .assistant, text: "Answer", isComplete: true)
       $0.streamingRowID = nil
-      $0.thinkingRowID = nil
+      $0.isTurnLive = false
       $0.isSending = false
-      // The finished turn's tool rows are history: a later running hydrate must not re-append them.
+      // The finished turn's tool + reasoning rows are history: a later running hydrate must
+      // not re-append them.
       $0.toolRowIDs = [:]
+      $0.liveReasoningRowIDs = []
     }
-    #expect(store.state.transcript.last?.id == uuid(0))
+    #expect(store.state.transcript.map(\.id) == [uuid(0), uuid(1), uuid(2), uuid(3)])
   }
 
   @Test func toolOnlyTurnLeavesNoEmptyMessageBubble() async {
@@ -119,116 +125,594 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
-    // start → (tool activity) → complete with no text and no reasoning/status: no assistant
-    // message row and the empty thinking row is removed too.
+    // start → (tool activity) → complete with no text and no reasoning: no row at all.
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil))) {
-      $0.transcript.remove(id: self.uuid(0))
-      $0.thinkingRowID = nil
+      $0.isTurnLive = false
       $0.isSending = false
     }
     #expect(store.state.transcript.isEmpty)
   }
 
-  // message.start eagerly creates the live thinking row + starts the elapsed timer;
-  // reasoning deltas accumulate into that one row; ticks advance thinkingSeconds; the turn
-  // completing bakes the elapsed in and freezes the row as a static disclosure.
-  @Test func messageStartCreatesLiveThinkingRowTimerTicksThenFreezes() async {
+  // MARK: Interim segments (`message.interim`)
+
+  // Commentary beside tool calls is its own row: `message.interim` seals the streaming
+  // segment (authoritative text, complete), so the deltas after the tools open a NEW row and
+  // `message.complete` lands on that final segment only — never on the sealed one. Every row
+  // is stamped at append and re-stamped when it completes.
+  @Test func interimSealThenFinalProducesTwoRowsAroundToolRows() async {
+    let now = LockIsolated(Date(timeIntervalSince1970: 10))
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = DateGenerator { now.value }
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.messageDelta(text: "Let me check"))) {
+      $0.transcript = [ChatRow(
+        id: uuid(0), kind: .message(role: .assistant, text: "Let me check", isComplete: false), timestamp: Self.at(10)
+      )]
+      $0.streamingRowID = uuid(0)
+    }
+    now.setValue(Self.at(12))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me check the tests.", alreadyStreamed: true, turnID: "turn-1", segment: 0
+    ))) {
+      // Sealed in place with the authoritative text; the segment is closed.
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Let me check the tests.", isComplete: true)
+      $0.transcript[id: uuid(0)]?.timestamp = Self.at(12)
+      $0.streamingRowID = nil
+      $0.sealedSegments = [.init(turnID: "turn-1", segment: 0)]
+      $0.liveCommentaryRowIDs = [uuid(0)]
+    }
+    now.setValue(Self.at(13))
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "pytest -q", argsText: nil))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(1), kind: .tool(name: "terminal", title: "pytest -q", state: .running, detail: nil, durationS: nil),
+        timestamp: Self.at(13)
+      ))
+      $0.toolRowIDs["t1"] = uuid(1)
+    }
+    now.setValue(Self.at(20))
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "t1", name: "terminal", title: nil, args: nil, resultText: "3 passed", inlineDiff: nil, durationS: 7
+    ))) {
+      $0.transcript[id: uuid(1)]?.kind = .tool(
+        name: "terminal", title: "pytest -q", state: .complete,
+        detail: ToolDetail(resultText: "3 passed"), durationS: 7
+      )
+      $0.transcript[id: uuid(1)]?.timestamp = Self.at(20)
+    }
+    now.setValue(Self.at(21))
+    // The next delta opens a NEW segment row below the tool.
+    await store.send(.gatewayEvent(.messageDelta(text: "All green"))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(2), kind: .message(role: .assistant, text: "All green", isComplete: false), timestamp: Self.at(21)
+      ))
+      $0.streamingRowID = uuid(2)
+    }
+    now.setValue(Self.at(25))
+    await store.send(.gatewayEvent(.messageComplete(text: "All green.", usage: nil))) {
+      $0.transcript[id: uuid(2)]?.kind = .message(role: .assistant, text: "All green.", isComplete: true)
+      $0.transcript[id: uuid(2)]?.timestamp = Self.at(25)
+      $0.streamingRowID = nil
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.toolRowIDs = [:]
+      $0.liveCommentaryRowIDs = []
+    }
+    // The sealed interim kept its own text: the final never overwrote it.
+    #expect(store.state.transcript.map(\.id) == [uuid(0), uuid(1), uuid(2)])
+    #expect(store.state.transcript[id: uuid(0)]?.copyText == "Let me check the tests.")
+  }
+
+  // A re-sent seal is a no-op: a stamped `(turn_id, segment)` already applied, or (unstamped)
+  // the same text as the turn's newest assistant row. A blank seal is a no-op too. A fresh
+  // un-streamed seal with no streaming row lands as a sealed row of its own.
+  @Test func resentSealIsNotDuplicated() async {
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.messageDelta(text: "Checking"))) {
+      $0.transcript = [ChatRow(
+        id: uuid(0), kind: .message(role: .assistant, text: "Checking", isComplete: false), timestamp: t0
+      )]
+      $0.streamingRowID = uuid(0)
+    }
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Checking", alreadyStreamed: true, turnID: "turn-1", segment: 0
+    ))) {
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Checking", isComplete: true)
+      $0.streamingRowID = nil
+      $0.sealedSegments = [.init(turnID: "turn-1", segment: 0)]
+      $0.liveCommentaryRowIDs = [uuid(0)]
+    }
+    // The same stamped seal again (a second socket, a superseded attempt): nothing changes —
+    // even with different text.
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Checking!", alreadyStreamed: true, turnID: "turn-1", segment: 0
+    )))
+    // An unstamped copy of the same text (older agent): the newest assistant row has it.
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "  Checking\n", alreadyStreamed: true, turnID: nil, segment: nil
+    )))
+    // Blank: nothing to seal.
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "  ", alreadyStreamed: false, turnID: "turn-1", segment: 1
+    )))
+    // A fresh un-streamed segment (no deltas preceded it) is appended, sealed.
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Second thought.", alreadyStreamed: false, turnID: "turn-1", segment: 1
+    ))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(1), kind: .message(role: .assistant, text: "Second thought.", isComplete: true), timestamp: t0
+      ))
+      $0.sealedSegments.insert(.init(turnID: "turn-1", segment: 1))
+      $0.liveCommentaryRowIDs.insert(uuid(1))
+    }
+    // A new turn forgets the previous turn's sealed segments.
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.sealedSegments = []
+    }
+    await store.send(.teardown)
+  }
+
+  // `message.complete` with no streaming row (a non-streamed reply) materialises the final
+  // row — unless it repeats a segment this turn already sealed: `response_reused`, or (older
+  // agents) the same text as the turn's newest assistant row. That sealed row IS the reply.
+  @Test func completeWithoutDeltasAppendsUnlessTheFinalWasAlreadySealed() async {
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+
+    // Turn 1: the answer is sealed before a housekeeping tool; the final reuses it.
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Here is the answer.", alreadyStreamed: false, turnID: "turn-1", segment: 0
+    ))) {
+      $0.transcript = [ChatRow(
+        id: uuid(0), kind: .message(role: .assistant, text: "Here is the answer.", isComplete: true), timestamp: t0
+      )]
+      $0.sealedSegments = [.init(turnID: "turn-1", segment: 0)]
+      $0.liveCommentaryRowIDs = [uuid(0)]
+    }
+    await store.send(.gatewayEvent(.toolStart(toolID: "m", name: "memory", title: nil, argsText: nil))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(1), kind: .tool(name: "memory", title: "memory", state: .running, detail: nil, durationS: nil),
+        timestamp: t0
+      ))
+      $0.toolRowIDs["m"] = uuid(1)
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "Here is the answer.", usage: nil, responseReused: true))) {
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.toolRowIDs = [:]
+      $0.liveCommentaryRowIDs = []
+    }
+    #expect(store.state.transcript.count == 2)
+
+    // Turn 2 (older agent, no flag): an identical final after the seal is not repainted.
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+      $0.sealedSegments = []
+    }
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Done.", alreadyStreamed: false, turnID: nil, segment: nil
+    ))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(2), kind: .message(role: .assistant, text: "Done.", isComplete: true), timestamp: t0
+      ))
+      $0.liveCommentaryRowIDs = [uuid(2)]
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "Done.", usage: nil))) {
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.liveCommentaryRowIDs = []
+    }
+
+    // Turn 3: a different, non-streamed final after a seal lands as its own row.
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Looking.", alreadyStreamed: false, turnID: nil, segment: nil
+    ))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(3), kind: .message(role: .assistant, text: "Looking.", isComplete: true), timestamp: t0
+      ))
+      $0.liveCommentaryRowIDs = [uuid(3)]
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "Found it.", usage: nil))) {
+      $0.transcript.append(ChatRow(
+        id: uuid(4), kind: .message(role: .assistant, text: "Found it.", isComplete: true), timestamp: t0
+      ))
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.liveCommentaryRowIDs = []
+    }
+  }
+
+  // A reused final over a still-streaming row keeps the streamed text (it already carries the
+  // reply) and completes the row in place.
+  @Test func reusedFinalOverTheStreamingRowKeepsTheStreamedText() async {
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.messageDelta(text: "Here is the answer.\n\n"))) {
+      $0.transcript = [ChatRow(
+        id: uuid(0), kind: .message(role: .assistant, text: "Here is the answer.\n\n", isComplete: false), timestamp: t0
+      )]
+      $0.streamingRowID = uuid(0)
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "Here is the answer.", usage: nil, responseReused: true))) {
+      $0.transcript[id: uuid(0)]?.kind = .message(role: .assistant, text: "Here is the answer.\n\n", isComplete: true)
+      $0.streamingRowID = nil
+      $0.isTurnLive = false
+      $0.isSending = false
+    }
+  }
+
+  @Test(arguments: ["", " \n "])
+  func blankFinalKeepsTheStreamedReply(final: String) async {
+    // Bot mode withholds a silence marker and completes with "" — the streamed text stands.
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Paris.")))
+    await store.send(.gatewayEvent(.messageComplete(text: final, usage: nil, responseReused: false)))
+    #expect(Array(store.state.transcript) == [ChatRow(
+      id: uuid(0), kind: .message(role: .assistant, text: "Paris.", isComplete: true), timestamp: t0
+    )])
+    #expect(store.state.streamingRowID == nil)
+  }
+
+  @Test func reusedFinalAfterATrailingSegmentShowsTheAnswerOnceAndKeepsTheTrailingText() async {
+    // The answer was sealed before a housekeeping tool; a short segment streamed after it; the
+    // turn then ends on the REUSED answer. The answer stays where it was sealed (once), and the
+    // trailing segment keeps its own text instead of being overwritten by a second copy.
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Here is the answer.")))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Here is the answer.", alreadyStreamed: true, turnID: "t", segment: 0
+    )))
+    await store.send(.gatewayEvent(.toolStart(toolID: "m", name: "todo", title: nil, argsText: nil)))
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "m", name: "todo", title: nil, args: nil, resultText: "ok", inlineDiff: nil, durationS: nil
+    )))
+    await store.send(.gatewayEvent(.messageDelta(text: "Done.")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Here is the answer.", usage: nil, responseReused: true)))
+
+    let texts = store.state.transcript.compactMap { row -> String? in
+      if case let .message(.assistant, text, true) = row.kind { return text }
+      return nil
+    }
+    #expect(texts == ["Here is the answer.", "Done."])
+    #expect(store.state.streamingRowID == nil)
+  }
+
+  @Test func toolCompleteWithoutAStartClosesTheOpenBurstAndStampsTheRow() async {
+    let now = LockIsolated(Self.at(10))
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = DateGenerator { now.value }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.reasoningDelta(text: "weighing")))
+    #expect(store.state.reasoningRowID == uuid(0))
+    now.setValue(Self.at(14))
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "orphan", name: "terminal", title: "ls", args: nil, resultText: "a b", inlineDiff: nil, durationS: 1
+    )))
+    #expect(store.state.reasoningRowID == nil)
+    #expect(store.state.transcript[id: uuid(0)]?.timestamp == Self.at(14))
+    #expect(store.state.transcript[id: uuid(1)] == ChatRow(
+      id: uuid(1),
+      kind: .tool(name: "terminal", title: "ls", state: .complete, detail: ToolDetail(resultText: "a b"), durationS: 1),
+      timestamp: Self.at(14)
+    ))
+    // The burst is closed: more reasoning starts a new row after the tool.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "next")))
+    #expect(store.state.transcript.count == 3)
+  }
+
+  @Test func aDetailSheetOpenOnARunningCallShowsItsCompletion() async {
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(t0)
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "pytest", argsText: nil)))
+    await store.send(.toolTapped(id: uuid(0)))
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "t1", name: "terminal", title: nil, args: nil, resultText: "3 passed", inlineDiff: nil, durationS: 2
+    )))
+    #expect(store.state.presentedTool == store.state.transcript[id: uuid(0)])
+    guard case let .tool(call)? = store.state.presentedTool?.kind else {
+      Issue.record("expected the presented tool row")
+      return
+    }
+    #expect(call.state == .complete)
+    #expect(call.detail?.resultText == "3 passed")
+  }
+
+  // message.start starts the turn timer WITHOUT a row; ticks advance `turnSeconds`;
+  // reasoning deltas accumulate into one burst row; the turn completing closes the burst,
+  // cancels the timer and resets the counter.
+  @Test func messageStartStartsTurnTimerWithoutARowThenFreezes() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    // The 1s tick loop drives thinkingSeconds.
+    // The 1s tick loop drives turnSeconds.
     await clock.advance(by: .seconds(3))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 3 }
-    // Reasoning accumulates into the existing row, then the assistant message streams.
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Thinking"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Thinking", status: nil, elapsedSeconds: 0, isComplete: false)
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 3 }
+    // Reasoning accumulates into one burst row, then the assistant message streams.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Thinking"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Thinking"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "…"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Thinking…", status: nil, elapsedSeconds: 0, isComplete: false)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "…"))) {
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Thinking…")
     }
     await store.send(.gatewayEvent(.messageDelta(text: "pong"))) {
-      // The assistant row streams in; the live thinking row is pinned below it.
-      $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "pong", isComplete: false)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "Thinking…", status: nil, elapsedSeconds: 0, isComplete: false)),
-      ]
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Thinking…")
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "pong", isComplete: false), timestamp: t0))
+      $0.reasoningRowID = nil
       $0.streamingRowID = uuid(1)
     }
-    // Completion freezes the thinking row (3s baked in), keeps it (had reasoning), cancels
-    // the timer, and resets the counter.
+    // Completion cancels the timer and resets the turn state.
     await store.send(.gatewayEvent(.messageComplete(text: "pong", usage: nil))) {
       $0.transcript[id: uuid(1)]?.kind = .message(role: .assistant, text: "pong", isComplete: true)
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Thinking…", status: nil, elapsedSeconds: 3, isComplete: true)
       $0.streamingRowID = nil
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
       $0.isSending = false
+      $0.liveReasoningRowIDs = []
     }
   }
 
-  // statusUpdate routes the context-size line into the active thinking row's status (no
-  // longer a persistent footer), and a status-only turn keeps its row on completion.
-  @Test func statusUpdateRoutesIntoThinkingRowAndKeepsIt() async {
+  // status.update is turn-level state (`turnStatus`), never a row; the terminal clears it.
+  @Test func statusUpdateIsTurnStateNotARow() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: "Context: 42% used"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "", status: "Context: 42% used", elapsedSeconds: 0, isComplete: false)
+      $0.turnStatus = "Context: 42% used"
     }
-    // A status-only turn (no reasoning, no message text) keeps the frozen row.
+    // The latest line replaces the previous one.
+    await store.send(.gatewayEvent(.statusUpdate(kind: "compress", text: "Compressing context"))) {
+      $0.turnStatus = "Compressing context"
+    }
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "", status: "Context: 42% used", elapsedSeconds: 0, isComplete: true)
-      $0.thinkingRowID = nil
+      $0.turnStatus = nil
+      $0.isTurnLive = false
       $0.isSending = false
     }
+    #expect(store.state.transcript.isEmpty)
   }
 
-  // Slot teardown mid-turn cancels the live thinking timer (no leaked tick loop).
-  @Test func teardownCancelsThinkingTimer() async {
+  // `thinking.delta` is the agent's spinner, NOT reasoning: each frame REPLACES the turn
+  // label (trimmed; blank → nil), never lands in a row, and is cleared by tool.start /
+  // message.delta / the terminal.
+  @Test func spinnerFramesReplaceTheTurnLabelAndNeverReachARow() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+    }
+    // A rewrite replaces (never appends), trimmed.
+    await store.send(.gatewayEvent(.spinnerFrame(text: "  ٩(๑❛ᴗ❛๑)۶ mulling…\n"))) {
+      $0.turnActivityLabel = "٩(๑❛ᴗ❛๑)۶ mulling…"
+    }
+    // A blank frame clears the label.
+    await store.send(.gatewayEvent(.spinnerFrame(text: "   "))) {
+      $0.turnActivityLabel = nil
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "(¬‿¬) cogitating…"))) {
+      $0.turnActivityLabel = "(¬‿¬) cogitating…"
+    }
+    // Real reasoning is a row; the label stands beside it.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "real reasoning"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "real reasoning"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
+    }
+    // tool.start clears the label.
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "search", title: "Searching", argsText: nil))) {
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "real reasoning")
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .tool(name: "search", title: "Searching", state: .running, detail: nil, durationS: nil), timestamp: t0))
+      $0.reasoningRowID = nil
+      $0.toolRowIDs["t1"] = uuid(1)
+      $0.turnActivityLabel = nil
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+    }
+    // message.delta clears it too.
+    await store.send(.gatewayEvent(.messageDelta(text: "Done"))) {
+      $0.transcript.append(ChatRow(id: uuid(2), kind: .message(role: .assistant, text: "Done", isComplete: false), timestamp: t0))
+      $0.streamingRowID = uuid(2)
+      $0.turnActivityLabel = nil
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+    }
+    // …and so does the terminal.
+    await store.send(.gatewayEvent(.messageComplete(text: "Done", usage: nil))) {
+      $0.transcript[id: uuid(2)]?.kind = .message(role: .assistant, text: "Done", isComplete: true)
+      $0.streamingRowID = nil
+      $0.turnActivityLabel = nil
+      $0.isTurnLive = false
+      $0.isSending = false
+      $0.toolRowIDs = [:]
+      $0.liveReasoningRowIDs = []
+    }
+    // No spinner text ever reached a row.
+    #expect(!store.state.transcript.contains { row in
+      ["pondering", "mulling", "cogitating"].contains { row.copyText.contains($0) }
+    })
+  }
+
+  // `reasoning.available` carries a response's whole reasoning when it was not streamed.
+  // Scoped to the open burst: a re-send of text the burst already holds is skipped; new text
+  // lands like a delta; after the burst ended it starts a new one.
+  @Test func reasoningAvailableDedupsWithinTheOpenBurst() async {
+    let clock = TestClock()
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(t0)
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.reasoningDelta(text: "weighing options"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "weighing options"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
+    }
+    // Already in the open burst → no change.
+    await store.send(.gatewayEvent(.reasoningAvailable(text: "weighing options\n")))
+    // New text appends to the open burst.
+    await store.send(.gatewayEvent(.reasoningAvailable(text: " then acting"))) {
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "weighing options then acting")
+    }
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "grep", title: nil, argsText: nil))) {
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "weighing options then acting")
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .tool(name: "grep", title: "grep", state: .running, detail: nil, durationS: nil), timestamp: t0))
+      $0.reasoningRowID = nil
+      $0.toolRowIDs["t1"] = uuid(1)
+    }
+    // The burst ended: the same text is a NEW burst, not a duplicate of the closed one.
+    await store.send(.gatewayEvent(.reasoningAvailable(text: "weighing options"))) {
+      $0.transcript.append(ChatRow(id: uuid(2), kind: .reasoning(text: "weighing options"), timestamp: t0))
+      $0.reasoningRowID = uuid(2)
+      $0.liveReasoningRowIDs.insert(uuid(2))
+    }
+    // Empty reasoning never creates a row.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "")))
+    await store.send(.teardown)
+  }
+
+  // Slot teardown mid-turn cancels the live turn timer (no leaked tick loop).
+  @Test func teardownCancelsTurnTimer() async {
+    let clock = TestClock()
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(t0)
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
     }
     await clock.advance(by: .seconds(1))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
     // Teardown cancels the loop; advancing further yields no more ticks.
     await store.send(.teardown)
     await clock.advance(by: .seconds(5))
@@ -236,7 +720,7 @@ struct ChatReductionTests {
 
   // Background-grace expiry: `.teardownSocketOnly` cancels the socket effect WITHOUT its
   // trailing `.gatewayClosed` (so no backoff reconnect is scheduled while suspended) and
-  // leaves the in-flight turn state intact — live thinking row, pointers, `isSending` —
+  // leaves the in-flight turn state intact — open reasoning burst, pointers, `isSending` —
   // for the #26-preserving foreground hydrate. Only the status flips to `.reconnecting`
   // (the socket is genuinely gone, so a later `.reattached` redials instead of hydrating
   // a dead socket).
@@ -252,6 +736,7 @@ struct ChatReductionTests {
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
       $0.hermesGateway.connect = { @Sendable _, _ in
         AsyncStream { continuation in
           continuation.onTermination = { _ in socketClosed.setValue(true) }
@@ -265,8 +750,12 @@ struct ChatReductionTests {
     }
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
 
     await store.send(.teardownSocketOnly) {
@@ -277,16 +766,17 @@ struct ChatReductionTests {
     // trailing `.gatewayClosed` was dropped (no reconnect backoff, no in-flight finalize).
     await waitUntil { socketClosed.value }
     #expect(store.state.isSending)
-    #expect(store.state.thinkingRowID == uuid(0))
+    #expect(store.state.isTurnLive)
+    #expect(store.state.reasoningRowID == uuid(0))
 
-    // The thinking ticker deliberately stays (the hydrate's `reconcileTimer` owns it);
+    // The turn ticker deliberately stays (the hydrate's `reconcileTimer` owns it);
     // full teardown cleans it up.
     await store.send(.teardown)
   }
 
   // `.viewDisappeared` (the screen left — forwarded by `AppFeature.chatViewDisappeared`)
   // releases only the VIEW-session resources: recording state reset + mic released. The
-  // slot's long-running effects are untouched — the thinking ticker (a stand-in for the
+  // slot's long-running effects are untouched — the turn ticker (a stand-in for the
   // socket/persist effects rooted alongside it) keeps firing after the view is gone.
   @Test func viewDisappearedReleasesMicButKeepsSlotEffects() async {
     let clock = TestClock()
@@ -303,11 +793,10 @@ struct ChatReductionTests {
       $0.audioRecorder.cancel = { micCancelled.setValue(true) }
     }
 
-    // A turn is running: the live thinking row + elapsed ticker are slot-rooted effects.
+    // A turn is running: the elapsed ticker is a slot-rooted effect.
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
 
     await store.send(.viewDisappeared) {
@@ -319,197 +808,324 @@ struct ChatReductionTests {
     await waitUntil { micCancelled.value }
     // …but the slot's effects survived the view: the ticker still fires.
     await clock.advance(by: .seconds(1))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
 
     await store.send(.teardown)
   }
 
-  // Two back-to-back turns: a second message.start (with no intervening message.complete)
-  // freezes/clears the first live row before creating the second, and the timer restarts
-  // cleanly from 0 (cancelInFlight + reset) — no orphaned shimmering row, no double-ticking.
-  @Test func secondMessageStartFreezesPriorRowAndRestartsTimerFromZero() async {
+  // Two back-to-back turns: the timer restarts cleanly from 0 (cancelInFlight + reset) for
+  // the second turn — no double-ticking — and the first turn's burst stays closed.
+  @Test func secondMessageStartRestartsTimerFromZero() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     // Turn 1: start, accumulate reasoning, tick twice, then complete normally.
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "First"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "First", status: nil, elapsedSeconds: 0, isComplete: false)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "First"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "First"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
     await store.send(.gatewayEvent(.messageComplete(text: "done", usage: nil))) {
-      // The answer lands, then the thinking row freezes into a "Thought" row below it.
+      // A non-streamed reply lands after the burst, which closes.
       $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "done", isComplete: true)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "First", status: nil, elapsedSeconds: 2, isComplete: true)),
+        ChatRow(id: uuid(0), kind: .reasoning(text: "First"), timestamp: t0),
+        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "done", isComplete: true), timestamp: t0),
       ]
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.reasoningRowID = nil
+      $0.liveReasoningRowIDs = []
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
       $0.isSending = false
     }
 
-    // Turn 2: a fresh message.start creates a new live row and restarts the timer at 0;
-    // exactly one tick per second (no leaked first-turn loop double-ticking).
+    // Turn 2: a fresh message.start restarts the timer at 0; exactly one tick per second
+    // (no leaked first-turn loop double-ticking).
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript.append(ChatRow(id: uuid(2), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)))
-      $0.thinkingRowID = uuid(2)
+      $0.isTurnLive = true
     }
     await clock.advance(by: .seconds(1))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
     await store.send(.teardown)
     await clock.advance(by: .seconds(3))
   }
 
-  // Defensive: a second message.start with the first row still LIVE (no message.complete in
-  // between) freezes the orphaned row rather than leaving it shimmering forever.
-  @Test func secondMessageStartFreezesAStillLiveFirstRow() async {
+  // Defensive: a second message.start with the first turn's burst still OPEN (no
+  // message.complete in between) closes it rather than leaving it live forever, and resets
+  // the timer + label + status for the new turn.
+  @Test func secondMessageStartFreezesAStillOpenBurst() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Live one"))) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Live one", status: nil, elapsedSeconds: 0, isComplete: false)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Live one"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Live one"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+    }
+    await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: "Context: 42% used"))) {
+      $0.turnStatus = "Context: 42% used"
     }
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
 
-    // No message.complete arrives — a fresh message.start freezes the orphan (2s baked in,
-    // isComplete=true, kept since it had reasoning) and starts a new live row.
+    // No message.complete arrives — a fresh message.start closes the orphaned burst and
+    // resets the turn state; the turn stays live.
     await store.send(.gatewayEvent(.messageStart)) {
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "Live one", status: nil, elapsedSeconds: 2, isComplete: true)
-      $0.transcript.append(ChatRow(id: uuid(1), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)))
-      $0.thinkingRowID = uuid(1)
-      $0.thinkingSeconds = 0
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Live one")
+      $0.reasoningRowID = nil
+      $0.turnSeconds = 0
+      $0.turnActivityLabel = nil
+      $0.turnStatus = nil
+    }
+    // The next reasoning is a new burst for the new turn.
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Second"))) {
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .reasoning(text: "Second"), timestamp: t0))
+      $0.reasoningRowID = uuid(1)
+      $0.liveReasoningRowIDs.insert(uuid(1))
     }
     await store.send(.teardown)
     await clock.advance(by: .seconds(3))
   }
 
-  // An empty live thinking row (no reasoning, no status) is removed on `.error`, the timer
-  // cancelled, and the counter reset.
-  @Test func errorRemovesEmptyThinkingRowAndCancelsTimer() async {
+  // `.error` ends the turn: the open burst closes, the timer is cancelled and the counter,
+  // label and status reset.
+  @Test func errorFreezesTurnAndCancelsTimer() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
+    }
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
+    }
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
     }
     await clock.advance(by: .seconds(2))
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 1 }
-    await store.receive(\.thinkingTick) { $0.thinkingSeconds = 2 }
-    // Error on an empty turn: the row is removed entirely, pointer + counter reset, timer
-    // cancelled (a leaked tick would fail the test).
+    await store.receive(\.turnTick) { $0.turnSeconds = 1 }
+    await store.receive(\.turnTick) { $0.turnSeconds = 2 }
+    // A leaked tick would fail the test.
     await store.send(.gatewayEvent(.error(message: "boom"))) {
       $0.errorBanner = "boom"
-      $0.transcript.remove(id: self.uuid(0))
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.transcript[id: uuid(0)]?.kind = .reasoning(text: "Hmm")
+      $0.reasoningRowID = nil
+      $0.liveReasoningRowIDs = []
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
+      $0.turnActivityLabel = nil
       $0.isSending = false
     }
     await clock.advance(by: .seconds(5))
-    #expect(store.state.transcript.isEmpty)
   }
 
-  // A socket drop on an empty live turn (no reasoning, no status) removes the thinking row
-  // rather than freezing an empty one.
-  @Test func socketDropRemovesEmptyThinkingRow() async {
+  // A socket drop finalizes the live turn: the open burst closes and every turn-level field
+  // resets, so nothing stays live on a dead socket.
+  @Test func socketDropClosesOpenBurstAndResetsTurn() async {
     let clock = TestClock()
     var initial = ChatFeature.State(connection: conn, status: .ready)
     initial.transcript = [
-      ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
+      ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm")),
     ]
-    initial.thinkingRowID = uuid(0)
-    initial.thinkingSeconds = 4
+    initial.reasoningRowID = uuid(0)
+    initial.isTurnLive = true
+    initial.turnSeconds = 4
+    initial.turnActivityLabel = "ಠ_ಠ pondering…"
+    initial.turnStatus = "Context: 42% used"
     initial.isSending = true
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.continuousClock = clock
       $0.uuid = .incrementing
+      $0.date = .constant(t0)
       $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
     await store.send(.gatewayClosed) {
       $0.status = .reconnecting
-      $0.transcript.remove(id: self.uuid(0))
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.transcript[id: self.uuid(0)]?.kind = .reasoning(text: "Hmm")
+      // Closing the burst stamps it.
+      $0.transcript[id: self.uuid(0)]?.timestamp = self.t0
+      $0.reasoningRowID = nil
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
+      $0.turnActivityLabel = nil
+      $0.turnStatus = nil
       $0.isSending = false
       $0.reconnectAttempt = 1
     }
-    #expect(store.state.transcript.isEmpty)
     await store.send(.teardown)
   }
 
-  // A bare thinkingDelta arriving FIRST (no prior message.start) defensively creates the
-  // thinking row with the text and sets thinkingRowID — but does NOT start the timer (that's
-  // tied to message.start), so no tick effect leaks.
-  @Test func bareThinkingDeltaDefensivelyCreatesRowWithoutStartingTimer() async {
+  // A bare reasoning delta arriving FIRST (no prior message.start) still creates its burst
+  // row — reasoning never drops — but does NOT start the timer (that's tied to
+  // message.start / a running hydrate), so no tick effect leaks.
+  @Test func bareReasoningDeltaCreatesBurstWithoutStartingTimer() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
-    await store.send(.gatewayEvent(.thinkingDelta(text: "Orphan reasoning"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "Orphan reasoning", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+    await store.send(.gatewayEvent(.reasoningDelta(text: "Orphan reasoning"))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Orphan reasoning"), timestamp: t0)]
+      $0.reasoningRowID = uuid(0)
+      $0.liveReasoningRowIDs = [uuid(0)]
     }
     // No timer was started by a bare delta — advancing the clock yields no ticks.
     await clock.advance(by: .seconds(3))
-    #expect(store.state.thinkingSeconds == 0)
+    #expect(store.state.turnSeconds == 0)
+    #expect(!store.state.isTurnLive)
+  }
+
+  // A burst is extended only while it is the LAST row: a status row (e.g. a timed-out card
+  // notice) landing after it ends the burst, so later reasoning opens a new row below it
+  // instead of growing a row that now sits above other content.
+  @Test func reasoningAfterAnInterveningRowStartsANewBurst() async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.transcript = [
+      ChatRow(id: uuid(100), kind: .reasoning(text: "first")),
+      ChatRow(id: uuid(101), kind: .status(kind: "approval", text: "Timed out")),
+    ]
+    initial.reasoningRowID = uuid(100)
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(t0)
+    }
+
+    await store.send(.gatewayEvent(.reasoningDelta(text: "second"))) {
+      $0.transcript[id: self.uuid(100)]?.kind = .reasoning(text: "first")
+      $0.transcript[id: self.uuid(100)]?.timestamp = self.t0
+      $0.transcript.append(ChatRow(id: self.uuid(0), kind: .reasoning(text: "second"), timestamp: self.t0))
+      $0.reasoningRowID = self.uuid(0)
+      $0.liveReasoningRowIDs = [self.uuid(0)]
+    }
   }
 
   @Test func toolStartThenComplete() async {
+    let completedAt = Date(timeIntervalSince1970: 90)
+    let now = LockIsolated(t0)
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
-    } withDependencies: { $0.uuid = .incrementing }
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = DateGenerator { now.value }
+    }
 
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "read_file", title: "Reading /x", argsText: "path=/x"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .tool(
         name: "read_file", title: "Reading /x", state: .running,
         detail: ToolDetail(argsText: "path=/x"), durationS: nil
-      ))]
+      ), timestamp: t0)]
+      $0.toolRowIDs = ["t1": uuid(0)]
+    }
+    now.setValue(completedAt)
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "t1", name: "read_file", title: "Read 12 lines",
+      args: .object(["path": .string("/x")]), resultText: "ok", inlineDiff: nil, durationS: 1.5,
+      result: .object(["content": .string("ok")])
+    ))) {
+      // Merge keeps the start-time args_text; fills in result + structured args; the
+      // completion re-stamps the row.
+      $0.transcript[id: uuid(0)]?.kind = .tool(
+        name: "read_file", title: "Read 12 lines", state: .complete,
+        detail: ToolDetail(
+          argsText: "path=/x", args: .object(["path": .string("/x")]),
+          result: .object(["content": .string("ok")]), resultText: "ok", inlineDiff: nil
+        ),
+        durationS: 1.5
+      )
+      $0.transcript[id: uuid(0)]?.timestamp = completedAt
+    }
+  }
+
+  // `tool.start` carries the call's full structured `args`; a `tool.complete` that omits
+  // them (or sends JSON null) keeps the start-time args, while its structured `result` fills
+  // in. A complete that DOES carry args wins.
+  @Test func toolArgsFromStartSurviveCompleteWithoutArgs() async {
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(t0)
+    }
+    let args: JSONValue = .object(["command": .string("pytest -q")])
+    let result: JSONValue = .object(["exit_code": .number(0), "output": .string("3 passed")])
+
+    await store.send(.gatewayEvent(.toolStart(
+      toolID: "t1", name: "terminal", title: "pytest -q", argsText: nil, args: args
+    ))) {
+      $0.transcript = [ChatRow(id: uuid(0), kind: .tool(
+        name: "terminal", title: "pytest -q", state: .running,
+        detail: ToolDetail(args: args), durationS: nil
+      ), timestamp: t0)]
       $0.toolRowIDs = ["t1": uuid(0)]
     }
     await store.send(.gatewayEvent(.toolComplete(
-      toolID: "t1", name: "read_file", title: "Read 12 lines",
-      args: .object(["path": .string("/x")]), resultText: "ok", inlineDiff: nil, durationS: 1.5
+      toolID: "t1", name: "terminal", title: nil, args: .null, resultText: nil, inlineDiff: nil,
+      durationS: 2, result: result
     ))) {
-      // Merge keeps the start-time args_text; fills in result + structured args.
       $0.transcript[id: uuid(0)]?.kind = .tool(
-        name: "read_file", title: "Read 12 lines", state: .complete,
-        detail: ToolDetail(argsText: "path=/x", args: .object(["path": .string("/x")]), resultText: "ok", inlineDiff: nil),
-        durationS: 1.5
+        name: "terminal", title: "pytest -q", state: .complete,
+        detail: ToolDetail(args: args, result: result), durationS: 2
+      )
+    }
+
+    // A second call whose completion carries its own args: those win.
+    let completeArgs: JSONValue = .object(["command": .string("ls")])
+    await store.send(.gatewayEvent(.toolStart(
+      toolID: "t2", name: "terminal", title: nil, argsText: nil, args: .object(["command": .string("l")])
+    ))) {
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .tool(
+        name: "terminal", title: "terminal", state: .running,
+        detail: ToolDetail(args: .object(["command": .string("l")])), durationS: nil
+      ), timestamp: t0))
+      $0.toolRowIDs["t2"] = uuid(1)
+    }
+    await store.send(.gatewayEvent(.toolComplete(
+      toolID: "t2", name: nil, title: nil, args: completeArgs, resultText: nil, inlineDiff: nil, durationS: nil
+    ))) {
+      $0.transcript[id: uuid(1)]?.kind = .tool(
+        name: "terminal", title: "terminal", state: .complete,
+        detail: ToolDetail(args: completeArgs), durationS: nil
       )
     }
   }
@@ -517,13 +1133,16 @@ struct ChatReductionTests {
   @Test func toolTitleFallsBackToNameAndTapPresentsDetail() async {
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
-    } withDependencies: { $0.uuid = .incrementing }
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(t0)
+    }
 
     // No context/summary → title falls back to the raw tool name.
     await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "grep", title: nil, argsText: nil))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .tool(
         name: "grep", title: "grep", state: .running, detail: nil, durationS: nil
-      ))]
+      ), timestamp: t0)]
       $0.toolRowIDs = ["t1": uuid(0)]
     }
     await store.send(.gatewayEvent(.toolComplete(
@@ -542,22 +1161,27 @@ struct ChatReductionTests {
     }
   }
 
-  // statusUpdate with no active thinking row creates one defensively (so the line is never
-  // dropped); .error then freezes that row and surfaces the banner.
-  @Test func statusUpdateDefensivelyCreatesRowAndErrorFreezes() async {
+  // statusUpdate with no message.start still lands (turn-level, never a row); .error then
+  // clears it and surfaces the banner. A blank line clears the status.
+  @Test func statusUpdateWithoutATurnSetsStatusAndErrorClearsIt() async {
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: { $0.uuid = .incrementing }
 
     await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: "searching…"))) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: "searching…", elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.turnStatus = "searching…"
+    }
+    await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: ""))) {
+      $0.turnStatus = nil
+    }
+    await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: "searching…"))) {
+      $0.turnStatus = "searching…"
     }
     await store.send(.gatewayEvent(.error(message: "boom"))) {
       $0.errorBanner = "boom"
-      $0.transcript[id: uuid(0)]?.kind = .thinking(reasoning: "", status: "searching…", elapsedSeconds: 0, isComplete: true)
-      $0.thinkingRowID = nil
+      $0.turnStatus = nil
     }
+    #expect(store.state.transcript.isEmpty)
   }
 
   // MARK: Composer
@@ -575,7 +1199,7 @@ struct ChatReductionTests {
 
     await store.send(\.binding.composerText, "hello") { $0.composerText = "hello" }
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -603,7 +1227,7 @@ struct ChatReductionTests {
     let trimmed = "line one\n\n  indented line two"
     await store.send(\.binding.composerText, raw) { $0.composerText = raw }
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: trimmed, isComplete: true))]
+      $0.transcript = [ChatRow(id: uuid(0), kind: .message(role: .user, text: trimmed, isComplete: true), timestamp: t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -1076,34 +1700,28 @@ struct ChatReductionTests {
       $0.usage = Usage(contextUsed: 5, contextMax: 200_000, contextPercent: 0)
       // running == true → working indicator on.
       $0.isSending = true
-      // Inflight user row + seeded streaming assistant row + a live thinking row recreated by
-      // the timer reconcile (running with no anchor → ticks from 0). The seeded rows now carry
-      // DETERMINISTIC, position-derived ids (review finding #4) — not fresh uuids — so repeated
-      // hydrates don't churn identity. Derived from their transcript positions (0/1/2).
+      // Inflight user row + seeded streaming assistant row; the turn is live with its timer
+      // reconciled (running with no anchor → ticks from 0) — no row for it. The seeded rows
+      // carry DETERMINISTIC, position-derived ids (review finding #4) — not fresh uuids — so
+      // repeated hydrates don't churn identity. Derived from their transcript positions (0/1).
       let inflightUserID = ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message")
       let inflightAssistantID = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message")
-      let inflightThinkingID = ChatRow.deterministicID(sequenceIndex: 2, role: nil, kindDiscriminator: "thinking")
       $0.transcript = [
         ChatRow(id: inflightUserID, kind: .message(role: .user, text: "explain this", isComplete: true)),
         ChatRow(id: inflightAssistantID, kind: .message(role: .assistant, text: "Sure, ", isComplete: false)),
-        ChatRow(
-          id: inflightThinkingID,
-          kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)
-        ),
       ]
       $0.streamingRowID = inflightAssistantID
-      $0.thinkingRowID = inflightThinkingID
+      $0.isTurnLive = true
     }
     // Activate's authoritative `running:true` lights the list glow for this session.
     await store.receive(\.delegate.runningChanged)
-    // The next delta appends to the seeded row — a SINGLE assistant row, no duplicate; the
-    // live thinking row is moved to last (keepThinkingLast) but stays the same row.
+    // The next delta appends to the seeded row — a SINGLE assistant row, no duplicate.
     let inflightAssistantID = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "message")
     await store.send(.gatewayEvent(.messageDelta(text: "here goes."))) {
       $0.transcript[id: inflightAssistantID]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: false)
     }
-    // user + assistant + thinking = 3 rows (no duplicate assistant from the delta).
-    #expect(store.state.transcript.count == 3)
+    // user + assistant = 2 rows (no duplicate assistant from the delta).
+    #expect(store.state.transcript.count == 2)
     await store.send(.teardown)
   }
 
@@ -1148,54 +1766,46 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.reviewSummary(text: " \n\t ")))
   }
 
-  @Test func reviewSummaryMidTurnInterleavesWithStreamingAndKeepsThinkingLast() async {
+  @Test func reviewSummaryMidTurnInterleavesWithStreaming() async {
     let clock = TestClock()
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = clock
+      $0.date = .constant(t0)
     }
 
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
-      $0.transcript = [ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))]
-      $0.thinkingRowID = uuid(0)
+      $0.isTurnLive = true
     }
     // The turn is actively streaming when the summary lands: the first delta creates the
-    // in-flight assistant row (above the pinned thinking row).
+    // in-flight assistant row.
     await store.send(.gatewayEvent(.messageDelta(text: "Sure, "))) {
       $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Sure, ", isComplete: false)),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
+        ChatRow(id: uuid(0), kind: .message(role: .assistant, text: "Sure, ", isComplete: false), timestamp: t0),
       ]
-      $0.streamingRowID = uuid(1)
+      $0.streamingRowID = uuid(0)
     }
-    // A summary arriving mid-turn slots in BELOW the partial assistant row and above the
-    // pinned live thinking row: [assistant][summary][thinking].
+    // A summary arriving mid-turn slots in BELOW the partial assistant row.
     await store.send(.gatewayEvent(.reviewSummary(text: "💾 Self-improvement review: noted."))) {
-      $0.transcript = [
-        ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Sure, ", isComplete: false)),
-        ChatRow(id: uuid(2), kind: .status(kind: "review", text: "💾 Self-improvement review: noted.")),
-        ChatRow(id: uuid(0), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false)),
-      ]
+      $0.transcript.append(ChatRow(id: uuid(1), kind: .status(kind: "review", text: "💾 Self-improvement review: noted.")))
     }
-    #expect(store.state.transcript.last?.id == uuid(0))
     // Later deltas keep mutating the SAME streaming row in place, above the summary — the
     // summary must not capture or reorder the stream.
     await store.send(.gatewayEvent(.messageDelta(text: "here goes."))) {
-      $0.transcript[id: self.uuid(1)]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: false)
+      $0.transcript[id: self.uuid(0)]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: false)
     }
-    #expect(store.state.transcript.map(\.id) == [uuid(1), uuid(2), uuid(0)])
-    // Turn ends: the empty thinking row is removed; the answer + summary stay in order.
+    #expect(store.state.transcript.map(\.id) == [uuid(0), uuid(1)])
+    // Turn ends: the answer + summary stay in order.
     await store.send(.gatewayEvent(.messageComplete(text: "Sure, here goes.", usage: nil))) {
-      $0.transcript[id: self.uuid(1)]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: true)
-      $0.transcript.remove(id: self.uuid(0))
-      $0.thinkingRowID = nil
+      $0.transcript[id: self.uuid(0)]?.kind = .message(role: .assistant, text: "Sure, here goes.", isComplete: true)
+      $0.isTurnLive = false
       $0.streamingRowID = nil
       $0.isSending = false
     }
-    #expect(store.state.transcript.map(\.id) == [uuid(1), uuid(2)])
+    #expect(store.state.transcript.map(\.id) == [uuid(0), uuid(1)])
   }
 
   @Test func reviewSummaryTriggersSnapshotPersist() async {
@@ -1236,6 +1846,59 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
+  @Test func interimSealTriggersSnapshotPersist() async {
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    let clock = TestClock()
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.storedSessionID = "stored123"
+    initial.status = .ready
+
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = clock
+      $0.date = .constant(t0)
+      $0.chatSnapshot = snapshotClient
+    }
+
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Checking the logs.", alreadyStreamed: false, turnID: nil, segment: nil
+    ))) {
+      $0.transcript = [ChatRow(
+        id: self.uuid(0), kind: .message(role: .assistant, text: "Checking the logs.", isComplete: true), timestamp: self.t0
+      )]
+      $0.liveCommentaryRowIDs = [self.uuid(0)]
+    }
+    #expect(snapshotClient.loadSnapshot("stored123") == nil)
+
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.persistSnapshotTick)
+    #expect(snapshotClient.loadSnapshot("stored123")?.rows == Array(store.state.transcript))
+
+    await store.send(.teardown)
+  }
+
+  @Test func spinnerFramesAndStatusUpdatesDoNotPersist() async {
+    // Turn-level state, not rows: with the persist gate live (session ids set), a scheduled
+    // write-back would leave an in-flight debounce effect and fail this exhaustive store.
+    var initial = ChatFeature.State(connection: conn)
+    initial.liveSessionID = "live123"
+    initial.storedSessionID = "stored123"
+    initial.status = .ready
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    }
+
+    await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
+      $0.turnActivityLabel = "ಠ_ಠ pondering…"
+    }
+    await store.send(.gatewayEvent(.statusUpdate(kind: "context", text: "Compacting…"))) {
+      $0.turnStatus = "Compacting…"
+    }
+  }
+
   @Test func sessionInfoUpdatesModelAndReasoningChip() async {
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) {
       ChatFeature()
@@ -1268,12 +1931,13 @@ struct ChatReductionTests {
       ChatFeature()
     } withDependencies: {
       $0.uuid = .incrementing
+      $0.date = .constant(t0)
     }
     let usage = Usage(input: 800, output: 200, total: 1_000, contextUsed: 1_000, contextMax: 200_000, contextPercent: 1)
     await store.send(.gatewayEvent(.messageComplete(text: "Hi", usage: usage))) {
       $0.usage = usage
       $0.transcript.append(
-        ChatRow(id: self.uuid(0), kind: .message(role: .assistant, text: "Hi", isComplete: true))
+        ChatRow(id: self.uuid(0), kind: .message(role: .assistant, text: "Hi", isComplete: true), timestamp: self.t0)
       )
       $0.isSending = false
     }
@@ -1433,12 +2097,12 @@ struct ChatReductionTests {
     let clock = TestClock()
     var initial = ChatFeature.State(connection: conn, status: .ready)
     initial.transcript = [
-      ChatRow(id: uuid(0), kind: .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 0, isComplete: false)),
+      ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm")),
       ChatRow(id: uuid(1), kind: .message(role: .assistant, text: "Half", isComplete: false)),
     ]
     initial.streamingRowID = uuid(1)
-    initial.thinkingRowID = uuid(0)
-    initial.thinkingSeconds = 7
+    initial.isTurnLive = true
+    initial.turnSeconds = 7
     initial.isSending = true
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.continuousClock = clock
@@ -1446,15 +2110,14 @@ struct ChatReductionTests {
       $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
-    // A dropped socket finalizes the streaming message and freezes the live thinking row
-    // (7s baked in) so it doesn't spin forever; the timer is cancelled.
+    // A dropped socket finalizes the streaming message and freezes the live turn so nothing
+    // spins forever; the timer is cancelled.
     await store.send(.gatewayClosed) {
       $0.status = .reconnecting
       $0.transcript[id: self.uuid(1)]?.kind = .message(role: .assistant, text: "Half", isComplete: true)
-      $0.transcript[id: self.uuid(0)]?.kind = .thinking(reasoning: "Hmm", status: nil, elapsedSeconds: 7, isComplete: true)
       $0.streamingRowID = nil
-      $0.thinkingRowID = nil
-      $0.thinkingSeconds = 0
+      $0.isTurnLive = false
+      $0.turnSeconds = 0
       $0.isSending = false
       $0.reconnectAttempt = 1
       $0.spokenAssistantCount = 1 // the dropped partial is consumed, never read aloud (#74)
@@ -2055,7 +2718,8 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(
         id: self.uuid(1),
         kind: .message(role: .user, text: "look", isComplete: true),
-        attachmentImages: [pasted.data] // the pasted bytes echo back as the thumbnail
+        attachmentImages: [pasted.data], // the pasted bytes echo back as the thumbnail
+        timestamp: self.t0
       )]
       $0.composerText = ""
       $0.attachments = []
@@ -2128,7 +2792,8 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(
         id: self.uuid(0),
         kind: .message(role: .user, text: "look", isComplete: true),
-        attachmentImages: [Data([0x89, 0x50, 5])] // image echoed as a thumbnail
+        attachmentImages: [Data([0x89, 0x50, 5])], // image echoed as a thumbnail
+        timestamp: self.t0
       )]
       $0.composerText = ""
       $0.attachments = []
@@ -2145,7 +2810,7 @@ struct ChatReductionTests {
       $0.attachments[0].uploadState = .uploading
     }
     await store.receive(\.attachmentsSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "read", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "read", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.attachments = []
     }
@@ -2165,7 +2830,7 @@ struct ChatReductionTests {
       $0.attachments[0].uploadState = .uploading
     }
     await store.receive(\.attachmentsSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "summarize", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "summarize", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.attachments = []
     }
@@ -2190,7 +2855,8 @@ struct ChatReductionTests {
       $0.transcript = [ChatRow(
         id: self.uuid(0),
         kind: .message(role: .user, text: "doc6.pdf, file7.txt", isComplete: true),
-        attachmentImages: [Data([0x89, 0x50, 5])]
+        attachmentImages: [Data([0x89, 0x50, 5])],
+        timestamp: self.t0
       )]
       $0.attachments = []
     }
@@ -2661,9 +3327,9 @@ struct ChatReductionTests {
     var hydrated = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
     hydrated.hasHydrated = true
     hydrated.transcript = [
-      ChatRow(id: uuid(1), kind: .thinking(reasoning: "", status: nil, elapsedSeconds: 0, isComplete: false))
+      ChatRow(id: uuid(1), kind: .reasoning(text: "hmm"))
     ]
-    #expect(!hydrated.showsEmptyHero, "a live thinking row is transcript content too")
+    #expect(!hydrated.showsEmptyHero, "a live reasoning row is transcript content too")
   }
 
   @Test func showsEmptyHeroFalseWhileSending() {
@@ -2706,8 +3372,8 @@ struct ChatReductionTests {
   }
 
   /// A hydrate reporting a STILL-RUNNING turn with empty history hides the hero through
-  /// `isSending` even though the transcript is empty (the eager thinking row is added by
-  /// `reconcileTurnTimer` — either way, nothing to hero over).
+  /// `isSending` even though the transcript is empty (the live turn adds no row — nothing
+  /// to hero over).
   @Test func hydrateOfRunningTurnWithEmptyHistoryHidesHero() async {
     let store = recoveryStore(ChatFeature.State(connection: conn, resumeStoredID: "stored123"))
 

@@ -35,7 +35,7 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "hi", isComplete: true),
-      .thinking(reasoning: "let me think", status: nil, elapsedSeconds: 0, isComplete: true),
+      .reasoning(text: "let me think"),
       .message(role: .assistant, text: "hello", isComplete: true),
     ]))
   }
@@ -44,29 +44,18 @@ struct TranscriptReconstructionTests {
     let fromContent = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoningContent: "via content")]
     )
-    #expect(fromContent.first?.kind == .thinking(reasoning: "via content", status: nil, elapsedSeconds: 0, isComplete: true))
+    #expect(fromContent.first?.kind == .reasoning(text: "via content"))
 
     let fromDetails = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoningDetails: "via details")]
     )
-    #expect(fromDetails.first?.kind == .thinking(reasoning: "via details", status: nil, elapsedSeconds: 0, isComplete: true))
+    #expect(fromDetails.first?.kind == .reasoning(text: "via details"))
 
     // First-non-empty wins.
     let priority = reconstructTranscript(
       [msg(1, "assistant", text: "x", reasoning: "primary", reasoningContent: "secondary")]
     )
-    #expect(priority.first?.kind == .thinking(reasoning: "primary", status: nil, elapsedSeconds: 0, isComplete: true))
-  }
-
-  @Test func reasoningElapsedIsZeroSoTheViewShowsBareThought() {
-    // Re-hydration has no client-measured duration → elapsedSeconds 0; the view renders a
-    // bare "Thought" (never "Thought · 0s"). The reconstruction simply emits 0.
-    let rows = reconstructTranscript([msg(1, "assistant", text: "x", reasoning: "r")])
-    guard case let .thinking(_, _, elapsed, isComplete) = rows.first?.kind else {
-      Issue.record("expected a thinking row"); return
-    }
-    #expect(elapsed == 0)
-    #expect(isComplete)
+    #expect(priority.first?.kind == .reasoning(text: "primary"))
   }
 
   @Test func userReasoningIsIgnored() {
@@ -84,11 +73,21 @@ struct TranscriptReconstructionTests {
       msg(1, "tool", name: "read_file", context: "/etc/hosts"),
     ])
 
+    // The title is the context (the live `tool.start` shape), so the presentation reads a
+    // reloaded call's target the same way it reads a live one.
     #expect(rows.count == 1)
     #expect(rows[0].kind == .tool(
-      name: "read_file", title: "read_file", state: .complete,
-      detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil
+      name: "read_file", title: "/etc/hosts", state: .complete, detail: nil, durationS: nil
     ))
+    guard case let .tool(call) = rows[0].kind else { return }
+    #expect(ToolPresentation(call: call).settledTitle == "Read hosts")
+  }
+
+  @Test func aBlankContextLeavesTheNameAsTheTitle() {
+    let rows = reconstructTranscript([msg(1, "tool", name: "grep", context: "  ")])
+    #expect(rows.map(\.kind) == [.tool(
+      name: "grep", title: "grep", state: .complete, detail: nil, durationS: nil
+    )])
   }
 
   @Test func toolRowWithoutContextHasNoDetail() {
@@ -100,7 +99,7 @@ struct TranscriptReconstructionTests {
   @Test func toolRowWithoutNameFallsBackToToolLabel() {
     let rows = reconstructTranscript([msg(1, "tool", context: "x")])
     #expect(rows.count == 1)
-    #expect(rows[0].kind == .tool(name: "tool", title: "tool", state: .complete, detail: ToolDetail(argsText: "x"), durationS: nil))
+    #expect(rows[0].kind == .tool(name: "tool", title: "x", state: .complete, detail: nil, durationS: nil))
   }
 
   // MARK: - Empty / blank rows
@@ -125,8 +124,8 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "What's in /etc/hosts?", isComplete: true),
-      .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/etc/hosts"), durationS: nil),
-      .thinking(reasoning: "thinking…", status: nil, elapsedSeconds: 0, isComplete: true),
+      .tool(name: "read_file", title: "/etc/hosts", state: .complete, detail: nil, durationS: nil),
+      .reasoning(text: "thinking…"),
       .message(role: .assistant, text: "It maps localhost.", isComplete: true),
     ]))
   }
@@ -168,10 +167,112 @@ struct TranscriptReconstructionTests {
 
     #expect(rows.map(\.kind) == [ChatRow.Kind]([
       .message(role: .user, text: "hi", isComplete: true),
-      .tool(name: "read_file", title: "read_file", state: .complete, detail: ToolDetail(argsText: "/x"), durationS: nil),
-      .thinking(reasoning: "ponder", status: nil, elapsedSeconds: 0, isComplete: true),
+      .tool(name: "read_file", title: "/x", state: .complete, detail: nil, durationS: nil),
+      .reasoning(text: "ponder"),
       .message(role: .assistant, text: "done", isComplete: true),
     ]))
+    // An old agent sends no timestamps: every row stays unstamped.
+    #expect(rows.allSatisfy { $0.timestamp == nil })
+  }
+
+  // MARK: - Rich cooked tool rows + timestamps
+
+  /// A newer agent's resume payload: an edit row with `args`, raw JSON `content`, a
+  /// `display_metadata` inline diff and a timestamp; a terminal row with `args` but no
+  /// `content` (live-only output); a non-JSON `content`.
+  private static let richHistoryJSON = """
+  [
+    {"role": "user", "text": "fix it", "timestamp": 1700000000.5},
+    {"role": "assistant", "text": "on it", "reasoning": "plan", "timestamp": 1700000001},
+    {"role": "tool", "name": "patch", "context": "Sources/A.swift",
+     "args": {"path": "Sources/A.swift", "old_string": "a", "new_string": "b"},
+     "content": "{\\"success\\": true, \\"files_modified\\": [\\"Sources/A.swift\\"]}",
+     "tool_call_id": "call_1", "timestamp": 1700000002,
+     "display_metadata": {"tool_result_metadata": {"inline_diff": "--- a\\n+++ b\\n-a\\n+b"}}},
+    {"role": "tool", "name": "terminal", "context": "pytest -q",
+     "args": {"command": "pytest -q"}, "timestamp": 1700000003},
+    {"role": "tool", "name": "skill_manage", "content": "Skill saved.", "timestamp": 0},
+    {"role": "assistant", "text": "done", "timestamp": 1700000004}
+  ]
+  """
+
+  @Test func richCookedToolRowsCarryArgsResultDiffAndTimestamps() throws {
+    let messages = try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    let rows = reconstructTranscript(messages)
+
+    #expect(rows.map(\.kind) == [ChatRow.Kind]([
+      .message(role: .user, text: "fix it", isComplete: true),
+      .reasoning(text: "plan"),
+      .message(role: .assistant, text: "on it", isComplete: true),
+      .tool(name: "patch", title: "Sources/A.swift", state: .complete, detail: ToolDetail(
+        args: .object([
+          "path": .string("Sources/A.swift"), "old_string": .string("a"), "new_string": .string("b"),
+        ]),
+        result: .object(["success": .bool(true), "files_modified": .array([.string("Sources/A.swift")])]),
+        resultText: #"{"success": true, "files_modified": ["Sources/A.swift"]}"#,
+        inlineDiff: "--- a\n+++ b\n-a\n+b"
+      ), durationS: nil),
+      // Terminal output is live-only: args survive, no result.
+      .tool(name: "terminal", title: "pytest -q", state: .complete, detail: ToolDetail(
+        args: .object(["command": .string("pytest -q")])
+      ), durationS: nil),
+      // Non-JSON content stays text-only (no structured result invented).
+      .tool(name: "skill_manage", title: "skill_manage", state: .complete,
+            detail: ToolDetail(resultText: "Skill saved."), durationS: nil),
+      .message(role: .assistant, text: "done", isComplete: true),
+    ]))
+    // Every row carries its message's timestamp (the reasoning row shares its message's);
+    // a non-positive timestamp is no timestamp.
+    #expect(rows.map(\.timestamp) == [
+      Date(timeIntervalSince1970: 1_700_000_000.5),
+      Date(timeIntervalSince1970: 1_700_000_001),
+      Date(timeIntervalSince1970: 1_700_000_001),
+      Date(timeIntervalSince1970: 1_700_000_002),
+      Date(timeIntervalSince1970: 1_700_000_003),
+      nil,
+      Date(timeIntervalSince1970: 1_700_000_004),
+    ])
+  }
+
+  @Test func richRowsKeepTheSameDeterministicIDsAsTheirOldAgentShape() throws {
+    // Ids derive from (index, role, discriminator) only — the new args/content/diff/timestamp
+    // fields never move an id, so an agent upgrade (or a re-hydrate) reconciles row identity.
+    let rich = reconstructTranscript(
+      try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    )
+    let bare = reconstructTranscript([
+      msg(1, "user", text: "fix it"),
+      msg(2, "assistant", text: "on it", reasoning: "plan"),
+      msg(3, "tool", name: "patch", context: "Sources/A.swift"),
+      msg(4, "tool", name: "terminal", context: "pytest -q"),
+      msg(5, "tool", name: "skill_manage"),
+      msg(6, "assistant", text: "done"),
+    ])
+    #expect(rich.map(\.id) == bare.map(\.id))
+    #expect(rich.map(\.id) == reconstructTranscript(
+      try JSONDecoder().decode([SessionMessage].self, from: Data(Self.richHistoryJSON.utf8))
+    ).map(\.id))
+  }
+
+  @Test(arguments: [
+    ("[1, 2]", JSONValue.array([.number(1), .number(2)]) as JSONValue?),
+    ("  {\"ok\": false}\n", .object(["ok": .bool(false)])),
+    ("42", nil), // a bare scalar is text, not a structured result
+    ("\"quoted\"", nil),
+    ("{not json", nil),
+    ("plain words", nil),
+  ])
+  func toolContentParsesOnlyJSONContainers(content: String, expected: JSONValue?) {
+    let rows = reconstructTranscript([
+      SessionMessage(id: 1, role: "tool", content: content, name: "write_file"),
+    ])
+    guard case let .tool(call) = rows.first?.kind else {
+      Issue.record("expected a tool row")
+      return
+    }
+    #expect(call.detail?.result == expected)
+    // The raw text is kept regardless — never hidden.
+    #expect(call.detail?.resultText == content)
   }
 
   // MARK: - Deterministic, content-derived identity
@@ -209,7 +310,7 @@ struct TranscriptReconstructionTests {
       msg(1, "assistant", text: "answer", reasoning: "ponder"),
     ])
     #expect(rows.count == 2)
-    #expect(rows[0].kindDiscriminator == "thinking")
+    #expect(rows[0].kindDiscriminator == "reasoning")
     #expect(rows[1].kindDiscriminator == "message")
     #expect(rows[0].id != rows[1].id)
   }
@@ -267,7 +368,7 @@ struct TranscriptReconstructionTests {
     // kindDiscriminator) combination a long session could produce and assert all ids are
     // distinct — 1000 indices × 3 roles × 5 discriminators = 15000 seeds.
     let roles: [ChatRow.Role?] = [.user, .assistant, nil]
-    let discriminators = ["message", "tool", "thinking", "status", "commandOutput"]
+    let discriminators = ["message", "tool", "reasoning", "status", "commandOutput"]
     var ids = Set<UUID>()
     var count = 0
     for index in 0..<1000 {
@@ -289,8 +390,8 @@ struct TranscriptReconstructionTests {
   @Test func deterministicIDStableAcrossRecomputation() {
     // Re-running the same seed yields the byte-identical UUID (no per-call randomness).
     for index in 0..<200 {
-      let a = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
-      let b = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "thinking")
+      let a = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "reasoning")
+      let b = ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: "reasoning")
       #expect(a == b)
     }
   }
@@ -312,7 +413,7 @@ struct TranscriptReconstructionTests {
     // Deterministic across rebuilds.
     #expect(id == ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: "commandOutput"))
     // Distinct from every other kind at the same ordinal.
-    for other in ["message", "tool", "thinking", "status"] {
+    for other in ["message", "tool", "reasoning", "status"] {
       #expect(id != ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: other))
     }
     #expect(id != ChatRow.deterministicID(sequenceIndex: 3, role: .user, kindDiscriminator: "message"))
@@ -335,7 +436,7 @@ struct TranscriptReconstructionTests {
     // Same ids as before the kind existed — derived only from the emitted kinds.
     #expect(rows.map(\.id) == [
       ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message"),
-      ChatRow.deterministicID(sequenceIndex: 1, role: nil, kindDiscriminator: "thinking"),
+      ChatRow.deterministicID(sequenceIndex: 1, role: nil, kindDiscriminator: "reasoning"),
       ChatRow.deterministicID(sequenceIndex: 2, role: .assistant, kindDiscriminator: "message"),
       ChatRow.deterministicID(sequenceIndex: 3, role: nil, kindDiscriminator: "tool"),
     ])

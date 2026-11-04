@@ -76,7 +76,7 @@ heal.
 ## Not a turn: locking
 
 An exec is **not a turn** — no turn anchor; the terminal actions unlock + emit
-`runningChanged(false)` ONLY when no real server turn started meanwhile (`thinkingRowID == nil`
+`runningChanged(false)` ONLY when no real server turn started meanwhile (`!isTurnLive`
 — a `message.start` that raced the exec keeps its lock and its server-confirmed running state).
 Because it is not a turn, `running` is false throughout, so a hydrate landing mid-exec would
 unlock the composer and let a SECOND command clobber the first: **`slashExecInFlight` holds the
@@ -103,7 +103,7 @@ is carried across the wholesale replace and re-appended, so the command's own ou
 the refresh that removes the rows it acted on (carrying EVERY historical output row put earlier
 ones after the whole transcript, out of chronological order once more than one exec had run —
 older ones are dropped like any real hydrate drops them). The refresh is a **no-op if a new turn
-or exec started while it was in flight** (`isSending`/`slashExecInFlight`/`thinkingRowID`) — its
+or exec started while it was in flight** (`isSending`/`slashExecInFlight`/`isTurnLive`) — its
 `session.resume` predates the new turn, so applying it would wipe the new turn's optimistic rows
 and unlock a genuinely-running turn.
 
@@ -125,7 +125,7 @@ The `SlashSuggestionPanel` is view-thin between transcript and composer, rendere
    `model`/`personality`/`fast`/`compress` mirror is gated on `session["agent"]`, so one of
    those typed BEFORE the first message can report worker success while the not-yet-built live
    agent keeps the default — re-issue after the first turn.
-2. If another client starts a REAL turn mid-exec, the `thinkingRowID` cross-client guard
+2. If another client starts a REAL turn mid-exec, the `isTurnLive` cross-client guard
    suppresses the post-command refresh (no clobbering the live turn), so a `/undo`/`/retry`/
    compression history mutation stays unreconciled until the next real hydrate (foreground/
    reattach) — bounded staleness, not permanent.

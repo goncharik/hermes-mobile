@@ -15,6 +15,8 @@ struct SelfHealTests {
   private func uuid(_ n: Int) -> UUID {
     UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012x", n))")!
   }
+  /// The pinned `date` the stores use — what the fold stamps on echoed user rows.
+  private let t0 = Date(timeIntervalSince1970: 0)
 
   /// A ready chat with both a stale live id and a stored id to re-resume against.
   private func healableState() -> ChatFeature.State {
@@ -131,7 +133,7 @@ struct SelfHealTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -171,7 +173,7 @@ struct SelfHealTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -210,7 +212,7 @@ struct SelfHealTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -484,7 +486,7 @@ struct SelfHealTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.isSending = true
     }
@@ -578,7 +580,7 @@ struct SelfHealTests {
     store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.composerSubmitted) {
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
       $0.composerText = ""
       $0.isSending = true
     }

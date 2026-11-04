@@ -74,6 +74,23 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertChatView(rows: rows, title: "Protocol chat", status: .ready)
   }
 
+  /// Demo mode's "watch it work" screenshot panel: a LIVE turn (running header, timer, status).
+  func testChatView_demoWorkPanel() {
+    assertSnapshot(
+      of: NavigationStack {
+        ChatView(
+          store: Store(initialState: DemoMode.workChat) {
+            ChatFeature()
+          } withDependencies: {
+            $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+            $0.continuousClock = ImmediateClock()
+          }
+        )
+      },
+      as: deviceImage()
+    )
+  }
+
   /// Fenced code block + list rendering (Task 11 markdown polish).
   func testChatView_codeBlockAndReconnecting() {
     let rows: [ChatRow] = [
@@ -234,7 +251,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -263,7 +280,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -291,7 +308,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -319,11 +336,55 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
     assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// Interim commentary (a completed assistant segment followed by tools and the turn's final
+  /// reply) gets NO action bar — only the final reply does. Store-driven: the verdict comes
+  /// from `State.visibleFinalReplyRowIDs`.
+  func testInterimCommentaryRow_noActionBar() {
+    let interim = ChatRow(id: id(1), kind: .message(
+      role: .assistant, text: "Let me check the gateway first.", isComplete: true
+    ))
+    let rows: [ChatRow] = [
+      ChatRow(id: id(0), kind: .message(role: .user, text: "What's in server.py?", isComplete: true)),
+      interim,
+      ChatRow(id: id(2), kind: .tool(name: "read_file", title: "server.py", state: .complete,
+                                     detail: nil, durationS: 0.4)),
+      ChatRow(id: id(3), kind: .message(
+        role: .assistant, text: "It defines the WebSocket gateway.", isComplete: true
+      )),
+    ]
+    let chat = ChatView(
+      store: Store(
+        initialState: ChatFeature.State(
+          connection: connection,
+          title: "Action bar",
+          transcript: IdentifiedArray(uniqueElements: rows),
+          status: .ready
+        )
+      ) {
+        ChatFeature()
+      } withDependencies: {
+        $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+        $0.continuousClock = ImmediateClock()
+      }
+    )
+    let view = cell(chat, interim)
+      .padding()
+      .frame(width: 320)
+      .background(Color(uiColor: .systemBackground))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// One transcript cell, its final-reply verdict read from the store the way the transcript
+  /// reads it.
+  private func cell(_ chat: ChatView, _ row: ChatRow) -> some View {
+    chat.rowView(row, isFinalReply: chat.store.visibleFinalReplyRowIDs.contains(row.id))
   }
 
   // MARK: Read aloud (#74)
@@ -356,7 +417,7 @@ final class ChatSnapshotTests: SnapshotTestCase {
         $0.continuousClock = ImmediateClock()
       }
     )
-    let view = chat.rowView(row)
+    let view = cell(chat, row)
       .padding()
       .frame(width: 320)
       .background(Color(uiColor: .systemBackground))
@@ -778,32 +839,40 @@ final class ChatSnapshotTests: SnapshotTestCase {
 
   // MARK: Tool/skill rows + detail sheet
 
+  /// Call lines (the T3 look): per-tool icon + parsed one-line title and a disclosure chevron
+  /// (every call expands in place — one without detail to an "unavailable" note); a failed
+  /// call's icon turns red; a live call reads in the present tense.
   func testToolRows() {
+    func call(
+      _ name: String, args: [String: JSONValue] = [:], result: String? = nil, running: Bool = false
+    ) -> ToolCall {
+      ToolCall(
+        name: name, title: name, state: running ? .running : .complete,
+        detail: args.isEmpty && result == nil ? nil : ToolDetail(args: .object(args), resultText: result)
+      )
+    }
     let view = VStack(spacing: 10) {
-      ToolStatusView(name: "read_file", title: "Reading server.py", state: .running,
-                     durationS: nil, hasDetail: true, onTap: {})
-      ToolStatusView(name: "edit_file", title: "Edited 3 lines in ChatView.swift", state: .complete,
-                     durationS: 1.4, hasDetail: true, onTap: {})
-      ToolStatusView(name: "todo", title: "todo", state: .complete,
-                     durationS: 0.1, hasDetail: false, onTap: {})
+      ToolStatusView(
+        call: call("read_file", args: ["path": .string("/srv/app/server.py"), "offset": .number(10),
+                                       "limit": .number(30)]),
+        onTap: {}
+      )
+      ToolStatusView(call: call("patch", args: ["path": .string("/src/ChatView.swift")]), onTap: {})
+      ToolStatusView(call: call("todo"), onTap: {})
+      ToolStatusView(
+        call: call("terminal", args: [
+          "command": .string("cd /private/tmp/claude-501/-Users-eugene-Documents-Development && asc testflight crashes"),
+        ], result: #"{"error": "asc: not logged in"}"#),
+        onTap: {}
+      )
+      ToolStatusView(
+        call: call("web_search", args: ["query": .string("swift testing traits")], running: true),
+        isLive: true, onTap: {}
+      )
     }
     .padding()
     .frame(width: device.size?.width ?? 390)
     assertSnapshot(of: view, as: componentImage())
-  }
-
-  func testToolDetailSheet() {
-    let view = ToolDetailSheet(
-      name: "edit_file",
-      title: "Edited 3 lines in ChatView.swift",
-      detail: ToolDetail(
-        args: .object(["path": .string("ChatView.swift"), "start": .number(42)]),
-        resultText: "Applied edit successfully.",
-        inlineDiff: "- old line\n+ new line"
-      ),
-      durationS: 1.4
-    )
-    assertSnapshot(of: view, as: deviceImage())
   }
 
   func testScrollToBottomButton() {

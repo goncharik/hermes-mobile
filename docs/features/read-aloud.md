@@ -73,12 +73,29 @@ switch keeps device UI prefs, the same as the swipe default.
   desktop, playback survives a chat switch; on a phone, stopping when the transcript is no
   longer visible is the expected behaviour.
 
-## The anchor: completed assistant rows
+## The anchor: completed final replies
 
-`spokenAssistantCount` counts the COMPLETED assistant message rows that are already consumed:
-spoken, skipped, or already present when the toggle was armed. A reply is pending only while
-`completedAssistantCount > spokenAssistantCount`. A streaming row never counts. The anchor is
-not snapshot-persisted, so every open re-arms.
+Only a turn's FINAL reply is ever read. `turnSpans` (`Models/TurnStructure.swift`) splits the
+transcript into user-delimited turns; a finished turn's final reply is its last assistant
+message row, and the running turn (the newest one while `isTurnLive`) has none yet. Interim
+commentary (`message.interim` segments, or the extra assistant rows history holds for a
+tool-using turn) is never read and gets no action bar (`State.finalReplyRowIDs`).
+
+`spokenAssistantCount` counts the COMPLETED final replies (`State.completedReplies`) that are
+already consumed: spoken, skipped, or already present when the toggle was armed. A reply is
+pending only while `completedReplyCount > spokenAssistantCount`. A streaming row never counts.
+The anchor is not snapshot-persisted, so every open re-arms.
+
+Because the scale is one reply per finished turn, a few turn edges keep it in step:
+
+- a turn that ends WITHOUT a `message.complete` (`.error`, a socket drop with nothing
+  streaming) promotes its last sealed segment to "final" — that one is consumed
+  (`consumeRepliesFinishedSince`), so an errored turn is still never spoken;
+- a `message.start` with no user row of ours (another client's prompt) re-opens the newest
+  turn, whose final reply stops counting until the turn ends — the anchor is clamped to the
+  new count, so the turn's eventual reply is pending like a fresh one;
+- a Stop or Send-now freezes the turn but consumes nothing: its `message.complete` follows and
+  is read like any other.
 
 **Arming** (`arm`: anchor = current completed count) happens at four points:
 
@@ -90,13 +107,11 @@ not snapshot-persisted, so every open re-arms.
   during the clip is not read at a later edge. `.sceneBackgrounded` does not arm: a held reply
   is read on `.foreground`.
 
-**Every later hydrate re-bases** (`rebaseSpokenAnchor`). Keeping the old count would be wrong.
-The live fold keeps ONE assistant row per turn (`streamingRowID` survives tool events), while
-`reconstructTranscript` emits one row per history assistant message. A hydrate after a
-tool-using turn can therefore raise that turn's row count, which would make an already-spoken
-turn look pending. The anchor is re-derived from the rebuilt transcript instead:
-`completedCount − (wasPending ? 1 : 0)`. `wasPending` is captured
-before the rebuild. A hydrate never CREATES a pending reply. It only PRESERVES the one the user
+**Every later hydrate re-bases** (`rebaseSpokenAnchor`). Keeping the old count would be wrong:
+the rebuild re-segments turns and its `running` verdict settles whether the newest turn has a
+final reply yet. The anchor is re-derived from the rebuilt transcript instead, AFTER the timer
+reconcile has applied `running` to `isTurnLive`: `completedCount − (wasPending ? 1 : 0)`.
+`wasPending` is captured before the rebuild. A hydrate never CREATES a pending reply. It only PRESERVES the one the user
 was already waiting on, for example a reply that completed live while the app was
 backgrounded. This mirrors the desktop's `absorbSpokenReplyRewrite`, which re-keys its
 spoken-row id across the same hydrate rewrite.
@@ -104,8 +119,8 @@ spoken-row id across the same hydrate rewrite.
 Two more consumers:
 
 - **A dropped partial is never spoken.** When `finalizeInFlight` (`.gatewayClosed`,
-  `.authExpired`) closes a streaming row, it arms. Whether that turn really finished is for the
-  reconnect replay and the hydrate to decide.
+  `.authExpired`) closes a streaming row, it arms (after freezing the turn). Whether that turn
+  really finished is for the reconnect replay and the hydrate to decide.
 - **A failed read stays consumed.** The desktop's `releaseUnplayedSpokenReply` (un-mark on
   failure) is not ported. `.ttsFailed` is itself a speak edge, so un-marking would retry in a
   loop. The user can re-read the reply from the action bar (no automatic retries).
@@ -126,13 +141,14 @@ the vanished id, so no row shows Stop (the pill still does). The clip itself kee
 - `.foreground`.
 
 It does NOT run on `.reattached`: navigating back to a chat only puts it back on screen. The
-check reads the **newest** assistant row when all of these hold:
+check reads the **newest** completed final reply when all of these hold:
 
 - `autoSpeakReplies`, `ttsSupported`, and no active clip;
 - `!recording.isBusy`: the mic owns the audio session, and `.playback` would cut the recorder's
   input;
 - `!isSceneBackgrounded`, `isOnScreen`, and `!isFoldingReplay`;
-- the newest assistant message row is COMPLETE, and a reply is pending.
+- that reply is also the newest assistant message row of all (a newer turn already streaming
+  or sealing commentary makes the edge wait), and a reply is pending.
 
 It then sets the anchor to the full completed count, so a backlog that built up during a clip
 collapses to the newest reply. Replies are never queued. If a reply finished during a clip
@@ -281,7 +297,7 @@ older hides both controls after the first attempt.
   - `speaking`: `speaker.slash`, "Stop reading", and a tap sends `.stopReadAloud`.
 
   `.readAloudTapped` re-checks the guards (supported, no active clip, mic not busy, a completed
-  assistant row). It
+  final reply). It
   raises the anchor past that row and never lowers it, so a newer pending reply stays pending.
 
 ## Deferred rungs and out of scope

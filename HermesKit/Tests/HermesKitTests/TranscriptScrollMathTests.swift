@@ -173,6 +173,97 @@ import Testing
     #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 0, distanceFromBottom: 0))
   }
 
+  // MARK: - Anchor choice (window slide, fold expand / collapse while scrolled up)
+
+  @Test func anchorIsTheFirstVisibleSurvivor() {
+    // A run above the viewport folded away (items 1, 2): the first visible item (3) holds still.
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [3, 4, 5], oldOrder: [0, 1, 2, 3, 4, 5, 6], surviving: [0, 3, 4, 5, 6]
+    ) == 3)
+    // The first visible item folded away: the next visible survivor.
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3, 4], oldOrder: [0, 1, 2, 3, 4], surviving: [0, 3, 4]
+    ) == 3)
+  }
+
+  @Test func expandingACallBodyHoldsWhatIsAboveIt() throws {
+    // Expanding a call in place inserts its body item right after the line: every old item
+    // survives, so the first visible one — above the tapped line — holds still, and nothing
+    // from it down to the tapped line moves; only the content below the line shifts down.
+    let rows = (0..<4).map { n in
+      ChatRow(id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(n)")!,
+              kind: n == 0 ? .message(role: .user, text: "q", isComplete: true)
+                : .tool(name: "terminal", title: "ls", state: .complete, detail: nil, durationS: nil))
+    }
+    let open = FoldExpansion(turnOverride: [0: .expanded], expandedRuns: [RunKey(turnOrdinal: 0, runOrdinal: 0)])
+    var expanded = open
+    expanded.toggleCall(CallKey(turnOrdinal: 0, callOrdinal: 1))
+    let before = TranscriptFold.items(rows: rows, expansion: open, runningTurnOrdinal: nil, liveLine: nil).map(\.id)
+    let after = TranscriptFold.items(rows: rows, expansion: expanded, runningTurnOrdinal: nil, liveLine: nil).map(\.id)
+    #expect(after.count == before.count + 1)
+    #expect(Set(before).isSubset(of: Set(after)))
+    let tappedLine = rows[2].id
+    let tapped = try #require(before.firstIndex(of: tappedLine))
+    #expect(tapped >= 2)
+    // The reader sees from one item below the top down past the tapped line.
+    let visible = Array(before[1...])
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: visible, oldOrder: before, surviving: Set(after)
+    ) == before[1])
+    #expect(Array(after.prefix(tapped + 1)) == Array(before.prefix(tapped + 1)))
+    #expect(after[tapped + 1] == TranscriptItem.toolBodyID(callRowID: tappedLine))
+  }
+
+  @Test func anchorHoldIsRowChangesThatKeepRowsOrAFoldChangeWhileScrolledUp() {
+    func holds(
+      _ diff: TranscriptDiffKind, didInitialJump: Bool = true, isPinned: Bool = false,
+      itemOrderChanged: Bool = true
+    ) -> Bool {
+      TranscriptScrollMath.holdsReaderAnchor(
+        rowDiff: diff, didInitialJump: didInitialJump, isPinned: isPinned,
+        itemOrderChanged: itemOrderChanged
+      )
+    }
+    // A slide or an append/mutate holds, pinned or not.
+    for diff: TranscriptDiffKind in [.slide(droppedHeadCount: 1), .appendOrMutate] {
+      #expect(holds(diff))
+      #expect(holds(diff, isPinned: true))
+    }
+    // A fold change over unchanged rows holds only for a scrolled-up reader.
+    #expect(holds(.inPlace))
+    #expect(!holds(.inPlace, isPinned: true))
+    #expect(!holds(.inPlace, itemOrderChanged: false))
+    // A prepend or a reset never holds (own offset path / jump), nor anything before the
+    // initial jump.
+    #expect(!holds(.prepend(insertedCount: 2)))
+    #expect(!holds(.reset))
+    for diff: TranscriptDiffKind in [.slide(droppedHeadCount: 1), .appendOrMutate, .inPlace] {
+      #expect(!holds(diff, didInitialJump: false))
+    }
+  }
+
+  @Test func anchorFallsToTheFinalReplyWhenEverythingVisibleFolded() {
+    // The reader was looking at the turn's tool lines (2...4) when it finished and collapsed:
+    // hold the first survivor after them — the final reply (5).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3, 4], oldOrder: [0, 1, 2, 3, 4, 5], surviving: [0, 1, 5]
+    ) == 5)
+    // Nothing after them survives: the last survivor before them (the header).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [2, 3], oldOrder: [0, 1, 2, 3], surviving: [0, 1]
+    ) == 1)
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [Int](), oldOrder: [0, 1], surviving: [0, 1]
+    ) == nil)
+  }
+
+  @Test func anchorInsideATallDroppedHeadRowIsTheFirstSurvivorBelowIt() {
+    // A slide dropped the head row the reader was inside (0): hold the next row (1).
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: [0], oldOrder: [0, 1, 2, 3], surviving: [1, 2, 3, 4]
+    ) == 1)
+  }
+
   // MARK: - TranscriptDiffKind.classify
 
   private func ids(_ count: Int) -> [ChatRow.ID] {
@@ -231,9 +322,9 @@ import Testing
   }
 
   @Test func classifyReorderSameLengthIsNotReset() {
-    // Same length, reordered ids (a permutation of the same logical rows, e.g. `keepThinkingLast`
-    // moving the thinking row): the id SET is unchanged ⇒ NOT a wholesale reset. It must follow
-    // the no-yank pin rule (`.appendOrMutate`), never force a jump.
+    // Same length, reordered ids (a permutation of the same logical rows): the id SET is
+    // unchanged ⇒ NOT a wholesale reset. It must follow the no-yank pin rule
+    // (`.appendOrMutate`), never force a jump.
     let old = ids(3)
     let reordered = [old[2], old[0], old[1]]
     #expect(TranscriptDiffKind.classify(old: old, new: reordered) == .appendOrMutate)
@@ -241,29 +332,14 @@ import Testing
 
   @Test func classifyMidInsertReorderIsNotReset() {
     // Counts grew and the new row was inserted in the MIDDLE (neither a contiguous prefix nor
-    // suffix), but every old id survives — the canonical live-turn `keepThinkingLast` shape
-    // (insert a tool/answer row above the thinking row). Must be `.appendOrMutate`, never `.reset`,
-    // so a user who scrolled up mid-turn is NOT yanked to the bottom.
+    // suffix), but every old id survives. Must be `.appendOrMutate`, never `.reset`, so a user
+    // who scrolled up mid-turn is NOT yanked to the bottom.
     let old = ids(3)
     let new = [old[0], old[1]]
       + [ChatRow.deterministicID(sequenceIndex: 50, role: .user, kindDiscriminator: "status")]
       + [old[2]]
     // old == [0,1,2]; new prefix(3) == [0,1,status] != old and suffix(3) == [1,status,2] != old,
     // yet {0,1,2} ⊆ {0,1,status,2} ⇒ old rows preserved ⇒ not a reset.
-    #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
-  }
-
-  @Test func classifyLiveTurnKeepThinkingLastIsNotReset() {
-    // Concrete `keepThinkingLast` sequence: a turn with [user, tool, thinking]; an assistant
-    // answer row is inserted above the thinking row, then thinking is moved to the end →
-    // [user, tool, answer, thinking]. Neither prefix nor suffix matches, but the old ids all
-    // survive. This is the exact round-2 regression: it must NOT be `.reset`.
-    let user = ChatRow.deterministicID(sequenceIndex: 0, role: .user, kindDiscriminator: "message")
-    let tool = ChatRow.deterministicID(sequenceIndex: 1, role: .assistant, kindDiscriminator: "tool")
-    let thinking = ChatRow.deterministicID(sequenceIndex: 2, role: .assistant, kindDiscriminator: "thinking")
-    let answer = ChatRow.deterministicID(sequenceIndex: 3, role: .assistant, kindDiscriminator: "message")
-    let old = [user, tool, thinking]
-    let new = [user, tool, answer, thinking]
     #expect(TranscriptDiffKind.classify(old: old, new: new) == .appendOrMutate)
   }
 
@@ -293,8 +369,8 @@ import Testing
   }
 
   @Test func classifyLiveToolCallSlideIsSlide() {
-    // Live `tool.start`: a tool row is inserted ABOVE the thinking row (keepThinkingLast) and the
-    // window drops its head row — a mid-insert combined with a dropped head.
+    // A row inserted ABOVE the window's last row while the window drops its head row — a
+    // mid-insert combined with a dropped head.
     let thinking = id(900, "thinking")
     let tool = id(901, "tool")
     let old = (0...48).map { id($0) } + [thinking]
@@ -340,8 +416,8 @@ import Testing
   }
 
   @Test func classifyTurnEndRowRemovalOnFullWindowIsSlide() {
-    // Turn end on a 50+ row chat: `freezeThinking` removes the empty thinking row, so the bottom
-    // window re-admits an older head row while its last row leaves.
+    // A turn-end row removal on a 50+ row chat (e.g. a re-parked queue entry's echo row): the
+    // bottom window re-admits an older head row while its last row leaves.
     let thinking = id(900, "thinking")
     let old = (1...49).map { id($0) } + [thinking]
     let new = (0...49).map { id($0) }

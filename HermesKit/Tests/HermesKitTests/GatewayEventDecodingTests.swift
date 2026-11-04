@@ -57,23 +57,63 @@ import Testing
 
   @Test func messageCompleteDecodesUsage() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"8680ce37","payload":{"text":"pong","status":"complete","usage":{"model":"gpt-5.5","input":6303,"output":31,"total":18622,"context_used":18591,"context_max":272000,"context_percent":7,"cost_usd":0.0}}}}"#)
-    guard case let (_, .messageComplete(text, usage))? = f.eventParts else {
+    guard case let (_, .messageComplete(text, usage, responseReused))? = f.eventParts else {
       Issue.record("expected messageComplete, got \(f)"); return
     }
     #expect(text == "pong")
+    #expect(responseReused == false) // absent → false (older agents)
     #expect(usage?.input == 6303)
     #expect(usage?.output == 31)
     #expect(usage?.contextMax == 272_000)
   }
 
-  @Test func thinkingDelta() throws {
-    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"thinking.delta","session_id":"8680ce37","payload":{"text":"(◔_◔) synthesizing..."}}}"#)
-    #expect(f == .event(sessionID: "8680ce37", .thinkingDelta(text: "(◔_◔) synthesizing...")))
+  @Test func messageCompleteDecodesResponseReused() throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"s","payload":{"text":"Here is the answer.","response_previewed":true,"response_reused":true}}}"#)
+    #expect(f == .event(sessionID: "s", .messageComplete(text: "Here is the answer.", usage: nil, responseReused: true)))
+    // A non-bool value is lenient: treated as not reused.
+    let odd = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"s","payload":{"text":"x","response_reused":"yes"}}}"#)
+    #expect(odd == .event(sessionID: "s", .messageComplete(text: "x", usage: nil, responseReused: false)))
   }
 
-  @Test func reasoningDeltaFoldsIntoThinking() throws {
+  @Test func thinkingDeltaIsASpinnerFrameNotReasoning() throws {
+    // `thinking.delta` is the agent's kawaii spinner — its own case, never reasoning.
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"thinking.delta","session_id":"8680ce37","payload":{"text":"(◔_◔) synthesizing..."}}}"#)
+    #expect(f == .event(sessionID: "8680ce37", .spinnerFrame(text: "(◔_◔) synthesizing...")))
+  }
+
+  @Test func thinkingDeltaWithoutTextIsAnEmptyFrame() throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"thinking.delta","session_id":"s"}}"#)
+    #expect(f == .event(sessionID: "s", .spinnerFrame(text: "")))
+  }
+
+  @Test func reasoningDelta() throws {
     let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"reasoning.delta","session_id":"8680ce37","payload":{"text":"weighing options"}}}"#)
-    #expect(f == .event(sessionID: "8680ce37", .thinkingDelta(text: "weighing options")))
+    #expect(f == .event(sessionID: "8680ce37", .reasoningDelta(text: "weighing options")))
+  }
+
+  @Test func messageInterimDecodesSegmentIdentity() throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.interim","session_id":"s","payload":{"text":"Let me check the tests.","already_streamed":true,"turn_id":"turn-3","segment":2}}}"#)
+    #expect(f == .event(sessionID: "s", .messageInterim(
+      text: "Let me check the tests.", alreadyStreamed: true, turnID: "turn-3", segment: 2
+    )))
+  }
+
+  @Test func messageInterimToleratesAbsentOptionalFields() throws {
+    // Older interim emitters send only `{text, already_streamed}`; a missing flag reads false.
+    let bare = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.interim","session_id":"s","payload":{"text":"Checking."}}}"#)
+    #expect(bare == .event(sessionID: "s", .messageInterim(
+      text: "Checking.", alreadyStreamed: false, turnID: nil, segment: nil
+    )))
+    // Odd shapes (non-bool flag, string segment) degrade to the defaults, never throw.
+    let odd = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.interim","session_id":"s","payload":{"text":null,"already_streamed":"yes","segment":"2"}}}"#)
+    #expect(odd == .event(sessionID: "s", .messageInterim(
+      text: "", alreadyStreamed: false, turnID: nil, segment: nil
+    )))
+    // An out-of-range segment number is absent, never a trap.
+    let huge = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.interim","session_id":"s","payload":{"text":"x","segment":1e19}}}"#)
+    #expect(huge == .event(sessionID: "s", .messageInterim(
+      text: "x", alreadyStreamed: false, turnID: nil, segment: nil
+    )))
   }
 
   @Test func reasoningAvailable() throws {
@@ -102,10 +142,67 @@ import Testing
   @Test func toolCompleteStringifiesObjectResultWhenNoResultText() throws {
     // No result_text (non-verbose) → result object is rendered for the detail sheet.
     let done = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"grep","result":{"matches":2}}}}"#)
-    guard case let (_, .toolComplete(_, _, _, _, resultText, _, _))? = done.eventParts else {
+    guard case let (_, .toolComplete(_, _, _, _, resultText, _, _, _))? = done.eventParts else {
       Issue.record("expected tool.complete event"); return
     }
     #expect(resultText?.contains("\"matches\" : 2") == true)
+  }
+
+  @Test func toolStartDecodesStructuredArgs() throws {
+    let start = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":"s","payload":{"tool_id":"t1","name":"terminal","context":"pytest -q","args":{"command":"pytest -q","timeout":60},"preview":"pytest -q"}}}"#)
+    #expect(start == .event(sessionID: "s", .toolStart(
+      toolID: "t1", name: "terminal", title: "pytest -q", argsText: nil,
+      args: .object(["command": .string("pytest -q"), "timeout": .number(60)])
+    )))
+  }
+
+  @Test func toolStartArgsAbsentNullOrOddShape() throws {
+    // Older agent: no `args` at all.
+    let old = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":"s","payload":{"tool_id":"t1","name":"terminal","context":"ls"}}}"#)
+    #expect(old == .event(sessionID: "s", .toolStart(toolID: "t1", name: "terminal", title: "ls", argsText: nil, args: nil)))
+    // Explicit null reads as absent.
+    let null = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":"s","payload":{"tool_id":"t1","name":"terminal","args":null}}}"#)
+    #expect(null == .event(sessionID: "s", .toolStart(toolID: "t1", name: "terminal", title: nil, argsText: nil, args: nil)))
+    // A non-object `args` is kept as-is (never dropped, never a throw).
+    let odd = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.start","session_id":"s","payload":{"tool_id":"t1","name":"terminal","args":["ls","-la"]}}}"#)
+    #expect(odd == .event(sessionID: "s", .toolStart(
+      toolID: "t1", name: "terminal", title: nil, argsText: nil,
+      args: .array([.string("ls"), .string("-la")])
+    )))
+  }
+
+  @Test func toolCompleteDecodesStructuredResult() throws {
+    let done = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"terminal","args":{"command":"pytest -q"},"result":{"output":"3 passed","exit_code":0},"duration_s":2.0}}}"#)
+    guard case let (_, .toolComplete(_, _, _, args, resultText, _, _, result))? = done.eventParts else {
+      Issue.record("expected tool.complete event"); return
+    }
+    #expect(args == .object(["command": .string("pytest -q")]))
+    #expect(result == .object(["output": .string("3 passed"), "exit_code": .number(0)]))
+    // The legacy display string still derives from the structured result.
+    #expect(resultText?.contains("\"output\" : \"3 passed\"") == true)
+  }
+
+  @Test func toolCompleteResultTextWinsForDisplayButResultStaysStructured() throws {
+    let done = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"terminal","result":"plain output","result_text":"verbose text"}}}"#)
+    guard case let (_, .toolComplete(_, _, _, _, resultText, _, _, result))? = done.eventParts else {
+      Issue.record("expected tool.complete event"); return
+    }
+    #expect(resultText == "verbose text")
+    #expect(result == .string("plain output"))
+  }
+
+  @Test func toolCompleteWithoutOrNullResult() throws {
+    let absent = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"terminal"}}}"#)
+    #expect(absent == .event(sessionID: "s", .toolComplete(
+      toolID: "t1", name: "terminal", title: nil, args: nil,
+      resultText: nil, inlineDiff: nil, durationS: nil, result: nil
+    )))
+    let null = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"tool.complete","session_id":"s","payload":{"tool_id":"t1","name":"terminal","result":null}}}"#)
+    guard case let (_, .toolComplete(_, _, _, _, resultText, _, _, result))? = null.eventParts else {
+      Issue.record("expected tool.complete event"); return
+    }
+    #expect(result == nil)
+    #expect(resultText == nil)
   }
 
   // MARK: Interactive requests (synthetic — shapes verified later in M2)
@@ -202,6 +299,21 @@ import Testing
     #expect(cancel.summary == "approval timeout srq-1")
     let bareCancel = GatewayLogEntry(id: 2, event: .requestCancel(RequestCancel(id: "srq-1")))
     #expect(bareCancel.summary == "srq-1")
+  }
+
+  @Test func segmentAndFinalLogEntriesNameTheirFlags() {
+    let streamed = GatewayLogEntry(id: 0, event: .messageInterim(
+      text: "Checking.", alreadyStreamed: true, turnID: "t", segment: 2
+    ))
+    #expect(streamed.summary == "#2 (streamed) Checking.")
+    let bare = GatewayLogEntry(id: 1, event: .messageInterim(
+      text: "Checking.", alreadyStreamed: false, turnID: nil, segment: nil
+    ))
+    #expect(bare.summary == "Checking.")
+    let reused = GatewayLogEntry(id: 2, event: .messageComplete(text: "Done.", usage: nil, responseReused: true))
+    #expect(reused.summary == "(reused) Done.")
+    let fresh = GatewayLogEntry(id: 3, event: .messageComplete(text: "Done.", usage: nil, responseReused: false))
+    #expect(fresh.summary == "Done.")
   }
 
   @Test func approvalRequestWithoutRequestIDStillDecodes() throws {
