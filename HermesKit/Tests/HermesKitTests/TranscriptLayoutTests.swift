@@ -65,6 +65,9 @@ struct TranscriptLayoutTests {
         return "run \(summary.key.runOrdinal) x\(summary.calls.count)" + (summary.isExpanded ? " open" : "")
       case let .toolCall(call):
         return "call \(call.key.callOrdinal) #\(Int(call.row.id.uuidString.suffix(12), radix: 16)!)"
+          + (call.isExpanded ? " open" : "")
+      case let .toolBody(row):
+        return "body #\(Int(row.id.uuidString.suffix(12), radix: 16)!)"
       case let .row(row):
         return "row #\(Int(row.id.uuidString.suffix(12), radix: 16)!)"
       case .liveIndicator:
@@ -263,6 +266,71 @@ struct TranscriptLayoutTests {
     guard case let .toolCall(call) = items(rows, expansion)[2] else { Issue.record("no call"); return }
     #expect(call.isExpanded)
     #expect(call.key == CallKey(turnOrdinal: 0, callOrdinal: 0))
+  }
+
+  // MARK: Expanded call bodies
+
+  @Test func anExpandedCallIsFollowedByItsBody() {
+    let rows = [user(0), tool(1), assistant(2), tool(3), assistant(4)]
+    let open = FoldExpansion(turnOverride: [0: .expanded])
+    #expect(shape(items(rows, open)) == [
+      "row #0", "header 0 open", "call 0 #1", "row #2", "call 1 #3", "row #4",
+    ])
+    var expanded = open
+    expanded.toggleCall(CallKey(turnOrdinal: 0, callOrdinal: 1))
+    let result = items(rows, expanded)
+    #expect(shape(result) == [
+      "row #0", "header 0 open", "call 0 #1", "row #2", "call 1 #3 open", "body #3", "row #4",
+    ])
+    // The body carries the call's row (what the view renders), under a derived id.
+    #expect(result[5] == .toolBody(tool(3)))
+    #expect(result[5].id == TranscriptItem.toolBodyID(callRowID: uuid(3)))
+
+    // Folding it back removes exactly the body item.
+    expanded.toggleCall(CallKey(turnOrdinal: 0, callOrdinal: 1))
+    #expect(items(rows, expanded) == items(rows, open))
+  }
+
+  @Test func bodiesInsideAnExpandedRunFollowTheirCalls() {
+    let rows = [user(0), tool(1), reasoning(2), tool(3), tool(4), assistant(5)]
+    let expansion = FoldExpansion(
+      turnOverride: [0: .expanded], expandedRuns: [RunKey(turnOrdinal: 0, runOrdinal: 0)],
+      expandedCalls: [CallKey(turnOrdinal: 0, callOrdinal: 0), CallKey(turnOrdinal: 0, callOrdinal: 2)]
+    )
+    #expect(shape(items(rows, expansion)) == [
+      "row #0", "header 0 open", "run 0 x3 open", "call 0 #1 open", "body #1", "row #2",
+      "call 1 #3", "call 2 #4 open", "body #4", "row #5",
+    ])
+  }
+
+  @Test func aHiddenCallShowsNoBody() {
+    let rows = [user(0), tool(1), tool(2), assistant(3)]
+    let calls: Set<CallKey> = [CallKey(turnOrdinal: 0, callOrdinal: 0)]
+    // A collapsed run hides its calls — and their bodies.
+    #expect(shape(items(rows, FoldExpansion(turnOverride: [0: .expanded], expandedCalls: calls))) == [
+      "row #0", "header 0 open", "run 0 x2", "row #3",
+    ])
+    // A collapsed turn hides everything it folds, bodies included.
+    #expect(shape(items(rows, FoldExpansion(expandedCalls: calls))) == ["row #0", "header 0 closed", "row #3"])
+  }
+
+  @Test func aPreambleCallExpandsInPlaceToo() {
+    let rows = [assistant(0), tool(1), user(2), assistant(3)]
+    let expansion = FoldExpansion(expandedCalls: [CallKey(turnOrdinal: -1, callOrdinal: 0)])
+    #expect(shape(items(rows, expansion)) == ["row #0", "call 0 #1 open", "body #1", "row #2", "row #3"])
+  }
+
+  @Test func aLiveCallsBodyFollowsTheRowAsItCompletes() {
+    let key = CallKey(turnOrdinal: 0, callOrdinal: 0)
+    let expansion = FoldExpansion(expandedCalls: [key])
+    let running = items([user(0), tool(1, running: true)], expansion, running: 0)
+    let done = items([user(0), tool(1)], expansion, running: 0)
+    // Same ids (the cell is reconfigured, not recreated); the body's payload moves on.
+    #expect(running.map(\.id) == done.map(\.id))
+    #expect(running.last == .toolBody(tool(1, running: true)))
+    #expect(done.last == .toolBody(tool(1)))
+    #expect(TranscriptItem.toolBodyID(callRowID: uuid(1)) != uuid(1))
+    #expect(TranscriptItem.toolBodyID(callRowID: uuid(1)) != TranscriptItem.runSummaryID(firstToolRowID: uuid(1)))
   }
 
   // MARK: Ids

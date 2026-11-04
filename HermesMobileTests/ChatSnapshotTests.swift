@@ -816,8 +816,9 @@ final class ChatSnapshotTests: SnapshotTestCase {
 
   // MARK: Tool/skill rows + detail sheet
 
-  /// Call lines (the T3 look): per-tool icon + parsed one-line title, a chevron only with
-  /// detail to open; a failed call's icon turns red; a live call reads in the present tense.
+  /// Call lines (the T3 look): per-tool icon + parsed one-line title and a disclosure chevron
+  /// (every call expands in place — one without detail to an "unavailable" note); a failed
+  /// call's icon turns red; a live call reads in the present tense.
   func testToolRows() {
     func call(
       _ name: String, args: [String: JSONValue] = [:], result: String? = nil, running: Bool = false
@@ -831,19 +832,19 @@ final class ChatSnapshotTests: SnapshotTestCase {
       ToolStatusView(
         call: call("read_file", args: ["path": .string("/srv/app/server.py"), "offset": .number(10),
                                        "limit": .number(30)]),
-        hasDetail: true, onTap: {}
+        onTap: {}
       )
-      ToolStatusView(call: call("patch", args: ["path": .string("/src/ChatView.swift")]), hasDetail: true, onTap: {})
-      ToolStatusView(call: call("todo"), hasDetail: false, onTap: {})
+      ToolStatusView(call: call("patch", args: ["path": .string("/src/ChatView.swift")]), onTap: {})
+      ToolStatusView(call: call("todo"), onTap: {})
       ToolStatusView(
         call: call("terminal", args: [
           "command": .string("cd /private/tmp/claude-501/-Users-eugene-Documents-Development && asc testflight crashes"),
         ], result: #"{"error": "asc: not logged in"}"#),
-        hasDetail: true, onTap: {}
+        onTap: {}
       )
       ToolStatusView(
         call: call("web_search", args: ["query": .string("swift testing traits")], running: true),
-        isLive: true, hasDetail: true, onTap: {}
+        isLive: true, onTap: {}
       )
     }
     .padding()

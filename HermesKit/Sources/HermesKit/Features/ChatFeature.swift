@@ -156,7 +156,8 @@ public struct ChatFeature {
     /// by a real approval (`.approvalRequest` or a v7 `.serverRequest`), by answering one, and
     /// at turn end (the real event wins — no later re-synthesis).
     public var expectsPendingApproval: Bool
-    /// The tool/skill row whose detail sheet is open, if any (Task 4).
+    /// The tool/skill row whose detail sheet is open, if any — opened from an expanded call
+    /// body's "Show all" (`toolTapped`).
     public var presentedTool: ChatRow?
     /// Current model + reasoning effort (from `session.info`), shown in the composer chip.
     public var model: String?
@@ -1044,6 +1045,8 @@ public struct ChatFeature {
     case turnHeaderTapped(Int)
     /// The user tapped a run's summary line: list / fold its calls.
     case runSummaryTapped(RunKey)
+    /// The user tapped a call line: expand its body in place below it, or fold it back.
+    case toolCallTapped(CallKey)
     case turnTick
     /// One event to fold, bypassing the replay cursor. Sent by tests; the socket effect
     /// sends `.gatewayFrame` and the replay fold calls `reduceGatewayEvent` directly, so all
@@ -1195,6 +1198,7 @@ public struct ChatFeature {
     /// clip — there is no background-audio entitlement, yet the ~30 s grace keeps a running
     /// turn's process alive — and hold auto-speak until `.foreground`.
     case sceneBackgrounded
+    /// Open a call's detail sheet (`presentedTool`) — the expanded body's "Show all".
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
@@ -1494,6 +1498,10 @@ public struct ChatFeature {
 
       case let .runSummaryTapped(key):
         state.fold.toggleRun(key)
+        return .none
+
+      case let .toolCallTapped(key):
+        state.fold.toggleCall(key)
         return .none
 
       case .turnTick:

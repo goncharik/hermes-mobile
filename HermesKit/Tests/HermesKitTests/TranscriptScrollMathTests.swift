@@ -186,6 +186,28 @@ import Testing
     ) == 3)
   }
 
+  @Test func expandingACallBodyHoldsWhatIsAboveIt() {
+    // Expanding a call in place inserts its body item after the line: every old item
+    // survives, so the first visible one (here the tapped line itself) holds still and only
+    // the content below the line shifts down.
+    let rows = (0..<4).map { n in
+      ChatRow(id: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(n)")!,
+              kind: n == 0 ? .message(role: .user, text: "q", isComplete: true)
+                : .tool(name: "terminal", title: "ls", state: .complete, detail: nil, durationS: nil))
+    }
+    let open = FoldExpansion(turnOverride: [0: .expanded], expandedRuns: [RunKey(turnOrdinal: 0, runOrdinal: 0)])
+    var expanded = open
+    expanded.toggleCall(CallKey(turnOrdinal: 0, callOrdinal: 1))
+    let before = TranscriptFold.items(rows: rows, expansion: open, runningTurnOrdinal: nil, liveLine: nil).map(\.id)
+    let after = TranscriptFold.items(rows: rows, expansion: expanded, runningTurnOrdinal: nil, liveLine: nil).map(\.id)
+    #expect(after.count == before.count + 1)
+    #expect(Set(before).isSubset(of: Set(after)))
+    let tappedLine = rows[2].id
+    #expect(TranscriptScrollMath.preservationAnchor(
+      visible: Array(before.drop(while: { $0 != tappedLine })), oldOrder: before, surviving: Set(after)
+    ) == tappedLine)
+  }
+
   @Test func anchorFallsToTheFinalReplyWhenEverythingVisibleFolded() {
     // The reader was looking at the turn's tool lines (2...4) when it finished and collapsed:
     // hold the first survivor after them — the final reply (5).

@@ -489,11 +489,11 @@ public enum Body {
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/TranscriptLayoutTests.swift`, `ChatReductionTests.swift`; `HermesMobileTests/` snapshot suite
 
-- [ ] tap a call line toggles `expandedCalls`; layout inserts a `toolBody` item after it; state survives hydrate (ordinal keys)
-- [ ] body views: terminal (`$ cmd`, exit badge green/amber, monospaced output), diff (+/- tinted), file range, search hit links, generic; selectable text that doesn't fight the line's tap; "Show all" when truncated
-- [ ] expanding while pinned re-pins; while scrolled up, content below shifts, nothing above moves
-- [ ] tests: layout inserts/removes the body item; tap action transitions; snapshot per body case + unavailable + failure, light + dark (pin explicit size for any scrollable body)
-- [ ] `make snapshot` clean and `make test` pass before Task 13
+- [x] tap a call line toggles `expandedCalls`; layout inserts a `toolBody` item after it; state survives hydrate (ordinal keys) (➕ `toolTapped(id:)` stays as the body's "Show all" → `presentedTool`; every fold call line expands — a call with no detail expands to the "unavailable" note — chevron `›` folded / `⌄` open)
+- [x] body views: terminal (`$ cmd`, exit badge green/amber, monospaced output), diff (+/- tinted), file range, search hit links, generic; selectable text that doesn't fight the line's tap; "Show all" when truncated (➕ also webPage / skill / delegate / unavailable, the outcome message over the body — red failure, grey notice — and a "Details" link when nothing was cut so the sheet stays reachable; `ToolBodyContent` renders a full body for Task 13's sheet)
+- [x] expanding while pinned re-pins; while scrolled up, content below shifts, nothing above moves (Task 8's fold-change handling already covers it: an insert keeps every old item, so the first visible one holds — pinned by a `TranscriptScrollMathTests` case)
+- [x] tests: layout inserts/removes the body item; tap action transitions; snapshot per body case + unavailable + failure, light + dark (pin explicit size for any scrollable body) (bodies hold no scroll views — long lines wrap — so nothing to pin)
+- [x] `make snapshot` clean and `make test` pass before Task 13 (298/298; 2231 tests; `testToolRows` re-recorded in its own commit)
 
 ### Task 13: Redesign the tool detail sheet
 

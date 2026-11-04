@@ -262,21 +262,19 @@ struct ChatView: View {
       TurnHeaderCell(store: store, header: header)
     case let .runSummary(summary):
       RunSummaryView(summary: summary) { store.send(.runSummaryTapped(summary.key)) }
-    case let .toolCall(call):
-      toolLine(call.row, isLive: call.isLive)
+    case let .toolCall(item):
+      if case let .tool(call) = item.row.kind {
+        ToolStatusView(
+          call: call, isLive: item.isLive, isExpanded: item.isExpanded,
+          onTap: { store.send(.toolCallTapped(item.key)) }
+        )
+      }
+    case let .toolBody(row):
+      if case let .tool(call) = row.kind {
+        ToolBodyView(call: call, onShowAll: { store.send(.toolTapped(id: row.id)) })
+      }
     case .liveIndicator:
       TurnHeaderCell(store: store, header: nil)
-    }
-  }
-
-  @ViewBuilder
-  private func toolLine(_ row: ChatRow, isLive: Bool = false) -> some View {
-    if case let .tool(call) = row.kind {
-      ToolStatusView(
-        call: call, isLive: isLive,
-        hasDetail: call.detail?.isEmpty == false,
-        onTap: { store.send(.toolTapped(id: row.id)) }
-      )
     }
   }
 
@@ -341,9 +339,10 @@ struct ChatView: View {
           )
         }
       }
-    case .tool:
-      // The fold lays tool rows out as `.toolCall` items; this branch keeps `rowView` total.
-      toolLine(row)
+    case let .tool(call):
+      // The fold lays tool rows out as `.toolCall` items (which expand in place); this branch
+      // keeps `rowView` total — a line whose tap opens the detail sheet.
+      ToolStatusView(call: call, onTap: { store.send(.toolTapped(id: row.id)) })
     case let .reasoning(text, _):
       // One line per reasoning burst (first sentence, tap to disclose). The turn's live label,
       // timer and status live on its header, not here. `.id` so a reused cell's disclosure

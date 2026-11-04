@@ -84,6 +84,16 @@ struct ChatFoldTests {
     #expect(fold.turnOverride[0] == nil)
   }
 
+  @Test func callToggle() {
+    var fold = FoldExpansion()
+    let key = CallKey(turnOrdinal: 2, callOrdinal: 3)
+    fold.toggleCall(key)
+    #expect(fold.expandedCalls == [key])
+    fold.toggleCall(CallKey(turnOrdinal: 2, callOrdinal: 4))
+    fold.toggleCall(key)
+    #expect(fold.expandedCalls == [CallKey(turnOrdinal: 2, callOrdinal: 4)])
+  }
+
   @Test func runToggleAndPrune() {
     var fold = FoldExpansion()
     let key = RunKey(turnOrdinal: 1, runOrdinal: 0)
@@ -132,6 +142,28 @@ struct ChatFoldTests {
 
     await store.send(.turnHeaderTapped(0)) { $0.fold.turnOverride[0] = .collapsed }
     #expect(header(store.state.transcriptItems)?.isExpanded == false)
+  }
+
+  @Test func callLineTapExpandsItsBodyInPlaceAndFoldsItBack() async {
+    let store = makeStore([user(0), tool(1), reply(2)])
+    let call = CallKey(turnOrdinal: 0, callOrdinal: 0)
+    await store.send(.turnHeaderTapped(0)) { $0.fold.turnOverride[0] = .expanded }
+    #expect(store.state.transcriptItems.map(\.id) == [
+      uuid(0), TranscriptItem.turnHeaderID(userRowID: uuid(0)), uuid(1), uuid(2),
+    ])
+
+    await store.send(.toolCallTapped(call)) { $0.fold.expandedCalls = [call] }
+    #expect(store.state.transcriptItems.map(\.id) == [
+      uuid(0), TranscriptItem.turnHeaderID(userRowID: uuid(0)), uuid(1),
+      TranscriptItem.toolBodyID(callRowID: uuid(1)), uuid(2),
+    ])
+
+    // "Show all" opens the sheet over the expanded body; dismissing leaves the body open.
+    await store.send(.toolTapped(id: uuid(1))) { $0.presentedTool = tool(1) }
+    await store.send(.toolDetailDismissed) { $0.presentedTool = nil }
+
+    await store.send(.toolCallTapped(call)) { $0.fold.expandedCalls = [] }
+    #expect(!store.state.transcriptItems.contains { if case .toolBody = $0 { true } else { false } })
   }
 
   @Test func headerTapOnTheRunningTurnCollapsesIt() async {
@@ -189,8 +221,10 @@ struct ChatFoldTests {
     let store = makeStore(rows)
     store.exhaustivity = .off
     let run = RunKey(turnOrdinal: 1, runOrdinal: 0)
+    let call = CallKey(turnOrdinal: 1, callOrdinal: 1)
     await store.send(.turnHeaderTapped(1))
     await store.send(.runSummaryTapped(run))
+    await store.send(.toolCallTapped(call))
 
     // The server's history for the same turns rebuilds every row under a deterministic id.
     let messages: [SessionMessage] = (0..<2).flatMap { turn -> [SessionMessage] in
@@ -207,7 +241,9 @@ struct ChatFoldTests {
     ))))
     #expect(store.state.transcript.count == 8)
     #expect(!store.state.transcript.ids.contains(uuid(10)))
-    #expect(store.state.fold == FoldExpansion(turnOverride: [1: .expanded], expandedRuns: [run]))
+    #expect(store.state.fold == FoldExpansion(
+      turnOverride: [1: .expanded], expandedRuns: [run], expandedCalls: [call]
+    ))
 
     let items = store.state.transcriptItems
     let turnHeaders = headers(items)
@@ -219,6 +255,10 @@ struct ChatFoldTests {
     // The expanded run lists both of turn 1's calls under their NEW (hydrated) ids.
     let calls = items.compactMap { if case let .toolCall(c) = $0 { return c } else { return nil } }
     #expect(calls.map(\.id) == [store.state.transcript[5].id, store.state.transcript[6].id])
+    // The second call's body stays open, now hanging off the hydrated row.
+    #expect(calls.map(\.isExpanded) == [false, true])
+    let bodies = items.compactMap { if case let .toolBody(row) = $0 { return row } else { return nil } }
+    #expect(bodies == [store.state.transcript[6]])
 
     await store.send(.teardown)
   }
@@ -260,6 +300,8 @@ struct ChatFoldTests {
     let run = RunKey(turnOrdinal: 0, runOrdinal: 0)
     await store.send(.turnHeaderTapped(0)) { $0.fold.turnOverride[0] = .expanded }
     await store.send(.runSummaryTapped(run)) { $0.fold.expandedRuns = [run] }
+    let call = CallKey(turnOrdinal: 0, callOrdinal: 1)
+    await store.send(.toolCallTapped(call)) { $0.fold.expandedCalls = [call] }
     await store.send(.teardown) { $0.fold = FoldExpansion() }
   }
 

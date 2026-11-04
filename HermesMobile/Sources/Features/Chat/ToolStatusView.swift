@@ -3,14 +3,17 @@ import SwiftUI
 
 /// A tool call's line inside a turn's fold (the T3 Code look): the tool's icon and its parsed
 /// one-line title (`ToolPresentation` — "Ran pytest -q", "Read ChatView.swift L10-40"; the
-/// present tense while the call is live) in secondary grey, with a chevron when there is
-/// detail to open. A failed call turns its icon red. No status seal and no spinner — the turn
-/// header carries the live state. A tap opens the detail sheet.
+/// present tense while the call is live) in secondary grey, with a disclosure chevron. A failed
+/// call turns its icon red. No status seal and no spinner — the turn header carries the live
+/// state. A tap expands the call's body in place below the line (`ToolBodyView`), or folds it
+/// back.
 struct ToolStatusView: View {
   let call: ToolCall
   /// The call is in flight in the running turn (`ToolCallItem.isLive`).
   var isLive: Bool = false
-  let hasDetail: Bool
+  /// Whether the body shows below the line (`ToolCallItem.isExpanded`): `›` folded, `⌄` open.
+  /// `nil` for a line that doesn't expand in place — its tap opens the detail sheet instead.
+  var isExpanded: Bool?
   let onTap: () -> Void
 
   var body: some View {
@@ -20,10 +23,10 @@ struct ToolStatusView: View {
     FoldLine(
       systemImage: presentation.icon.systemImage,
       text: title,
-      chevron: hasDetail ? "chevron.right" : nil,
+      chevron: isExpanded == true ? "chevron.down" : "chevron.right",
       iconTint: failed ? .red : .secondary
     )
-    .foldTap(isExpanded: nil, action: hasDetail ? onTap : nil)
+    .foldTap(isExpanded: isExpanded, action: onTap)
     .accessibilityLabel(failed ? "\(title), failed" : title)
   }
 }
