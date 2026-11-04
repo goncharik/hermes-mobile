@@ -4365,10 +4365,17 @@ public struct ChatFeature {
       if inflight.streaming == true || !assistant.isEmpty,
          !(followsSeal && assistant.isEmpty && preserved.streamingSlot == nil) {
         let assistantKind = ChatRow.Kind.message(role: .assistant, text: assistant, isComplete: false)
-        let id = ChatRow.deterministicID(
-          sequenceIndex: state.transcript.count, role: assistantKind.role,
+        // Keyed on the seed's final position (after the preserved rows ahead of its slot): an
+        // earlier hydrate's seed, sealed since into preserved commentary, keeps the id of ITS
+        // position, so a seed keyed on the bare history count would reuse it. Still-taken
+        // ids fall back to a fresh one.
+        var id = ChatRow.deterministicID(
+          sequenceIndex: state.transcript.count + seedSlot, role: assistantKind.role,
           kindDiscriminator: assistantKind.discriminator
         )
+        if state.transcript[id: id] != nil || preserved.rows.contains(where: { $0.row.id == id }) {
+          id = uuid()
+        }
         seededStreamingRow = ChatRow(id: id, kind: assistantKind)
         state.streamingRowID = id
       }

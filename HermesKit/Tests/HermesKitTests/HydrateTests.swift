@@ -873,6 +873,57 @@ struct HydrateTests {
     await store.send(.teardown)
   }
 
+  @Test func aSecondRunningHydrateNeverSeedsOverAnEarlierSeedSealedIntoCommentary() async {
+    // Hydrate #1 seeds the streaming row, a seal turns that seeded row into commentary, more
+    // text streams, and hydrate #2 seeds the newer text: both segments and the new streaming
+    // text survive, and the streaming target is the new row, not the sealed one.
+    let response = LockIsolated(Self.runningInflight(assistant: "Let me look.Now the "))
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = [ChatRow(id: uuid(900), kind: .message(role: .user, text: "now", isComplete: true))]
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in response.value }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Let me look.")))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me look.", alreadyStreamed: true, turnID: "t", segment: 0
+    )))
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "ls", argsText: nil)))
+    await store.send(.gatewayEvent(.messageDelta(text: "Now the ")))
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    await store.send(.gatewayEvent(.messageDelta(text: "answer is near.")))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Now the answer is near.", alreadyStreamed: true, turnID: "t", segment: 1
+    )))
+    await store.send(.gatewayEvent(.messageDelta(text: "Final")))
+
+    response.setValue(Self.runningInflight(assistant: "Let me look.Now the answer is near.Final"))
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(assistantTexts(store.state) == ["Let me look.", "Now the answer is near.", "Final"])
+    #expect(store.state.transcript.count == 5)
+    #expect(store.state.liveCommentaryRowIDs.count == 2)
+    let streaming = store.state.streamingRowID
+    #expect(streaming == store.state.transcript.last?.id)
+    #expect(streaming.map { !store.state.liveCommentaryRowIDs.contains($0) } == true)
+
+    await store.send(.gatewayEvent(.messageDelta(text: " answer.")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Final answer.", usage: nil, responseReused: false)))
+    #expect(assistantTexts(store.state) == ["Let me look.", "Now the answer is near.", "Final answer."])
+
+    await store.send(.teardown)
+  }
+
   @Test func runningHydrateWithNoInflightTextKeepsTheCommentaryAndSeedsNothingAboveIt() async {
     // The turn sealed its commentary and is running a tool; `inflight` has no assistant text.
     // No empty streaming row is seeded above the commentary — the next delta lands after it.
