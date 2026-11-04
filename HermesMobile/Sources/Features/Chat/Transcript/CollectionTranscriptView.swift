@@ -187,9 +187,13 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
   // MARK: - Coordinator
 
   /// Owns the diffable data source, cell hosting, and all imperative scroll behaviour: pin
-  /// detection, follow-on-delta, prepend offset-preservation, and the open/hydrate jump.
+  /// detection, follow-on-delta, prepend offset-preservation, slide anchor-preservation for a
+  /// scrolled-up reader (#125), and the open/hydrate jump.
   final class Coordinator: NSObject, UICollectionViewDelegate {
     enum Section { case main }
+
+    /// An offset change below this is a no-op: not worth a programmatic write or an animation.
+    private static var minimumOffsetChange: CGFloat { 0.5 }
 
     var onLoadOlder: () -> Void
     var cell: (ChatRow) -> Cell
@@ -208,9 +212,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var rowsByID: [ChatRow.ID: ChatRow] = [:]
     private var currentOrder: [ChatRow.ID] = []
 
-    /// Renderer-local pin state (~60pt). Never lives in the reducer. Starts pinned so the
-    /// first population follows the open-at-bottom contract.
+    /// Renderer-local pin state. Never lives in the reducer. Starts pinned so the first
+    /// population follows the open-at-bottom contract; afterwards only the user's own scrolling
+    /// (`TranscriptScrollMath.pinnedAfterUserScroll`), the jump button, or a jump changes it.
     private var isPinnedToBottom = true
+    /// The offset at the last `scrollViewDidScroll`, so a user scroll's direction is known.
+    private var lastOffsetY: CGFloat?
     /// Guards the one-shot open/hydrate jump for this view instance.
     private var didInitialJump = false
     /// True while the initial (or post-hydrate) open-at-bottom is still *settling*. Two things make
@@ -227,8 +234,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var pendingPrependPreservation = false
     /// Re-entrancy guard: programmatic offset changes shouldn't be read back as user scrolls.
     ///
-    /// Lifecycle: set `true` when we kick off a programmatic `setContentOffset`. For a
-    /// *non-animated* jump the offset settles synchronously, so we clear it on the next runloop.
+    /// Lifecycle: set `true` when we kick off a programmatic offset change — `setContentOffset`
+    /// (`scrollToBottom`) or a direct `contentOffset` write (`assignOffset`: the anchor hold and
+    /// the prepend preserve). A *non-animated* change settles synchronously, so we clear it on the
+    /// next runloop (`assignOffset` skips that clear if an animated follow took the guard since).
     /// For an *animated* follow we must keep it set across the whole animation (UIKit emits
     /// intermediate `scrollViewDidScroll` frames that would otherwise be misread as user scrolls
     /// and flip the pin mid-follow); it is cleared by whichever of these fires first:
@@ -242,10 +251,10 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// Monotonic token identifying the latest animated follow, so a stale watchdog from a
     /// superseded animation can't clear the guard belonging to a newer one.
     private var animationGuardGeneration = 0
-    /// True while a snapshot apply is in flight. The `contentSize` KVO fires during a diff
-    /// apply (the layout grows as rows are inserted/resized); the apply *completion* already
-    /// owns the authoritative re-pin/preserve/jump, so the KVO must not also snap mid-apply
-    /// (which could fight the completion's prepend-preservation). Streaming-delta growth
+    /// True while a snapshot apply is in flight (until its completion runs). The `contentSize`
+    /// KVO fires during a diff apply (the layout grows as rows are inserted/resized); `apply`
+    /// and its completion already own the authoritative hold/preserve/re-pin/jump, so the KVO
+    /// must not also snap mid-apply (which could fight the prepend-preservation). Streaming-delta growth
     /// happens *outside* an apply, where this is false, so the KVO still handles that.
     private var isApplyingSnapshot = false
     /// KVO token watching `contentSize` so a self-sizing cell that grows (a streaming delta
@@ -319,6 +328,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       let host = UIHostingController(
         rootView: ScrollToBottomButton { [weak self] in
           guard let self else { return }
+          self.isPinnedToBottom = true
+          self.setJumpButtonVisible(false)
           self.scrollToBottom(animated: !self.reduceMotion)
         }
       )
@@ -349,7 +360,23 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     // MARK: Diff application
 
     /// Apply a new `rows` slice: classify the structural change, refresh the payload, snapshot
-    /// the diff, then honour the stick-to-bottom contract (jump / follow / preserve / nothing).
+    /// the diff, then honour the stick-to-bottom contract:
+    /// - **jump** — first population, or a `.reset` (hydrate / wholesale replace): to the bottom,
+    ///   regardless of pin state.
+    /// - **preserve** — a `.prepend` armed by the top sentinel keeps the on-screen anchor.
+    /// - **hold** — any change that keeps old rows (`holdsReaderAnchor`: `.slide`, e.g. #125's
+    ///   live window dropping its head, or an append/mutate) keeps the reader's anchor row at the
+    ///   same on-screen y; a shift that carries them to the window top pages older rows in.
+    /// - **follow** — then, if pinned, go to the new bottom: an animated scroll for an
+    ///   append/mutate, the jump-and-settle for a `.slide`.
+    ///
+    /// The preserve and the hold run right after the (non-animated, synchronous) apply, in the same
+    /// pass; the jump and the follow run in the apply's completion, which UIKit calls on a later
+    /// pass.
+    ///
+    /// A hydrate is classified like any other update, so it jumps a scrolled-up reader only when
+    /// their rows are gone (`.reset`: nothing survives, or the window shrank and lost its head — a
+    /// paged-up window re-trimmed to the bottom). A hydrate whose rows survive keeps their place.
     func apply(rows: [ChatRow]) {
       let newOrder = rows.map(\.id)
       let oldOrder = currentOrder
@@ -365,14 +392,19 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         oldOrder.contains(id)
       }
 
-      let preservePrepend = pendingPrependPreservation && {
-        if case .prepend = diff { return true } else { return false }
-      }()
+      let preservePrepend = pendingPrependPreservation && diff.isPrepend
       pendingPrependPreservation = false
 
-      let capturedOffsetY = collectionView?.contentOffset.y ?? 0
-      let capturedContentHeight = collectionView?.contentSize.height ?? 0
-      let wasPinned = isPinnedToBottom
+      // Open, or a wholesale replace of the reader's rows (`.reset`, e.g. a hydrate re-trimming a
+      // paged-up window to the bottom): jump to the bottom regardless of pin state.
+      let jumps = !didInitialJump || diff == .reset
+      let isSlide = if case .slide = diff { true } else { false }
+
+      // Capture against the PRE-apply layout.
+      let previousOffsetY = collectionView?.contentOffset.y ?? 0
+      let previousContentHeight = collectionView?.contentSize.height ?? 0
+      let anchor = !jumps && diff.holdsReaderAnchor
+        ? captureReaderAnchor(survivors: Set(newOrder)) : nil
 
       var snapshot = NSDiffableDataSourceSnapshot<Section, ChatRow.ID>()
       snapshot.appendSections([.main])
@@ -381,43 +413,126 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         snapshot.reconfigureItems(changedIDs)
       }
 
-      let isFirstPopulation = oldOrder.isEmpty && !newOrder.isEmpty
-      // A wholesale replace of the visible slice — a server-authoritative re-hydrate
-      // (`session.resume` rebuilds rows to the bottom window) or a reorder. Per the open/hydrate
-      // contract this forces a jump-to-bottom regardless of pin state, so a re-hydrate while the
-      // user is scrolled up doesn't leave the list parked mid-history. A prepend that is *also*
-      // being offset-preserved (`preservePrepend`) is explicitly NOT a reset — the prepend path
-      // owns the offset there.
-      let isReset = !preservePrepend && {
-        if case .reset = diff { return true } else { return false }
-      }()
-
-      // Suppress the contentSize KVO for the duration of the apply: the completion below is the
-      // single authority on where the offset lands for this structural change.
+      // Suppress the contentSize KVO for the duration of the apply: this method and its
+      // completion are the single authority on where the offset lands for this change.
       isApplyingSnapshot = true
       dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
+        // UIKit runs this on a later run-loop pass. It reads the live pin state, so a reader who
+        // scrolled away since the apply is not pulled back.
         guard let self else { return }
         defer { self.isApplyingSnapshot = false }
-        if isFirstPopulation || !self.didInitialJump || isReset, !newOrder.isEmpty {
-          // Open / hydrate / wholesale-reset: jump to bottom (no animation) — always, regardless
-          // of pin state (honours the open/hydrate→bottom contract on a re-hydrate while the
-          // user had scrolled up). Begin a "settle" so self-sizing cell growth keeps re-pinning
-          // until the real bottom is reached.
-          self.didInitialJump = true
-          self.isPinnedToBottom = true
-          self.setJumpButtonVisible(false)
-          self.beginInitialBottomSettle()
-        } else if preservePrepend {
-          self.preserveOffsetAfterPrepend(
-            previousOffsetY: capturedOffsetY,
-            previousContentHeight: capturedContentHeight
-          )
-        } else if wasPinned {
+        guard !newOrder.isEmpty else { return }
+        if jumps || !self.didInitialJump || (isSlide && self.isPinnedToBottom) {
+          // Open / reset — or a pinned reader's slide (a hydrate re-iding the tail rows lands on
+          // estimated heights, which an animated follow would stop short of): jump and settle.
+          self.jumpToBottomAndSettle()
+        } else if !preservePrepend, self.isPinnedToBottom {
           // Appended row or streaming delta grew the last cell: follow only if pinned.
           self.scrollToBottom(animated: !self.reduceMotion)
         }
-        // Scrolled-up reader: do nothing (no yank), the jump button stays.
+        // Scrolled-up reader: no yank, the jump button stays.
       }
+
+      // The non-animated apply has already updated the collection view, so correct the offset
+      // now, in the same pass, so the changed layout is never drawn uncorrected.
+      if jumps { return }
+      if preservePrepend {
+        preserveOffsetAfterPrepend(
+          previousOffsetY: previousOffsetY, previousContentHeight: previousContentHeight
+        )
+      } else if let anchor, holdAnchor(anchor, previousOffsetY: previousOffsetY), !isPinnedToBottom {
+        // A programmatic shift never reaches `scrollViewDidScroll`'s top sentinel, so check it
+        // here — after this view update, since paging older rows sends a store action.
+        DispatchQueue.main.async { [weak self] in self?.loadOlderIfNearTop() }
+      }
+    }
+
+    /// The reader's reference row: its id and its content-space `frame.minY` before the apply.
+    private struct ReaderAnchor {
+      let id: ChatRow.ID
+      let minY: CGFloat
+    }
+
+    /// The topmost on-screen row (below the top inset) that survives into the new order — or,
+    /// when every on-screen row is going away (the reader is inside a tall row the slide drops),
+    /// the surviving row nearest the viewport. Measured against the current (pre-apply) layout;
+    /// `nil` only when no row survives.
+    private func captureReaderAnchor(survivors: Set<ChatRow.ID>) -> ReaderAnchor? {
+      guard let collectionView else { return nil }
+      let visibleTop = collectionView.bounds.minY + collectionView.adjustedContentInset.top
+      let visibleBottom = collectionView.bounds.maxY
+      func anchor(at indexPath: IndexPath) -> (anchor: ReaderAnchor, frame: CGRect)? {
+        guard
+          let id = dataSource.itemIdentifier(for: indexPath), survivors.contains(id),
+          let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+        else { return nil }
+        return (ReaderAnchor(id: id, minY: frame.minY), frame)
+      }
+      let onScreen = collectionView.indexPathsForVisibleItems
+        .compactMap(anchor(at:))
+        .filter { $0.frame.maxY > visibleTop }
+      if let topmost = onScreen.min(by: { $0.frame.minY < $1.frame.minY }) {
+        return topmost.anchor
+      }
+      func distance(_ frame: CGRect) -> CGFloat {
+        max(visibleTop - frame.maxY, frame.minY - visibleBottom, 0)
+      }
+      return (0..<dataSource.snapshot().numberOfItems)
+        .compactMap { anchor(at: IndexPath(item: $0, section: 0)) }
+        .min { distance($0.frame) < distance($1.frame) }?
+        .anchor
+    }
+
+    /// Keep `anchor` where it was on screen: lay out the new snapshot, measure how far the row
+    /// moved in content space, and shift the pre-apply offset by that delta. Runs in the same pass
+    /// as the apply, so no user scroll lies between the capture and the shift. A row that did not
+    /// move (a plain append below the reader) leaves the offset alone. Returns whether it shifted.
+    private func holdAnchor(_ anchor: ReaderAnchor, previousOffsetY: CGFloat) -> Bool {
+      guard
+        let collectionView,
+        let indexPath = dataSource.indexPath(for: anchor.id)
+      else { return false }
+      collectionView.layoutIfNeeded()
+      guard let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else {
+        return false
+      }
+      let anchorShift = frame.minY - anchor.minY
+      guard abs(anchorShift) > Self.minimumOffsetChange else { return false }
+      assignOffset(
+        TranscriptScrollMath.offsetAfterAnchorShift(
+          previousOffsetY: previousOffsetY,
+          anchorShift: anchorShift,
+          contentHeight: collectionView.contentSize.height,
+          viewportHeight: collectionView.bounds.height,
+          topInset: collectionView.adjustedContentInset.top,
+          bottomInset: collectionView.adjustedContentInset.bottom
+        )
+      )
+      return true
+    }
+
+    /// A programmatic, non-animated offset change. Assigned directly rather than through
+    /// `setContentOffset(_:animated:)`, which also stops an in-flight deceleration; whether a fling
+    /// continues smoothly across the shift is not verified on device.
+    private func assignOffset(_ y: CGFloat) {
+      guard let collectionView else { return }
+      isAdjustingOffset = true
+      collectionView.contentOffset = CGPoint(x: 0, y: y)
+      // Clear on the next runloop — unless an animated follow started since and owns the guard.
+      let generation = animationGuardGeneration
+      DispatchQueue.main.async { [weak self] in
+        guard let self, self.animationGuardGeneration == generation else { return }
+        self.isAdjustingOffset = false
+      }
+    }
+
+    /// The open / hydrate / reset jump: re-pin, hide the jump button, and begin a "settle" so
+    /// self-sizing cell growth keeps re-pinning until the real bottom is reached.
+    private func jumpToBottomAndSettle() {
+      didInitialJump = true
+      isPinnedToBottom = true
+      setJumpButtonVisible(false)
+      beginInitialBottomSettle()
     }
 
     // MARK: Scroll behaviour
@@ -433,7 +548,8 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // Animate only when there's a meaningful distance to travel; an animated call that is
       // already at the target produces NO `scrollViewDidEndScrollingAnimation`, which would
       // strand `isAdjustingOffset == true` forever. Treat a no-op as a synchronous settle.
-      let willAnimate = animated && abs(collectionView.contentOffset.y - target) > 0.5
+      let willAnimate =
+        animated && abs(collectionView.contentOffset.y - target) > Self.minimumOffsetChange
       isAdjustingOffset = true
       collectionView.setContentOffset(CGPoint(x: 0, y: target), animated: willAnimate)
       // For non-animated jumps the offset settles synchronously; clear the guard on the next
@@ -454,7 +570,6 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
           guard let self, self.animationGuardGeneration == generation, self.isAdjustingOffset
           else { return }
           self.isAdjustingOffset = false
-          self.updatePinState()
         }
       } else {
         DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
@@ -468,19 +583,18 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       previousContentHeight: CGFloat
     ) {
       guard let collectionView else { return }
+      collectionView.layoutIfNeeded()
       let insertedHeight = collectionView.contentSize.height - previousContentHeight
       guard insertedHeight > 0 else { return }
-      let newOffsetY = TranscriptScrollMath.offsetAfterPrepend(
+      let newOffsetY = TranscriptScrollMath.offsetAfterAnchorShift(
         previousOffsetY: previousOffsetY,
-        insertedHeight: insertedHeight,
+        anchorShift: insertedHeight,
         contentHeight: collectionView.contentSize.height,
         viewportHeight: collectionView.bounds.height,
         topInset: collectionView.adjustedContentInset.top,
         bottomInset: collectionView.adjustedContentInset.bottom
       )
-      isAdjustingOffset = true
-      collectionView.setContentOffset(CGPoint(x: 0, y: newOffsetY), animated: false)
-      DispatchQueue.main.async { [weak self] in self?.isAdjustingOffset = false }
+      assignOffset(newOffsetY)
     }
 
     /// Drive the open-at-bottom across self-sizing cell measurement. The first `scrollToBottom`
@@ -512,18 +626,22 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       scrollToBottom(animated: false)
     }
 
-    /// Re-evaluate pin state from live geometry and toggle the jump button on a change.
-    private func updatePinState() {
+    /// Update the pin from a user scroll that moved the offset by `delta`, and toggle the jump
+    /// button on a change.
+    private func updatePinState(delta: CGFloat) {
       // While settling the initial open-at-bottom, intermediate cell-sizing can momentarily look
-      // "not at bottom"; don't let that flip the pin off (it would stop the re-pin and strand the
-      // list short of the real bottom). The settle-release timer re-evaluates once stable.
+      // "not at bottom"; don't let that flip the pin off (a drag ends the settle first).
       guard !needsInitialBottomSettle else { return }
       guard let collectionView else { return }
-      let pinned = TranscriptScrollMath.isPinnedToBottom(
+      let maxY = TranscriptScrollMath.maxOffsetY(
         contentHeight: collectionView.contentSize.height,
         viewportHeight: collectionView.bounds.height,
-        bottomInset: collectionView.adjustedContentInset.bottom,
-        offsetY: collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        topInset: collectionView.adjustedContentInset.top,
+        bottomInset: collectionView.adjustedContentInset.bottom
+      )
+      let pinned = TranscriptScrollMath.pinnedAfterUserScroll(
+        wasPinned: isPinnedToBottom, delta: delta,
+        distanceFromBottom: maxY - collectionView.contentOffset.y
       )
       if pinned != isPinnedToBottom {
         isPinnedToBottom = pinned
@@ -534,20 +652,28 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     // MARK: UIScrollViewDelegate
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-      // Skip programmatic adjustments (jump / prepend-preserve) — only real user scrolls
-      // should mutate pin state.
+      // Track every offset change, programmatic included, so a user scroll's delta is measured
+      // from where our own adjustments left the list.
+      let offsetY = scrollView.contentOffset.y
+      let delta = offsetY - (lastOffsetY ?? offsetY)
+      lastOffsetY = offsetY
+      // Skip programmatic adjustments (jump / follow / anchor hold / prepend-preserve) — only
+      // real user scrolls mutate pin state.
       guard !isAdjustingOffset else { return }
-      updatePinState()
+      updatePinState(delta: delta)
+      loadOlderIfNearTop()
+    }
 
-      // Top sentinel: when the user pulls near the top of the window AND older history exists,
-      // request the older page. Arm prepend preservation so the next `apply` keeps the anchor
-      // row fixed. Gating on `canLoadOlder` is essential: without it, a transcript scrolled to
-      // its true top would fire `onLoadOlder` every scroll tick and leave
-      // `pendingPrependPreservation` stuck `true` (no prepend ever clears it), which would then
-      // suppress the next legitimate page.
-      let topTriggerThreshold = TranscriptScrollMath.loadOlderTopThreshold
-      let atTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top
-        <= topTriggerThreshold
+    /// Top sentinel: when the offset is near the top of the window AND older history exists,
+    /// request the older page. Arm prepend preservation so the next `apply` keeps the anchor
+    /// row fixed. Gating on `canLoadOlder` is essential: without it, a transcript scrolled to
+    /// its true top would fire `onLoadOlder` every scroll tick and leave
+    /// `pendingPrependPreservation` stuck `true` (no prepend ever clears it), which would then
+    /// suppress the next legitimate page.
+    private func loadOlderIfNearTop() {
+      guard let collectionView else { return }
+      let atTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        <= TranscriptScrollMath.loadOlderTopThreshold
       if atTop, canLoadOlder, !pendingPrependPreservation {
         pendingPrependPreservation = true
         onLoadOlder()
@@ -558,9 +684,9 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // An animated programmatic follow (`scrollToBottom(animated: true)`) has settled. Clear
       // the re-entrancy guard now — not synchronously when the animation was kicked off — so the
       // intermediate animation frames were never mistaken for user scrolls (which would have
-      // dropped the pin mid-follow). Re-evaluate pin state from the final resting offset.
+      // dropped the pin mid-follow). The pin stays as the follow found it: only a user scroll
+      // changes it.
       isAdjustingOffset = false
-      updatePinState()
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
@@ -571,6 +697,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       // would stop updating pin/pagination and the contentSize KVO re-pin would stay suppressed).
       // The subsequent user-driven `scrollViewDidScroll` frames then correctly mutate pin state.
       isAdjustingOffset = false
+      lastOffsetY = scrollView.contentOffset.y
       // A deliberate user scroll also ends any initial open-at-bottom settle — respect their
       // intent rather than yanking back to the bottom as cells finish sizing.
       needsInitialBottomSettle = false

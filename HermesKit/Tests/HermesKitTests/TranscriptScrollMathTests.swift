@@ -83,27 +83,94 @@ import Testing
     )
   }
 
-  // MARK: - offsetAfterPrepend
+  // MARK: - offsetAfterAnchorShift
 
-  @Test func offsetAfterPrependShiftsByInsertedHeight() {
+  @Test func offsetAfterAnchorShiftForPrependShiftsByInsertedHeight() {
     // Inserting 300pt of older rows shifts the offset down by exactly 300 so the anchor row
     // stays visually fixed.
     #expect(
-      TranscriptScrollMath.offsetAfterPrepend(
-        previousOffsetY: 100, insertedHeight: 300,
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 100, anchorShift: 300,
         contentHeight: 2300, viewportHeight: 800, topInset: 0, bottomInset: 0
       ) == 400
     )
   }
 
-  @Test func offsetAfterPrependClampsToMax() {
+  @Test func offsetAfterAnchorShiftForPrependClampsToMax() {
     // Target would exceed the legal max ⇒ clamps to maxOffsetY.
     #expect(
-      TranscriptScrollMath.offsetAfterPrepend(
-        previousOffsetY: 1400, insertedHeight: 300,
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 1400, anchorShift: 300,
         contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 0
       ) == 1200
     )
+  }
+
+  @Test func offsetAfterAnchorShiftNegativeShiftForDroppedHead() {
+    // A slide dropped 120pt of head rows above the anchor: the anchor moved up by 120, so the
+    // offset moves up by the same amount to keep it on screen in place.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 900, anchorShift: -120,
+        contentHeight: 3000, viewportHeight: 800, topInset: 0, bottomInset: 0
+      ) == 780
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftClampsAtNegativeTopInset() {
+    // Target would scroll above the top edge ⇒ clamps to -topInset.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 50, anchorShift: -200,
+        contentHeight: 3000, viewportHeight: 800, topInset: 20, bottomInset: 0
+      ) == -20
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftClampsAtMaxOffsetY() {
+    // maxOffsetY = 2000 + 40 - 800 = 1240.
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 1200, anchorShift: 100,
+        contentHeight: 2000, viewportHeight: 800, topInset: 0, bottomInset: 40
+      ) == 1240
+    )
+  }
+
+  @Test func offsetAfterAnchorShiftZeroShiftIsIdentity() {
+    #expect(
+      TranscriptScrollMath.offsetAfterAnchorShift(
+        previousOffsetY: 640, anchorShift: 0,
+        contentHeight: 3000, viewportHeight: 800, topInset: 0, bottomInset: 0
+      ) == 640
+    )
+  }
+
+  // MARK: - pinnedAfterUserScroll (#125)
+
+  @Test func scrollingUpOffTheBottomUnpinsEvenInsideTheThreshold() {
+    // The keyboard case: the reader scrolled up and the list grew under them, leaving them
+    // 50pt from the bottom. Their scroll went up, so they are not following.
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -20, distanceFromBottom: 50))
+  }
+
+  @Test func scrollingDownToWithinTheThresholdRepins() {
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 30, distanceFromBottom: 40))
+  }
+
+  @Test func scrollingDownButStillFarFromTheBottomStaysUnpinned() {
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 30, distanceFromBottom: 200))
+  }
+
+  @Test func bounceBackFromAnOverscrollAtTheBottomKeepsThePin() {
+    // Rubber-banding back from past the bottom moves the offset up while still at the bottom.
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -15, distanceFromBottom: -10))
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: -15, distanceFromBottom: 0))
+  }
+
+  @Test func noMovementKeepsThePin() {
+    #expect(TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: true, delta: 0, distanceFromBottom: 300))
+    #expect(!TranscriptScrollMath.pinnedAfterUserScroll(wasPinned: false, delta: 0, distanceFromBottom: 0))
   }
 
   // MARK: - TranscriptDiffKind.classify
@@ -209,5 +276,121 @@ import Testing
       ChatRow.deterministicID(sequenceIndex: $0, role: .assistant, kindDiscriminator: "message")
     }
     #expect(TranscriptDiffKind.classify(old: oldTopSlice, new: newBottomWindow) == .reset)
+  }
+
+  // MARK: - TranscriptDiffKind.classify — window slide (#125)
+
+  private func id(_ index: Int, _ kind: String = "message") -> ChatRow.ID {
+    ChatRow.deterministicID(sequenceIndex: index, role: .assistant, kindDiscriminator: kind)
+  }
+
+  @Test func classifyPlainSlideIsSlide() {
+    // The reducer's fixed bottom window advanced by one row: the head row dropped off the top,
+    // one row appended at the bottom. Not a reset — a scrolled-up reader must not be yanked.
+    let old = (0..<50).map { id($0) }
+    let new = (1..<51).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyLiveToolCallSlideIsSlide() {
+    // Live `tool.start`: a tool row is inserted ABOVE the thinking row (keepThinkingLast) and the
+    // window drops its head row — a mid-insert combined with a dropped head.
+    let thinking = id(900, "thinking")
+    let tool = id(901, "tool")
+    let old = (0...48).map { id($0) } + [thinking]
+    let new = (1...48).map { id($0) } + [tool, thinking]
+    #expect(old.count == 50 && new.count == 50)
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyMultiRowSlideIsSlide() {
+    // Two rows appended in one update ⇒ two head rows dropped.
+    let old = (0..<50).map { id($0) }
+    let new = (2..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 2))
+  }
+
+  @Test func classifySlideThatGrewIsSlide() {
+    // The head dropped but the window still grew (rare, but the no-shrink rule admits it).
+    let old = (0..<50).map { id($0) }
+    let new = (1..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyShrunkWindowWithOverlapIsReset() {
+    // Paged up (100 visible rows), then a hydrate re-trims to the 50-row bottom window: the
+    // window shrank and the reader's rows are gone ⇒ still a reset (jump to bottom).
+    let old = (100..<200).map { id($0) }
+    let new = (150..<200).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
+
+  @Test func classifyZeroOverlapSameSizeIsReset() {
+    let old = (0..<50).map { id($0) }
+    let new = (100..<150).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .reset)
+  }
+
+  @Test func classifyHoleAfterDroppedHeadIsSlide() {
+    // A head row dropped AND a mid-window row vanished: the reader's other rows survive and the
+    // window did not shrink ⇒ hold their anchor, never jump.
+    let old = (0..<50).map { id($0) }
+    let new = (1..<25).map { id($0) } + (26..<52).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  @Test func classifyTurnEndRowRemovalOnFullWindowIsSlide() {
+    // Turn end on a 50+ row chat: `freezeThinking` removes the empty thinking row, so the bottom
+    // window re-admits an older head row while its last row leaves.
+    let thinking = id(900, "thinking")
+    let old = (1...49).map { id($0) } + [thinking]
+    let new = (0...49).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 0))
+  }
+
+  @Test func classifyTailRemovalThatShrinksIsSlide() {
+    // The same turn-end removal on a chat whose window is not full (or was paged up): the window
+    // shrinks, but its head survives ⇒ not the paged-up hydrate re-trim.
+    let thinking = id(900, "thinking")
+    let old = (0..<30).map { id($0) } + [thinking]
+    let new = (0..<30).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 0))
+  }
+
+  @Test func classifyCompletedTurnHydrateKeepingOnlyOlderRowsIsSlide() {
+    // A foreground hydrate after a long turn completed: the turn's live rows (random ids) are
+    // rebuilt with history ids, so only the rows above the turn survive — a minority, all off
+    // screen for a reader inside the turn. Those survivors are the same server rows (position ids
+    // over immutable history), so this is deliberately a slide, not a reset: the reader is held
+    // against them instead of being jumped to the bottom.
+    let history = (0..<10).map { id($0) }
+    let old = history + (0..<40).map { id(1000 + $0, "live") }
+    let new = history + (10..<50).map { id($0) }
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 0))
+  }
+
+  @Test func classifyDroppedHeadWithReorderedSurvivorsIsSlide() {
+    // Survivor order is deliberately not checked: a reorder is never a reset (see the
+    // permutation case), so a dropped head plus a reorder is still a slide.
+    let old = (0..<50).map { id($0) }
+    let new = (1..<48).map { id($0) } + [id(49), id(48), id(50)]
+    #expect(TranscriptDiffKind.classify(old: old, new: new) == .slide(droppedHeadCount: 1))
+  }
+
+  // MARK: - TranscriptDiffKind predicates
+
+  @Test func isPrependOnlyForPrepend() {
+    #expect(TranscriptDiffKind.prepend(insertedCount: 2).isPrepend)
+    for kind: TranscriptDiffKind in [.appendOrMutate, .inPlace, .slide(droppedHeadCount: 1), .reset] {
+      #expect(!kind.isPrepend)
+    }
+  }
+
+  @Test func holdsReaderAnchorForSlideAndAppendOnly() {
+    #expect(TranscriptDiffKind.slide(droppedHeadCount: 0).holdsReaderAnchor)
+    #expect(TranscriptDiffKind.appendOrMutate.holdsReaderAnchor)
+    for kind: TranscriptDiffKind in [.prepend(insertedCount: 1), .inPlace, .reset] {
+      #expect(!kind.holdsReaderAnchor)
+    }
   }
 }

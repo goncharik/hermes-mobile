@@ -2,14 +2,11 @@ import Foundation
 
 // MARK: - Pure transcript scroll/anchor math (platform-independent, unit-testable)
 
-/// Pure scroll/anchor math shared by both transcript rendering engines (the SwiftUI
-/// `ScrollView` engine and the `UICollectionView` engine). Foundation-only — no UIKit — so the
-/// threshold/anchor logic is platform-independent, lives in `HermesKit` (logic, not views), and
-/// is directly unit-testable via `swift test`. Keeping the numbers here is what makes the two
-/// renderers agree on the at-bottom contract.
+/// Pure scroll/anchor math for the transcript renderer (`CollectionTranscriptView`).
+/// Foundation-only — no UIKit — so the threshold/anchor logic is platform-independent, lives in
+/// `HermesKit` (logic, not views), and is directly unit-testable via `swift test`.
 public enum TranscriptScrollMath {
-  /// Distance from the bottom (in points) that still counts as "pinned" — both renderers read
-  /// this single constant so they agree on the at-bottom contract.
+  /// Distance from the bottom (in points) that still counts as "pinned".
   public static let bottomThreshold: CGFloat = 60
 
   /// Distance from the *top* (in points) at which scrolling up triggers a load-older page.
@@ -31,6 +28,23 @@ public enum TranscriptScrollMath {
     return distanceFromBottom <= threshold
   }
 
+  /// The pin after a user-driven scroll moved the offset by `delta` (negative = toward older
+  /// rows). Pinning follows the user's direction, not just geometry: scrolling up off the bottom
+  /// unpins, and only scrolling down to within `threshold` of the bottom re-pins. A viewport
+  /// change (the keyboard hiding grows the list at the bottom and can land a reader who scrolled
+  /// up inside the threshold) never re-pins on its own (#125). The `> 0.5` distance guard keeps
+  /// the bounce-back from an overscroll at the bottom from counting as scrolling up.
+  public static func pinnedAfterUserScroll(
+    wasPinned: Bool,
+    delta: CGFloat,
+    distanceFromBottom: CGFloat,
+    threshold: CGFloat = bottomThreshold
+  ) -> Bool {
+    if delta < -0.5, distanceFromBottom > 0.5 { return false }
+    if delta > 0.5, distanceFromBottom <= threshold { return true }
+    return wasPinned
+  }
+
   /// The maximum legal vertical content offset for a scroll view (clamped at 0 so short
   /// transcripts that don't fill the viewport never produce a negative offset).
   public static func maxOffsetY(
@@ -42,18 +56,20 @@ public enum TranscriptScrollMath {
     max(-topInset, contentHeight + bottomInset - viewportHeight)
   }
 
-  /// Offset-preservation across a prepend: when older rows are inserted at the top, the
-  /// content grows by `insertedHeight`, so to keep the on-screen anchor row visually fixed we
-  /// shift the offset down by exactly that delta. Returns the new offset (clamped to legal).
-  public static func offsetAfterPrepend(
+  /// Offset-preservation for an anchor row that moved in content coordinates by `anchorShift`
+  /// (its new `frame.minY` minus its old one): shifting the offset by the same delta keeps the
+  /// anchor visually fixed on screen. Negative when rows above the anchor were removed (a window
+  /// `.slide` dropping its head), positive when rows were inserted above it (a prepend shifts by
+  /// the inserted height). Returns the new offset clamped to `[-topInset, maxOffsetY]`.
+  public static func offsetAfterAnchorShift(
     previousOffsetY: CGFloat,
-    insertedHeight: CGFloat,
+    anchorShift: CGFloat,
     contentHeight: CGFloat,
     viewportHeight: CGFloat,
     topInset: CGFloat,
     bottomInset: CGFloat
   ) -> CGFloat {
-    let target = previousOffsetY + insertedHeight
+    let target = previousOffsetY + anchorShift
     let maxY = maxOffsetY(
       contentHeight: contentHeight,
       viewportHeight: viewportHeight,
@@ -65,10 +81,12 @@ public enum TranscriptScrollMath {
 }
 
 /// Detect whether a `rows` update is a *prepend* (older page loaded at the top), an
-/// append/in-place mutation (streaming / new turn / live-turn reorder), or a *reset* (a genuine
-/// wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A prepend
-/// requires offset preservation; a reset forces a jump-to-bottom (the open/hydrate contract);
-/// everything else follows the pin rule. Pure over the row id sequences so it is testable.
+/// append/in-place mutation (streaming / new turn / live-turn reorder), a *slide* (the reducer's
+/// fixed bottom window moving under the reader as live rows come and go), or a *reset* (a
+/// genuine wholesale replacement of the visible slice, e.g. a server-authoritative re-hydrate). A
+/// prepend requires offset preservation; a slide or an append/mutate holds the reader's anchor
+/// row and follows if pinned (`holdsReaderAnchor`); a reset forces a jump-to-bottom (the
+/// open/hydrate contract). Pure over the row id sequences so it is testable.
 public enum TranscriptDiffKind: Equatable, Sendable {
   /// Older rows were inserted before the previously-first row (load-older).
   case prepend(insertedCount: Int)
@@ -80,12 +98,18 @@ public enum TranscriptDiffKind: Equatable, Sendable {
   case appendOrMutate
   /// No structural change to the id sequence (pure content mutation, e.g. a delta).
   case inPlace
-  /// A *genuine* wholesale replacement of the visible slice: the new id sequence is neither a
-  /// reordering nor a superset of the old one — the old rows were largely replaced by different
-  /// ids, which is what `reconstructTranscript` produces (fresh deterministic ids) only when the
-  /// underlying messages actually changed (a server-authoritative re-hydrate via `session.resume`,
-  /// or first population). Per the open/hydrate contract the renderer must force a jump-to-bottom
-  /// on a reset, regardless of pin state. A live-turn reorder is explicitly NOT a reset.
+  /// The window moved under the reader (#125): some old rows are gone but others survive — the
+  /// reducer's fixed bottom window (`ChatFeature.State.initialWindow`) dropping `droppedHeadCount`
+  /// head rows on a live append, or a turn-end row removal re-admitting an older head row
+  /// (`droppedHeadCount == 0`). Follow if pinned; otherwise the renderer holds the reader's anchor
+  /// row — **never yank**. Without this case every tool row of a turn on a 50+ row chat, and the
+  /// turn end itself, classified as `.reset`.
+  case slide(droppedHeadCount: Int)
+  /// A *genuine* wholesale replacement of the visible slice: no old id survives, or the window
+  /// shrank AND lost its head (a hydrate re-trimming a paged-up window to the bottom) — the
+  /// reader's rows are gone. Also first population. Per the open/hydrate contract the renderer
+  /// forces a jump-to-bottom on a reset, regardless of pin state. A live-turn reorder is
+  /// explicitly NOT a reset, and neither is a `.slide`.
   case reset
 
   /// Classify the transition from `old` row ids to `new` row ids.
@@ -94,13 +118,13 @@ public enum TranscriptDiffKind: Equatable, Sendable {
   /// (the `keepThinkingLast` insert-then-move-thinking-to-the-end pattern — which is neither a
   /// contiguous prefix nor suffix match, yet preserves all the old logical rows) from a genuine
   /// hydrate (`reconstructTranscript` mints fresh ids when the messages changed, so the old ids
-  /// largely disappear). `.reset` is therefore reserved for the case where the new sequence is
-  /// NOT a reordering of the old set and NOT a superset of the old ids — i.e. the old rows were
-  /// actually replaced, not merely shuffled or added to.
+  /// largely disappear). `.reset` is therefore reserved for the case where no old row survives,
+  /// or the window shrank and lost its head — i.e. the reader's rows were actually replaced, not
+  /// shuffled, added to, or slid past.
   public static func classify(old: [ChatRow.ID], new: [ChatRow.ID]) -> TranscriptDiffKind {
     guard !old.isEmpty else {
       // First population (empty → rows): treat as a reset so the renderer performs the
-      // open-at-bottom jump. (Both renderers also guard this via their first-population flag.)
+      // open-at-bottom jump. (The renderer also guards this via its first-population flag.)
       return new.isEmpty ? .inPlace : .reset
     }
     if new == old { return .inPlace }
@@ -126,13 +150,34 @@ public enum TranscriptDiffKind: Equatable, Sendable {
     //   2. A superset: every old id survives in the new sequence (the usual live-turn case where
     //      a tool/answer row is inserted *above* the thinking row, then thinking is moved last —
     //      counts grow and the insert lands in the middle, so it's neither prefix nor suffix).
-    // Only when neither holds — the old ids were largely replaced by different ids — is this a
-    // genuine hydrate/wholesale reset.
+    // When neither holds, some old rows are gone; the slide/reset split below decides.
     let oldSet = Set(old)
     let newSet = Set(new)
     if newSet == oldSet { return .appendOrMutate }       // permutation / reorder
     if oldSet.isSubset(of: newSet) { return .appendOrMutate } // superset: old rows preserved
-    // The old rows were largely replaced by different ids ⇒ genuine wholesale reset.
-    return .reset
+    // Some old rows are gone. No old row survives ⇒ a wholesale replace.
+    guard let firstSurvivor = old.firstIndex(where: newSet.contains) else { return .reset }
+    // A window that shrank AND lost its head is a hydrate re-trimming a paged-up window to the
+    // bottom: the reader's rows are gone, so it keeps the jump-to-bottom contract.
+    if new.count < old.count, firstSurvivor > 0 { return .reset }
+    // Slide (#125): anything else that keeps old rows is the window moving under the reader —
+    // the head dropping on a live append, or a turn-end row removal (`freezeThinking`'s empty
+    // thinking row, `reparkDrainingEntry`'s echo) re-admitting an older row at the head.
+    return .slide(droppedHeadCount: firstSurvivor)
+  }
+
+  /// Whether this is a load-older `.prepend`.
+  public var isPrepend: Bool {
+    if case .prepend = self { return true } else { return false }
+  }
+
+  /// Whether the renderer holds the reader's anchor row across this update: every structural
+  /// change that keeps old rows on screen (`.slide`, `.appendOrMutate`). A `.prepend` has its own
+  /// offset path, a `.reset` jumps, and `.inPlace` changes no row positions.
+  public var holdsReaderAnchor: Bool {
+    switch self {
+    case .slide, .appendOrMutate: true
+    case .prepend, .inPlace, .reset: false
+    }
   }
 }
