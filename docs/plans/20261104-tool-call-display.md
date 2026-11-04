@@ -448,11 +448,11 @@ public enum Body {
 - Create: `HermesKit/Sources/HermesKit/Models/ToolPresentation.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ToolPresentationTests.swift`
 
-- [ ] icon kind, category, target extraction per the arg-key table (desktop parity), live/settled title
-- [ ] outcome heuristics (success / failure(message) / unknown) incl. the neutral downgrades
-- [ ] fallback: humanized name + context; never drops data
-- [ ] table-driven tests over fixture payloads per tool (live shape and hydrated args-only shape) + unknown tool + malformed args
-- [ ] run tests — must pass before Task 10
+- [x] icon kind, category, target extraction per the arg-key table (desktop parity), live/settled title (➕ `ToolPresentation(call:)` reads `ToolCall.title` as the context unless it is the name fallback; `Body` lands in Task 10)
+- [x] outcome heuristics (success / failure(message) / unknown) incl. the neutral downgrades (➕ the downgrades are a fourth `.notice(message)` case — routine error, explanation kept, never red)
+- [x] fallback: humanized name + context; never drops data
+- [x] table-driven tests over fixture payloads per tool (live shape and hydrated args-only shape) + unknown tool + malformed args
+- [x] run tests — must pass before Task 10
 
 ### Task 10: Build the per-tool bodies
 
