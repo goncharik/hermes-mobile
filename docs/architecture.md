@@ -65,7 +65,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 └─ ChatFeature             // SLOT-rooted (composed via .ifLet, NOT a path element), so a running
                            //   turn's socket + streaming effects survive nav pops; owns the WS
                            //   lifecycle + streaming reduction; also folds in approvals,
-                           //   clarify/sudo/secret, the tool-detail sheet, the model/reasoning
+                           //   clarify/sudo/secret, the turn fold (FoldExpansion) + tool-detail
+                           //   sheet, the model/reasoning
                            //   picker, reconnect
 ```
 
@@ -274,6 +275,21 @@ not assumed):
 - **Streaming has no message id.** The fold tracks a single in-flight assistant row,
   created lazily on the first delta — a `message.start` with no text would otherwise
   render as an empty bubble. The `session_id` lives on the event *frame*.
+- **`message.interim` segments a turn.** `{text, already_streamed, turn_id?, segment?}` seals
+  the streaming row as interim commentary; the next `message.delta` starts a new row. A seal
+  stamped with `turn_id` + `segment` dedups a re-send, and `message.complete`'s
+  `response_reused` stops the final text from landing twice. A turn's FINAL reply is its last
+  assistant row (`turnSpans`), and only it gets the action bar, branch and read-aloud.
+- **`thinking.delta` is the agent's spinner, not reasoning.** Its frames (`ಠ_ಠ pondering…`,
+  provider-wait lines) are rewrites: they replace the transient `turnActivityLabel` shown on the
+  turn header and never reach a row. Reasoning comes only from `reasoning.delta` /
+  `reasoning.available`, one `.reasoning` row per burst (a tool, a new tool result or an
+  assistant delta closes the burst). `status.update` is the live header's caption
+  (`turnStatus`).
+- **Tool events carry structure.** `tool.start` brings `args` (plus `context` / `args_text`),
+  `tool.complete` a parsed JSON `result` (plus `result_text`, `inline_diff`); the two merge on
+  `tool_id`. The turn fold, run summaries and per-tool bodies built from them:
+  `docs/features/tool-calls.md`.
 - **Decode leniently.** Unknown event `type`s decode to `.unknown` and never crash.
 - **`review.summary` is live-only** (#47). The background self-improvement review emits it
   to the session's own socket but never writes it to session history, so the chat renders
@@ -481,11 +497,11 @@ trailing "turn complete" for that same turn is suppressed as redundant.)
 
 ## Session re-hydration (`session.resume`)
 
-In-flight turn state (model, context usage, running status, tool/thinking history, the
-elapsed "Thinking" timer) is **server-authoritative** and is reconstructed every time a chat
+In-flight turn state (model, context usage, running status, tool/reasoning history, the
+elapsed turn timer) is **server-authoritative** and is reconstructed every time a chat
 appears — there is no durable client-side mirror of it. This is what keeps navigating
 **chat → list → chat**, backgrounding, or a cold restart from blanking the model, zeroing the
-context gauge, dropping tool/thinking rows, or stranding a phantom "working" glow.
+context gauge, dropping tool/reasoning rows, or stranding a phantom "working" glow.
 
 **One unified `hydrate(sessionID)` effect** serves open, foreground, and cold launch. Opening a
 session with a stored id, foregrounding it (`.foreground`), and a cold-launch socket connect all
@@ -507,9 +523,25 @@ response (`applyActivate`), in order:
    response (partial info only overwrites present fields) — fixing the blank-model and
    context-0 regressions.
 3. **`reconstructTranscript(messages)`** rebuilds the transcript wholesale from the
-   authoritative history — reasoning rows, assistant text, and tool-call rows (with
-   backward-matched `role:"tool"` results), keyed identically to the live fold's `toolRowIDs`.
+   authoritative history — reasoning rows (`.reasoning(isComplete: true)`), assistant text, and
+   tool-call rows (with backward-matched `role:"tool"` results), keyed identically to the live
+   fold's `toolRowIDs`. Tool rows carry the cooked `args`, `display_metadata.tool_result_metadata
+   .inline_diff`, and `content` (sent only for `write_file` / `patch` / `skill_manage`): kept as
+   `resultText` always, plus a structured `result` when it parses as a JSON object or array, the
+   live `tool.complete` shape. The title is `context ?? name`, as live. Every row gets the
+   message's server `timestamp` (0 → none), so a reloaded turn's header can say "Worked for …".
    The cached tail is replaced, never merged.
+
+   **#26 running-turn exception.** When `running` is true, the live turn's tool rows (tracked by
+   `toolRowIDs`) and reasoning bursts (tracked by `liveReasoningRowIDs`, the same lifecycle,
+   cleared at `message.complete` / `.error`) are re-appended after the rebuilt history and the
+   seeded inflight rows, in their original transcript order and under their original ids, since
+   `inflight` carries neither (a row whose id the rebuild already holds is skipped). `toolRowIDs`,
+   `liveReasoningRowIDs` and the open burst's `reasoningRowID` are restored, so a later
+   `tool.complete` / `reasoning.delta` reconciles in place and the next running hydrate drops and
+   doubles nothing. Stopped turns stay strict server-wins. The fold's expansion choices
+   are ordinal-keyed, so they survive this id rewrite; `fold.prune` drops choices on turns the
+   history no longer has (`docs/features/tool-calls.md`).
 4. **Working indicator + inflight seed.** `isSending` is set from the authoritative `running`
    flag; `inflight.user`/`inflight.assistant` rows are appended and, when `inflight.streaming`
    is set, an assistant streaming row is seeded eagerly with `streamingRowID` pointed at it so
@@ -521,11 +553,12 @@ response (`applyActivate`), in order:
    legacy server a `running == false` hydrate clears a standing approval card, and an armed
    push-tap hint on a running turn synthesizes the generic recovered card. Details:
    `docs/features/approvals.md`.
-5. **`reconcileTimer(running, anchor, now)`** restarts the elapsed "Thinking" timer from a
-   client-persisted turn-start anchor. **`running` decides *whether* the timer runs; the anchor
-   only supplies the *start instant*.** A running turn resumes ticking seeded at `now − anchor`;
-   a stopped turn with a stale anchor **discards** the anchor (no phantom timer) and leaves a
-   static `Thought · <elapsed>` disclosure. The anchor is written on `prompt.submit` /
+5. **`reconcileTimer(running, anchor, now)`** restarts the turn timer (`turnSeconds`, shown on
+   the running turn's header) from a client-persisted turn-start anchor. **`running` decides
+   *whether* the timer runs; the anchor only supplies the *start instant*.** A running turn
+   resumes ticking seeded at `now − anchor`; a stopped turn with a stale anchor **discards** the
+   anchor (no phantom timer), and its header reads `Worked for <duration>` from row timestamps.
+   The anchor is written on `prompt.submit` /
    `message.start` and cleared on `message.complete` / error / interrupt.
 6. **Write-back.** A fresh server-authoritative snapshot is persisted (debounced; flushed
    immediately on `.background`/`.inactive` via `persistNow`) so the next cold open paints from
@@ -554,19 +587,22 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
   `request.cancel` would otherwise fire a queued prompt (#66) against a turn the server may still
   be running. A replayed `.error` does not park the queue, the fold emits no `runningChanged`,
   and the turn anchor gets one write for the last boundary folded; the fold never starts the
-  thinking timer. The hydrate's `running` is the only trustworthy idle edge (and the only timer
+  turn timer. The hydrate's `running` is the only trustworthy idle edge (and the only timer
   start), and its own drain runs as usual. A replayed `message.complete` is never read aloud
   either (#74): auto-speak is inert under `isFoldingReplay`, and the fold consumes the reply
   (arms the anchor), so the trailing hydrate's re-base keeps it consumed —
   `docs/features/read-aloud.md` → "Replay rule".
 - **Then the hydrate, unchanged.** `applyActivate` stays the authority. A running turn keeps the
-  tool and thinking rows the fold built or extended (#26); assistant text is the hydrate's alone
-  (the fold skips `message.delta`s and materialises no `message.complete` row, so a reply never
-  shows twice); a completed turn is replaced wholesale. Replayed status rows (`review.summary`, a
+  tool rows and reasoning bursts the fold built or extended (#26); assistant text is the
+  hydrate's alone (the fold skips `message.delta`s and STREAMED `message.interim` seals and
+  materialises no `message.complete` row, so a reply never shows twice; an unstreamed seal, the
+  only delivery of its text, lands and then goes with the wholesale replace like any assistant
+  row); a completed turn is replaced wholesale. Replayed status rows (`review.summary`, a
   "Timed out" row) are wiped, as live ones are (accepted, #47). After a `.gatewayClosed` drop
-  `finalizeInFlight` has frozen the pre-drop thinking row, so replayed reasoning starts a fresh
-  live one (the frozen row goes with the hydrate); after `.teardownSocketOnly` nothing was
-  finalized and replayed reasoning extends the live row.
+  `finalizeInFlight` has closed the pre-drop reasoning burst, so replayed reasoning starts a new
+  burst; the closed one is still in `liveReasoningRowIDs`, so the running hydrate KEEPS it next to
+  the new one. After `.teardownSocketOnly` nothing was finalized and replayed reasoning extends
+  the open burst.
 - **Fallbacks** fold nothing and hydrate: `truncated` (the gap fell off the ring; the cursor
   advances to `latest_seq`, desktop parity, so the next drop doesn't re-ask for the evicted
   window); a reply epoch that differs from the stored one (drop the cursor, adopt the epoch);

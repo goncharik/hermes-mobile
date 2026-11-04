@@ -63,8 +63,8 @@ bullets below are the compressed rules.
   `inflight` from the response — rebuild rows wholesale, server wins, never merge; seed
   the streaming row from `inflight`. `open_requests` (v7 prompt replay) is reconciled, not
   rebuilt: absence authoritative, whatever `running` says. Exception (#26): a foreground re-hydrate of a
-  still-RUNNING turn preserves the client's live thinking + tool rows (server `inflight`
-  carries no reasoning/tools); a completed turn still replaces wholesale. Details:
+  still-RUNNING turn preserves the client's live reasoning + tool rows (`liveReasoningRowIDs`
+  / `toolRowIDs`; server `inflight` carries neither); a completed turn still replaces wholesale. Details:
   `docs/architecture.md`.
 - **Elapsed-timer continuity**: client turn-start anchor persisted in
   `ChatSnapshotClient` (set on `prompt.submit`/`message.start`, cleared on terminals).
@@ -132,25 +132,36 @@ bullets below are the compressed rules.
 
 - **Streaming has no message id** — the fold tracks one in-flight assistant row created
   lazily on the first delta (an empty `message.start` must not render an empty bubble);
-  `session_id` is on the event frame.
-- **The live "Thinking" indicator** owns the turn's reasoning + latest `status.update`
-  in one in-place row (eager at `message.start`); elapsed ticks via a cancellable
-  `continuousClock`, frozen on terminals, collapsing to a static disclosure. Status
-  shows inside that disclosure — never as a persistent footer above the composer.
+  `session_id` is on the event frame. `message.interim` seals it (the next delta starts a
+  new row; re-sent seals dedup on `(turn_id, segment)`); a turn's FINAL reply = its last
+  assistant row (`turnSpans`) — only it gets the action bar / branch / read-aloud.
+- **`thinking.delta` is the spinner, NEVER reasoning** — it replaces `turnActivityLabel`
+  (never appended, never in a row). Reasoning = `reasoning.delta`/`.available`, one
+  `.reasoning` row per burst. Timer (`turnSeconds`, cancellable `continuousClock`, frozen on
+  terminals), spinner label and `turnStatus` caption live on the turn header — never a
+  persistent footer above the composer.
+- **Tool calls fold (#45/#55)**: pure `TranscriptFold.items` turns rows into display items
+  (turn header, run summary, call line, in-place body); a finished turn collapses unless the
+  user last expanded it. `FoldExpansion` is keyed by ORDINALS (survives the hydrate id
+  rewrite, pruned on hydrate); per-tool titles/bodies/outcomes come from the pure
+  `ToolPresentation`; reloaded output is "unavailable", never faked. Details:
+  `docs/features/tool-calls.md`.
 - **Transcript rows use DETERMINISTIC content-derived IDs** — FNV-1a of
   `(sequenceIndex, role, kindDiscriminator)`; never a random `UUID`, never derived from
   mutable streaming text. Live streaming rows reconcile to the history ID on the next
   hydrate; `message.delta` mutates the row in place, preserving its id.
 - **History paginates client-side** (no server pagination): `windowStart` window over
-  the full in-memory transcript; hydrate resets the reducer's window to the bottom. An update
-  that keeps old rows (`.slide` #125, `.appendOrMutate`) follows if pinned, else holds the
-  reader's topmost surviving row — never a yank; only a `.reset` (no row survives, or the
+  the full in-memory transcript; hydrate resets the reducer's window to the bottom; the start
+  snaps down to a turn's user row (derived, `windowStart` stays raw). An update that keeps old
+  rows (`.slide` #125, `.appendOrMutate`) or only changes the fold follows if pinned, else holds
+  the reader's topmost surviving item — never a yank; only a `.reset` (no row survives, or the
   window shrank and lost its head) or first population jumps. The pin follows the USER's scroll
   direction (`pinnedAfterUserScroll`), never geometry alone: the keyboard hiding grows the list
-  under a reader who scrolled up and must not re-pin them. Mechanics: `apply(rows:)`.
+  under a reader who scrolled up and must not re-pin them. Mechanics: `apply(items:rowIDs:)`.
 - **`CollectionTranscriptView` is the ONLY renderer** — `UICollectionView` + diffable
-  data source keyed on the deterministic row id + `UIHostingConfiguration` cells (the
-  pure-SwiftUI engine was removed: it dropped tail messages). Stick-to-bottom is
+  data source keyed on the deterministic `TranscriptItem.ID` + `UIHostingConfiguration` cells
+  (the pure-SwiftUI engine was removed: it dropped tail messages); open/hydrate/prepend
+  classification runs on ROW ids, so a fold change is never a reset. Stick-to-bottom is
   renderer-local, not reducer state; pure scroll-math helpers stay outside the
   `#if canImport(UIKit)` guard.
 - **The empty-chat hero swaps the transcript REGION on `ChatFeature.State.showsEmptyHero`**
@@ -227,8 +238,8 @@ bullets below are the compressed rules.
   unpersisted `extendedReasoningSupported`. Details: `docs/features/model-picker.md`.
 - **Read replies aloud (#74)**: the toggle is a device-local pref, never `voice.auto_tts`.
   Synthesis is `POST /api/audio/speak` only; `TTSClient` is a dumb player and the state
-  machine is per-slot in `ChatFeature`. A completed-row anchor (armed, re-based on every
-  hydrate) decides what is pending; a #98 replayed completion is never read. Only USER
+  machine is per-slot in `ChatFeature`. A completed-FINAL-reply anchor (armed, re-based on every
+  hydrate; interim segments never count) decides what is pending; a #98 replayed completion is never read. Only USER
   submits and the mic barge in (the mic `await`s `tts.stop()` BEFORE `requestPermission`);
   every regular `prompt.submit` takes the 120 s `interrupted` latch. A 404/405 hides both
   controls. Details: `docs/features/read-aloud.md`.

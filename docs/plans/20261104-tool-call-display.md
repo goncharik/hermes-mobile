@@ -516,11 +516,11 @@ public enum Body {
 - [x] run snapshots: `make snapshot` (clean; update the 285/285 count in CLAUDE.md) (302/302; CLAUDE.md + docs/development.md updated)
 
 ### Task 15: [Final] Update documentation
-- [ ] create `docs/features/tool-calls.md` (turn fold rules, ordinal-keyed expansion, display items, presentation table, data availability live vs hydrated, out-of-scope list)
-- [ ] CLAUDE.md: replace the "live Thinking indicator" bullet; add a compact tool-calls bullet pointing at the feature doc; note `thinking.delta` = spinner, never reasoning; keep the file ~200 lines
-- [ ] `docs/architecture.md`: hydration section (#26 preserves reasoning rows, new tool-row fields) and event list (`message.interim`, `thinking.delta`)
-- [ ] add a `docs/backlog/` item for REST `/api/sessions/{id}/messages` output recovery after reload
-- [ ] move this plan to `docs/plans/completed/`
+- [x] create `docs/features/tool-calls.md` (turn fold rules, ordinal-keyed expansion, display items, presentation table, data availability live vs hydrated, out-of-scope list)
+- [x] CLAUDE.md: replace the "live Thinking indicator" bullet; add a compact tool-calls bullet pointing at the feature doc; note `thinking.delta` = spinner, never reasoning; keep the file ~200 lines (➕ also refreshed the stale streaming / #26 hydrate / pagination / renderer / read-aloud-anchor bullets; net +10 lines — the file was already 359, the ~200 target is the separate whole-file compression pass)
+- [x] `docs/architecture.md`: hydration section (#26 preserves reasoning rows, new tool-row fields) and event list (`message.interim`, `thinking.delta`) (➕ fixed the #98 "frozen row goes with the hydrate" sentence; README feature bullet refreshed)
+- [x] add a `docs/backlog/` item for REST `/api/sessions/{id}/messages` output recovery after reload (`docs/backlog/tool-output-lost-after-reload.md`)
+- [x] move this plan to `docs/plans/completed/` (done by the orchestrator after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only*

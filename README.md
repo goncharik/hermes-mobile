@@ -47,10 +47,12 @@ away from your desk and still keep your agent moving.
   them from a Safari-style header pill — each profile has its own scoped session list,
   and new chats are created under the selected one. Create custom profiles (with an
   optional SOUL.md) right from the app.
-- **Watch it work.** Streaming responses render as native Markdown, with tool/skill
-  activity rows (tap for args, results, and diffs), a live "Thinking" indicator with an
-  elapsed timer that collapses into a reviewable reasoning + status disclosure when the
-  turn ends, and a subtle glow on sessions that are actively running. When the agent's
+- **Watch it work.** Streaming responses render as native Markdown. A running turn shows
+  the agent's live status and an elapsed timer; when it finishes, its tool calls, reasoning
+  and interim commentary fold behind one "Worked for …" line above the reply. Expand it to
+  see run summaries ("Ran 6 commands and read 5 files") and per-call lines that open in
+  place to terminal output, diffs, file reads or search hits, with the full payload a tap
+  away. Sessions that are actively running get a subtle glow. When the agent's
   background self-improvement review posts a summary, it shows up right in the chat as
   a system line (live sessions only).
 - **Compose hands-free or with files.** Dictate a message with voice input (a live
