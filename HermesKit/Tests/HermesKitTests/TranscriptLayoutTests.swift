@@ -90,7 +90,7 @@ struct TranscriptLayoutTests {
     #expect(shape(result) == ["row #0", "header 0 closed", "row #6"])
     guard case let .turnHeader(header) = result[1] else { Issue.record("no header"); return }
     #expect(header.duration == 271)
-    #expect(header.title(activityLabel: nil, elapsedSeconds: 0) == "Worked for 4m 31s")
+    #expect(header.finishedTitle == "Worked for 4m 31s")
     #expect(header.liveLine == nil)
   }
 
@@ -139,11 +139,8 @@ struct TranscriptLayoutTests {
   @Test func aRunningTurnWithNothingYetStillHasAHeader() {
     let result = items([user(0), assistant(1), user(2)], running: 1)
     #expect(shape(result) == ["row #0", "row #1", "row #2", "header 1 running open"])
-    guard case let .turnHeader(header) = result[3] else { Issue.record("no header"); return }
-    #expect(header.title(activityLabel: "ಠ_ಠ pondering…", elapsedSeconds: 19) == "ಠ_ಠ pondering… · 19s")
-    #expect(header.title(activityLabel: nil, elapsedSeconds: 19) == "Working · 19s")
-    #expect(header.title(activityLabel: "  ", elapsedSeconds: 61) == "Working · 1m 1s")
     #expect(TurnHeader.liveLabel(" ಠ_ಠ pondering… ") == "ಠ_ಠ pondering…")
+    #expect(TurnHeader.liveLabel("  ") == "Working")
     #expect(TurnHeader.liveLabel(nil) == "Working")
   }
 
@@ -156,7 +153,12 @@ struct TranscriptLayoutTests {
     let result = items([user(0), tool(1), assistant(2)])
     guard case let .turnHeader(header) = result[1] else { Issue.record("no header"); return }
     #expect(header.duration == nil)
-    #expect(header.title(activityLabel: "ignored", elapsedSeconds: 99) == "Worked")
+    #expect(header.finishedTitle == "Worked")
+  }
+
+  @Test func anAbsurdDurationIsClampedNotATrap() {
+    let header = TurnHeader(id: UUID(), ordinal: 0, isRunning: false, isExpanded: false, duration: 1e300)
+    #expect(header.finishedTitle.hasPrefix("Worked for "))
   }
 
   @Test func statusAndCommandOutputRowsAreNeverFolded() {

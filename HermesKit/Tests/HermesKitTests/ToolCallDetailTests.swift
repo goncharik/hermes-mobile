@@ -142,6 +142,7 @@ struct ToolCallDetailTests {
     (-3, "0s"),
     (.infinity, "0s"),
     (.nan, "0s"),
+    (1e300, formatElapsed(Int(Int32.max))),
   ] as [(Double, String)])
   func durationLabel(seconds: Double, expected: String) {
     #expect(ToolPresentation.durationLabel(seconds) == expected)

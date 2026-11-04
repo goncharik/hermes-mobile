@@ -527,7 +527,7 @@ extension ToolPresentation {
       let command = name == "terminal" ? firstString(args, ["command", "code"]) ?? context : nil
       let streams = outputStreams(result: result, record: record)
       return .terminal(
-        command: command, exitCode: number(record["exit_code"]).map { Int($0) },
+        command: command, exitCode: integer(record["exit_code"]),
         stdout: streams.stdout, stderr: streams.stderr
       )
 
@@ -556,7 +556,7 @@ extension ToolPresentation {
       guard hasOutput else { return unavailable }
       return .search(
         query: firstString(args, ["pattern", "query"]) ?? context,
-        hits: fileSearchHits(record), totalCount: number(record["total_count"]).map { Int($0) }
+        hits: fileSearchHits(record), totalCount: integer(record["total_count"])
       )
 
     case "web_search":
@@ -620,7 +620,7 @@ extension ToolPresentation {
     if let matches = record["matches"]?.arrayValue {
       hits = matches.compactMap { item in
         guard let match = object(item), let path = firstString(match, ["path", "file"]) else { return nil }
-        let line = number(match["line"] ?? match["line_number"]).map { ":\(Int($0))" } ?? ""
+        let line = integer(match["line"] ?? match["line_number"]).map { ":\($0)" } ?? ""
         return SearchHit(title: path + line, snippet: firstString(match, ["content", "text"]).map { compact($0, 300) })
       }
     } else if let dense = record["matches_text"]?.stringValue {
@@ -629,7 +629,7 @@ extension ToolPresentation {
       hits = files.compactMap { $0.stringValue?.trimmedNonEmpty }.map { SearchHit(title: $0) }
     } else if case let .object(counts)? = record["counts"] {
       hits = counts.keys.sorted().map { path in
-        let count = number(counts[path]).map { Int($0) } ?? 0
+        let count = integer(counts[path]) ?? 0
         return SearchHit(title: path, snippet: "\(count) \(count == 1 ? "match" : "matches")")
       }
     }
@@ -847,6 +847,16 @@ extension ToolPresentation {
     }
   }
 
+  /// A model-written number as an `Int` (truncated), or nil past ±1e15 — so no conversion or
+  /// later arithmetic on it can trap.
+  private static func integer(_ value: JSONValue?) -> Int? {
+    number(value).flatMap(integer)
+  }
+
+  private static func integer(_ value: Double) -> Int? {
+    abs(value) < 1e15 ? Int(value) : nil
+  }
+
   private static func formatNumber(_ value: Double) -> String {
     value == value.rounded() && abs(value) < 1e15 ? String(Int(value)) : String(value)
   }
@@ -882,10 +892,9 @@ extension ToolPresentation {
     let offset = args["offset"]?.doubleValue
     let limit = args["limit"]?.doubleValue
     guard offset != nil || limit != nil else { return nil }
-    if let offset, offset > 0 {
-      let start = Int(offset)
-      guard let limit, limit > 1 else { return "L\(start)" }
-      return "L\(start)-\(start + Int(limit) - 1)"
+    if let start = offset.flatMap(integer), start > 0 {
+      guard let lines = limit.flatMap(integer), lines > 1 else { return "L\(start)" }
+      return "L\(start)-\(start + lines - 1)"
     }
     let numbers = (firstString(result, ["content"]) ?? "")
       .split(separator: "\n")

@@ -119,14 +119,11 @@ public struct TurnHeader: Equatable, Sendable, Identifiable {
     self.liveLine = liveLine
   }
 
-  /// The header's label. Running: the spinner label (else "Working") and the turn timer;
-  /// finished: "Worked for <duration>", or a bare "Worked" when the duration is unknown.
-  public func title(activityLabel: String?, elapsedSeconds: Int) -> String {
-    if isRunning {
-      return "\(Self.liveLabel(activityLabel)) · \(formatElapsed(elapsedSeconds))"
-    }
+  /// A finished header's label: "Worked for <duration>", or a bare "Worked" when the duration
+  /// is unknown. (A running header shows ``liveLabel(_:)`` beside the turn timer.)
+  public var finishedTitle: String {
     guard let duration else { return "Worked" }
-    return "Worked for \(formatElapsed(Int(duration)))"
+    return "Worked for \(formatElapsed(Int(min(duration, Double(Int32.max)))))"
   }
 
   /// A running turn's label without its timer: the spinner line (trimmed), else "Working".

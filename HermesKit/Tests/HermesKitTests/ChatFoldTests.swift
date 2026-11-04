@@ -390,4 +390,41 @@ struct ChatFoldTests {
       #expect(headers(items).last?.isRunning == true, "start \(start)")
     }
   }
+
+  @Test(arguments: [false, true])
+  func aTurnLongerThanAPageKeepsTheRawStartSoTheWindowStaysBounded(isRunning: Bool) async {
+    // The bottom window of a 120-call turn starts 70 rows below its user row — more than a page
+    // — so it does not snap: the window stays at `initialWindow` rows, the turn shows without
+    // its header (a running one ends with the live indicator), and paging older brings the
+    // header back.
+    let rows = [user(0), reply(1), user(2)] + (0..<120).map { tool(100 + $0) } + [reply(300, isComplete: !isRunning)]
+    let store = makeStore(rows, isTurnLive: isRunning)
+    let window = ChatFeature.State.initialWindow
+    #expect(store.state.snappedWindowStart == rows.count - window)
+    #expect(store.state.visibleRows.count == window)
+    #expect(store.state.hasMoreAbove)
+    let items = store.state.transcriptItems
+    #expect(headers(items).isEmpty)
+    #expect((items.last == .liveIndicator) == isRunning)
+
+    await store.send(.loadOlderRequested) { $0.windowStart = rows.count - window - ChatFeature.State.pageSize }
+    #expect(store.state.snappedWindowStart == 2)
+    #expect(headers(store.state.transcriptItems).map(\.ordinal) == [1])
+  }
+
+  @Test func theWindowedFinalRepliesMatchTheWholeTranscriptsInView() {
+    var rows = [reply(900, "seed"), tool(901)]
+    rows += finishedTurn(base: 0)
+    rows += [user(20)] + (0..<70).map { tool(300 + $0) } + [reply(21, "commentary"), tool(22), reply(23)]
+    rows += [user(40), tool(41, state: .running), reply(42, "…", isComplete: false)]
+    for isTurnLive in [false, true] {
+      for start in 0..<rows.count {
+        var state = ChatFeature.State(connection: conn, transcript: IdentifiedArrayOf(uniqueElements: rows))
+        state.isTurnLive = isTurnLive
+        state.windowStart = start
+        let visible = Set(state.visibleRows.map(\.id))
+        #expect(state.visibleFinalReplyRowIDs == state.finalReplyRowIDs.intersection(visible), "start \(start)")
+      }
+    }
+  }
 }

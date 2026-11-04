@@ -80,6 +80,6 @@ extension ToolPresentation {
     guard seconds.isFinite, seconds > 0 else { return "0s" }
     if seconds < 0.05 { return "<0.1s" }
     if seconds < 9.95 { return String(format: "%.1fs", seconds) }
-    return formatElapsed(Int(seconds.rounded()))
+    return formatElapsed(Int(min(seconds, Double(Int32.max)).rounded()))
   }
 }

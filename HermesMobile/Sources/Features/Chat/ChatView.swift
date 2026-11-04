@@ -219,7 +219,7 @@ struct ChatView: View {
       let onLoadOlder = { _ = store.send(.loadOlderRequested) }
       // Derived once per render, not per cell: every apply reconfigures all visible cells,
       // so a reply that just became final picks up its action bar on the next pass.
-      let finalReplyIDs = store.finalReplyRowIDs
+      let finalReplyIDs = store.visibleFinalReplyRowIDs
 
       // The transcript is rendered by the `UICollectionView`-backed engine (the only engine):
       // a diffable data source keyed on the deterministic display-item id (the turn fold —
@@ -499,7 +499,7 @@ private struct TurnHeaderCell: View {
   var body: some View {
     if let header, !header.isRunning {
       TurnHeaderView(
-        label: header.title(activityLabel: nil, elapsedSeconds: 0),
+        label: header.finishedTitle,
         elapsedSeconds: nil,
         isExpanded: header.isExpanded,
         onTap: { store.send(.turnHeaderTapped(header.ordinal)) }

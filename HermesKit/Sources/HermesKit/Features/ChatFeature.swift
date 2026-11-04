@@ -49,9 +49,9 @@ public struct ChatFeature {
     /// `.loadOlderRequested`, and is reset to the bottom window on every wholesale transcript
     /// replace (hydrate). The view renders `visibleRows`, never `transcript` directly.
     ///
-    /// This is the RAW start: `visibleRows` snaps it down to the containing turn's user row
-    /// (`snappedWindowStart`) so a turn's fold header is never orphaned. Kept raw so the
-    /// "parked at the bottom window" checks keep comparing like with like.
+    /// This is the RAW start: `visibleRows` snaps it down to the containing turn's user row —
+    /// at most one page (`snappedWindowStart`) — so a turn's fold header is not orphaned. Kept
+    /// raw so the "parked at the bottom window" checks keep comparing like with like.
     public var windowStart: Int
     /// The user's turn-fold / run-summary choices (tool-call display plan, Phase B). In memory
     /// only, keyed by ordinals so a hydrate's id rewrite leaves them intact; a new slot (another
@@ -692,8 +692,8 @@ public struct ChatFeature {
     var reasoningRowID: ChatRow.ID?
     /// A server turn is live on this slot: set at `message.start` and by a running hydrate,
     /// cleared at every turn terminal. The slash pipeline's "a REAL turn began while the
-    /// exec was in flight" guard reads it.
-    var isTurnLive: Bool
+    /// exec was in flight" guard reads it. Public so demo mode can seed a live turn.
+    public var isTurnLive: Bool
     var toolRowIDs: [String: ChatRow.ID]
     /// Every reasoning burst row the live fold created this turn (open AND closed) — the
     /// reasoning counterpart of `toolRowIDs`, with the same lifecycle (cleared at
@@ -918,16 +918,25 @@ public struct ChatFeature {
     /// sentinel in the view.
     public var hasMoreAbove: Bool { snappedWindowStart > 0 }
 
-    /// `windowStart` (clamped) snapped DOWN to the user row of the turn it falls in, so the
-    /// window never starts mid-turn: a turn's header (which hangs off its user row) and its
-    /// ordinal are always in view together. A start inside the preamble (rows before the first
-    /// user row) snaps to 0.
+    /// `windowStart` (clamped) snapped DOWN to the user row of the turn it falls in, so a
+    /// turn's header (which hangs off its user row) and its ordinal are in view together. A
+    /// start inside the preamble (rows before the first user row) snaps to 0. The snap walks
+    /// back at most one page: a turn longer than that keeps the raw start and shows without
+    /// its header until older rows are loaded, so the window stays bounded.
     var snappedWindowStart: Int {
       let count = transcript.count
-      var start = min(max(0, windowStart), count)
+      let start = min(max(0, windowStart), count)
       guard start < count else { return start }
-      while start > 0, !Self.isUserMessage(transcript[start]) { start -= 1 }
-      return start
+      let floor = max(0, start - Self.pageSize)
+      var index = start
+      while index > floor, !Self.isUserMessage(transcript[index]) { index -= 1 }
+      return index == 0 || Self.isUserMessage(transcript[index]) ? index : start
+    }
+
+    /// User message rows before `index` — the absolute ordinal of the first turn a window
+    /// starting there shows.
+    private func userRows(before index: Int) -> Int {
+      transcript.elements[..<index].count(where: Self.isUserMessage)
     }
 
     /// The view boundary: the windowed slice of `transcript` from `snappedWindowStart` to the
@@ -945,13 +954,28 @@ public struct ChatFeature {
     /// has no header (no user row of ours) — on a trailing ``TranscriptItem/liveIndicator``.
     public var transcriptItems: [TranscriptItem] {
       let start = snappedWindowStart
+      let running = runningTurnOrdinal
+      // The spinner label only reaches the items as a COLLAPSED running header's live line —
+      // read it only then, so its frames don't re-lay the transcript out otherwise.
+      let isRunningCollapsed = running.map { !fold.isTurnExpanded(ordinal: $0, isRunning: true) } ?? false
       return TranscriptFold.items(
         rows: transcript.elements[start..<transcript.count],
         expansion: fold,
-        runningTurnOrdinal: runningTurnOrdinal,
-        liveLine: turnActivityLabel,
-        ordinalOffset: transcript.elements[..<start].count(where: Self.isUserMessage)
+        runningTurnOrdinal: running,
+        liveLine: isRunningCollapsed ? turnActivityLabel : nil,
+        ordinalOffset: userRows(before: start)
       )
+    }
+
+    /// ``finalReplyRowIDs`` restricted to the window (`visibleRows`) — what the transcript's
+    /// cells read, computed over the window only.
+    public var visibleFinalReplyRowIDs: Set<ChatRow.ID> {
+      let start = snappedWindowStart
+      let window = transcript.elements[start..<transcript.count]
+      let running = runningTurnOrdinal.map { $0 - userRows(before: start) }
+      return Set(turnSpans(window, runningTurnOrdinal: running).compactMap { span in
+        span.finalReplyIndex.map { window[window.startIndex + $0].id }
+      })
     }
 
     public var canSend: Bool {
@@ -3859,8 +3883,9 @@ public struct ChatFeature {
   /// Keep the client-side rendering window sensible as rows append live (streaming deltas, a
   /// freshly-echoed user row). When the user was parked at the bottom window (i.e. hadn't
   /// scrolled up to pull in older history), re-pin to the bottom window so the newest rows stay
-  /// visible and the live window stays bounded by `initialWindow` — capping relayout cost on a
-  /// long streaming turn. A user who DID scroll up (a window wider than the bottom one) is left
+  /// visible and the live window stays bounded by `initialWindow` plus at most one page of
+  /// turn snap (`snappedWindowStart`) — capping relayout cost on a long streaming turn. A user
+  /// who DID scroll up (a window wider than the bottom one) is left
   /// untouched: we never yank their scroll. Always clamps `windowStart` into range.
   private func maintainWindowAfterStreaming(wasAtBottomWindow: Bool, into state: inout State) {
     let count = state.transcript.count

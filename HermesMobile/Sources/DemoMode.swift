@@ -260,8 +260,9 @@ enum DemoMode {
     return state
   }
 
-  /// Panel 3 — "watch it work": the agent researching + acting across tools, live.
-  private static var workChat: ChatFeature.State {
+  /// Panel 3 — "watch it work": the agent researching + acting across tools, live. Internal
+  /// so a snapshot pins the panel.
+  static var workChat: ChatFeature.State {
     var state = ChatFeature.State(
       connection: connection,
       title: "Lisbon trip",
@@ -271,8 +272,9 @@ enum DemoMode {
           text: "Find 3 well-rated hotels in Lisbon under €150 and add the trip to my calendar.",
           isComplete: true)),
         ChatRow(id: rowID(1), kind: .tool(
-          name: "web_search", title: "Searched hotels in Lisbon", state: .complete,
-          detail: ToolDetail(resultText: "hotels"), durationS: 0.9)),
+          name: "web_search", title: "hotels in Lisbon under €150", state: .complete,
+          detail: ToolDetail(args: .object(["query": .string("hotels in Lisbon under €150")]), resultText: "hotels"),
+          durationS: 0.9)),
         ChatRow(id: rowID(2), kind: .tool(
           name: "web_fetch", title: "Compared 12 options by rating & price", state: .complete,
           detail: ToolDetail(resultText: "compared"), durationS: 1.6)),
@@ -285,6 +287,8 @@ enum DemoMode {
       ]),
       status: .ready
     )
+    state.isTurnLive = true
+    state.fold.expandedRuns = [RunKey(turnOrdinal: 0, runOrdinal: 0)]
     state.turnSeconds = 7
     state.turnStatus = "Updating calendar…"
     state.model = "claude-opus-4-8"

@@ -803,6 +803,36 @@ extension ToolPresentationTests {
     #expect(presentation.outcome == .notice("File not found: /nope.txt"))
   }
 
+  @Test(arguments: [
+    #"{"path": "/a", "offset": 1e19}"#,
+    #"{"path": "/a", "offset": 9e18, "limit": 9e18}"#,
+    #"{"path": "/a", "offset": -1e300, "limit": 1e300}"#,
+  ])
+  func absurdReadRangesNeverTrap(args: String) {
+    let presentation = Self.presentation("read_file", args: args, result: #"{"content": "1|x"}"#)
+    #expect(presentation.settledTitle.hasPrefix("Read a"))
+    _ = presentation.body
+  }
+
+  @Test func absurdCountsAndLineNumbersNeverTrap() {
+    let terminal = Self.presentation(
+      "terminal", args: #"{"command": "ls"}"#, result: #"{"output": "", "exit_code": 1e19}"#
+    )
+    guard case let .terminal(_, exitCode, _, _) = terminal.body else {
+      Issue.record("expected a terminal body")
+      return
+    }
+    #expect(exitCode == nil)
+    _ = terminal.outcome
+    let search = Self.presentation(
+      "search_files", args: #"{"pattern": "x"}"#,
+      result: #"{"total_count": 1e300, "matches": [{"path": "a.swift", "line": -1e19, "content": "x"}]}"#
+    )
+    #expect(search.body == .search(query: "x", hits: [.init(title: "a.swift", snippet: "x")], totalCount: nil))
+    let counts = Self.presentation("search_files", args: #"{"pattern": "x"}"#, result: #"{"counts": {"a": 1e19}}"#)
+    #expect(counts.body == .search(query: "x", hits: [.init(title: "a", snippet: "0 matches")], totalCount: nil))
+  }
+
   @Test func hydratedReadFileIsUnavailable() {
     #expect(Self.presentation("read_file", args: #"{"path": "/a"}"#).body == Self.unavailable)
   }

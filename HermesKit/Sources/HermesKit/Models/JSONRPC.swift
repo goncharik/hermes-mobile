@@ -58,7 +58,8 @@ public extension JSONValue {
 
   var stringValue: String? { if case .string(let s) = self { return s }; return nil }
   var doubleValue: Double? { if case .number(let d) = self { return d }; return nil }
-  var intValue: Int? { if case .number(let d) = self { return Int(d) }; return nil }
+  /// The number truncated toward zero; nil when it is out of `Int`'s range (never traps).
+  var intValue: Int? { if case .number(let d) = self { return Int(exactly: d.rounded(.towardZero)) }; return nil }
   var boolValue: Bool? { if case .bool(let b) = self { return b }; return nil }
   var arrayValue: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
   /// `self`, or nil for JSON `null` — so an explicit `"result": null` reads as absent.

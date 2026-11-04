@@ -109,6 +109,11 @@ import Testing
     #expect(odd == .event(sessionID: "s", .messageInterim(
       text: "", alreadyStreamed: false, turnID: nil, segment: nil
     )))
+    // An out-of-range segment number is absent, never a trap.
+    let huge = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"message.interim","session_id":"s","payload":{"text":"x","segment":1e19}}}"#)
+    #expect(huge == .event(sessionID: "s", .messageInterim(
+      text: "x", alreadyStreamed: false, turnID: nil, segment: nil
+    )))
   }
 
   @Test func reasoningAvailable() throws {

@@ -74,6 +74,23 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertChatView(rows: rows, title: "Protocol chat", status: .ready)
   }
 
+  /// Demo mode's "watch it work" screenshot panel: a LIVE turn (running header, timer, status).
+  func testChatView_demoWorkPanel() {
+    assertSnapshot(
+      of: NavigationStack {
+        ChatView(
+          store: Store(initialState: DemoMode.workChat) {
+            ChatFeature()
+          } withDependencies: {
+            $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
+            $0.continuousClock = ImmediateClock()
+          }
+        )
+      },
+      as: deviceImage()
+    )
+  }
+
   /// Fenced code block + list rendering (Task 11 markdown polish).
   func testChatView_codeBlockAndReconnecting() {
     let rows: [ChatRow] = [

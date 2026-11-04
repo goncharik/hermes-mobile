@@ -89,7 +89,7 @@ struct ToolCallAcceptanceTests {
     #expect(items.map(\.id) == [userID, TranscriptItem.turnHeaderID(userRowID: userID), reply?.id])
     let header = headers(items).first
     #expect(header?.isRunning == false)
-    #expect(header?.title(activityLabel: nil, elapsedSeconds: 0) == "Worked for 4m 31s")
+    #expect(header?.finishedTitle == "Worked for 4m 31s")
 
     // Expanded, the commentary is its own row and the 15 calls are ONE summary line (the
     // reasoning between calls stays inside the run).
@@ -244,7 +244,7 @@ struct ToolCallAcceptanceTests {
       rows: rows, expansion: FoldExpansion(), runningTurnOrdinal: nil, liveLine: nil
     )
     #expect(items.map(\.id) == [rows[0].id, TranscriptItem.turnHeaderID(userRowID: rows[0].id), rows.last?.id])
-    #expect(headers(items).first?.title(activityLabel: nil, elapsedSeconds: 0) == "Worked for 1m 35s")
+    #expect(headers(items).first?.finishedTitle == "Worked for 1m 35s")
   }
 
   // MARK: Older agent — no `args`, no `message.interim`, cooked `{name, context}` only
@@ -286,7 +286,7 @@ struct ToolCallAcceptanceTests {
     // Collapsed: the header and the reply; expanded, the call line is there too.
     let items = store.state.transcriptItems
     #expect(items.map(\.id) == [userID, TranscriptItem.turnHeaderID(userRowID: userID), assistants[0].id])
-    #expect(headers(items).first?.title(activityLabel: nil, elapsedSeconds: 0) == "Worked for 5s")
+    #expect(headers(items).first?.finishedTitle == "Worked for 5s")
     await store.send(.turnHeaderTapped(0))
     #expect(store.state.transcriptItems.contains {
       if case let .toolCall(item) = $0 { item.row.kind == .tool(call) } else { false }
@@ -320,6 +320,6 @@ struct ToolCallAcceptanceTests {
       rows: rows, expansion: FoldExpansion(), runningTurnOrdinal: nil, liveLine: nil
     )
     #expect(items.map(\.id) == [rows[0].id, TranscriptItem.turnHeaderID(userRowID: rows[0].id), rows[5].id])
-    #expect(headers(items).first?.title(activityLabel: nil, elapsedSeconds: 0) == "Worked")
+    #expect(headers(items).first?.finishedTitle == "Worked")
   }
 }
