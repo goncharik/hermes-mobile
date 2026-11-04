@@ -296,6 +296,7 @@ struct ReplayTests {
     initial.isSending = true
     initial.transcript = [ChatRow(id: uuid(900), kind: .reasoning(text: "before", isComplete: false))]
     initial.reasoningRowID = uuid(900)
+    initial.liveReasoningRowIDs = [uuid(900)]
     let store = gateway.makeStore(initial)
 
     // Grace expiry keeps every live pointer (nothing is finalized).

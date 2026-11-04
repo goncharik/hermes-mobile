@@ -33,6 +33,20 @@ struct SessionDecodingTests {
     #expect(response.messages.first?.reasoningText == "step one")
   }
 
+  @Test(arguments: [
+    (#""started_at": 1700000000.5"#, Date(timeIntervalSince1970: 1_700_000_000.5)),
+    (#""started_at": 0"#, nil),
+    (#""started_at": "soon""#, nil),
+    (#""updated_at": 1"#, nil),
+  ] as [(String, Date?)])
+  func inflightStartedAtIsLenient(field: String, expected: Date?) throws {
+    let json = """
+    { "session_id": "s", "inflight": { "user": "hi", "assistant": "", "streaming": true, \(field) } }
+    """
+    let inflight = try #require(try decode(ActivateResponse.self, json).inflight)
+    #expect(inflight == SessionInflight(user: "hi", assistant: "", streaming: true, startedAt: expected))
+  }
+
   @Test func reasoningFallsBackToContentVariant() throws {
     // No `reasoning`, but `reasoning_content` present → that wins.
     let json = """

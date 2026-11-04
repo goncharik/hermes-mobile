@@ -700,6 +700,11 @@ public struct ChatFeature {
     /// `message.complete` / `.error`, restored by a running hydrate). A running hydrate (#26)
     /// preserves these rows: `inflight` carries no reasoning, so they exist only client-side.
     var liveReasoningRowIDs: Set<ChatRow.ID>
+    /// Every interim-commentary segment `message.interim` sealed this turn — the commentary
+    /// counterpart of `liveReasoningRowIDs`, same lifecycle: `inflight` carries the turn's
+    /// streamed text only as one run-together string, so a running hydrate (#26) preserves
+    /// these rows and seeds the streaming row with the text after them.
+    var liveCommentaryRowIDs: Set<ChatRow.ID>
     /// The wire identity of one sealed `message.interim` segment.
     struct SealedSegment: Hashable, Sendable {
       var turnID: String
@@ -821,6 +826,7 @@ public struct ChatFeature {
       self.isTurnLive = false
       self.toolRowIDs = [:]
       self.liveReasoningRowIDs = []
+      self.liveCommentaryRowIDs = []
       self.sealedSegments = []
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
@@ -2884,8 +2890,11 @@ public struct ChatFeature {
       // `message.interim` is no longer `streamingRowID`, so it is never overwritten.
       if let id = state.streamingRowID {
         if case let .message(_, streamed, _) = state.transcript[id: id]?.kind {
-          // A reused final already on screen keeps the streamed text (desktop parity).
-          let kept = responseReused && Self.normalizedText(streamed).contains(Self.normalizedText(text))
+          // Keep the streamed text when the final is blank (bot mode sends "" once it drops a
+          // silence marker — the streamed text stands) or is a reused final already on screen
+          // this turn, in the streaming row or a sealed segment (desktop parity).
+          let kept = text.trimmedNonEmpty == nil
+            || (responseReused && Self.isFinalAlreadyShown(text, responseReused: true, in: state.transcript))
           state.transcript[id: id]?.kind = .message(
             role: .assistant, text: kept ? streamed : text, isComplete: true
           )
@@ -2904,10 +2913,11 @@ public struct ChatFeature {
       }
       // else: empty tool-only turn → no row at all.
       state.streamingRowID = nil
-      // The turn's tool + reasoning rows are history now: a later running hydrate (#26) must
-      // not re-append them next to their cooked history rows.
+      // The turn's tool, reasoning and commentary rows are history now: a later running
+      // hydrate (#26) must not re-append them next to their cooked history rows.
       state.toolRowIDs = [:]
       state.liveReasoningRowIDs = []
+      state.liveCommentaryRowIDs = []
       // Close every open reasoning burst and reset the turn-level timer/label/status.
       freezeTurn(into: &state)
       state.isSending = false
@@ -3002,6 +3012,8 @@ public struct ChatFeature {
           durationS: durationS
         ))
         state.transcript[id: id]?.timestamp = now
+        // A detail sheet open on this call shows its completion, not the running snapshot.
+        if state.presentedTool?.id == id { state.presentedTool = state.transcript[id: id] }
       } else {
         // tool.complete with no prior start — create the row directly (it ends the open
         // reasoning burst like any appended tool row).
@@ -3035,6 +3047,7 @@ public struct ChatFeature {
       state.isSending = false
       state.toolRowIDs = [:]
       state.liveReasoningRowIDs = []
+      state.liveCommentaryRowIDs = []
       freezeTurn(into: &state)
       // An errored turn is never read aloud (#74), but ending it makes its last sealed
       // segment a counted final reply — consume that one.
@@ -3208,6 +3221,7 @@ public struct ChatFeature {
       if case .message = state.transcript[id: id]?.kind {
         state.transcript[id: id]?.kind = .message(role: .assistant, text: text, isComplete: true)
         state.transcript[id: id]?.timestamp = now
+        state.liveCommentaryRowIDs.insert(id)
       }
       state.streamingRowID = nil
       return
@@ -3216,14 +3230,29 @@ public struct ChatFeature {
       return
     }
     if state.isFoldingReplay, alreadyStreamed { return }
+    let id = uuid()
     state.transcript.append(ChatRow(
-      id: uuid(), kind: .message(role: .assistant, text: text, isComplete: true), timestamp: now
+      id: id, kind: .message(role: .assistant, text: text, isComplete: true), timestamp: now
     ))
+    state.liveCommentaryRowIDs.insert(id)
   }
 
   /// Whitespace-collapsed, trimmed text — the comparison key for "the same reply text".
   static func normalizedText(_ text: String) -> String {
     text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  }
+
+  /// `inflight` (the turn's accumulated streamed text) minus the sealed segments it opens
+  /// with: each sealed text, in order, is cut through its first occurrence in what is left. A
+  /// segment that never streamed (not in the text) cuts nothing; after a cut, the whitespace
+  /// between segments is dropped.
+  static func textAfterSealedSegments(_ inflight: String, sealed: [String]) -> String {
+    var rest = Substring(inflight)
+    for text in sealed {
+      guard let needle = text.trimmedNonEmpty, let range = rest.range(of: needle) else { continue }
+      rest = rest[range.upperBound...].drop(while: \.isWhitespace)
+    }
+    return String(rest)
   }
 
   /// The assistant `.message` texts of the CURRENT turn (rows after the last user row).
@@ -3239,7 +3268,11 @@ public struct ChatFeature {
 
   /// The current turn's newest assistant `.message` text, if any.
   private static func lastTurnAssistantText(in transcript: IdentifiedArrayOf<ChatRow>) -> String? {
-    turnAssistantTexts(in: transcript).last
+    for row in transcript.reversed() {
+      guard case let .message(role, text, _) = row.kind else { continue }
+      return role == .assistant ? text : nil
+    }
+    return nil
   }
 
   /// Whether a `message.complete` final with no streaming row is already on screen as a
@@ -4264,23 +4297,28 @@ public struct ChatFeature {
     }
 
     // #26: when the hydrate reports a STILL-RUNNING turn, the agent is mid-turn and the
-    // client's own live reasoning + tool rows are not in the server payload (`SessionInflight`
-    // carries only user/assistant/streaming — no reasoning, no tools). Capture those live rows
+    // client's own live reasoning, tool and sealed-commentary rows are not in the server
+    // payload (`SessionInflight` carries only the user prompt and the turn's streamed text as
+    // one string — no reasoning, no tools, no segment boundaries). Capture those live rows
     // (in transcript order) BEFORE the wholesale replace so they survive the round-trip; we
     // re-append them after the authoritative history is rebuilt and restore their tracking ids
     // so subsequent `tool.*` / `reasoning.delta` events reconcile in place. A COMPLETED turn
     // (`running == false`) keeps the strict server-wins behavior: no preserved live rows leak
     // into a finished transcript.
     var preservedLiveRows: [(toolKey: String?, row: ChatRow)] = []
+    // Where the client's streaming row sat among the preserved rows (how many precede it), so
+    // the re-seeded streaming row goes back there.
+    var streamingSlot: Int?
     let openReasoningID = state.reasoningRowID
     if running {
-      // Tracked tool rows + every reasoning burst of the live turn (closed ones too, and the
-      // open one), in transcript order (so re-append preserves the original interleaving).
       let toolKeys = Dictionary(state.toolRowIDs.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
-      preservedLiveRows = state.transcript.compactMap { row -> (String?, ChatRow)? in
-        if let key = toolKeys[row.id] { return (key, row) }
-        if row.id == openReasoningID || state.liveReasoningRowIDs.contains(row.id) { return (nil, row) }
-        return nil
+      for row in state.transcript {
+        if row.id == state.streamingRowID { streamingSlot = preservedLiveRows.count }
+        if let key = toolKeys[row.id] {
+          preservedLiveRows.append((key, row))
+        } else if state.liveReasoningRowIDs.contains(row.id) || state.liveCommentaryRowIDs.contains(row.id) {
+          preservedLiveRows.append((nil, row))
+        }
       }
     }
 
@@ -4290,6 +4328,7 @@ public struct ChatFeature {
     state.reasoningRowID = nil
     state.toolRowIDs = [:]
     state.liveReasoningRowIDs = []
+    state.liveCommentaryRowIDs = []
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
     // Use DETERMINISTIC, position-derived ids (same convention as `reconstructTranscript`) so
@@ -4297,47 +4336,74 @@ public struct ChatFeature {
     // identity churn (a re-hydrate diffs the unchanged in-flight rows as a stable update, not a
     // delete/insert). Streaming is unaffected: `streamingRowID` still points at the seeded row,
     // so the next `message.delta` mutates it in place under the same id.
+    var seededStreamingRow: ChatRow?
+    var seedSlot = 0
     if let inflight = response.inflight {
       if let user = inflight.user?.nonEmpty {
         let userKind = ChatRow.Kind.message(role: .user, text: user, isComplete: true)
+        // Stamped with the turn's start (the server's, else this client's persisted turn
+        // anchor) so the finished turn's header can say how long it worked.
+        let started = inflight.startedAt ?? anchorKey(state).flatMap { chatSnapshot.turnAnchor($0) }
         state.transcript.append(ChatRow(
           id: ChatRow.deterministicID(
             sequenceIndex: state.transcript.count, role: userKind.role,
             kindDiscriminator: userKind.discriminator
           ),
-          kind: userKind
+          kind: userKind,
+          timestamp: started
         ))
       }
       // Seed the streaming row eagerly when the turn is still streaming so the next
-      // `message.delta` reuses it (avoids a duplicate from the lazy first-delta path).
-      let assistant = inflight.assistant ?? ""
-      if inflight.streaming == true || !assistant.isEmpty {
+      // `message.delta` reuses it (avoids a duplicate from the lazy first-delta path). Its text
+      // is what streamed AFTER the preserved sealed segments — `inflight.assistant` never resets
+      // at a seal, so the sealed commentary is stripped off its front. It goes back into the
+      // client's streaming row's slot; with none, an agent that seals its segments has only
+      // the newest one left unsealed (after every preserved row — and when it is empty, the
+      // next delta opens it there lazily), while an older agent's unsegmented text keeps its
+      // place right after the prompt.
+      let sealedTexts = preservedLiveRows.compactMap { _, row -> String? in
+        if case let .message(_, text, _) = row.kind { return text }
+        return nil
+      }
+      let assistant = Self.textAfterSealedSegments(inflight.assistant ?? "", sealed: sealedTexts)
+      let followsSeal = !sealedTexts.isEmpty
+      seedSlot = streamingSlot ?? (followsSeal ? preservedLiveRows.count : 0)
+      if inflight.streaming == true || !assistant.isEmpty,
+         !(followsSeal && assistant.isEmpty && streamingSlot == nil) {
         let assistantKind = ChatRow.Kind.message(role: .assistant, text: assistant, isComplete: false)
         let id = ChatRow.deterministicID(
           sequenceIndex: state.transcript.count, role: assistantKind.role,
           kindDiscriminator: assistantKind.discriminator
         )
-        state.transcript.append(ChatRow(id: id, kind: assistantKind))
+        seededStreamingRow = ChatRow(id: id, kind: assistantKind)
         state.streamingRowID = id
       }
     }
 
     // #26: re-append the preserved live rows (in their original transcript order) after the
-    // rebuilt history + seeded inflight rows, restoring `toolRowIDs` so a later `tool.complete`
-    // for the same tool key reconciles the same row in place, `liveReasoningRowIDs` so the
-    // NEXT running hydrate preserves them again (never dropped, never duplicated), and
-    // `reasoningRowID` (open burst only) so the next `reasoning.delta` keeps extending it.
-    // Keep the ORIGINAL row ids (the rows already exist client-side under those ids) — no UUID
-    // churn, no diff delete/insert.
-    for (toolKey, row) in preservedLiveRows where state.transcript[id: row.id] == nil {
+    // rebuilt history + seeded user row, with the seeded streaming row back in its slot.
+    // Restore `toolRowIDs` so a later `tool.complete` for the same tool key reconciles the same
+    // row in place, `liveReasoningRowIDs` / `liveCommentaryRowIDs` so the NEXT running hydrate
+    // preserves them again (never dropped, never duplicated), and `reasoningRowID` (open burst
+    // only) so the next `reasoning.delta` keeps extending it. Keep the ORIGINAL row ids (the rows
+    // already exist client-side under those ids) — no UUID churn, no diff delete/insert.
+    for (index, (toolKey, row)) in preservedLiveRows.enumerated() {
+      if index == seedSlot, let seeded = seededStreamingRow {
+        state.transcript.append(seeded)
+        seededStreamingRow = nil
+      }
+      guard state.transcript[id: row.id] == nil else { continue }
       state.transcript.append(row)
       if let toolKey {
         state.toolRowIDs[toolKey] = row.id
-      } else {
+      } else if case .reasoning = row.kind {
         state.liveReasoningRowIDs.insert(row.id)
         if row.id == openReasoningID { state.reasoningRowID = row.id }
+      } else {
+        state.liveCommentaryRowIDs.insert(row.id)
       }
     }
+    if let seeded = seededStreamingRow { state.transcript.append(seeded) }
 
     // Reconcile the live turn elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;

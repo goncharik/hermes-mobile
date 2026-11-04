@@ -547,6 +547,7 @@ struct HydrateTests {
     ]
     initial.toolRowIDs = ["t1": tool1ID, "t2": tool2ID]
     initial.reasoningRowID = reasoningID
+    initial.liveReasoningRowIDs = [reasoningID]
     initial.turnStatus = "compacting"
 
     let store = TestStore(initialState: initial) {
@@ -606,6 +607,7 @@ struct HydrateTests {
     ]
     initial.toolRowIDs = ["t1": toolID]
     initial.reasoningRowID = reasoningID
+    initial.liveReasoningRowIDs = [reasoningID]
 
     let store = TestStore(initialState: initial) {
       ChatFeature()
@@ -646,6 +648,7 @@ struct HydrateTests {
     ]
     initial.toolRowIDs = ["t1": tool1ID]
     initial.reasoningRowID = reasoningID
+    initial.liveReasoningRowIDs = [reasoningID]
     initial.streamingRowID = uuid(203)
     initial.isTurnLive = true
     initial.turnActivityLabel = "ಠ_ಠ pondering…"
@@ -763,6 +766,165 @@ struct HydrateTests {
     await store.send(.gatewayEvent(.reasoningDelta(text: " more")))
     #expect(store.state.transcript[id: r3]?.kind == .reasoning(text: "third more", isComplete: false))
     #expect(store.state.transcript.count == 10)
+
+    await store.send(.teardown)
+  }
+
+  nonisolated private static func runningInflight(
+    assistant: String?, startedAt: Double? = nil
+  ) -> JSONValue {
+    var inflight: [String: JSONValue] = ["user": .string("now"), "streaming": .bool(true)]
+    if let assistant { inflight["assistant"] = .string(assistant) }
+    if let startedAt { inflight["started_at"] = .number(startedAt) }
+    return .object([
+      "session_id": .string("live123"),
+      "stored_session_id": .string("stored123"),
+      "messages": .array([]),
+      "running": .bool(true),
+      "inflight": .object(inflight),
+    ])
+  }
+
+  private func assistantTexts(_ state: ChatFeature.State) -> [String] {
+    state.transcript.compactMap { row in
+      if case let .message(.assistant, text, _) = row.kind { return text }
+      return nil
+    }
+  }
+
+  @Test func runningHydrateAfterASealKeepsTheCommentaryAndSeedsOnlyTheTextAfterIt() async throws {
+    // `inflight.assistant` accumulates EVERY delta of the turn (the server never resets it at a
+    // seal). The sealed commentary row survives the running hydrate, the streaming row is seeded
+    // with only what streamed after it and goes back after the tool, and the next seal / the
+    // final land on that row alone — nothing run together, nothing lost.
+    let response = LockIsolated(Self.runningInflight(assistant: "Let me look.Now the ", startedAt: 970))
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = [ChatRow(id: uuid(900), kind: .message(role: .user, text: "now", isComplete: true))]
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in response.value }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageDelta(text: "Let me look.")))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Let me look.", alreadyStreamed: true, turnID: "t", segment: 0
+    )))
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "ls", argsText: nil)))
+    await store.send(.gatewayEvent(.messageDelta(text: "Now the ")))
+    let callKey = CallKey(turnOrdinal: 0, callOrdinal: 0)
+    func toolCallKeys() -> [UUID: CallKey] {
+      Dictionary(uniqueKeysWithValues: store.state.transcriptItems.compactMap { item in
+        if case let .toolCall(call) = item { return (call.row.id, call.key) }
+        return nil
+      })
+    }
+    #expect(toolCallKeys() == [uuid(1): callKey])
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    let rows = Array(store.state.transcript)
+    #expect(rows.count == 4)
+    #expect(rows[0].kind == .message(role: .user, text: "now", isComplete: true))
+    #expect(rows[0].timestamp == Date(timeIntervalSince1970: 970))
+    #expect(rows[1].id == uuid(0))
+    #expect(rows[1].kind == .message(role: .assistant, text: "Let me look.", isComplete: true))
+    #expect(rows[2].id == uuid(1))
+    #expect(rows[3].kind == .message(role: .assistant, text: "Now the ", isComplete: false))
+    #expect(store.state.streamingRowID == rows[3].id)
+    #expect(store.state.liveCommentaryRowIDs == [uuid(0)])
+    #expect(store.state.toolRowIDs == ["t1": uuid(1)])
+    #expect(toolCallKeys() == [uuid(1): callKey])
+
+    // The next delta and seal land on the seeded row only.
+    await store.send(.gatewayEvent(.messageDelta(text: "answer is near.")))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Now the answer is near.", alreadyStreamed: true, turnID: "t", segment: 1
+    )))
+    #expect(assistantTexts(store.state) == ["Let me look.", "Now the answer is near."])
+    #expect(store.state.streamingRowID == nil)
+
+    // Another running hydrate: both segments are cut off the inflight text, nothing is left,
+    // so no streaming row is seeded — the next delta opens it lazily at the end.
+    response.setValue(Self.runningInflight(assistant: "Let me look.Now the answer is near.", startedAt: 970))
+    await store.send(.foreground)
+    await store.receive(\.activateResult.success)
+    #expect(assistantTexts(store.state) == ["Let me look.", "Now the answer is near."])
+    #expect(store.state.streamingRowID == nil)
+    #expect(toolCallKeys() == [uuid(1): callKey])
+
+    await store.send(.gatewayEvent(.messageDelta(text: "Done")))
+    await store.send(.gatewayEvent(.messageComplete(text: "Done.", usage: nil, responseReused: false)))
+    #expect(assistantTexts(store.state) == ["Let me look.", "Now the answer is near.", "Done."])
+    // The seeded user row's stamp gives the finished turn its duration.
+    let header = try #require(store.state.transcriptItems.lazy.compactMap { item -> TurnHeader? in
+      if case let .turnHeader(header) = item { return header }
+      return nil
+    }.first)
+    #expect(header.duration == 30)
+
+    await store.send(.teardown)
+  }
+
+  @Test func runningHydrateWithNoInflightTextKeepsTheCommentaryAndSeedsNothingAboveIt() async {
+    // The turn sealed its commentary and is running a tool; `inflight` has no assistant text.
+    // No empty streaming row is seeded above the commentary — the next delta lands after it.
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "stored123")
+    initial.transcript = [ChatRow(id: uuid(900), kind: .message(role: .user, text: "now", isComplete: true))]
+    let store = TestStore(initialState: initial) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in Self.runningInflight(assistant: nil) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.messageStart))
+    await store.send(.gatewayEvent(.messageInterim(
+      text: "Checking.", alreadyStreamed: false, turnID: "t", segment: 0
+    )))
+    await store.send(.gatewayEvent(.toolStart(toolID: "t1", name: "terminal", title: "ls", argsText: nil)))
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    #expect(store.state.transcript.map(\.id).suffix(2) == [uuid(0), uuid(1)])
+    #expect(store.state.transcript.count == 3)
+    #expect(store.state.streamingRowID == nil)
+
+    await store.send(.gatewayEvent(.messageDelta(text: "Found it.")))
+    #expect(store.state.transcript.last?.kind == .message(role: .assistant, text: "Found it.", isComplete: false))
+    #expect(assistantTexts(store.state) == ["Checking.", "Found it."])
+
+    await store.send(.teardown)
+  }
+
+  @Test func theSeededPromptIsStampedFromTheTurnAnchorWithoutAServerStart() async {
+    let snapshotClient = ChatSnapshotClient.inMemory()
+    snapshotClient.setTurnAnchor("stored123", Date(timeIntervalSince1970: 988))
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = snapshotClient
+      $0.hermesGateway.send = { @Sendable _, _ in Self.runningInflight(assistant: "partial") }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+    #expect(store.state.transcript.first?.timestamp == Date(timeIntervalSince1970: 988))
 
     await store.send(.teardown)
   }

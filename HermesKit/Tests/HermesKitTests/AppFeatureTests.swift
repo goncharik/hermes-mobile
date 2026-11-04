@@ -1430,6 +1430,7 @@ struct AppFeatureTests {
       ChatRow(id: reasoningID, kind: .reasoning(text: "detached reasoning", isComplete: false))
     ]
     chat.reasoningRowID = reasoningID
+    chat.liveReasoningRowIDs = [reasoningID]
 
     let store = TestStore(
       initialState: AppFeature.State(
@@ -2126,6 +2127,7 @@ struct AppFeatureTests {
       ChatRow(id: reasoningID, kind: .reasoning(text: "live reasoning", isComplete: false))
     ]
     chat.reasoningRowID = reasoningID
+    chat.liveReasoningRowIDs = [reasoningID]
 
     let store = TestStore(
       initialState: AppFeature.State(

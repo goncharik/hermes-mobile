@@ -133,11 +133,28 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
   public var user: String?
   public var assistant: String?
   public var streaming: Bool?
+  /// When the turn started (`started_at`, Unix seconds); `nil` when absent, non-numeric or ≤ 0.
+  public var startedAt: Date?
 
-  public init(user: String? = nil, assistant: String? = nil, streaming: Bool? = nil) {
+  enum CodingKeys: String, CodingKey {
+    case user, assistant, streaming
+    case startedAt = "started_at"
+  }
+
+  public init(user: String? = nil, assistant: String? = nil, streaming: Bool? = nil, startedAt: Date? = nil) {
     self.user = user
     self.assistant = assistant
     self.streaming = streaming
+    self.startedAt = startedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    self.user = try c.decodeIfPresent(String.self, forKey: .user)
+    self.assistant = try c.decodeIfPresent(String.self, forKey: .assistant)
+    self.streaming = try c.decodeIfPresent(Bool.self, forKey: .streaming)
+    let seconds = (try? c.decodeIfPresent(Double.self, forKey: .startedAt)) ?? nil
+    self.startedAt = seconds.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
   }
 }
 
