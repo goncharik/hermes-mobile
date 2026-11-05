@@ -629,6 +629,20 @@ public struct ChatFeature {
     /// attach-by-live-id in `liveSessionIDRefreshed`); a TRANSPORT-interrupted replay
     /// keeps it (the seed is the only copy of the branch).
     var branchSeed: BranchSeed?
+    /// This plain new chat's session has (as far as the client can prove) no server DB row
+    /// yet (#132). `session.create` mints the stored key, but the server writes the row
+    /// lazily on the first prompt ("A draft has no row yet"), so on agents without
+    /// `_resume_materialize_minted` a `session.resume(stored)` of a reaped never-prompted
+    /// session answers 4007 — the #17 heal's resume fails itself. This is the fact the
+    /// heal's resume→create fallback keys on: recreating loses nothing while it holds.
+    /// The plain-chat analogue of the #34 branch bookkeeping (`attachLiveSessionID` /
+    /// `branchSeed`), which owns a branch's unpersisted window — a branch (primed with a
+    /// stored key) and any resumed chat start false. Set at init from
+    /// `!resumesStoredSession`; cleared only on positive evidence of a row: the first
+    /// `message.start` (the prompt persisted it) or a hydrate carrying server history or a
+    /// running turn. An empty hydrate or a heal's `.liveSessionIDRefreshed` keeps it —
+    /// upstream's `_resume_live_unpersisted` answers a still-live row-less session too.
+    var awaitsFirstPersist: Bool
     /// One-shot guard for the seed replay: at most ONE replayed `session.create` per
     /// successful hydrate (reset in `applyActivate` and on `message.start`), so a server
     /// answering "session not found" even for a just-recreated session can't loop
@@ -816,6 +830,7 @@ public struct ChatFeature {
       self.liveSessionID = nil
       self.attachLiveSessionID = nil
       self.branchSeed = nil
+      self.awaitsFirstPersist = resumeStoredID == nil
       self.hasReplayedBranchSeed = false
       self.pendingBranchSeed = nil
       self.streamingRowID = nil
@@ -2887,6 +2902,8 @@ public struct ChatFeature {
       state.attachLiveSessionID = nil
       state.branchSeed = nil
       state.hasReplayedBranchSeed = false
+      // Same fact for a plain new chat (#132): its row exists now.
+      state.awaitsFirstPersist = false
       // Defensive: a second message.start without an intervening message.complete would
       // otherwise leave the prior turn's open reasoning burst live forever. Freeze it first
       // (idempotent) — this also resets `turnSeconds = 0` and the label/status for the new
@@ -4250,6 +4267,11 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
+    // Server history or a running turn proves the row exists (#132); an empty idle
+    // hydrate doesn't (a still-live row-less session resumes with empty history).
+    if !response.messages.isEmpty || response.running == true {
+      state.awaitsFirstPersist = false
+    }
     // Read-aloud inputs (#74), captured BEFORE the rebuild below changes the rows.
     let isFirstHydrate = !state.hasHydrated
     let wasReplyPending = state.completedReplyCount > state.spokenAssistantCount

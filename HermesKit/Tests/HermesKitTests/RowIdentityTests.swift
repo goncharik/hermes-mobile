@@ -62,6 +62,7 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
+      $0.awaitsFirstPersist = false
     }
     // First delta materialises the assistant row (uuid 0) — nothing was created eagerly.
     await store.send(.gatewayEvent(.messageDelta(text: "Hel"))) {
@@ -97,6 +98,7 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
+      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan"), timestamp: t0)]
@@ -123,6 +125,7 @@ struct RowIdentityTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
+      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Plan"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Plan"), timestamp: t0)]

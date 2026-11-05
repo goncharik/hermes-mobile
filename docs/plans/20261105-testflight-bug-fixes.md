@@ -108,8 +108,9 @@
   calls the existing `apply(items:rowIDs:)`, so `currentRowIDs`/`currentOrder` reflect only
   updates that were actually applied, and the diff classification stays correct across the gap.
 - **#132 flag**: a `State` field such as `awaitsFirstPersist: Bool`, initialised to
-  `!resumesStoredSession && branchSeed == nil` and cleared on the first `message.start`, on
-  `.liveSessionIDRefreshed` from a successful resume, and on hydrate with server history. It is
+  `!resumesStoredSession && branchSeed == nil` and cleared on the first `message.start` and on a
+  hydrate with server history or a running turn (as built in Task 4: NOT on
+  `.liveSessionIDRefreshed` — a heal resume can succeed against a still-live row-less session). It is
   captured into the effect next to `stored`/`seed`/`profile` and passed to `healLiveSessionID`
   as `fallbackToCreate: Bool`. All `withSessionHeal` callers get the same behaviour (submit,
   attachments, slash, rename, config.set), because they share the heal.
@@ -250,13 +251,19 @@ is handled by Task 2's gate instead. No source to clamp, so no test or code chan
 - Modify: `HermesKit/Sources/HermesKit/Features/ChatFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SelfHealTests.swift` (or `ChatReductionTests.swift`)
 
-- [ ] write failing tests: a new chat starts with the flag set; the first `message.start` clears
+- [x] write failing tests: a new chat starts with the flag set; the first `message.start` clears
       it; a resumed chat (`resumesStoredSession`) and a branch never set it; a hydrate with server
-      history clears it
-- [ ] add the `State` field with a doc comment linking it to the server's lazy row creation and
-      the #34 branch analogue
-- [ ] set/clear it in the reducer at the points listed in Technical Details
-- [ ] run `make test`, which must pass
+      history clears it (`SelfHealTests` "never-saved flag (#132)"; also: a running hydrate clears
+      it, an empty hydrate and a heal's `.liveSessionIDRefreshed` keep it)
+- [x] add the `State` field with a doc comment linking it to the server's lazy row creation and
+      the #34 branch analogue (`awaitsFirstPersist`)
+- [x] set/clear it in the reducer at the points listed in Technical Details
+      (⚠️ deviation: NOT cleared on `.liveSessionIDRefreshed` — upstream's
+      `_resume_live_unpersisted` resumes a still-live row-less session successfully, so a
+      successful heal resume is no proof of a row, and the action can't tell resume from
+      create; cleared instead on a hydrate with history OR `running == true`)
+- [x] run `make test`, which must pass (21 exhaustive first-`message.start` assertions in
+      `ChatReductionTests`/`RowIdentityTests` now also assert the flag clearing)
 
 ### Task 5: Fall back from resume to create in the heal for never-saved chats (#132)
 

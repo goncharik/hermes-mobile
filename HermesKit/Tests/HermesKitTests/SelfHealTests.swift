@@ -594,4 +594,141 @@ struct SelfHealTests {
     #expect(calls.value == ["prompt.submit", "session.resume"])
     #expect(store.state.liveSessionID == "stale-live")
   }
+
+  // MARK: never-saved flag (#132)
+  //
+  // A plain new chat's `session.create` mints a stored key but the server writes no DB row
+  // until the first prompt, so until then a `session.resume(stored)` heal can itself 4007.
+  // `awaitsFirstPersist` is the per-slot fact the heal's resume→create fallback keys on.
+
+  /// A hydrate response for the new chat's minted key; `nonisolated` like `resumePayload`.
+  private nonisolated func mintedHydrate(
+    messages: [SessionMessage] = [], running: Bool = false
+  ) -> ActivateResponse {
+    ActivateResponse(
+      sessionID: "live-2", storedSessionID: "minted-key", messages: messages, running: running
+    )
+  }
+
+  /// A new chat as it stands once its `session.create` handshake landed: live id plus the
+  /// minted stored key (which alone can't tell it from a resumed session).
+  private func handshakenNewChat() -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, status: .ready)
+    state.liveSessionID = "live-1"
+    state.storedSessionID = "minted-key"
+    return state
+  }
+
+  @Test func newChatStartsAwaitingFirstPersist() {
+    #expect(ChatFeature.State(connection: conn).awaitsFirstPersist)
+    #expect(handshakenNewChat().awaitsFirstPersist)
+  }
+
+  @Test func resumedChatNeverAwaitsFirstPersist() {
+    #expect(!ChatFeature.State(connection: conn, resumeStoredID: "stored123").awaitsFirstPersist)
+  }
+
+  /// A branch (#34) is primed with its stored key, so it never sets the flag — its own
+  /// `attachLiveSessionID`/`branchSeed` machinery owns the unpersisted window.
+  @Test func branchChatNeverAwaitsFirstPersist() async {
+    let connection = conn
+    var parent = ChatFeature.State(connection: connection, resumeStoredID: "parent")
+    parent.liveSessionID = "parent-live"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "parent")]),
+        liveChat: parent
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.liveChat(.delegate(.branchCreated(.init(
+      handle: SessionHandle(sessionID: "branch-live", storedSessionID: "branch-1"),
+      seed: .init(text: "seeded answer", parentSessionID: "parent")
+    )))))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.branchSeed != nil)
+    #expect(store.state.liveChat?.awaitsFirstPersist == false)
+
+    await store.send(.liveChat(.teardown))
+    await store.send(.home(.onDisappear))
+  }
+
+  /// The first `message.start` proves the first prompt landed — the server wrote the row
+  /// (`prompt.submit` persists it before `message.start` reaches the client).
+  @Test func firstMessageStartClearsAwaitsFirstPersist() async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+      $0.awaitsFirstPersist = false
+    }
+    await store.receive(\.delegate.runningChanged)
+    await store.send(.teardown)
+  }
+
+  /// A hydrate that returns server history (or a running turn) proves the row exists.
+  @Test(arguments: [true, false])
+  func hydrateWithServerHistoryClearsAwaitsFirstPersist(runningOnly: Bool) async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    let response = runningOnly
+      ? mintedHydrate(running: true)
+      : mintedHydrate(messages: [
+          SessionMessage(id: 1, role: "user", content: "hi"),
+          SessionMessage(id: 2, role: "assistant", content: "hello"),
+        ])
+    await store.send(.activateResult(.success(response)))
+    #expect(!store.state.awaitsFirstPersist)
+    await store.send(.teardown)
+  }
+
+  /// An EMPTY, idle hydrate proves nothing: upstream's `_resume_live_unpersisted` answers a
+  /// still-live row-less session with empty history, so the chat may still be unsaved.
+  @Test func emptyHydrateKeepsAwaitsFirstPersist() async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.activateResult(.success(mintedHydrate())))
+    #expect(store.state.awaitsFirstPersist)
+    await store.send(.teardown)
+  }
+
+  /// A heal that re-bound fresh ids is no proof of a row either (the resume may have hit the
+  /// same live-unpersisted path, or the heal recreated) — the flag stands.
+  @Test func liveSessionIDRefreshedKeepsAwaitsFirstPersist() async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() }
+
+    await store.send(.liveSessionIDRefreshed(liveSessionID: "live-3", storedSessionID: "minted-key")) {
+      $0.liveSessionID = "live-3"
+    }
+    #expect(store.state.awaitsFirstPersist)
+  }
 }
