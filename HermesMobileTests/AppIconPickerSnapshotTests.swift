@@ -8,14 +8,11 @@ import XCTest
 
 /// Settings → App Icon. The grid is a vertical `ScrollView`, so every fixture renders at the
 /// pinned device size (`deviceImage()` fixes width AND height) inside the navigation stack the
-/// Settings sheet pushes it onto. `.task` is swallowed so the seeded selection is what renders
-/// (the in-memory client would otherwise reload the primary as current).
+/// Settings sheet pushes it onto, from the seeded state (the picker loads nothing itself).
 final class AppIconPickerSnapshotTests: SnapshotTestCase {
   private func pickerView(_ state: AppIconPickerFeature.State) -> some View {
     NavigationStack {
-      AppIconPickerView(
-        store: Store(initialState: state) { AppIconPickerFeature().ignoring(\.task) }
-      )
+      AppIconPickerView(store: Store(initialState: state) { AppIconPickerFeature() })
     }
   }
 

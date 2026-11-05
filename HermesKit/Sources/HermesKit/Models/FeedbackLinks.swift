@@ -1,8 +1,7 @@
 import Foundation
 
-/// The app's App Store identity. `appID` stays `nil` until the App Store Connect record
-/// exists; while it is `nil` the Settings "Rate" row only shows the system review prompt and
-/// never opens the write-review page.
+/// The app's App Store identity. `appID` stays `nil` until the app is live on the App Store;
+/// while it is `nil` the Settings "Rate" row is hidden (`FeedbackLinks.rateApp`).
 public enum AppStoreIdentity {
   public static let appID: String? = nil
 }
@@ -54,6 +53,10 @@ public enum FeedbackLinks {
   public static func writeReview(appID: String) -> URL {
     URL(string: "https://apps.apple.com/app/id\(appID)?action=write-review")!
   }
+
+  /// The "Rate Hermes Mobile" destination: this app's write-review page, `nil` (row hidden)
+  /// until `AppStoreIdentity.appID` is set.
+  public static var rateApp: URL? { AppStoreIdentity.appID.map { writeReview(appID: $0) } }
 
   /// The facts every issue body ends with: app version and build, iOS version, device model.
   static func environmentBlock(_ info: BundleInfo) -> String {

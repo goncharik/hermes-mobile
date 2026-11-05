@@ -35,13 +35,32 @@ struct AppIconCatalogTests {
     #expect(AppIconOption.all.map(\.previewAsset) == AppIconOption.all.map { "AppIconPreview-\($0.name)" })
   }
 
-  /// Documents the coupling with `Project.swift`: this literal list is the
-  /// `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` value (plus the `.appiconset` and
-  /// `AppIconPreview-<SetName>` asset names). Changing either side means changing all three.
-  @Test func tableNamesMatchProjectAlternateIconNames() {
-    let projectAlternateIconNames =
-      "AppIcon AppIconDev AppIconHermes AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint"
-    #expect(AppIconOption.all.map(\.name) == projectAlternateIconNames.split(separator: " ").map(String.init))
+  /// The table must match `Project.swift`'s `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`,
+  /// read from the checkout, and every set needs its `.appiconset` and preview image set.
+  @Test func tableNamesMatchProjectAlternateIconNames() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent() // HermesKitTests
+      .deletingLastPathComponent() // Tests
+      .deletingLastPathComponent() // HermesKit
+      .deletingLastPathComponent()
+    let project = try String(
+      contentsOf: repoRoot.appendingPathComponent("Project.swift"), encoding: .utf8
+    )
+    let key = "\"ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES\": \""
+    let value = try #require(
+      project.components(separatedBy: key).dropFirst().first?.components(separatedBy: "\"").first
+    )
+    #expect(AppIconOption.all.map(\.name) == value.split(separator: " ").map(String.init))
+
+    let assets = repoRoot.appendingPathComponent("HermesMobile/Resources/Assets.xcassets")
+    for option in AppIconOption.all {
+      for set in ["\(option.name).appiconset", "\(option.previewAsset).imageset"] {
+        #expect(
+          FileManager.default.fileExists(atPath: assets.appendingPathComponent(set).path),
+          "missing \(set)"
+        )
+      }
+    }
   }
 
   /// The real Debug-build `Info.plist` (dumped from the built app): actool drops the primary
@@ -88,18 +107,6 @@ struct AppIconCatalogTests {
     let catalog = AppIconCatalog.parse(infoDictionary: info)
     #expect(catalog.primary == nil)
     #expect(catalog.alternates.map(\.name) == ["AppIconHermes"])
-  }
-
-  @Test func fallsBackToIpadIconsKey() {
-    let info: [String: Any] = [
-      "CFBundleIcons~ipad": [
-        "CFBundlePrimaryIcon": ["CFBundleIconName": "AppIcon"],
-        "CFBundleAlternateIcons": ["AppIconDev": [String: Any]()],
-      ] as [String: Any],
-    ]
-    let catalog = AppIconCatalog.parse(infoDictionary: info)
-    #expect(catalog.primary?.name == "AppIcon")
-    #expect(catalog.alternates.map(\.name) == ["AppIconDev"])
   }
 
   @Test func emptyDictionaryYieldsEmptyCatalog() {

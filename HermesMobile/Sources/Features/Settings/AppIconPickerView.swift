@@ -31,7 +31,6 @@ struct AppIconPickerView: View {
     .background(Color(.systemGroupedBackground))
     .navigationTitle("App Icon")
     .navigationBarTitleDisplayMode(.inline)
-    .task { store.send(.task) }
   }
 }
 

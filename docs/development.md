@@ -209,13 +209,16 @@ change.
 1. Add `Assets.xcassets/<SetName>.appiconset` with a 1024×1024 PNG without alpha
    (`sips -Z 1024`; check `hasAlpha: no` with `sips -g hasAlpha`) and the `Contents.json`
    copied from `AppIcon.appiconset`.
-2. Add a plain image set `AppIconPreview-<SetName>.imageset` with a 180 px preview
-   (`sips -Z 180`), single scale: the picker cannot load an `.appiconset` with `Image(_:)`.
+2. Add a plain image set `AppIconPreview-<SetName>.imageset` with a 240 px preview
+   (`sips -Z 240`, at least the 76 pt tile at 3x), single scale: the picker cannot load an
+   `.appiconset` with `Image(_:)`.
 3. Add an `AppIconOption` row to `AppIconOption.all` in HermesKit (display order = table
    order; the preview name is derived).
-4. Append the set name to `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` in `Project.swift`,
-   then update the literals in `AppIconCatalogTests`: the Project list in
-   `tableNamesMatchProjectAlternateIconNames`, the labels in `tableIsSixIconsInDisplayOrder`,
-   and the option count in `testValueIsInMemoryWithFullCatalog`.
-5. Add the row to the icon table in `docs/features/settings.md` and re-record the picker
-   snapshots (`AppIconPickerSnapshotTests`).
+4. Append the set name to `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` in `Project.swift`
+   (`tableNamesMatchProjectAlternateIconNames` reads it from there), then update the literals
+   in `AppIconCatalogTests`: the labels in `tableIsSixIconsInDisplayOrder`, the option count in
+   `testValueIsInMemoryWithFullCatalog`, and the five-alternate fixture in
+   `actoolOutputWithoutPrimaryAlternate`.
+5. Add the row to the icon table in `docs/features/settings.md`, then delete the
+   `AppIconPickerSnapshotTests` baselines and run `make snapshot` twice (never
+   `make snapshot-record`).

@@ -51,9 +51,9 @@ the push authorization status, and the push plugin info.
 3. **Notifications.** The existing block, unchanged (`docs/features/push-notifications.md`).
 4. **Feedback.** "Report a bug" and "Request a feature" open `reportBugURL` /
    `requestFeatureURL`, which fall back to `FeedbackLinks.allIssues` until `bundleInfo`
-   loads, so the view never unwraps. "Rate Hermes Mobile" calls the SwiftUI `requestReview`
-   environment action in the view, then opens `FeedbackLinks.writeReview(appID:)` only when
-   `AppStoreIdentity.appID` is set (it is `nil` until the App Store record exists). "All
+   loads, so the view never unwraps. "Rate Hermes Mobile" opens `FeedbackLinks.rateApp` (the
+   write-review page) and is hidden while that is `nil`, i.e. until `AppStoreIdentity.appID`
+   is set once the app is live on the App Store. "All
    issues on GitHub".
 5. **About.** `versionLabel` (`"Version 1.0 (79)"`); GitHub repository; Hermes Agent; Privacy
    policy (`FeedbackLinks.privacyPolicy`, the repo's `PRIVACY.md` on GitHub);
@@ -62,8 +62,7 @@ the push authorization status, and the push plugin info.
    name and the same clear list (logout clears every prefs entry); only the copy changed. It
    never calls `appIcon.set`: the icon survives logout.
 
-External rows (`ExternalLinkRow`) are `Link`s with a trailing `arrow.up.right`; the Rate row
-is a `Button` with a star glyph, because with `appID == nil` it never leaves the app.
+External rows (`ExternalLinkRow`) are `Link`s with a trailing `arrow.up.right`.
 
 ## App icon picker (#135)
 
@@ -78,7 +77,7 @@ is a `Button` with a star glyph, because with `appID == nil` it never leaves the
 | Hermes Classic | `AppIconHermesClassic` | `AppIconPreview-AppIconHermesClassic` | |
 | Hermes Classic Blueprint | `AppIconHermesClassicBlueprint` | `AppIconPreview-AppIconHermesClassicBlueprint` | |
 
-`AppIconOption.all` is this table in display order. The previews are plain 180 px
+`AppIconOption.all` is this table in display order. The previews are plain 240 px
 single-scale image sets because an app icon set cannot be loaded with `Image(_:)`. The picker
 draws them as fixed 76 pt continuous-corner tiles in a three-column grid, so the layout is the
 same at every sheet width.
@@ -87,8 +86,7 @@ same at every sheet width.
 
 `AppIconCatalog.parse(infoDictionary:)` is pure (outside any UIKit guard). It reads
 `CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName` and the keys of
-`CFBundleIcons.CFBundleAlternateIcons`, falling back to `CFBundleIcons~ipad` when the
-universal key is absent. Names not in the table are dropped, the primary is filtered out of
+`CFBundleIcons.CFBundleAlternateIcons`. Names not in the table are dropped, the primary is filtered out of
 `alternates`, and alternates keep table order; a missing or malformed dictionary is `.empty`.
 `options` is primary + alternates in table order (the grid), and `label(for:)` maps
 `nil` → the primary's label and an unknown name → `nil`.
@@ -107,8 +105,8 @@ the primary is reachable as `set(nil)`. Choosing the primary is ALWAYS `set(nil)
 alternate twin: `State.iconName(for:)` maps the primary tile to `nil`, and `isSelected(_:)`
 checks the primary tile when `selected == nil`. Pinned by
 `AppIconCatalogTests.actoolOutputWithoutPrimaryAlternate` (the real built shape) and
-`tableNamesMatchProjectAlternateIconNames` (a literal copy of the `Project.swift` list that
-documents the coupling).
+`tableNamesMatchProjectAlternateIconNames` (reads the `Project.swift` list from the checkout
+and checks every set's `.appiconset` and preview image set exist).
 
 ### Selection
 
@@ -117,14 +115,16 @@ is async (the main-actor `alternateIconName` hop lives inside the client), and `
 when iOS refuses. The live value is UIKit-guarded; `testValue` is `.inMemory()` with the full
 six-icon `testCatalog` (primary `AppIcon`).
 
-`AppIconPickerFeature` reloads the catalog and the current icon on `.task`. A tap is
-**optimistic**: the checkmark moves, `appIcon.set` runs, and a refusal sends
-`setFailed(previous:)`, which rolls the checkmark back and sets `errorBanner` to
-`setFailedBanner`. A new tap
-clears a stale banner; tapping the already-selected icon is a no-op. The `set` effect is
-`cancelInFlight`, so the last tap wins and a superseded effect lands neither a rollback nor a
-delegate. Only a CONFIRMED change sends `delegate(.iconChanged)`, which the parent maps to
-`selectedAppIcon`, so the App Icon row never shows a refused icon.
+`AppIconPickerFeature` loads nothing itself: the push seeds the catalog and current icon
+Settings already read. A tap is **optimistic**: the checkmark moves and `appIcon.set` runs.
+One change at a time: a tap while `isApplying` is ignored, because cancelling the effect would
+not stop the UIKit change already under way. A refusal re-reads `appIcon.current()` and sends
+`setFailed(current:)`, which shows what iOS actually has and sets `errorBanner` to
+`setFailedBanner`. A new tap clears a stale banner; tapping the already-selected icon is a
+no-op. Success and refusal both send `delegate(.iconChanged)` with the resulting icon, which the
+parent maps to `selectedAppIcon`. Popping the picker mid-change cancels its effect, so the
+parent re-reads `appIcon.current()` on any pop that removes the picker; if the UIKit change
+completes after that read, the row stays stale until Settings reopens.
 
 **iOS persists the choice.** Nothing is mirrored into `PreferencesClient`, so logout leaves
 the icon alone.
@@ -155,25 +155,28 @@ winning on a simulator (which would otherwise report `arm64`). `testValue` is `B
 
 ## Diagnostics
 
-`DiagnosticsFeature` is seeded by the parent with facts it already holds: `bundleInfo`,
-`serverURL`, `authLabel` and `agentVersion`. It owns the live gateway log: `.task` subscribes to
-`debugLog.stream()` (cancellable `logStream`), and the explicit `.onDisappear` action cancels it.
-The log moved here from `SettingsFeature`, so it streams only while the screen is on screen.
+`DiagnosticsFeature` is seeded by the parent with `serverURL`, `authLabel` and `agentVersion`;
+a version that lands after the push is forwarded into the open screen. Build facts come from
+`bundleInfo.info()` at copy time. It owns the live gateway log: `.task` subscribes to
+`debugLog.stream()` (cancellable `logStream`); popping the screen ends it, because the stack
+cancels a removed element's effects (no `.onDisappear` action, which would reach a missing
+element). The log streams only while the screen is pushed; sign out clears it
+(`debugLog.clear()`), so a report never mixes in a previous server's events.
 
-"Copy diagnostics" puts `State.report` (`DiagnosticsReport.render`) on the pasteboard, bumps
+"Copy diagnostics" puts `DiagnosticsReport.render` on the pasteboard, bumps
 `copiedToken` and runs the `cancelInFlight` `copiedFeedbackDuration` dwell (the transient-toast
 idiom); the view shows the shared `CopiedToastView` ("Diagnostics copied", announced to
-VoiceOver). `ConnectionDebugView(entries:header:)` renders the button as a leading `Section` of
-the same `List` as the log (no list-in-list), and the empty state is a row, because an overlay
-would hide the button.
+VoiceOver). `DiagnosticsView` puts the button and the gateway events in one `List` (no
+list-in-list), and the empty state is a row, because an overlay would hide the button.
 
 The report, in order: a `Hermes Mobile diagnostics` header; `App: <version> (<build>)`, `iOS`,
-`Device` (or `App: unknown` before bundle info loads); `Server:` (redacted); `Auth:` (the label);
+`Device`; `Server:` (redacted); `Auth:` (the label);
 `Agent:` (the version or `unknown`); a blank line; then `Recent events (last N of M):` over the
 last `DiagnosticsReport.defaultLogLimit` (50) log entries as `type — summary`, or
-`Recent events: none`. A summary is `GatewayEvent.debugSummary`, which carries up to 80
-characters of event text (message and reasoning fragments, commands, clarify questions):
-conversation excerpts, not credentials. The copy is user-initiated and goes only to the
+`Recent events: none`. `render` caps every summary with `GatewayEvent.truncate` (80
+characters plus an ellipsis, newlines collapsed), whatever fed the log; the text can still be
+message and reasoning fragments, commands or clarify questions: conversation excerpts, not
+credentials. The copy is user-initiated and goes only to the
 pasteboard; `PRIVACY.md` and the screen's footer under the button both say the events may
 include snippets of messages and commands.
 
@@ -187,15 +190,17 @@ credential-bearing URL.
 
 ## Acknowledgements
 
-`Acknowledgement.all` is a static list of the RUNTIME package dependencies (`GRDB.swift`,
-`swift-composable-architecture`, `swift-dependencies`, all MIT); test-only packages are not
-listed. Adding a runtime dependency to HermesKit's `Package.swift` means adding it here.
-`AcknowledgementsFeature` is an `EmptyReducer` that exists only to be a `SettingsPath` case;
-`AcknowledgementsView` renders the list directly and takes no store.
+`Acknowledgement.all` lists every package in `HermesKit/Package.resolved` except the build- and
+test-only ones (`swift-syntax`, `swift-snapshot-testing`), each with its LICENSE text verbatim
+(MIT and Apache-2.0 both require it in the binary). `AcknowledgementTests` pins the list against
+`Package.resolved` and each text against the SwiftPM checkout, so a new or removed dependency
+fails until the list follows. `AcknowledgementsFeature` is an `EmptyReducer` that exists only to
+be a `SettingsPath` case; `AcknowledgementsView` renders the list directly (each row expands to
+the license text) and takes no store.
 
 ## Tests
 
-- HermesKit: `AppIconCatalogTests`, `FeedbackLinksTests`, `BundleInfoClientTests`,
+- HermesKit: `AppIconCatalogTests`, `AcknowledgementTests`, `FeedbackLinksTests`, `BundleInfoClientTests`,
   `AuthSessionTests` (labels), `DiagnosticsReportTests`, `AppIconPickerFeatureTests`,
   `DiagnosticsFeatureTests`, `SettingsFeatureTests` (seeding, pushes, gates, sign out never
   touching the icon), `SessionListFeatureTests` (`profileName` seeding).

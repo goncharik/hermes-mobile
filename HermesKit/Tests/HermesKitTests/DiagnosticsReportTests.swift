@@ -38,13 +38,12 @@ struct DiagnosticsReportTests {
 
   @Test func unknownAgentVersionAndEmptyLog() {
     let report = DiagnosticsReport.render(
-      bundleInfo: nil,
+      bundleInfo: .test,
       serverURL: Self.serverURL,
       authLabel: "Token",
       agentVersion: nil,
       log: []
     )
-    #expect(report.contains("App: unknown"))
     #expect(report.contains("Agent: unknown"))
     #expect(report.contains("Recent events: none"))
 
@@ -67,6 +66,29 @@ struct DiagnosticsReportTests {
     #expect(report.contains("Recent events (last 3 of 10):"))
     #expect(report.hasSuffix("t7 — s7\nt8 — s8\nt9 — s9"))
     #expect(!report.contains("t6 — s6"))
+  }
+
+  /// Every event summary is capped at 80 characters (+ ellipsis) whatever fed the log —
+  /// `debugSummary` passes an approval command through at full length.
+  @Test func capsEveryEventSummary() {
+    let command = "curl -H 'Authorization: Bearer " + String(repeating: "k", count: 200) + "' x"
+    let approval = GatewayEvent.approvalRequest(ApprovalRequest(command: command))
+    let log = [
+      GatewayLogEntry(id: 0, event: approval),
+      GatewayLogEntry(id: 1, type: "error", summary: String(repeating: "e", count: 200)),
+      GatewayLogEntry(id: 2, type: "status.update", summary: "line one\nline two"),
+    ]
+    #expect(log[0].summary == command) // the cap is the report's, not the log's
+    let report = DiagnosticsReport.render(
+      bundleInfo: .test, serverURL: Self.serverURL, authLabel: "Token", agentVersion: nil, log: log
+    )
+    let eventLines = report.components(separatedBy: "\n").suffix(log.count)
+    for (line, entry) in zip(eventLines, log) {
+      let summary = String(line.dropFirst("\(entry.type) — ".count))
+      #expect(summary.count <= 81, "uncapped summary: \(line)")
+    }
+    #expect(!report.contains(String(repeating: "k", count: 81)))
+    #expect(report.hasSuffix("status.update — line one⏎line two"))
   }
 
   @Test func neverContainsSecrets() {

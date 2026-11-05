@@ -1,6 +1,5 @@
 import ComposableArchitecture
 import HermesKit
-import StoreKit
 import SwiftUI
 import UIKit
 
@@ -12,8 +11,6 @@ struct SettingsView: View {
   /// Presentation-only: the "how push works / install the plugin" info sheet. Pure view
   /// state — there's no reducer behavior behind it.
   @State private var showingPushGuide = false
-  @Environment(\.openURL) private var openURL
-  @Environment(\.requestReview) private var requestReview
 
   var body: some View {
     NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
@@ -229,10 +226,10 @@ struct SettingsView: View {
     Section("Feedback") {
       ExternalLinkRow(title: "Report a bug", destination: store.reportBugURL)
       ExternalLinkRow(title: "Request a feature", destination: store.requestFeatureURL)
-      Button(action: rateButtonTapped) {
-        ExternalRowLabel(title: "Rate Hermes Mobile", systemImage: "star")
+      // Hidden until the app is live on the App Store (`AppStoreIdentity.appID`).
+      if let rateApp = FeedbackLinks.rateApp {
+        ExternalLinkRow(title: "Rate Hermes Mobile", destination: rateApp)
       }
-      .tint(.primary)
       ExternalLinkRow(title: "All issues on GitHub", destination: FeedbackLinks.allIssues)
     }
   }
@@ -265,15 +262,6 @@ struct SettingsView: View {
       }
     } footer: {
       Text("Removes this server's credentials and cached chats from this device and returns to the connection screen.")
-    }
-  }
-
-  /// The system review prompt first; the App Store write-review page only once the app has an
-  /// App Store id (`AppStoreIdentity.appID` starts `nil`, so today this is the prompt alone).
-  private func rateButtonTapped() {
-    requestReview()
-    if let appID = AppStoreIdentity.appID {
-      openURL(FeedbackLinks.writeReview(appID: appID))
     }
   }
 
@@ -316,7 +304,6 @@ private struct SettingsNavigationRow: View {
     // A Form button resolves `.primary` in its label to the TINT; re-tinting to `.primary`
     // keeps the row reading like a `NavigationLink` (label colour, secondary value).
     .tint(.primary)
-    .accessibilityAddTraits(.isLink)
   }
 }
 
@@ -328,26 +315,16 @@ private struct ExternalLinkRow: View {
 
   var body: some View {
     Link(destination: destination) {
-      ExternalRowLabel(title: title)
+      HStack {
+        Text(title)
+          .foregroundStyle(.primary)
+        Spacer()
+        Image(systemName: "arrow.up.right")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      }
+      .contentShape(Rectangle())
     }
     .tint(.primary) // see `SettingsNavigationRow`
-  }
-}
-
-/// The shared label of an external row (also used by the Rate button, which isn't a `Link`).
-private struct ExternalRowLabel: View {
-  let title: String
-  var systemImage = "arrow.up.right"
-
-  var body: some View {
-    HStack {
-      Text(title)
-        .foregroundStyle(.primary)
-      Spacer()
-      Image(systemName: systemImage)
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.tertiary)
-    }
-    .contentShape(Rectangle())
   }
 }

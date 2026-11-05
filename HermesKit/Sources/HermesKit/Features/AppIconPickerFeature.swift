@@ -2,14 +2,16 @@ import ComposableArchitecture
 import Foundation
 
 /// The Settings → App Icon screen: a grid of the icons this build can switch between, with
-/// the current one checked.
+/// the current one checked. Seeded by `SettingsFeature` with the catalog and current icon it
+/// already loaded.
 ///
-/// A tap is **optimistic** — the checkmark moves at once, then `appIcon.set` runs; a refusal
-/// from iOS rolls the checkmark back to the previous icon and raises `errorBanner` (the
-/// project's optimistic-then-rollback idiom, as in the model picker). Only a CONFIRMED change
-/// reaches the parent (`delegate(.iconChanged)`), so the Settings row value never shows an
-/// icon iOS refused. iOS persists the choice itself; nothing here touches `PreferencesClient`,
-/// so logout leaves the icon alone.
+/// A tap is **optimistic** — the checkmark moves at once, then `appIcon.set` runs. One change
+/// at a time: a tap while `isApplying` is ignored (cancelling the effect would not stop the
+/// UIKit change already under way). A refusal re-reads `appIcon.current()` and shows THAT —
+/// what iOS actually has — and raises `errorBanner`. Every outcome reports the resulting icon
+/// to the parent (`delegate(.iconChanged)`), so the Settings row follows iOS, not a guess.
+/// iOS persists the choice itself; nothing here touches `PreferencesClient`, so logout leaves
+/// the icon alone.
 ///
 /// `selected == nil` means the build's primary icon (`alternateIconName == nil`): picking the
 /// primary tile is `set(nil)`, never the primary's alternate twin (see `AppIconCatalog`).
@@ -17,21 +19,25 @@ import Foundation
 public struct AppIconPickerFeature {
   @ObservableState
   public struct State: Equatable {
-    /// The icons on offer — seeded by `.task` from `appIcon.catalog()`.
+    /// The icons on offer — seeded by the parent from `appIcon.catalog()`.
     public var catalog: AppIconCatalog
     /// The checked icon's set name; `nil` is the build's primary icon.
     public var selected: String?
     /// The last `set` failure, shown under the grid; cleared by the next tap.
     public var errorBanner: String?
+    /// A `set` is in flight; taps are ignored until it settles.
+    public var isApplying: Bool
 
     public init(
       catalog: AppIconCatalog = .empty,
       selected: String? = nil,
-      errorBanner: String? = nil
+      errorBanner: String? = nil,
+      isApplying: Bool = false
     ) {
       self.catalog = catalog
       self.selected = selected
       self.errorBanner = errorBanner
+      self.isApplying = isApplying
     }
 
     /// Whether a tile is the checked one. The primary tile is checked when `selected == nil`
@@ -48,27 +54,22 @@ public struct AppIconPickerFeature {
   }
 
   public enum Action: Equatable, Sendable {
-    /// The screen appeared — load the catalog and the current icon.
-    case task
-    case loaded(catalog: AppIconCatalog, current: String?)
     /// A tile was tapped; `nil` is the primary icon.
     case iconTapped(String?)
-    /// iOS refused the change — restore `previous` and raise the banner.
-    case setFailed(previous: String?)
+    /// iOS accepted the change to this icon.
+    case setSucceeded(String?)
+    /// iOS refused the change; `current` is what `appIcon.current()` reads afterwards.
+    case setFailed(current: String?)
     case delegate(Delegate)
 
     @CasePathable
     public enum Delegate: Equatable, Sendable {
-      /// iOS accepted the change; `nil` is the primary icon.
+      /// The icon iOS has after a change attempt; `nil` is the primary icon.
       case iconChanged(String?)
     }
   }
 
   public static let setFailedBanner = "Couldn’t change the app icon. Try again."
-
-  /// One icon change in flight: a newer tap supersedes an older one so the last tap wins
-  /// (a superseded effect's sends are dropped — no stale rollback or delegate lands).
-  private enum CancelID { case set }
 
   @Dependency(\.appIcon) var appIcon
 
@@ -77,37 +78,29 @@ public struct AppIconPickerFeature {
   public var body: some ReducerOf<Self> {
     Reduce { state, action in
       switch action {
-      case .task:
-        return .run { [appIcon] send in
-          let catalog = appIcon.catalog()
-          let current = await appIcon.current()
-          await send(.loaded(catalog: catalog, current: current))
-        }
-
-      case let .loaded(catalog, current):
-        state.catalog = catalog
-        state.selected = current
-        return .none
-
       case let .iconTapped(name):
-        guard name != state.selected else { return .none }
-        let previous = state.selected
+        guard !state.isApplying, name != state.selected else { return .none }
         state.selected = name
         state.errorBanner = nil
+        state.isApplying = true
         return .run { [appIcon] send in
           do {
             try await appIcon.set(name)
-            await send(.delegate(.iconChanged(name)))
+            await send(.setSucceeded(name))
           } catch {
-            await send(.setFailed(previous: previous))
+            await send(.setFailed(current: await appIcon.current()))
           }
         }
-        .cancellable(id: CancelID.set, cancelInFlight: true)
 
-      case let .setFailed(previous):
-        state.selected = previous
+      case let .setSucceeded(name):
+        state.isApplying = false
+        return .send(.delegate(.iconChanged(name)))
+
+      case let .setFailed(current):
+        state.isApplying = false
+        state.selected = current
         state.errorBanner = Self.setFailedBanner
-        return .none
+        return .send(.delegate(.iconChanged(current)))
 
       case .delegate:
         return .none

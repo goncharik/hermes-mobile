@@ -37,6 +37,26 @@ struct SettingsFeatureTests {
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
   }
 
+  /// The gateway event log belongs to the old server: sign out empties it, so a later
+  /// diagnostics report under a new server carries none of its events.
+  @Test func clearTokenClearsTheGatewayEventLog() async {
+    let debugLog = DebugLogClient.ringBuffer()
+    debugLog.note("session.resume", "old server")
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.keychain.deleteSession = { @Sendable in }
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.debugLog = debugLog
+      $0.dismiss = DismissEffect {}
+    }
+
+    await store.send(.clearTokenTapped)
+    await store.receive(\.delegate.disconnect)
+    #expect(debugLog.snapshot().isEmpty)
+  }
+
   @Test func clearTokenWipesChatSnapshotStore() async {
     // Logout must clear the non-authoritative chat cache (snapshots + turn anchors) too —
     // they are per-server, like the prefs cleared above.
@@ -249,9 +269,7 @@ struct SettingsFeatureTests {
 
   @Test func diagnosticsRowPushesDiagnosticsSeededFromParent() async {
     let store = TestStore(
-      initialState: SettingsFeature.State(
-        connection: connection, agentVersion: "0.17.2", bundleInfo: .test
-      )
+      initialState: SettingsFeature.State(connection: connection, agentVersion: "0.17.2")
     ) {
       SettingsFeature()
     }
@@ -259,12 +277,30 @@ struct SettingsFeatureTests {
     await store.send(.diagnosticsRowTapped) {
       $0.path[id: 0] = .diagnostics(
         DiagnosticsFeature.State(
-          bundleInfo: .test,
           serverURL: self.connection.baseURL,
           authLabel: "Token",
           agentVersion: "0.17.2"
         )
       )
+    }
+  }
+
+  /// Diagnostics pushed before `/api/status` answered still gets the version.
+  @Test func agentVersionLandingAfterThePushReachesDiagnostics() async {
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    }
+
+    await store.send(.diagnosticsRowTapped) {
+      $0.path[id: 0] = .diagnostics(
+        DiagnosticsFeature.State(
+          serverURL: self.connection.baseURL, authLabel: "Token", agentVersion: nil
+        )
+      )
+    }
+    await store.send(.agentStatusLoaded("0.17.2")) {
+      $0.agentVersion = "0.17.2"
+      $0.path[id: 0, case: \.diagnostics]?.agentVersion = "0.17.2"
     }
   }
 
@@ -276,9 +312,6 @@ struct SettingsFeatureTests {
     await store.send(.acknowledgementsRowTapped) {
       $0.path[id: 0] = .acknowledgements(AcknowledgementsFeature.State())
     }
-    #expect(Acknowledgement.all.map(\.name) == [
-      "GRDB.swift", "swift-composable-architecture", "swift-dependencies",
-    ])
   }
 
   /// A confirmed change in the pushed picker updates the App Icon row value.
@@ -297,6 +330,10 @@ struct SettingsFeatureTests {
     }
     await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermesClassic") {
       $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermesClassic"
+      $0.path[id: 0, case: \.appIcon]?.isApplying = true
+    }
+    await store.receive(\.path[id: 0].appIcon.setSucceeded) {
+      $0.path[id: 0, case: \.appIcon]?.isApplying = false
     }
     await store.receive(\.path[id: 0].appIcon.delegate.iconChanged) {
       $0.selectedAppIcon = "AppIconHermesClassic"
@@ -305,15 +342,56 @@ struct SettingsFeatureTests {
     #expect(store.state.selectedAppIconLabel == "Hermes Classic")
   }
 
-  /// A refused change never reaches the parent — the row keeps the previous icon.
-  @Test func refusedIconChangeLeavesSelectedIcon() async {
+  /// A refused change reports what iOS has after the refusal, so the row follows iOS.
+  @Test func refusedIconChangeReportsTheCurrentIcon() async {
     struct Refused: Error {}
+    let store = TestStore(
+      initialState: SettingsFeature.State(
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+      )
+    ) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.appIcon.current = { @Sendable in "AppIconHermesClassic" }
+      $0.appIcon.set = { @Sendable _ in throw Refused() }
+    }
+
+    await store.send(.appIconRowTapped) {
+      $0.path[id: 0] = .appIcon(
+        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+      )
+    }
+    await store.send(\.path[id: 0].appIcon.iconTapped, nil) {
+      $0.path[id: 0, case: \.appIcon]?.selected = nil
+      $0.path[id: 0, case: \.appIcon]?.isApplying = true
+    }
+    await store.receive(\.path[id: 0].appIcon.setFailed) {
+      $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermesClassic"
+      $0.path[id: 0, case: \.appIcon]?.errorBanner = AppIconPickerFeature.setFailedBanner
+      $0.path[id: 0, case: \.appIcon]?.isApplying = false
+    }
+    await store.receive(\.path[id: 0].appIcon.delegate.iconChanged) {
+      $0.selectedAppIcon = "AppIconHermesClassic"
+    }
+  }
+
+  /// Popping the picker while `set` is suspended cancels the picker's effect (its delegate
+  /// never lands), so the parent re-reads what iOS has.
+  @Test func poppingThePickerMidChangeReReadsTheCurrentIcon() async {
+    let (gate, hold) = AsyncStream<Void>.makeStream()
+    defer { hold.finish() }
+    let current = LockIsolated<String?>(nil)
     let store = TestStore(
       initialState: SettingsFeature.State(connection: connection, appIconCatalog: .testCatalog)
     ) {
       SettingsFeature()
     } withDependencies: {
-      $0.appIcon.set = { @Sendable _ in throw Refused() }
+      $0.appIcon.current = { @Sendable in current.value }
+      $0.appIcon.set = { @Sendable name in
+        // iOS applies the icon; the completion never arrives before the pop.
+        current.setValue(name)
+        for await _ in gate {}
+      }
     }
 
     await store.send(.appIconRowTapped) {
@@ -321,12 +399,32 @@ struct SettingsFeatureTests {
     }
     await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermes") {
       $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermes"
+      $0.path[id: 0, case: \.appIcon]?.isApplying = true
     }
-    await store.receive(\.path[id: 0].appIcon.setFailed) {
-      $0.path[id: 0, case: \.appIcon]?.selected = nil
-      $0.path[id: 0, case: \.appIcon]?.errorBanner = AppIconPickerFeature.setFailedBanner
+    await waitUntil({ current.value == "AppIconHermes" })
+    await store.send(.path(.popFrom(id: 0))) { $0.path.pop(from: 0) }
+    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermes" }
+  }
+
+  /// Popping any other screen leaves the icon alone (no extra read).
+  @Test func poppingDiagnosticsDoesNotReadTheIcon() async {
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.appIcon.current = { @Sendable in
+        Issue.record("appIcon.current() read on a non-picker pop")
+        return nil
+      }
     }
-    #expect(store.state.selectedAppIcon == nil)
+
+    await store.send(.diagnosticsRowTapped) {
+      $0.path[id: 0] = .diagnostics(
+        DiagnosticsFeature.State(
+          serverURL: self.connection.baseURL, authLabel: "Token", agentVersion: nil
+        )
+      )
+    }
+    await store.send(.path(.popFrom(id: 0))) { $0.path.pop(from: 0) }
   }
 
   /// Sign out leaves the home-screen icon alone (iOS owns that choice, not the account).

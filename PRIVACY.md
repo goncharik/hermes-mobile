@@ -74,7 +74,7 @@ You can turn notifications off at any time in iOS Settings. Technical details:
   with the app version, build number, iOS version and device model. Nothing is sent unless
   you submit the issue on GitHub. GitHub issues are public and covered by GitHub's privacy
   policy.
-- **Rate Hermes Mobile** shows Apple's standard rating prompt.
+- **Rate Hermes Mobile** (once the app is on the App Store) opens its App Store review page.
 - **Copy diagnostics** (Settings → About → Diagnostics) copies a text report to your
   clipboard only when you tap it. The report contains the app version and build, iOS
   version, device model, your server address (without any user name, password or query

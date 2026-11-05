@@ -24,7 +24,7 @@ public struct SettingsFeature {
     /// The agent's `/api/status` version, read on appearance; `nil` until it lands (and left
     /// `nil` on failure), which hides the Agent row.
     public var agentVersion: String?
-    /// Build + device facts (version row, diagnostics), read on appearance.
+    /// Build + device facts (version row, feedback links), read on appearance.
     public var bundleInfo: BundleInfo?
     /// The icons this build can switch between, read on appearance (labels the App Icon row
     /// and seeds the picker).
@@ -245,6 +245,7 @@ public struct SettingsFeature {
   @Dependency(\.keychain) var keychain
   @Dependency(\.preferences) var preferences
   @Dependency(\.chatSnapshot) var chatSnapshot
+  @Dependency(\.debugLog) var debugLog
   @Dependency(\.hermesREST) var rest
   @Dependency(\.push) var push
   @Dependency(\.bearerTokens) var bearerTokens
@@ -399,6 +400,10 @@ public struct SettingsFeature {
 
       case let .agentStatusLoaded(version):
         state.agentVersion = version
+        // A Diagnostics screen pushed before the probe landed reports the version too.
+        for id in state.path.ids {
+          state.path[id: id, case: \.diagnostics]?.agentVersion = version
+        }
         return .none
 
       case let .currentAppIconLoaded(name):
@@ -420,7 +425,6 @@ public struct SettingsFeature {
         state.path.append(
           .diagnostics(
             DiagnosticsFeature.State(
-              bundleInfo: state.bundleInfo,
               serverURL: state.connection.baseURL,
               authLabel: state.authLabel,
               agentVersion: state.agentVersion
@@ -434,9 +438,19 @@ public struct SettingsFeature {
         return .none
 
       case let .path(.element(id: _, action: .appIcon(.delegate(.iconChanged(name))))):
-        // Only a CONFIRMED change reaches here, so the row value never shows a refused icon.
         state.selectedAppIcon = name
         return .none
+
+      case let .path(.popFrom(id)):
+        // Popping the picker cancels its effects, so a change still in flight never reports
+        // back; re-read what iOS has instead. (Runs before the stack removes the element.)
+        guard
+          state.path.ids.drop(while: { $0 != id })
+            .contains(where: { state.path[id: $0]?.is(\.appIcon) == true })
+        else { return .none }
+        return .run { [appIcon] send in
+          await send(.currentAppIconLoaded(appIcon.current()))
+        }
 
       case .path:
         return .none
@@ -471,6 +485,7 @@ public struct SettingsFeature {
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
         preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
+        debugLog.clear() // the gateway event log is per-server too (diagnostics report)
         return .merge(
           .send(.delegate(.disconnect)),
           .run { [dismiss] _ in await dismiss() }

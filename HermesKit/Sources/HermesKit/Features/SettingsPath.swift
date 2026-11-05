@@ -31,38 +31,3 @@ public struct AcknowledgementsFeature {
     EmptyReducer()
   }
 }
-
-/// One open-source package the app ships at runtime (HermesKit's `Package.swift`
-/// dependencies — test-only packages are not listed).
-public struct Acknowledgement: Equatable, Hashable, Identifiable, Sendable {
-  public let name: String
-  public let url: URL
-  public let license: String
-
-  public var id: String { name }
-
-  public init(name: String, url: URL, license: String) {
-    self.name = name
-    self.url = url
-    self.license = license
-  }
-
-  /// Every runtime dependency, alphabetical by display name.
-  public static let all: [Acknowledgement] = [
-    Acknowledgement(
-      name: "GRDB.swift",
-      url: URL(string: "https://github.com/groue/GRDB.swift")!,
-      license: "MIT"
-    ),
-    Acknowledgement(
-      name: "swift-composable-architecture",
-      url: URL(string: "https://github.com/pointfreeco/swift-composable-architecture")!,
-      license: "MIT"
-    ),
-    Acknowledgement(
-      name: "swift-dependencies",
-      url: URL(string: "https://github.com/pointfreeco/swift-dependencies")!,
-      license: "MIT"
-    ),
-  ]
-}

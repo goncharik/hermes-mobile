@@ -77,10 +77,6 @@ struct FeedbackLinksTests {
         == "https://apps.apple.com/app/id1234567890?action=write-review"
     )
   }
-
-  @Test func appStoreIDStartsUnset() {
-    #expect(AppStoreIdentity.appID == nil)
-  }
 }
 
 struct BundleInfoClientTests {

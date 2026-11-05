@@ -6,9 +6,8 @@ import XCTest
 
 @testable import HermesMobile
 
-/// Settings → Diagnostics: the copy button above the live gateway log (the former standalone
-/// `ConnectionDebugView` screen). `.task` is swallowed so the seeded log renders instead of
-/// the debug-log stream.
+/// Settings → Diagnostics: the copy button above the live gateway log. `.task` is swallowed so
+/// the seeded log renders instead of the debug-log stream.
 final class DiagnosticsSnapshotTests: SnapshotTestCase {
   private let entries = [
     GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
@@ -22,7 +21,6 @@ final class DiagnosticsSnapshotTests: SnapshotTestCase {
     copiedToken: Int? = nil
   ) -> some View {
     let state = DiagnosticsFeature.State(
-      bundleInfo: .test,
       serverURL: connection.baseURL,
       authLabel: "Token",
       agentVersion: "0.12.0",

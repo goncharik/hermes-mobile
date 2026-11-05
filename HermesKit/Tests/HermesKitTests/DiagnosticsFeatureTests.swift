@@ -11,7 +11,6 @@ struct DiagnosticsFeatureTests {
 
   private func state(log: [GatewayLogEntry] = []) -> DiagnosticsFeature.State {
     DiagnosticsFeature.State(
-      bundleInfo: .test,
       serverURL: serverURL,
       authLabel: "Password · eugene",
       agentVersion: "0.9.1",
@@ -21,26 +20,37 @@ struct DiagnosticsFeatureTests {
 
   // MARK: - Log stream
 
-  @Test func streamFeedsTheLogUntilDisappear() async {
+  /// The log streams while the screen is pushed; popping it (the stack cancels a removed
+  /// element's effects) ends the subscription — no explicit disappear action.
+  @Test func streamFeedsTheLogUntilPopped() async {
     let (stream, continuation) = AsyncStream<[GatewayLogEntry]>.makeStream()
     let terminated = LockIsolated(false)
     continuation.onTermination = { _ in terminated.setValue(true) }
     let first = [GatewayLogEntry(id: 1, type: "message.delta", summary: "hi")]
     let second = first + [GatewayLogEntry(id: 2, type: "message.complete", summary: "done")]
-    let store = TestStore(initialState: state()) {
-      DiagnosticsFeature()
+    let connection = ServerConnection(baseURL: serverURL, token: "tok")
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
     } withDependencies: {
       $0.debugLog.stream = { @Sendable in stream }
     }
 
-    await store.send(.task)
+    await store.send(.diagnosticsRowTapped) {
+      $0.path[id: 0] = .diagnostics(
+        DiagnosticsFeature.State(serverURL: self.serverURL, authLabel: "Token", agentVersion: nil)
+      )
+    }
+    await store.send(\.path[id: 0].diagnostics.task)
     continuation.yield(first)
-    await store.receive(.logUpdated(first)) { $0.log = first }
+    await store.receive(\.path[id: 0].diagnostics.logUpdated) {
+      $0.path[id: 0, case: \.diagnostics]?.log = first
+    }
     continuation.yield(second)
-    await store.receive(.logUpdated(second)) { $0.log = second }
+    await store.receive(\.path[id: 0].diagnostics.logUpdated) {
+      $0.path[id: 0, case: \.diagnostics]?.log = second
+    }
 
-    // The explicit `.onDisappear` cancels the subscription (not bare `.task` cancellation).
-    await store.send(.onDisappear)
+    await store.send(.path(.popFrom(id: 0))) { $0.path.pop(from: 0) }
     await waitUntil({ terminated.value })
     #expect(terminated.value)
   }
@@ -68,7 +78,7 @@ struct DiagnosticsFeatureTests {
     )
     await waitUntil({ copied.value.count == 1 })
     expectNoDifference(copied.value, [expected])
-    #expect(expected.contains("session.resume — ok"))
+    #expect(copied.value.first?.contains("session.resume — ok") == true)
 
     await clock.advance(by: .seconds(1.5))
     await store.receive(.copiedFeedbackExpired) { $0.copiedToken = nil }
@@ -90,6 +100,7 @@ struct DiagnosticsFeatureTests {
     // timer dies with it (cancelInFlight).
     await store.send(.copyTapped) { $0.copiedToken = 2 }
     await clock.advance(by: .seconds(1.0)) // 2.0 s after the first copy — nothing fires
+    #expect(store.state.copiedToken == 2)
     await clock.advance(by: .seconds(0.5)) // 1.5 s after the second copy
     await store.receive(.copiedFeedbackExpired) { $0.copiedToken = nil }
     await waitUntil({ copied.value.count == 2 })

@@ -4,18 +4,18 @@ import Foundation
 /// The Settings → Diagnostics screen: the live gateway event log plus a "Copy diagnostics"
 /// button that puts a plain-text `DiagnosticsReport` on the pasteboard for a bug report.
 ///
-/// Seeded by `SettingsFeature` with the facts it already holds (bundle info, server URL, the
-/// pre-rendered auth label, the agent version) — never an `AuthSession`, so no credential can
-/// reach the report (`DiagnosticsReport`'s no-secrets invariant).
+/// Seeded by `SettingsFeature` with the facts it already holds (server URL, the pre-rendered
+/// auth label, the agent version — kept current by the parent while pushed) — never an
+/// `AuthSession`, so no credential can reach the report (`DiagnosticsReport`'s no-secrets
+/// invariant). Build facts come from `bundleInfo` at copy time.
 ///
-/// Lifecycle: `.task` subscribes to `debugLog.stream()`; the explicit `.onDisappear` action
-/// cancels it (the project's explicit-cancel idiom, not bare `.task` cancellation). The copied
-/// toast is the reducer-owned token + `cancelInFlight` dwell, duplicated per feature.
+/// Lifecycle: `.task` subscribes to `debugLog.stream()`; popping the screen cancels it (the
+/// stack cancels a removed element's effects). The copied toast is the reducer-owned token +
+/// `cancelInFlight` dwell, duplicated per feature.
 @Reducer
 public struct DiagnosticsFeature {
   @ObservableState
   public struct State: Equatable {
-    public var bundleInfo: BundleInfo?
     public var serverURL: URL
     /// `AuthSession.settingsLabel` — identity only, never a secret.
     public var authLabel: String
@@ -28,30 +28,17 @@ public struct DiagnosticsFeature {
     public var copiedToken: Int?
 
     public init(
-      bundleInfo: BundleInfo?,
       serverURL: URL,
       authLabel: String,
       agentVersion: String?,
       log: [GatewayLogEntry] = [],
       copiedToken: Int? = nil
     ) {
-      self.bundleInfo = bundleInfo
       self.serverURL = serverURL
       self.authLabel = authLabel
       self.agentVersion = agentVersion
       self.log = log
       self.copiedToken = copiedToken
-    }
-
-    /// The report "Copy diagnostics" puts on the pasteboard.
-    public var report: String {
-      DiagnosticsReport.render(
-        bundleInfo: bundleInfo,
-        serverURL: serverURL,
-        authLabel: authLabel,
-        agentVersion: agentVersion,
-        log: log
-      )
     }
   }
 
@@ -61,8 +48,6 @@ public struct DiagnosticsFeature {
     case logUpdated([GatewayLogEntry])
     case copyTapped
     case copiedFeedbackExpired
-    /// The screen went away — cancel the log subscription.
-    case onDisappear
   }
 
   private enum CancelID: Hashable {
@@ -73,6 +58,7 @@ public struct DiagnosticsFeature {
   /// than shared, so a tweak elsewhere can't silently restyle this screen.
   static let copiedFeedbackDuration: Duration = .seconds(1.5)
 
+  @Dependency(\.bundleInfo) var bundleInfo
   @Dependency(\.continuousClock) var clock
   @Dependency(\.debugLog) var debugLog
   @Dependency(\.pasteboard) var pasteboard
@@ -96,7 +82,13 @@ public struct DiagnosticsFeature {
 
       case .copyTapped:
         state.copiedToken = (state.copiedToken ?? 0) + 1
-        let report = state.report
+        let report = DiagnosticsReport.render(
+          bundleInfo: bundleInfo.info(),
+          serverURL: state.serverURL,
+          authLabel: state.authLabel,
+          agentVersion: state.agentVersion,
+          log: state.log
+        )
         return .merge(
           .run { [pasteboard] _ in pasteboard.copy(report) },
           .run { [clock] send in
@@ -109,9 +101,6 @@ public struct DiagnosticsFeature {
       case .copiedFeedbackExpired:
         state.copiedToken = nil
         return .none
-
-      case .onDisappear:
-        return .cancel(id: CancelID.logStream)
       }
     }
   }
