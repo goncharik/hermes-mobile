@@ -472,13 +472,10 @@ import Testing
 
   // MARK: - canApplySnapshot (#128)
 
-  /// The production section inset (`TranscriptLayout.horizontalSectionInset`, app target).
-  private let inset: CGFloat = 16
+  private let inset = TranscriptScrollMath.horizontalSectionInset
 
   private func canApply(width: CGFloat, height: CGFloat, hasWindow: Bool = true) -> Bool {
-    TranscriptScrollMath.canApplySnapshot(
-      width: width, height: height, hasWindow: hasWindow, horizontalSectionInset: inset
-    )
+    TranscriptScrollMath.canApplySnapshot(width: width, height: height, hasWindow: hasWindow)
   }
 
   @Test func appliesAtARealSizeInAWindow() {
@@ -504,11 +501,11 @@ import Testing
   }
 
   @Test func defersAWidthThatLeavesNoRowWidth() {
-    // A row is `width − 2 × inset`: at or below 32pt it is 0pt wide, a degenerate self-sizing
+    // A row is `width − 2 × inset`: at or below that it is 0pt wide, a degenerate self-sizing
     // pass (every cell measured at a 0–1pt fitting width).
-    #expect(!canApply(width: 20, height: 619.67))
-    #expect(!canApply(width: 32, height: 619.67))
-    #expect(canApply(width: 33, height: 619.67))
+    #expect(!canApply(width: inset, height: 619.67))
+    #expect(!canApply(width: 2 * inset, height: 619.67))
+    #expect(canApply(width: 2 * inset + 1, height: 619.67))
   }
 
   @Test func defersAZeroNegativeOrNonFiniteHeight() {

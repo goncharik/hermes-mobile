@@ -614,20 +614,18 @@ struct SelfHealTests {
   }
 
   /// A new chat as it stands once its `session.create` handshake landed: live id plus the
-  /// minted stored key (which alone can't tell it from a resumed session).
+  /// minted stored key (which alone can't tell it from a resumed session), flag set.
   private func handshakenNewChat() -> ChatFeature.State {
     var state = ChatFeature.State(connection: conn, status: .ready)
     state.liveSessionID = "live-1"
     state.storedSessionID = "minted-key"
+    state.awaitsFirstPersist = true
     return state
   }
 
-  @Test func newChatStartsAwaitingFirstPersist() {
-    #expect(ChatFeature.State(connection: conn).awaitsFirstPersist)
-  }
-
-  /// The real new-chat handshake (`.ready` → `session.create` → `.sessionResult`) keeps it.
-  @Test func newChatHandshakeKeepsAwaitsFirstPersist() async {
+  /// The real new-chat handshake (`.ready` → `session.create` → `.sessionResult`) sets it.
+  @Test func newChatHandshakeSetsAwaitsFirstPersist() async {
+    #expect(!ChatFeature.State(connection: conn).awaitsFirstPersist)
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
       $0.date = .constant(.init(timeIntervalSince1970: 0))
@@ -762,32 +760,13 @@ struct SelfHealTests {
     await store.send(.teardown)
   }
 
-  /// A hydrate that returns server history (or a running turn) proves the row exists.
-  @Test(arguments: [true, false])
-  func hydrateWithServerHistoryClearsAwaitsFirstPersist(runningOnly: Bool) async {
-    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
-      $0.uuid = .incrementing
-      $0.continuousClock = TestClock()
-      $0.date = .constant(.init(timeIntervalSince1970: 0))
-      $0.chatSnapshot = .inMemory()
-      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
-    }
-    store.exhaustivity = .off(showSkippedAssertions: false)
+  enum MintedHydrateShape: Sendable { case history, runningOnly, empty }
 
-    let response = runningOnly
-      ? mintedHydrate(running: true)
-      : mintedHydrate(messages: [
-          SessionMessage(id: 1, role: "user", content: "hi"),
-          SessionMessage(id: 2, role: "assistant", content: "hello"),
-        ])
-    await store.send(.activateResult(.success(response)))
-    #expect(!store.state.awaitsFirstPersist)
-    await store.send(.teardown)
-  }
-
-  /// An EMPTY, idle hydrate proves nothing: upstream's `_resume_live_unpersisted` answers a
+  /// A hydrate that returns server history (or a running turn) proves the row exists. An
+  /// EMPTY, idle hydrate proves nothing: upstream's `_resume_live_unpersisted` answers a
   /// still-live row-less session with empty history, so the chat may still be unsaved.
-  @Test func emptyHydrateKeepsAwaitsFirstPersist() async {
+  @Test(arguments: [(.history, false), (.runningOnly, false), (.empty, true)] as [(MintedHydrateShape, Bool)])
+  func hydrateClearsAwaitsFirstPersistOnlyOnRowEvidence(shape: MintedHydrateShape, staysSet: Bool) async {
     let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
       $0.continuousClock = TestClock()
@@ -797,8 +776,17 @@ struct SelfHealTests {
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
 
-    await store.send(.activateResult(.success(mintedHydrate())))
-    #expect(store.state.awaitsFirstPersist)
+    let response = switch shape {
+    case .history:
+      mintedHydrate(messages: [
+        SessionMessage(id: 1, role: "user", content: "hi"),
+        SessionMessage(id: 2, role: "assistant", content: "hello"),
+      ])
+    case .runningOnly: mintedHydrate(running: true)
+    case .empty: mintedHydrate()
+    }
+    await store.send(.activateResult(.success(response)))
+    #expect(store.state.awaitsFirstPersist == staysSet)
     await store.send(.teardown)
   }
 
@@ -819,11 +807,13 @@ struct SelfHealTests {
   // `session.resume(minted-key)` 4007s too (no DB row on older agents), so the heal falls
   // back to `session.create` and replays the op ONCE. Only `awaitsFirstPersist` arms it.
 
-  /// A never-saved new chat (flag on, from init) holding a reaped live id and its minted key.
+  /// A never-saved new chat (flag on, as its handshake left it) holding a reaped live id and
+  /// its minted key.
   private func reapedNewChat(profileName: String? = nil) -> ChatFeature.State {
     var state = ChatFeature.State(connection: conn, profileName: profileName)
     state.liveSessionID = "stale-live"
     state.storedSessionID = "minted-key"
+    state.awaitsFirstPersist = true
     return state
   }
 
@@ -928,12 +918,13 @@ struct SelfHealTests {
     #expect(store.state.isSending)
   }
 
-  /// The healed ops other than submit/attach, each driven from the action that issues it.
+  /// The healed ops other than attach, each driven from the action that issues it.
   enum HealedOp: CaseIterable, Sendable {
-    case rename, model, reasoning, slashExec, compress
+    case submit, rename, model, reasoning, slashExec, compress
 
     var method: String {
       switch self {
+      case .submit: "prompt.submit"
       case .rename: "session.title"
       case .model, .reasoning: "config.set"
       case .slashExec: "slash.exec"
@@ -946,13 +937,14 @@ struct SelfHealTests {
       case .rename: .confirmRename
       case .model: .modelSelected(model: "claude-sonnet-4-6", provider: nil)
       case .reasoning: .reasoningSelected("high")
-      case .slashExec, .compress: .composerSubmitted
+      case .submit, .slashExec, .compress: .composerSubmitted
       }
     }
 
     func prepare(_ state: inout ChatFeature.State) {
       state.status = .ready
       switch self {
+      case .submit: state.composerText = "follow-up"
       case .rename: state.renameDraft = "New title"
       case .model, .reasoning: break
       case .slashExec, .compress:
@@ -965,8 +957,8 @@ struct SelfHealTests {
     }
   }
 
-  /// Every heal call site carries the never-saved fallback, not just submit/attach.
-  @Test(arguments: HealedOp.allCases)
+  /// Every heal call site carries the never-saved fallback, not just submit/attach (tested above).
+  @Test(arguments: HealedOp.allCases.filter { $0 != .submit })
   func neverSavedHealFallsBackToCreateForEveryHealedOp(op: HealedOp) async {
     let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
     var initial = reapedNewChat()
@@ -1005,15 +997,17 @@ struct SelfHealTests {
     #expect(store.state.errorBanner == nil)
   }
 
-  /// Rename and the model chip apply the same unpersisted-branch rule (#34) as submit: the
-  /// branch's row-less stored key is never resumed — the heal recreates from the seed.
-  @Test(arguments: [HealedOp.rename, .model, .reasoning])
-  func branchHealRecreatesFromSeedForRenameAndConfig(op: HealedOp) async {
+  /// #34 stays intact: a reaped unpersisted branch heals submit, rename and the model chip
+  /// straight through the SEEDED create (seed + parent link) — its row-less stored key is
+  /// never resumed, so even with the never-saved flag forced on the fallback has nothing to add.
+  @Test(arguments: [HealedOp.submit, .rename, .model, .reasoning])
+  func branchHealRecreatesFromSeed(op: HealedOp) async {
     let calls = LockIsolated<[(method: String, params: JSONValue)]>([])
     var initial = ChatFeature.State(connection: conn, resumeStoredID: "branch-stored", status: .ready)
     initial.liveSessionID = "branch-live"
     initial.attachLiveSessionID = "branch-live"
     initial.branchSeed = .init(text: "seeded answer", parentSessionID: "parent-1")
+    initial.awaitsFirstPersist = true
     op.prepare(&initial)
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
@@ -1229,45 +1223,6 @@ struct SelfHealTests {
     #expect(healCalls.value.map(\.method) == ["session.resume", "session.create"])
     #expect(healCalls.value.first?.params == .object(resumeParams))
     #expect(healCalls.value.last?.params == .object(createParams))
-    #expect(store.state.errorBanner == nil)
-  }
-
-  /// #34 stays intact: a reaped unpersisted branch heals straight through the SEEDED create
-  /// (seed + parent link, no resume), even with the never-saved flag forced on — the branch
-  /// path never resumes, so the fallback has nothing to add.
-  @Test func branchHealStillUsesSeededCreate() async {
-    let calls = LockIsolated<[(method: String, params: JSONValue)]>([])
-    var initial = ChatFeature.State(connection: conn, resumeStoredID: "branch-stored", status: .ready)
-    initial.liveSessionID = "branch-live"
-    initial.attachLiveSessionID = "branch-live"
-    initial.branchSeed = .init(text: "seeded answer", parentSessionID: "parent-1")
-    initial.awaitsFirstPersist = true
-    initial.composerText = "follow-up"
-    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
-      $0.uuid = .incrementing
-      $0.date = .constant(.init(timeIntervalSince1970: 0))
-      $0.chatSnapshot = .inMemory()
-      $0.hermesGateway.send = { @Sendable method, params in
-        calls.withValue { $0.append((method, params)) }
-        switch method {
-        case "prompt.submit" where params["session_id"]?.stringValue == "branch-live":
-          throw GatewayError.server("session not found")
-        case "session.resume": throw GatewayError.server("session not found")
-        case "session.create": return self.recreatedHandle
-        default: return .object(["status": .string("streaming")])
-        }
-      }
-    }
-    store.exhaustivity = .off(showSkippedAssertions: false)
-
-    await store.send(.composerSubmitted)
-    await store.receive(\.liveSessionIDRefreshed)
-    await store.finish()
-
-    #expect(calls.value.map(\.method) == ["prompt.submit", "session.create", "prompt.submit"])
-    guard calls.value.count == 3 else { return }
-    #expect(calls.value[1].params["parent_session_id"]?.stringValue == "parent-1")
-    #expect(calls.value[1].params["messages"] != nil)
     #expect(store.state.errorBanner == nil)
   }
 }

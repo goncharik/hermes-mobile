@@ -246,13 +246,10 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     let hosted = try host(rows: Self.rows(0..<50), tallRows: [tailID: 400])
     let transcript = hosted.transcript
 
-    // A touch at the bottom ends the open settle (so the follow below is the slide's, not the
-    // settle re-pinning on layout) and leaves the reader pinned.
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    transcript.delegate?.scrollViewDidScroll?(transcript)
-    spinRunLoop()
+    // Ending the open settle makes the follow below the slide's, not the settle re-pinning on
+    // layout.
+    pinReaderAtBottom(transcript)
     let oldBottom = Self.maxOffsetY(of: transcript)
-    XCTAssertEqual(transcript.contentOffset.y, oldBottom, accuracy: 0.5, "Fixture sanity: opens at the bottom")
     let watched = try XCTUnwrap(Self.fullyVisibleRowIndices(in: transcript).first)
     let watchedY = Self.onScreenMinY(ofRow: watched, in: transcript)
 
@@ -298,13 +295,7 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     )
     let transcript = hosted.transcript
 
-    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
-    transcript.delegate?.scrollViewDidScroll?(transcript)
-    spinRunLoop()
-    XCTAssertEqual(
-      transcript.contentOffset.y, Self.maxOffsetY(of: transcript), accuracy: 0.5,
-      "Fixture sanity: opens at the bottom"
-    )
+    pinReaderAtBottom(transcript)
     let contentHeightBefore = transcript.contentSize.height
 
     hosted.update(rows: Self.rows(0..<45) + Self.rows(rebuilt))

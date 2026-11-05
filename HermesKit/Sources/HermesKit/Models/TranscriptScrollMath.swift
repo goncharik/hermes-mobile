@@ -79,6 +79,10 @@ public enum TranscriptScrollMath {
     return min(max(target, -topInset), maxY)
   }
 
+  /// Inset applied to each horizontal edge of the transcript section, i.e. a row is
+  /// `screen width − 2 × this` (the app's `TranscriptLayout` reads it from here).
+  public static let horizontalSectionInset: CGFloat = 16
+
   /// Whether the collection view can take a diff apply now (#128). A diff apply self-sizes its
   /// cells against the current frame; one landing on a degenerate frame — no window (the first
   /// `updateUIView` on open, a background snapshot), a non-finite or zero height, or a width
@@ -87,12 +91,7 @@ public enum TranscriptScrollMath {
   /// `_UIContentViewAssertValidFittingSize`. The renderer defers such an update (keeping only
   /// the latest) and flushes it from the next layout pass that passes this gate, so the open's
   /// first population still takes the jump-to-bottom.
-  ///
-  /// - Parameter horizontalSectionInset: the layout's per-edge section inset
-  ///   (`TranscriptLayout.horizontalSectionInset` in the app target).
-  public static func canApplySnapshot(
-    width: CGFloat, height: CGFloat, hasWindow: Bool, horizontalSectionInset: CGFloat
-  ) -> Bool {
+  public static func canApplySnapshot(width: CGFloat, height: CGFloat, hasWindow: Bool) -> Bool {
     hasWindow
       && width.isFinite && height.isFinite
       && height > 0

@@ -19,9 +19,9 @@ enum TurnState: Equatable {
 /// `#if canImport(UIKit)` extension below, so pure-SwiftUI views can name the namespace on
 /// any platform.
 enum TranscriptLayout {
-  /// Inset applied to each horizontal edge of the transcript section, i.e. a row is
-  /// `screen width − 2 × this`.
-  static let horizontalSectionInset: CGFloat = 16
+  /// Inset applied to each horizontal edge of the transcript section (owned by
+  /// `TranscriptScrollMath`, whose apply gate measures against it).
+  static let horizontalSectionInset = TranscriptScrollMath.horizontalSectionInset
 
   /// The narrowest logical screen width this app can be rendered at.
   ///
@@ -678,8 +678,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
       return TranscriptScrollMath.canApplySnapshot(
         width: collectionView.bounds.width,
         height: collectionView.bounds.height,
-        hasWindow: collectionView.window != nil,
-        horizontalSectionInset: TranscriptLayout.horizontalSectionInset
+        hasWindow: collectionView.window != nil
       )
     }
 

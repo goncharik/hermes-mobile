@@ -40,7 +40,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageDelta(text: "Hel"))) {
       $0.transcript = [
@@ -75,7 +74,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
@@ -134,7 +132,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageComplete(text: "", usage: nil))) {
       $0.isTurnLive = false
@@ -162,7 +159,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageDelta(text: "Let me check"))) {
       $0.transcript = [ChatRow(
@@ -237,7 +233,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageDelta(text: "Checking"))) {
       $0.transcript = [ChatRow(
@@ -299,7 +294,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageInterim(
       text: "Here is the answer.", alreadyStreamed: false, turnID: "turn-1", segment: 0
@@ -382,7 +376,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.messageDelta(text: "Here is the answer.\n\n"))) {
       $0.transcript = [ChatRow(
@@ -523,7 +516,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     // The 1s tick loop drives turnSeconds.
     await clock.advance(by: .seconds(3))
@@ -570,7 +562,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.statusUpdate(kind: "lifecycle", text: "Context: 42% used"))) {
       $0.turnStatus = "Context: 42% used"
@@ -603,7 +594,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.spinnerFrame(text: "ಠ_ಠ pondering…"))) {
       $0.turnActivityLabel = "ಠ_ಠ pondering…"
@@ -677,7 +667,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "weighing options"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "weighing options"), timestamp: t0)]
@@ -721,7 +710,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await clock.advance(by: .seconds(1))
     await store.receive(\.turnTick) { $0.turnSeconds = 1 }
@@ -763,7 +751,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
@@ -810,7 +797,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
 
     await store.send(.viewDisappeared) {
@@ -843,7 +829,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "First"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "First"), timestamp: t0)]
@@ -894,7 +879,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Live one"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Live one"), timestamp: t0)]
@@ -945,7 +929,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     await store.send(.gatewayEvent(.reasoningDelta(text: "Hmm"))) {
       $0.transcript = [ChatRow(id: uuid(0), kind: .reasoning(text: "Hmm"), timestamp: t0)]
@@ -1336,6 +1319,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     // New sessions create with no title so the server auto-names from the first message.
     #expect(sent.value?["method"]?.stringValue == "session.create")
@@ -1381,6 +1365,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("work")]))
@@ -1427,6 +1412,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("default")]))
@@ -1796,7 +1782,6 @@ struct ChatReductionTests {
     await store.send(.gatewayEvent(.messageStart)) {
       $0.isSending = true
       $0.isTurnLive = true
-      $0.awaitsFirstPersist = false
     }
     // The turn is actively streaming when the summary lands: the first delta creates the
     // in-flight assistant row.
