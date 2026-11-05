@@ -246,10 +246,11 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesKit/Sources/HermesKit/Features/DiagnosticsFeature.swift`
 - Create: `HermesKit/Tests/HermesKitTests/DiagnosticsFeatureTests.swift`
 
-- [ ] state: `bundleInfo: BundleInfo?`, `serverURL: URL`, `authLabel: String`, `agentVersion: String?`, `log: [GatewayLogEntry]`, `copiedToken: Int?`; `public init`
-- [ ] actions: `task` (subscribes `debugLog.stream()`, cancellable `logStream`), `logUpdated`, `copyTapped` (renders `DiagnosticsReport`, `pasteboard.copy`, bumps `copiedToken`, `cancelInFlight` clock dwell using the project's `copiedFeedbackDuration` idiom), `copiedFeedbackExpired`, `onDisappear` (cancel the stream)
-- [ ] write tests: stream feeds `log`; copy → pasteboard receives the rendered report and token bumps per copy; dwell clears on `TestClock` advance; a second copy inside the dwell restarts it
-- [ ] run tests - must pass before next task
+- [x] state: `bundleInfo: BundleInfo?`, `serverURL: URL`, `authLabel: String`, `agentVersion: String?`, `log: [GatewayLogEntry]`, `copiedToken: Int?`; `public init`
+  - ➕ derived `State.report` (the `DiagnosticsReport.render` output) so the view/tests read one source
+- [x] actions: `task` (subscribes `debugLog.stream()`, cancellable `logStream`), `logUpdated`, `copyTapped` (renders `DiagnosticsReport`, `pasteboard.copy`, bumps `copiedToken`, `cancelInFlight` clock dwell using the project's `copiedFeedbackDuration` idiom), `copiedFeedbackExpired`, `onDisappear` (cancel the stream)
+- [x] write tests: stream feeds `log`; copy → pasteboard receives the rendered report and token bumps per copy; dwell clears on `TestClock` advance; a second copy inside the dwell restarts it
+- [x] run tests - must pass before next task
 
 ### Task 7: SettingsPath and SettingsFeature restructure
 
