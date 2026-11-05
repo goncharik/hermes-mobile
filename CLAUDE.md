@@ -309,7 +309,7 @@ bullets below are the compressed rules.
   copy to VoiceOver off the token.
 - **Settings is ONE `Form` (six groups) + a `SettingsPath` stack** owned by `SettingsView`
   (the sheet adds no `NavigationStack`); rows push by reducer append, never `NavigationLink`.
-  App icons: all six sets are alternates in `Project.swift` (primary included — it differs
+  App icons: every set is an alternate in `Project.swift` (primary included — it differs
   per build); `AppIconCatalog.parse` filters the primary, which is always `set(nil)`; iOS
   persists the choice, logout never touches it. `DiagnosticsReport` takes no `AuthSession`
   (no-secrets invariant). Gates, icon table, links: `docs/features/settings.md`.

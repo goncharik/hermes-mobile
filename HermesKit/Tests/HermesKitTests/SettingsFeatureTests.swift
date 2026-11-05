@@ -134,7 +134,7 @@ struct SettingsFeatureTests {
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
-      $0.appIcon = .inMemory(current: "AppIconHermes")
+      $0.appIcon = .inMemory(current: "AppIconHermesNeo")
       $0.hermesREST.status = { @Sendable url in
         probedURL.setValue(url)
         return ServerStatus(version: "0.17.2")
@@ -150,10 +150,11 @@ struct SettingsFeatureTests {
       $0.appIconCatalog = .testCatalog
     }
     await store.receive(\.agentStatusLoaded) { $0.agentVersion = "0.17.2" }
-    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermes" }
+    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermesNeo" }
     #expect(probedURL.value == connection.baseURL)
     #expect(store.state.versionLabel == "Version 1.0 (79)")
-    #expect(store.state.selectedAppIconLabel == "Hermes")
+    #expect(store.state.selectedAppIconLabel == "Hermes Neo")
+    #expect(store.state.selectedAppIconOption?.previewAsset == "AppIconPreview-AppIconHermesNeo")
     await store.send(.doneTapped)
   }
 
@@ -259,7 +260,7 @@ struct SettingsFeatureTests {
   @Test func appIconRowPushesPickerSeededFromParent() async {
     let store = TestStore(
       initialState: SettingsFeature.State(
-        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermesNeo"
       )
     ) {
       SettingsFeature()
@@ -267,7 +268,7 @@ struct SettingsFeatureTests {
 
     await store.send(.appIconRowTapped) {
       $0.path[id: 0] = .appIcon(
-        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermesNeo")
       )
     }
   }
@@ -352,7 +353,7 @@ struct SettingsFeatureTests {
     struct Refused: Error {}
     let store = TestStore(
       initialState: SettingsFeature.State(
-        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermesNeo"
       )
     ) {
       SettingsFeature()
@@ -363,7 +364,7 @@ struct SettingsFeatureTests {
 
     await store.send(.appIconRowTapped) {
       $0.path[id: 0] = .appIcon(
-        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermesNeo")
       )
     }
     await store.send(\.path[id: 0].appIcon.iconTapped, nil) {
@@ -402,13 +403,13 @@ struct SettingsFeatureTests {
     await store.send(.appIconRowTapped) {
       $0.path[id: 0] = .appIcon(AppIconPickerFeature.State(catalog: .testCatalog, selected: nil))
     }
-    await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermes") {
-      $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermes"
+    await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermesNeo") {
+      $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermesNeo"
       $0.path[id: 0, case: \.appIcon]?.isApplying = true
     }
-    await waitUntil({ current.value == "AppIconHermes" })
+    await waitUntil({ current.value == "AppIconHermesNeo" })
     await store.send(.path(.popFrom(id: 0))) { $0.path.pop(from: 0) }
-    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermes" }
+    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermesNeo" }
   }
 
   /// Popping any other screen leaves the icon alone (no extra read).
@@ -437,7 +438,7 @@ struct SettingsFeatureTests {
     let setCalled = LockIsolated(false)
     let store = TestStore(
       initialState: SettingsFeature.State(
-        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermesNeo"
       )
     ) {
       SettingsFeature()

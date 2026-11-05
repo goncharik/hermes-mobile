@@ -16,11 +16,11 @@ final class AppIconPickerSnapshotTests: SnapshotTestCase {
     }
   }
 
-  /// An ALTERNATE is current: the checkmark and tint ring sit on "Hermes", not on the
+  /// An ALTERNATE is current: the checkmark and tint ring sit on "Hermes Neo", not on the
   /// primary "Gold" tile — the primary is checked only when `selected == nil`.
   private let alternateSelected = AppIconPickerFeature.State(
     catalog: .testCatalog,
-    selected: "AppIconHermes"
+    selected: "AppIconHermesNeo"
   )
 
   func testAppIconPicker_alternateSelected() {

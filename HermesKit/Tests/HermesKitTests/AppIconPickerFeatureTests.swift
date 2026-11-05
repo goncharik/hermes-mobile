@@ -8,7 +8,7 @@ import Testing
 struct AppIconPickerFeatureTests {
   private struct Refused: Error {}
 
-  /// A recording client over the full six-icon test catalog: every `set` argument is
+  /// A recording client over the full test catalog: every `set` argument is
   /// appended to `calls`; `fails` makes `set` throw (after recording) and leaves `current`.
   private func client(
     current: String? = nil,
@@ -74,24 +74,24 @@ struct AppIconPickerFeatureTests {
   @Test func failedSetRollsBackToTheCurrentIconAndBanners() async {
     let calls = LockIsolated<[String?]>([])
     let store = TestStore(
-      initialState: AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+      initialState: AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermesNeo")
     ) {
       AppIconPickerFeature()
     } withDependencies: {
-      $0.appIcon = client(current: "AppIconHermes", calls: calls, fails: true)
+      $0.appIcon = client(current: "AppIconHermesNeo", calls: calls, fails: true)
     }
 
-    await store.send(.iconTapped("AppIconHermesBlueprint")) {
-      $0.selected = "AppIconHermesBlueprint"
+    await store.send(.iconTapped("AppIconHermesNeoBlueprint")) {
+      $0.selected = "AppIconHermesNeoBlueprint"
       $0.isApplying = true
     }
-    await store.receive(.setFailed(current: "AppIconHermes")) {
-      $0.selected = "AppIconHermes"
+    await store.receive(.setFailed(current: "AppIconHermesNeo")) {
+      $0.selected = "AppIconHermesNeo"
       $0.errorBanner = AppIconPickerFeature.setFailedBanner
       $0.isApplying = false
     }
-    await store.receive(\.delegate, .iconChanged("AppIconHermes"))
-    #expect(calls.value == ["AppIconHermesBlueprint"])
+    await store.receive(\.delegate, .iconChanged("AppIconHermesNeo"))
+    #expect(calls.value == ["AppIconHermesNeoBlueprint"])
   }
 
   /// The rollback target is what iOS reports after the refusal, not the checkmark before the
@@ -107,8 +107,8 @@ struct AppIconPickerFeatureTests {
       )
     }
 
-    await store.send(.iconTapped("AppIconHermes")) {
-      $0.selected = "AppIconHermes"
+    await store.send(.iconTapped("AppIconHermesNeo")) {
+      $0.selected = "AppIconHermesNeo"
       $0.isApplying = true
     }
     await store.receive(.setFailed(current: "AppIconHermesClassic")) {
@@ -134,13 +134,13 @@ struct AppIconPickerFeatureTests {
       $0.appIcon = client(calls: calls)
     }
 
-    await store.send(.iconTapped("AppIconHermes")) {
-      $0.selected = "AppIconHermes"
+    await store.send(.iconTapped("AppIconHermesNeo")) {
+      $0.selected = "AppIconHermesNeo"
       $0.errorBanner = nil
       $0.isApplying = true
     }
-    await store.receive(.setSucceeded("AppIconHermes")) { $0.isApplying = false }
-    await store.receive(\.delegate, .iconChanged("AppIconHermes"))
+    await store.receive(.setSucceeded("AppIconHermesNeo")) { $0.isApplying = false }
+    await store.receive(\.delegate, .iconChanged("AppIconHermesNeo"))
   }
 
   /// One change at a time: a tap while a `set` is in flight is ignored (cancelling the effect
@@ -161,16 +161,16 @@ struct AppIconPickerFeatureTests {
       )
     }
 
-    await store.send(.iconTapped("AppIconHermes")) {
-      $0.selected = "AppIconHermes"
+    await store.send(.iconTapped("AppIconHermesNeo")) {
+      $0.selected = "AppIconHermesNeo"
       $0.isApplying = true
     }
     await waitUntil({ calls.value.count == 1 })
     await store.send(.iconTapped("AppIconHermesClassic"))
     release.finish()
-    await store.receive(.setSucceeded("AppIconHermes")) { $0.isApplying = false }
-    await store.receive(\.delegate, .iconChanged("AppIconHermes"))
-    #expect(calls.value == ["AppIconHermes"])
+    await store.receive(.setSucceeded("AppIconHermesNeo")) { $0.isApplying = false }
+    await store.receive(\.delegate, .iconChanged("AppIconHermesNeo"))
+    #expect(calls.value == ["AppIconHermesNeo"])
   }
 
   @Test(arguments: [nil, "AppIconHermesClassicBlueprint"] as [String?])
@@ -196,15 +196,15 @@ struct AppIconPickerFeatureTests {
 
   @Test func tileHelpersMapThePrimaryToNil() {
     let primary = AppIconCatalog.testCatalog.primary!
-    let hermes = AppIconOption.named("AppIconHermes")!
+    let hermes = AppIconOption.named("AppIconHermesNeo")!
 
     let onPrimary = loadedState
     #expect(onPrimary.iconName(for: primary) == nil)
-    #expect(onPrimary.iconName(for: hermes) == "AppIconHermes")
+    #expect(onPrimary.iconName(for: hermes) == "AppIconHermesNeo")
     #expect(onPrimary.isSelected(primary))
     #expect(!onPrimary.isSelected(hermes))
 
-    let onHermes = AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+    let onHermes = AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermesNeo")
     #expect(!onHermes.isSelected(primary))
     #expect(onHermes.isSelected(hermes))
   }

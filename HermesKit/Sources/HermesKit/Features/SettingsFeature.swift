@@ -147,8 +147,14 @@ public struct SettingsFeature {
     /// session has no token to edit.
     public var showsTokenField: Bool { authSession.isToken }
 
-    /// The App Icon row value; `nil` until the catalog loads (or for an unknown name).
-    public var selectedAppIconLabel: String? { appIconCatalog.label(for: selectedAppIcon) }
+    /// The current icon for the App Icon row (label + preview thumbnail); `nil` until the
+    /// catalog loads (or for an unknown name).
+    public var selectedAppIconOption: AppIconOption? {
+      appIconCatalog.option(for: selectedAppIcon)
+    }
+
+    /// The App Icon row value; see `selectedAppIconOption`.
+    public var selectedAppIconLabel: String? { selectedAppIconOption?.label }
 
     /// The About version row, e.g. `"Version 1.0 (79)"`; `nil` until bundle info loads.
     public var versionLabel: String? {

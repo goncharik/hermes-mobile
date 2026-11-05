@@ -188,12 +188,13 @@ when archiving an App Store release submission to get the Gold icon.
 
 #### Alternate icons (Settings → App Icon)
 
-Users can switch between six icons in Settings (`docs/features/settings.md`). The base
-settings in `Project.swift` list **all six** sets as alternates, the primary included:
+Users can switch between eight icons in Settings (`docs/features/settings.md`). The base
+settings in `Project.swift` list **every** set as an alternate, the primary included:
 
 ```
-ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIcon AppIconDev AppIconHermes
-  AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint
+ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIcon AppIconDev AppIconHermesNeo
+  AppIconHermesNeoDark AppIconHermesNeoBlueprint AppIconHermesClassic
+  AppIconHermesClassicDark AppIconHermesClassicBlueprint
 ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES
 ```
 
@@ -208,7 +209,9 @@ change.
 
 1. Add `Assets.xcassets/<SetName>.appiconset` with a 1024×1024 PNG without alpha
    (`sips -Z 1024`; check `hasAlpha: no` with `sips -g hasAlpha`) and the `Contents.json`
-   copied from `AppIcon.appiconset`.
+   copied from `AppIcon.appiconset`. For light-background art, copy
+   `AppIconHermesNeo.appiconset`'s `Contents.json` instead and add its dark and tinted files
+   (see the icon notes in `docs/features/settings.md`).
 2. Add a plain image set `AppIconPreview-<SetName>.imageset` with a 240 px preview
    (`sips -Z 240`, at least the 76 pt tile at 3x), single scale: the picker cannot load an
    `.appiconset` with `Image(_:)`.

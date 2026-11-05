@@ -22,9 +22,11 @@ public struct AppIconOption: Equatable, Hashable, Sendable {
   public static let all: [AppIconOption] = [
     AppIconOption(name: "AppIcon", label: "Gold"),
     AppIconOption(name: "AppIconDev", label: "Blueprint"),
-    AppIconOption(name: "AppIconHermes", label: "Hermes"),
-    AppIconOption(name: "AppIconHermesBlueprint", label: "Hermes Blueprint"),
+    AppIconOption(name: "AppIconHermesNeo", label: "Hermes Neo"),
+    AppIconOption(name: "AppIconHermesNeoDark", label: "Hermes Neo Dark"),
+    AppIconOption(name: "AppIconHermesNeoBlueprint", label: "Hermes Neo Blueprint"),
     AppIconOption(name: "AppIconHermesClassic", label: "Hermes Classic"),
+    AppIconOption(name: "AppIconHermesClassicDark", label: "Hermes Classic Dark"),
     AppIconOption(name: "AppIconHermesClassicBlueprint", label: "Hermes Classic Blueprint"),
   ]
 
@@ -37,7 +39,7 @@ public struct AppIconOption: Equatable, Hashable, Sendable {
 /// The icons this build can switch between, derived from the bundle's `Info.plist`.
 ///
 /// The primary icon differs per build configuration (gold for Release, blueprint for Debug
-/// and TestFlight), so `Project.swift` lists all six sets as alternates and any build can
+/// and TestFlight), so `Project.swift` lists every set as an alternate and any build can
 /// reach any icon. actool drops the primary from the built `CFBundleAlternateIcons`; the
 /// parser filters it out of `alternates` as a safeguard all the same: choosing the primary is
 /// `setAlternateIconName(nil)`, never its alternate twin.
@@ -66,11 +68,16 @@ public struct AppIconCatalog: Equatable, Sendable {
     return AppIconOption.all.filter { names.contains($0.name) }
   }
 
-  /// Label for an `alternateIconName` value: `nil` means the primary icon; an unknown name
-  /// (not in the table) yields `nil`.
+  /// The option for an `alternateIconName` value: `nil` means the primary icon; an unknown
+  /// name (not in the table) yields `nil`.
+  public func option(for name: String?) -> AppIconOption? {
+    guard let name else { return primary }
+    return AppIconOption.named(name)
+  }
+
+  /// Label for an `alternateIconName` value; see `option(for:)`.
   public func label(for name: String?) -> String? {
-    guard let name else { return primary?.label }
-    return AppIconOption.named(name)?.label
+    option(for: name)?.label
   }
 
   /// Builds the catalog from an `Info.plist` dictionary (`Bundle.main.infoDictionary`).

@@ -46,7 +46,8 @@ the push authorization status, and the push plugin info.
    `/api/status` probe is informational, so a failure maps to `nil` with **no banner** (the
    row stays hidden), only an `api.status` debug-log note. The token `SecureField` + "Save token" show only when `showsTokenField`
    (`AuthSession.isToken`): a password or OAuth session has no token to re-paste. Reconnect.
-2. **App.** "App Icon" (value `selectedAppIconLabel`) pushes the picker. "Default swipe
+2. **App.** "App Icon" (value `selectedAppIconLabel`, plus a small thumbnail of
+   `selectedAppIconOption`'s preview) pushes the picker. "Default swipe
    action" stays gated on `deleteSupported` (`docs/features/session-list.md`).
 3. **Notifications.** The existing block, unchanged (`docs/features/push-notifications.md`).
 4. **Feedback.** "Report a bug" and "Request a feature" open `reportBugURL` /
@@ -66,21 +67,29 @@ External rows (`ExternalLinkRow`) are `Link`s with a trailing `arrow.up.right`.
 
 ## App icon picker (#135)
 
-### The six icons
+### The icons
 
 | Label | Set name (`.appiconset`) | Preview image set | Notes |
 |---|---|---|---|
 | Gold | `AppIcon` | `AppIconPreview-AppIcon` | App Store release primary |
 | Blueprint | `AppIconDev` | `AppIconPreview-AppIconDev` | Debug + every TestFlight primary |
-| Hermes | `AppIconHermes` | `AppIconPreview-AppIconHermes` | |
-| Hermes Blueprint | `AppIconHermesBlueprint` | `AppIconPreview-AppIconHermesBlueprint` | |
-| Hermes Classic | `AppIconHermesClassic` | `AppIconPreview-AppIconHermesClassic` | |
+| Hermes Neo | `AppIconHermesNeo` | `AppIconPreview-AppIconHermesNeo` | Dark + tinted variants |
+| Hermes Neo Dark | `AppIconHermesNeoDark` | `AppIconPreview-AppIconHermesNeoDark` | Dark + tinted variants |
+| Hermes Neo Blueprint | `AppIconHermesNeoBlueprint` | `AppIconPreview-AppIconHermesNeoBlueprint` | |
+| Hermes Classic | `AppIconHermesClassic` | `AppIconPreview-AppIconHermesClassic` | Dark + tinted variants |
+| Hermes Classic Dark | `AppIconHermesClassicDark` | `AppIconPreview-AppIconHermesClassicDark` | Dark + tinted variants |
 | Hermes Classic Blueprint | `AppIconHermesClassicBlueprint` | `AppIconPreview-AppIconHermesClassicBlueprint` | |
 
 `AppIconOption.all` is this table in display order. The previews are plain 240 px
 single-scale image sets because an app icon set cannot be loaded with `Image(_:)`. The picker
 draws them as fixed 76 pt continuous-corner tiles in a three-column grid, so the layout is the
 same at every sheet width.
+
+The four black-and-white sets (white and black backgrounds) carry explicit `luminosity`
+appearance variants: `dark` is the original art and `tinted` is its grayscale copy. Without
+them, iOS auto-generates the Dark, Clear and Tinted Home Screen renditions and inverts the
+art. With them, the art keeps its own background and line colours in every mode (Tinted and
+Clear still apply the system tint). The gold and blue sets have no variants yet (#83).
 
 ### Catalog derivation
 
@@ -91,16 +100,16 @@ same at every sheet width.
 `options` is primary + alternates in table order (the grid), and `label(for:)` maps
 `nil` → the primary's label and an unknown name → `nil`.
 
-### The all-six alternates rule
+### The every-set-is-an-alternate rule
 
 The primary differs per build (`ASSETCATALOG_COMPILER_APPICON_NAME`: Gold for an App Store
 release, Blueprint for Debug and TestFlight; `docs/development.md`). So `Project.swift` lists
-**all six** sets in `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`, the primary included, with
+**every** set in `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`, the primary included, with
 `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES`; every build can then reach every
 icon without per-configuration lists.
 
 **actool omits the primary from the built `CFBundleAlternateIcons`**, so a built `Info.plist`
-lists five alternates, not six. That is harmless: the parser filters the primary anyway, and
+lists one alternate fewer than the table. That is harmless: the parser filters the primary anyway, and
 the primary is reachable as `set(nil)`. Choosing the primary is ALWAYS `set(nil)`, never its
 alternate twin: `State.iconName(for:)` maps the primary tile to `nil`, and `isSelected(_:)`
 checks the primary tile when `selected == nil`. Pinned by
@@ -113,7 +122,7 @@ and checks every set's `.appiconset` and preview image set exist).
 `AppIconClient` (`@DependencyClient`): `catalog()` is synchronous (bundle plist), `current()`
 is async (the main-actor `alternateIconName` hop lives inside the client), and `set(_:)` throws
 when iOS refuses. The live value is UIKit-guarded; `testValue` is `.inMemory()` with the full
-six-icon `testCatalog` (primary `AppIcon`).
+`testCatalog` (primary `AppIcon`).
 
 `AppIconPickerFeature` loads nothing itself: the push seeds the catalog and current icon
 Settings already read. A tap is **optimistic**: the checkmark moves and `appIcon.set` runs.

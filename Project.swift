@@ -38,6 +38,8 @@ let project = Project(
         // default otherwise hardcodes CFBundleVersion = 1, ignoring the setting).
         "CFBundleShortVersionString": "$(MARKETING_VERSION)",
         "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+        // Home Screen label. The product name (App Store, in-app copy) stays "Hermes Mobile".
+        "CFBundleDisplayName": "Hermes",
         "UILaunchScreen": ["UIColorName": ""],
         // iPad rotates freely in every orientation; the split view adapts (side-by-side
         // in landscape, overlay sidebar in portrait). iPhone keeps Tuist's default set.
@@ -96,12 +98,12 @@ let project = Project(
           // — a custom configuration breaks Tuist's SwiftPM integration, so we switch the
           // icon via a build setting.
           "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-          // The Settings icon picker (#135). ALL six sets are alternates — the primary
+          // The Settings icon picker (#135). EVERY set is an alternate — the primary
           // included on purpose: the primary differs per build (gold for App Store, blueprint
           // for Debug/TestFlight), so listing every set lets any build reach any icon.
           // `AppIconCatalog.parse` filters the primary back out (choosing it is
           // `setAlternateIconName(nil)`). Names must match `AppIconOption.all` in HermesKit.
-          "ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES": "AppIcon AppIconDev AppIconHermes AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint",
+          "ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES": "AppIcon AppIconDev AppIconHermesNeo AppIconHermesNeoDark AppIconHermesNeoBlueprint AppIconHermesClassic AppIconHermesClassicDark AppIconHermesClassicBlueprint",
           "ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS": "YES",
         ],
         configurations: [

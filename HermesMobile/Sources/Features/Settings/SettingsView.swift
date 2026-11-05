@@ -99,7 +99,11 @@ struct SettingsView: View {
 
   private var appSection: some View {
     Section("App") {
-      SettingsNavigationRow(title: "App Icon", value: store.selectedAppIconLabel) {
+      SettingsNavigationRow(
+        title: "App Icon",
+        value: store.selectedAppIconLabel,
+        thumbnail: store.selectedAppIconOption?.previewAsset
+      ) {
         store.send(.appIconRowTapped)
       }
       // Only offered when the agent supports session deletion — otherwise Archive is the

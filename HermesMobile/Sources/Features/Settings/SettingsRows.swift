@@ -6,7 +6,12 @@ import SwiftUI
 struct SettingsNavigationRow: View {
   let title: String
   var value: String?
+  /// Optional image-set name drawn as a small app-icon thumbnail before the value.
+  var thumbnail: String?
   let action: () -> Void
+
+  /// Thumbnail side, scaled with Dynamic Type like the row's text.
+  @ScaledMetric(relativeTo: .body) private var thumbnailSide: CGFloat = 29
 
   var body: some View {
     Button(action: action) {
@@ -14,6 +19,19 @@ struct SettingsNavigationRow: View {
         Text(title)
           .foregroundStyle(.primary)
         Spacer()
+        if let thumbnail {
+          Image(thumbnail)
+            .resizable()
+            .scaledToFill()
+            .frame(width: thumbnailSide, height: thumbnailSide)
+            // Home-screen squircle ratio (≈ 0.225 × side), matching the picker's tiles.
+            .clipShape(.rect(cornerRadius: thumbnailSide * 0.225, style: .continuous))
+            .overlay {
+              RoundedRectangle(cornerRadius: thumbnailSide * 0.225, style: .continuous)
+                .strokeBorder(.separator, lineWidth: 0.5)
+            }
+            .accessibilityHidden(true) // the value text already names the icon
+        }
         if let value {
           Text(value)
             .foregroundStyle(.secondary)

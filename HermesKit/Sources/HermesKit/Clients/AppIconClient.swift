@@ -16,7 +16,7 @@ public struct AppIconClient: Sendable {
 }
 
 extension AppIconClient: DependencyKey {
-  /// In-memory double: the full six-icon catalog with `AppIcon` as primary, `current`
+  /// In-memory double: the full icon catalog with `AppIcon` as primary, `current`
   /// starting at the primary and following every successful `set`.
   public static var testValue: AppIconClient { .inMemory() }
 

@@ -17,22 +17,24 @@ struct AppIconCatalogTests {
       ],
       "CFBundleAlternateIcons": [
         "AppIconHermesClassicBlueprint": ["CFBundleIconName": "AppIconHermesClassicBlueprint"],
-        "AppIconHermes": ["CFBundleIconName": "AppIconHermes"],
+        "AppIconHermesNeo": ["CFBundleIconName": "AppIconHermesNeo"],
         "AppIconDev": ["CFBundleIconName": "AppIconDev"],
         "AppIcon": ["CFBundleIconName": "AppIcon"],
         "AppIconRetired": ["CFBundleIconName": "AppIconRetired"],
-        "AppIconHermesBlueprint": ["CFBundleIconName": "AppIconHermesBlueprint"],
+        "AppIconHermesNeoBlueprint": ["CFBundleIconName": "AppIconHermesNeoBlueprint"],
         "AppIconHermesClassic": ["CFBundleIconName": "AppIconHermesClassic"],
+        "AppIconHermesClassicDark": ["CFBundleIconName": "AppIconHermesClassicDark"],
+        "AppIconHermesNeoDark": ["CFBundleIconName": "AppIconHermesNeoDark"],
       ],
     ] as [String: Any],
   ]}
 
-  @Test func tableIsSixIconsInDisplayOrder() {
+  @Test func tableIsEightIconsInDisplayOrder() {
     #expect(AppIconOption.all.map(\.label) == [
-      "Gold", "Blueprint", "Hermes", "Hermes Blueprint", "Hermes Classic",
-      "Hermes Classic Blueprint",
+      "Gold", "Blueprint", "Hermes Neo", "Hermes Neo Dark", "Hermes Neo Blueprint",
+      "Hermes Classic", "Hermes Classic Dark", "Hermes Classic Blueprint",
     ])
-    #expect(AppIconOption.named("AppIconHermes")?.previewAsset == "AppIconPreview-AppIconHermes")
+    #expect(AppIconOption.named("AppIconHermesNeo")?.previewAsset == "AppIconPreview-AppIconHermesNeo")
   }
 
   /// The table must match `Project.swift`'s `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`,
@@ -64,16 +66,18 @@ struct AppIconCatalogTests {
   }
 
   /// The real Debug-build `Info.plist` (dumped from the built app): actool drops the primary
-  /// from `CFBundleAlternateIcons` even though `Project.swift` lists it, so five alternates.
+  /// from `CFBundleAlternateIcons` even though `Project.swift` lists it, so seven alternates.
   @Test func actoolOutputWithoutPrimaryAlternate() {
     let info: [String: Any] = [
       "CFBundleIcons": [
         "CFBundlePrimaryIcon": ["CFBundleIconName": "AppIconDev"],
         "CFBundleAlternateIcons": [
           "AppIcon": ["CFBundleIconName": "AppIcon"],
-          "AppIconHermes": ["CFBundleIconName": "AppIconHermes"],
-          "AppIconHermesBlueprint": ["CFBundleIconName": "AppIconHermesBlueprint"],
+          "AppIconHermesNeo": ["CFBundleIconName": "AppIconHermesNeo"],
+          "AppIconHermesNeoDark": ["CFBundleIconName": "AppIconHermesNeoDark"],
+          "AppIconHermesNeoBlueprint": ["CFBundleIconName": "AppIconHermesNeoBlueprint"],
           "AppIconHermesClassic": ["CFBundleIconName": "AppIconHermesClassic"],
+          "AppIconHermesClassicDark": ["CFBundleIconName": "AppIconHermesClassicDark"],
           "AppIconHermesClassicBlueprint": ["CFBundleIconName": "AppIconHermesClassicBlueprint"],
         ],
       ] as [String: Any],
@@ -87,8 +91,8 @@ struct AppIconCatalogTests {
     let catalog = AppIconCatalog.parse(infoDictionary: Self.debugInfo)
     #expect(catalog.primary?.name == "AppIconDev")
     #expect(catalog.alternates.map(\.name) == [
-      "AppIcon", "AppIconHermes", "AppIconHermesBlueprint", "AppIconHermesClassic",
-      "AppIconHermesClassicBlueprint",
+      "AppIcon", "AppIconHermesNeo", "AppIconHermesNeoDark", "AppIconHermesNeoBlueprint",
+      "AppIconHermesClassic", "AppIconHermesClassicDark", "AppIconHermesClassicBlueprint",
     ])
   }
 
@@ -101,12 +105,12 @@ struct AppIconCatalogTests {
     let info: [String: Any] = [
       "CFBundleIcons": [
         "CFBundlePrimaryIcon": ["CFBundleIconName": "SomethingElse"],
-        "CFBundleAlternateIcons": ["AppIconHermes": [String: Any]()],
+        "CFBundleAlternateIcons": ["AppIconHermesNeo": [String: Any]()],
       ] as [String: Any],
     ]
     let catalog = AppIconCatalog.parse(infoDictionary: info)
     #expect(catalog.primary == nil)
-    #expect(catalog.alternates.map(\.name) == ["AppIconHermes"])
+    #expect(catalog.alternates.map(\.name) == ["AppIconHermesNeo"])
   }
 
   @Test func emptyDictionaryYieldsEmptyCatalog() {
@@ -136,13 +140,22 @@ struct AppIconCatalogTests {
     #expect(catalog.label(for: "AppIconRetired") == nil)
   }
 
+  /// The row thumbnail and label come from the same lookup: `nil` → the build's primary.
+  @Test func optionForPrimaryKnownAndUnknownNames() {
+    let catalog = AppIconCatalog.parse(infoDictionary: Self.debugInfo)
+    #expect(catalog.option(for: nil)?.previewAsset == "AppIconPreview-AppIconDev")
+    #expect(catalog.option(for: "AppIconHermesNeo")?.label == "Hermes Neo")
+    #expect(catalog.option(for: "AppIconRetired") == nil)
+    #expect(AppIconCatalog.empty.option(for: nil) == nil)
+  }
+
   @Test func testValueIsInMemoryWithFullCatalog() async throws {
     let client = AppIconClient.testValue
     #expect(client.catalog().primary?.name == "AppIcon")
-    #expect(client.catalog().options.count == 6)
+    #expect(client.catalog().options.count == 8)
     #expect(await client.current() == nil)
-    try await client.set("AppIconHermes")
-    #expect(await client.current() == "AppIconHermes")
+    try await client.set("AppIconHermesNeo")
+    #expect(await client.current() == "AppIconHermesNeo")
     try await client.set(nil)
     #expect(await client.current() == nil)
   }
