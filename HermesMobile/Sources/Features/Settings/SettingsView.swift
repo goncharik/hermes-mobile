@@ -1,177 +1,31 @@
 import ComposableArchitecture
 import HermesKit
+import StoreKit
 import SwiftUI
 import UIKit
 
-/// Settings sheet: server info, token re-paste/clear, manual reconnect, and a link to
-/// the live connection debug log.
+/// Settings sheet: one `Form` in six groups (Server, App, Notifications, Feedback, About,
+/// Sign out). Three rows push sub-screens through the reducer-owned `path` — the view owns
+/// the `NavigationStack`, so the presenting sheet must not wrap it in another one.
 struct SettingsView: View {
   @Bindable var store: StoreOf<SettingsFeature>
   /// Presentation-only: the "how push works / install the plugin" info sheet. Pure view
   /// state — there's no reducer behavior behind it.
   @State private var showingPushGuide = false
+  @Environment(\.openURL) private var openURL
+  @Environment(\.requestReview) private var requestReview
 
   var body: some View {
-    Form {
-      Section("Server") {
-        LabeledContent("URL", value: store.serverURLString)
-      }
-
-      Section {
-        SecureField("Session token", text: $store.token)
-          .textContentType(.password)
-        Button("Save token") { store.send(.saveTokenTapped) }
-          .disabled(!store.canSaveToken)
-        if store.savedConfirmation {
-          Label("Token saved", systemImage: "checkmark.circle")
-            .foregroundStyle(.green).font(.footnote)
-        }
-      } header: {
-        Text("Token")
-      } footer: {
-        Text("Re-paste the stable token if it changed on the server.")
-      }
-
-      Section("Connection") {
-        Button("Reconnect") { store.send(.reconnectTapped) }
-        NavigationLink {
-          ConnectionDebugView(entries: store.log)
-        } label: {
-          LabeledContent("Debug log", value: "\(store.log.count)")
-        }
-      }
-
-      // Only offered when the agent supports session deletion — otherwise Archive is the
-      // only destructive action and the choice would be meaningless.
-      if store.deleteSupported {
-        Section {
-          Picker(
-            "Default swipe action",
-            selection: Binding(
-              get: { store.defaultSwipeAction },
-              set: { store.send(.defaultSwipeActionChanged($0)) }
-            )
-          ) {
-            Text("Archive").tag(SessionSwipeAction.archive)
-            Text("Delete").tag(SessionSwipeAction.delete)
-          }
-        } header: {
-          Text("Session list")
-        } footer: {
-          Text("The action a full swipe on a session row triggers. The long-press menu always offers both.")
-        }
-      }
-
-      Section {
-        // Plugin update, offered above the toggle because an out-of-date plugin sends pushes
-        // the user is actively complaining about. Shown whether or not push is currently
-        // available — an installed-but-disabled plugin is still worth updating.
-        if store.pluginUpdateAvailable {
-          VStack(alignment: .leading, spacing: 4) {
-            Label("Plugin update available", systemImage: "arrow.down.circle")
-              .font(.subheadline.weight(.semibold))
-            Text(pluginUpdateExplanation)
-              .font(.footnote).foregroundStyle(.secondary)
-          }
-          Button("Update plugin") { store.send(.updatePluginTapped) }
-            .disabled(store.pluginUpdate == .updating)
-        } else if store.pluginUpdateNeedsManualSteps {
-          // Out of date but the agent can't pull it (pip install / hand-copied directory), so
-          // a button here would only 400. Route to the guide, which offers the chat prompt.
-          VStack(alignment: .leading, spacing: 4) {
-            Label("Plugin update available", systemImage: "arrow.down.circle")
-              .font(.subheadline.weight(.semibold))
-            Text("\(pluginUpdateExplanation) This copy can't be updated from the app — ask your agent to update it.")
-              .font(.footnote).foregroundStyle(.secondary)
-          }
-          Button("How to update the plugin") { showingPushGuide = true }
-            .font(.footnote)
-        }
-        switch store.pluginUpdate {
-        case .idle:
-          EmptyView()
-        case .updating:
-          Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
-            .foregroundStyle(.secondary).font(.footnote)
-        case .updated:
-          // A pull only changes files on disk — the running agent keeps the old code loaded.
-          // This restart notice is the whole point of the success state; don't soften it.
-          Label(
-            "Plugin updated. Restart your Hermes agent to apply it.",
-            systemImage: "exclamationmark.arrow.triangle.2.circlepath"
-          )
-          .foregroundStyle(.orange).font(.footnote)
-        case .alreadyCurrent:
-          Label("Plugin is already up to date", systemImage: "checkmark.circle")
-            .foregroundStyle(.green).font(.footnote)
-        case let .failed(reason):
-          Label(reason, systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.orange).font(.footnote)
-        }
-
-        if store.pushAvailable {
-          Toggle(
-            "Notify me about approvals",
-            isOn: Binding(
-              get: { store.notificationsEnabled },
-              set: { store.send(.notificationsToggled($0)) }
-            )
-          )
-          if store.notificationsDenied {
-            VStack(alignment: .leading, spacing: 4) {
-              Label("Notifications are turned off", systemImage: "bell.slash")
-                .foregroundStyle(.orange).font(.footnote)
-              if let url = URL(string: UIApplication.openSettingsURLString) {
-                Link("Enable in iOS Settings", destination: url)
-                  .font(.footnote)
-              }
-            }
-          }
-          Button("Send test notification") { store.send(.sendTestPushTapped) }
-            .disabled(store.testPushStatus == .sending)
-          switch store.testPushStatus {
-          case .idle:
-            EmptyView()
-          case .sending:
-            Label("Sending…", systemImage: "paperplane")
-              .foregroundStyle(.secondary).font(.footnote)
-          case .sent:
-            Label("Test notification sent", systemImage: "checkmark.circle")
-              .foregroundStyle(.green).font(.footnote)
-          case .failed:
-            Label("Couldn't send test notification", systemImage: "exclamationmark.triangle")
-              .foregroundStyle(.orange).font(.footnote)
-          }
-          Button("How push notifications work") { showingPushGuide = true }
-            .font(.footnote)
-        } else {
-          Label("Notifications aren't available on this server", systemImage: "bell.slash")
-            .foregroundStyle(.secondary).font(.footnote)
-          Button("How to enable push notifications") { showingPushGuide = true }
-        }
-      } header: {
-        Text("Notifications")
-      } footer: {
-        if store.pushAvailable {
-          Text("Get a push when Hermes needs your approval, even while the app is closed.")
-        } else {
-          Text("Needs the hermes-push plugin running on your agent.")
-        }
-      }
-
-      Section {
-        Button("Clear token & disconnect", role: .destructive) {
-          store.send(.clearTokenTapped)
-        }
-      } footer: {
-        Text("Removes the token from the Keychain and returns to the connection screen.")
-      }
-    }
-    .navigationTitle("Settings")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .confirmationAction) {
-        Button("Done") { store.send(.doneTapped) }
+    NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+      form
+    } destination: { pathStore in
+      switch pathStore.case {
+      case .appIcon:
+        SettingsPlaceholderView(title: "App Icon")
+      case .diagnostics:
+        SettingsPlaceholderView(title: "Diagnostics")
+      case .acknowledgements:
+        SettingsPlaceholderView(title: "Acknowledgements")
       }
     }
     .sheet(isPresented: $showingPushGuide) {
@@ -187,7 +41,240 @@ struct SettingsView: View {
         onLater: { showingPushGuide = false }
       )
     }
+    // On the stack, not the Form: the root's `.task` would re-fire on every pop back from a
+    // sub-screen and re-probe the agent.
     .task { store.send(.task) }
+  }
+
+  private var form: some View {
+    Form {
+      serverSection
+      appSection
+      notificationsSection
+      feedbackSection
+      aboutSection
+      signOutSection
+    }
+    .navigationTitle("Settings")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Done") { store.send(.doneTapped) }
+      }
+    }
+  }
+
+  // MARK: Server
+
+  private var serverSection: some View {
+    Section {
+      LabeledContent("URL", value: store.serverURLString)
+      LabeledContent("Auth", value: store.authLabel)
+      if let profileName = store.profileName {
+        LabeledContent("Profile", value: profileName)
+      }
+      if let agentVersion = store.agentVersion {
+        LabeledContent("Agent", value: agentVersion)
+      }
+      // Only the token regime has a credential the user can re-paste; a password / OAuth
+      // session re-authenticates through sign-in instead.
+      if store.showsTokenField {
+        SecureField("Session token", text: $store.token)
+          .textContentType(.password)
+        Button("Save token") { store.send(.saveTokenTapped) }
+          .disabled(!store.canSaveToken)
+        if store.savedConfirmation {
+          Label("Token saved", systemImage: "checkmark.circle")
+            .foregroundStyle(.green).font(.footnote)
+        }
+      }
+      Button("Reconnect") { store.send(.reconnectTapped) }
+    } header: {
+      Text("Server")
+    } footer: {
+      if store.showsTokenField {
+        Text("Re-paste the stable token if it changed on the server.")
+      }
+    }
+  }
+
+  // MARK: App
+
+  private var appSection: some View {
+    Section("App") {
+      SettingsNavigationRow(title: "App Icon", value: store.selectedAppIconLabel) {
+        store.send(.appIconRowTapped)
+      }
+      // Only offered when the agent supports session deletion — otherwise Archive is the
+      // only destructive action and the choice would be meaningless.
+      if store.deleteSupported {
+        Picker(
+          "Default swipe action",
+          selection: Binding(
+            get: { store.defaultSwipeAction },
+            set: { store.send(.defaultSwipeActionChanged($0)) }
+          )
+        ) {
+          Text("Archive").tag(SessionSwipeAction.archive)
+          Text("Delete").tag(SessionSwipeAction.delete)
+        }
+      }
+    }
+  }
+
+  // MARK: Notifications
+
+  private var notificationsSection: some View {
+    Section {
+      // Plugin update, offered above the toggle because an out-of-date plugin sends pushes
+      // the user is actively complaining about. Shown whether or not push is currently
+      // available — an installed-but-disabled plugin is still worth updating.
+      if store.pluginUpdateAvailable {
+        VStack(alignment: .leading, spacing: 4) {
+          Label("Plugin update available", systemImage: "arrow.down.circle")
+            .font(.subheadline.weight(.semibold))
+          Text(pluginUpdateExplanation)
+            .font(.footnote).foregroundStyle(.secondary)
+        }
+        Button("Update plugin") { store.send(.updatePluginTapped) }
+          .disabled(store.pluginUpdate == .updating)
+      } else if store.pluginUpdateNeedsManualSteps {
+        // Out of date but the agent can't pull it (pip install / hand-copied directory), so
+        // a button here would only 400. Route to the guide, which offers the chat prompt.
+        VStack(alignment: .leading, spacing: 4) {
+          Label("Plugin update available", systemImage: "arrow.down.circle")
+            .font(.subheadline.weight(.semibold))
+          Text("\(pluginUpdateExplanation) This copy can't be updated from the app — ask your agent to update it.")
+            .font(.footnote).foregroundStyle(.secondary)
+        }
+        Button("How to update the plugin") { showingPushGuide = true }
+          .font(.footnote)
+      }
+      switch store.pluginUpdate {
+      case .idle:
+        EmptyView()
+      case .updating:
+        Label("Updating…", systemImage: "arrow.triangle.2.circlepath")
+          .foregroundStyle(.secondary).font(.footnote)
+      case .updated:
+        // A pull only changes files on disk — the running agent keeps the old code loaded.
+        // This restart notice is the whole point of the success state; don't soften it.
+        Label(
+          "Plugin updated. Restart your Hermes agent to apply it.",
+          systemImage: "exclamationmark.arrow.triangle.2.circlepath"
+        )
+        .foregroundStyle(.orange).font(.footnote)
+      case .alreadyCurrent:
+        Label("Plugin is already up to date", systemImage: "checkmark.circle")
+          .foregroundStyle(.green).font(.footnote)
+      case let .failed(reason):
+        Label(reason, systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.orange).font(.footnote)
+      }
+
+      if store.pushAvailable {
+        Toggle(
+          "Notify me about approvals",
+          isOn: Binding(
+            get: { store.notificationsEnabled },
+            set: { store.send(.notificationsToggled($0)) }
+          )
+        )
+        if store.notificationsDenied {
+          VStack(alignment: .leading, spacing: 4) {
+            Label("Notifications are turned off", systemImage: "bell.slash")
+              .foregroundStyle(.orange).font(.footnote)
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+              Link("Enable in iOS Settings", destination: url)
+                .font(.footnote)
+            }
+          }
+        }
+        Button("Send test notification") { store.send(.sendTestPushTapped) }
+          .disabled(store.testPushStatus == .sending)
+        switch store.testPushStatus {
+        case .idle:
+          EmptyView()
+        case .sending:
+          Label("Sending…", systemImage: "paperplane")
+            .foregroundStyle(.secondary).font(.footnote)
+        case .sent:
+          Label("Test notification sent", systemImage: "checkmark.circle")
+            .foregroundStyle(.green).font(.footnote)
+        case .failed:
+          Label("Couldn't send test notification", systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.orange).font(.footnote)
+        }
+        Button("How push notifications work") { showingPushGuide = true }
+          .font(.footnote)
+      } else {
+        Label("Notifications aren't available on this server", systemImage: "bell.slash")
+          .foregroundStyle(.secondary).font(.footnote)
+        Button("How to enable push notifications") { showingPushGuide = true }
+      }
+    } header: {
+      Text("Notifications")
+    } footer: {
+      if store.pushAvailable {
+        Text("Get a push when Hermes needs your approval, even while the app is closed.")
+      } else {
+        Text("Needs the hermes-push plugin running on your agent.")
+      }
+    }
+  }
+
+  // MARK: Feedback
+
+  private var feedbackSection: some View {
+    Section("Feedback") {
+      ExternalLinkRow(title: "Report a bug", destination: store.reportBugURL)
+      ExternalLinkRow(title: "Request a feature", destination: store.requestFeatureURL)
+      Button(action: rateButtonTapped) {
+        ExternalRowLabel(title: "Rate Hermes Mobile", systemImage: "star")
+      }
+      .tint(.primary)
+      ExternalLinkRow(title: "All issues on GitHub", destination: FeedbackLinks.allIssues)
+    }
+  }
+
+  // MARK: About
+
+  private var aboutSection: some View {
+    Section("About") {
+      if let versionLabel = store.versionLabel {
+        Text(versionLabel)
+      }
+      ExternalLinkRow(title: "GitHub repository", destination: FeedbackLinks.repository)
+      ExternalLinkRow(title: "Hermes Agent", destination: FeedbackLinks.hermesAgent)
+      ExternalLinkRow(title: "Privacy policy", destination: FeedbackLinks.privacyPolicy)
+      SettingsNavigationRow(title: "Acknowledgements") {
+        store.send(.acknowledgementsRowTapped)
+      }
+      SettingsNavigationRow(title: "Diagnostics") {
+        store.send(.diagnosticsRowTapped)
+      }
+    }
+  }
+
+  // MARK: Sign out
+
+  private var signOutSection: some View {
+    Section {
+      Button("Sign out", role: .destructive) {
+        store.send(.clearTokenTapped)
+      }
+    } footer: {
+      Text("Removes this server's credentials and cached chats from this device and returns to the connection screen.")
+    }
+  }
+
+  /// The system review prompt first; the App Store write-review page only once the app has an
+  /// App Store id (`AppStoreIdentity.appID` starts `nil`, so today this is the prompt alone).
+  private func rateButtonTapped() {
+    requestReview()
+    if let appID = AppStoreIdentity.appID {
+      openURL(FeedbackLinks.writeReview(appID: appID))
+    }
   }
 
   /// Why the update matters, naming both versions when the agent reported one. Kept in the
@@ -199,5 +286,79 @@ struct SettingsView: View {
       return "Update to \(latest). \(reason)"
     }
     return "Installed \(installed), latest \(latest). \(reason)"
+  }
+}
+
+/// A Form row that pushes a sub-screen. A `Button` rather than a `NavigationLink`: the push is
+/// a reducer append onto `SettingsFeature.State.path`, so the row only sends the action and
+/// draws the disclosure chevron itself.
+private struct SettingsNavigationRow: View {
+  let title: String
+  var value: String?
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack {
+        Text(title)
+          .foregroundStyle(.primary)
+        Spacer()
+        if let value {
+          Text(value)
+            .foregroundStyle(.secondary)
+        }
+        Image(systemName: "chevron.right")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      }
+      .contentShape(Rectangle())
+    }
+    // A Form button resolves `.primary` in its label to the TINT; re-tinting to `.primary`
+    // keeps the row reading like a `NavigationLink` (label colour, secondary value).
+    .tint(.primary)
+    .accessibilityAddTraits(.isLink)
+  }
+}
+
+/// A Form row that leaves the app (Safari / the App Store): primary-coloured title with a
+/// trailing arrow so it reads as external rather than as a push.
+private struct ExternalLinkRow: View {
+  let title: String
+  let destination: URL
+
+  var body: some View {
+    Link(destination: destination) {
+      ExternalRowLabel(title: title)
+    }
+    .tint(.primary) // see `SettingsNavigationRow`
+  }
+}
+
+/// The shared label of an external row (also used by the Rate button, which isn't a `Link`).
+private struct ExternalRowLabel: View {
+  let title: String
+  var systemImage = "arrow.up.right"
+
+  var body: some View {
+    HStack {
+      Text(title)
+        .foregroundStyle(.primary)
+      Spacer()
+      Image(systemName: systemImage)
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.tertiary)
+    }
+    .contentShape(Rectangle())
+  }
+}
+
+/// Stand-in destination until the sub-screen views land (Task 9 of the settings overhaul).
+private struct SettingsPlaceholderView: View {
+  let title: String
+
+  var body: some View {
+    ContentUnavailableView(title, systemImage: "hammer")
+      .navigationTitle(title)
+      .navigationBarTitleDisplayMode(.inline)
   }
 }

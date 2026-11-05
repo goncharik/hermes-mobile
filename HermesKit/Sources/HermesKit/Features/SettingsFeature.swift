@@ -154,6 +154,18 @@ public struct SettingsFeature {
       bundleInfo.map { "Version \($0.marketingVersion) (\($0.build))" }
     }
 
+    /// The Feedback "Report a bug" link: a new issue prefilled with the build facts. Until
+    /// bundle info loads (it's a synchronous read on `.task`, so only the first frame) the row
+    /// falls back to the issue list rather than an issue missing its environment block.
+    public var reportBugURL: URL {
+      bundleInfo.map(FeedbackLinks.reportBug) ?? FeedbackLinks.allIssues
+    }
+
+    /// The Feedback "Request a feature" link; same fallback as `reportBugURL`.
+    public var requestFeatureURL: URL {
+      bundleInfo.map(FeedbackLinks.requestFeature) ?? FeedbackLinks.allIssues
+    }
+
     public var serverURLString: String { connection.baseURL.absoluteString }
     public var canSaveToken: Bool {
       !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

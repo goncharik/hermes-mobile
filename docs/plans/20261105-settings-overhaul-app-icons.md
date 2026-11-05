@@ -281,12 +281,16 @@ and the TestFlight command-line override stay as they are.
 - Modify: `HermesMobile/Sources/Features/SessionListView.swift`
 - Modify: `HermesMobileTests/SettingsSnapshotTests.swift`
 
-- [ ] `SettingsView` owns `NavigationStack(path: $store.scope(state: \.path, action: \.path))` with the `Form` as root and `switch pathStore.case` destinations (placeholder views for the three cases until Task 9); `SessionListView` sheet drops its bare `NavigationStack`
-- [ ] rebuild the `Form` into the six groups from Technical Details; token field gated on `showsTokenField`; Agent row hidden while `agentVersion == nil`; Profile row gated on `profileName`; Notifications block moved verbatim
-- [ ] Feedback rows as `Link`s from `FeedbackLinks` with the external-link affordance; "Rate Hermes Mobile" calls `@Environment(\.requestReview)` then opens `writeReview` only when `AppStoreIdentity.appID` is set
-- [ ] Sign out button copy + footer; version row from `versionLabel`
-- [ ] update existing `SettingsSnapshotTests` (no outer `NavigationStack`, new init, no `log`) and add light/dark snapshots for token vs cookie vs bearer auth and `profileName` present; re-record the changed baselines (`make snapshot` twice for new tests)
-- [ ] run `make snapshot` + HermesKit tests - must pass before next task
+- [x] `SettingsView` owns `NavigationStack(path: $store.scope(state: \.path, action: \.path))` with the `Form` as root and `switch pathStore.case` destinations (placeholder views for the three cases until Task 9); `SessionListView` sheet drops its bare `NavigationStack`
+  - ⚠️ actual: `.task` and the push-guide `.sheet` sit on the `NavigationStack`, not the Form root, so popping back from a sub-screen doesn't re-fire `.task` (re-probing `/api/status`)
+- [x] rebuild the `Form` into the six groups from Technical Details; token field gated on `showsTokenField`; Agent row hidden while `agentVersion == nil`; Profile row gated on `profileName`; Notifications block moved verbatim
+  - ⚠️ actual: push rows are a private `SettingsNavigationRow` (`Button` + drawn chevron, `.tint(.primary)` — a Form button resolves `.primary` to the tint); the swipe picker's old "Session list" footer dropped (it now lives in the App group)
+- [x] Feedback rows as `Link`s from `FeedbackLinks` with the external-link affordance; "Rate Hermes Mobile" calls `@Environment(\.requestReview)` then opens `writeReview` only when `AppStoreIdentity.appID` is set
+  - ➕ `SettingsFeature.State.reportBugURL` / `requestFeatureURL` (fall back to `FeedbackLinks.allIssues` until `bundleInfo` loads) so the view never unwraps; unit-tested
+- [x] Sign out button copy + footer; version row from `versionLabel`
+- [x] update existing `SettingsSnapshotTests` (no outer `NavigationStack`, new init, no `log`) and add light/dark snapshots for token vs cookie vs bearer auth and `profileName` present; re-record the changed baselines (`make snapshot` twice for new tests)
+  - ➕ `testSettingsView_unloaded` (Agent/version rows hidden, no icon value); whole-Form fixtures render at `deviceImage(height: 1_800)` so Feedback/About/Sign out are in frame
+- [x] run `make snapshot` + HermesKit tests - must pass before next task
 
 ### Task 9: Sub-screen views and their snapshots
 

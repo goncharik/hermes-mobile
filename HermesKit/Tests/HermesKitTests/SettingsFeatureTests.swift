@@ -213,6 +213,15 @@ struct SettingsFeatureTests {
     #expect(state.profileName == nil)
   }
 
+  @Test func feedbackLinksCarryBundleInfoOnceLoaded() {
+    var state = SettingsFeature.State(connection: connection)
+    #expect(state.reportBugURL == FeedbackLinks.allIssues)
+    #expect(state.requestFeatureURL == FeedbackLinks.allIssues)
+    state.bundleInfo = .test
+    #expect(state.reportBugURL == FeedbackLinks.reportBug(.test))
+    #expect(state.requestFeatureURL == FeedbackLinks.requestFeature(.test))
+  }
+
   @Test func selectedAppIconLabelNilMeansPrimary() {
     var state = SettingsFeature.State(connection: connection, appIconCatalog: .testCatalog)
     #expect(state.selectedAppIconLabel == "Gold")
