@@ -219,10 +219,12 @@ and the TestFlight command-line override stay as they are.
 - Modify: `HermesKit/Tests/HermesKitTests/AuthSessionTests.swift` (create if absent)
 - Create: `HermesKit/Tests/HermesKitTests/DiagnosticsReportTests.swift`
 
-- [ ] add `AuthSession.settingsLabel` (token → "Token"; cookie → "Password · <username>"; bearer → "<provider> · <username>") and `AuthSession.isToken`
-- [ ] add `DiagnosticsReport.render(bundleInfo:serverURL:authLabel:agentVersion:log:)` producing a plain-text block (app facts, server URL, auth label, agent version or "unknown", then the last N log entries as `type — summary`)
-- [ ] write tests: label per regime; report contains the facts and log lines; report NEVER contains the token / cookie values / bearer tokens (assert absence against a session built with known secret strings)
-- [ ] run tests - must pass before next task
+- [x] add `AuthSession.settingsLabel` (token → "Token"; cookie → "Password · <username>"; bearer → "<provider> · <username>") and `AuthSession.isToken`
+  - ⚠️ actual: `BearerSession` has no username, so bearer renders `"<provider> · <userID>"` with the WIRE provider name (e.g. `nous`; the server owns display names, same fallback as `ReauthFeature.providerLabel`). An empty identity drops the `· …` suffix; an empty bearer provider reads `"OAuth"`.
+- [x] add `DiagnosticsReport.render(bundleInfo:serverURL:authLabel:agentVersion:log:)` producing a plain-text block (app facts, server URL, auth label, agent version or "unknown", then the last N log entries as `type — summary`)
+  - ⚠️ actual: `bundleInfo` is `BundleInfo?` (matches `DiagnosticsFeature.State`; nil → "App: unknown"); extra `logLimit` param defaults to `defaultLogLimit = 50`; the server URL is stripped of userinfo/query/fragment so a credential-bearing URL can't leak.
+- [x] write tests: label per regime; report contains the facts and log lines; report NEVER contains the token / cookie values / bearer tokens (assert absence against a session built with known secret strings)
+- [x] run tests - must pass before next task
 
 ### Task 5: AppIconPickerFeature reducer
 
