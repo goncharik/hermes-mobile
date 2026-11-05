@@ -96,6 +96,13 @@ let project = Project(
           // — a custom configuration breaks Tuist's SwiftPM integration, so we switch the
           // icon via a build setting.
           "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+          // The Settings icon picker (#135). ALL six sets are alternates — the primary
+          // included on purpose: the primary differs per build (gold for App Store, blueprint
+          // for Debug/TestFlight), so listing every set lets any build reach any icon.
+          // `AppIconCatalog.parse` filters the primary back out (choosing it is
+          // `setAlternateIconName(nil)`). Names must match `AppIconOption.all` in HermesKit.
+          "ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES": "AppIcon AppIconDev AppIconHermes AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint",
+          "ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS": "YES",
         ],
         configurations: [
           // Local dev → blue icon, so it's visually distinct from the production app.

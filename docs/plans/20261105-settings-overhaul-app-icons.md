@@ -190,12 +190,13 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesMobile/Resources/Assets.xcassets/AppIconPreview-{AppIcon,AppIconDev,AppIconHermes,AppIconHermesBlueprint,AppIconHermesClassic,AppIconHermesClassicBlueprint}.imageset/`
 - Modify: `Project.swift`
 
-- [ ] generate the four 1024×1024 icons with `sips -Z 1024` from the attachment sources (verify `hasAlpha: no`, 1024×1024 with `sips -g`), `Contents.json` copied from `AppIcon.appiconset`
-- [ ] generate six 180px previews (`sips -Z 180`) as plain image sets, single-scale, named `AppIconPreview-<SetName>`
-- [ ] add `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` (all six) and `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES` to the base settings in `Project.swift`, with a comment explaining why the primary is listed too
-- [ ] `tuist generate` and build the Debug app; dump the built `Info.plist` and confirm `CFBundleAlternateIcons` lists the six names and `CFBundlePrimaryIcon` is `AppIconDev`
-- [ ] write a HermesKit test that the `AppIconOption` table names match the six set names used in `Project.swift` (literal list in the test, documents the coupling)
-- [ ] run tests - must pass before next task
+- [x] generate the four 1024×1024 icons with `sips -Z 1024` from the attachment sources (verify `hasAlpha: no`, 1024×1024 with `sips -g`), `Contents.json` copied from `AppIcon.appiconset`
+- [x] generate six 180px previews (`sips -Z 180`) as plain image sets, single-scale, named `AppIconPreview-<SetName>`
+- [x] add `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` (all six) and `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES` to the base settings in `Project.swift`, with a comment explaining why the primary is listed too
+- [x] `tuist generate` and build the Debug app; dump the built `Info.plist` and confirm `CFBundleAlternateIcons` lists the six names and `CFBundlePrimaryIcon` is `AppIconDev`
+  - ⚠️ actual: `CFBundlePrimaryIcon` = `AppIconDev`, but actool OMITS the primary from `CFBundleAlternateIcons` (five names: AppIcon + the four Hermes sets). Harmless — the parser filters the primary anyway; all six remain reachable (primary via `set(nil)`). Pinned by `AppIconCatalogTests.actoolOutputWithoutPrimaryAlternate`.
+- [x] write a HermesKit test that the `AppIconOption` table names match the six set names used in `Project.swift` (literal list in the test, documents the coupling)
+- [x] run tests - must pass before next task
 
 ### Task 3: BundleInfoClient and FeedbackLinks
 

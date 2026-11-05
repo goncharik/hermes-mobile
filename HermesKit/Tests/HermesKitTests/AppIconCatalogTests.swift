@@ -5,8 +5,10 @@ import Testing
 @testable import HermesKit
 
 struct AppIconCatalogTests {
-  /// Shape of the `Info.plist` Xcode writes for a Debug build: the primary (`AppIconDev`)
-  /// is ALSO listed as an alternate, plus one name the table doesn't know.
+  /// A Debug-build `Info.plist` with the primary (`AppIconDev`) ALSO listed as an alternate,
+  /// plus one name the table doesn't know. actool currently omits the primary from
+  /// `CFBundleAlternateIcons` (see `actoolOutputWithoutPrimaryAlternate`); the parser must
+  /// still hold if a toolchain starts listing it.
   private static var debugInfo: [String: Any] {[
     "CFBundleIcons": [
       "CFBundlePrimaryIcon": [
@@ -31,6 +33,35 @@ struct AppIconCatalogTests {
       "Hermes Classic Blueprint",
     ])
     #expect(AppIconOption.all.map(\.previewAsset) == AppIconOption.all.map { "AppIconPreview-\($0.name)" })
+  }
+
+  /// Documents the coupling with `Project.swift`: this literal list is the
+  /// `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` value (plus the `.appiconset` and
+  /// `AppIconPreview-<SetName>` asset names). Changing either side means changing all three.
+  @Test func tableNamesMatchProjectAlternateIconNames() {
+    let projectAlternateIconNames =
+      "AppIcon AppIconDev AppIconHermes AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint"
+    #expect(AppIconOption.all.map(\.name) == projectAlternateIconNames.split(separator: " ").map(String.init))
+  }
+
+  /// The real Debug-build `Info.plist` (dumped from the built app): actool drops the primary
+  /// from `CFBundleAlternateIcons` even though `Project.swift` lists it, so five alternates.
+  @Test func actoolOutputWithoutPrimaryAlternate() {
+    let info: [String: Any] = [
+      "CFBundleIcons": [
+        "CFBundlePrimaryIcon": ["CFBundleIconName": "AppIconDev"],
+        "CFBundleAlternateIcons": [
+          "AppIcon": ["CFBundleIconName": "AppIcon"],
+          "AppIconHermes": ["CFBundleIconName": "AppIconHermes"],
+          "AppIconHermesBlueprint": ["CFBundleIconName": "AppIconHermesBlueprint"],
+          "AppIconHermesClassic": ["CFBundleIconName": "AppIconHermesClassic"],
+          "AppIconHermesClassicBlueprint": ["CFBundleIconName": "AppIconHermesClassicBlueprint"],
+        ],
+      ] as [String: Any],
+    ]
+    let catalog = AppIconCatalog.parse(infoDictionary: info)
+    #expect(catalog.primary?.name == "AppIconDev")
+    #expect(catalog.options == AppIconOption.all)
   }
 
   @Test func parsesPrimaryAndFiltersItOutOfAlternates() {
