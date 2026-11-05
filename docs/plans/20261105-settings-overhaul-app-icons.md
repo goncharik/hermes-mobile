@@ -176,12 +176,12 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesKit/Sources/HermesKit/Clients/AppIconClient.swift`
 - Create: `HermesKit/Tests/HermesKitTests/AppIconCatalogTests.swift`
 
-- [ ] add `AppIconOption` (name, label, previewAsset) with the static six-entry table in display order
-- [ ] add `AppIconCatalog` + pure `parse(infoDictionary:)` outside any UIKit guard (primary from `CFBundlePrimaryIcon.CFBundleIconName`, alternates from `CFBundleAlternateIcons` keys, unknown names dropped, primary filtered out, order from the table); `label(for name: String?)` helper (nil → primary's label)
-- [ ] add `AppIconClient` (`@DependencyClient`): `catalog`, `current`, `set`; `liveValue` under `#if canImport(UIKit)` over `Bundle.main.infoDictionary` + `UIApplication.shared.alternateIconName` / `setAlternateIconName` (main-actor hop inside the client); non-UIKit `liveValue = testValue`; `testValue` in-memory with the full six-icon catalog, primary `AppIcon`
-- [ ] register `DependencyValues.appIcon`
-- [ ] write tests: parse a fixture plist dict (primary filtered, unknown dropped, table order kept); empty/malformed dict → empty catalog; `label(for:)` nil and unknown names
-- [ ] run tests - must pass before next task
+- [x] add `AppIconOption` (name, label, previewAsset) with the static six-entry table in display order
+- [x] add `AppIconCatalog` + pure `parse(infoDictionary:)` outside any UIKit guard (primary from `CFBundlePrimaryIcon.CFBundleIconName`, alternates from `CFBundleAlternateIcons` keys, unknown names dropped, primary filtered out, order from the table); `label(for name: String?)` helper (nil → primary's label)
+- [x] add `AppIconClient` (`@DependencyClient`): `catalog`, `current`, `set`; `liveValue` under `#if canImport(UIKit)` over `Bundle.main.infoDictionary` + `UIApplication.shared.alternateIconName` / `setAlternateIconName` (main-actor hop inside the client); non-UIKit `liveValue = testValue`; `testValue` in-memory with the full six-icon catalog, primary `AppIcon`
+- [x] register `DependencyValues.appIcon`
+- [x] write tests: parse a fixture plist dict (primary filtered, unknown dropped, table order kept); empty/malformed dict → empty catalog; `label(for:)` nil and unknown names
+- [x] run tests - must pass before next task
 
 ### Task 2: Icon assets and build wiring
 
