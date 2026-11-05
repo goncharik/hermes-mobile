@@ -85,10 +85,10 @@ public enum TranscriptScrollMath {
 
   /// Whether the collection view can take a diff apply now (#128). A diff apply self-sizes its
   /// cells against the current frame; one landing on a degenerate frame — no window (the first
-  /// `updateUIView` on open, a background snapshot), a non-finite or zero height, or a width
-  /// that leaves the row (`width − 2 × horizontalSectionInset`) no positive width — measures
-  /// every cell at a 0–1pt fitting width, which is the pass iOS 18 rejects with
-  /// `_UIContentViewAssertValidFittingSize`. The renderer defers such an update (keeping only
+  /// `updateUIView` on open), a non-finite or zero height, or a width that leaves the row
+  /// (`width − 2 × horizontalSectionInset`) no positive width — measures every cell at a 0pt
+  /// fitting width, the suspected trigger of iOS 18's `_UIContentViewAssertValidFittingSize`
+  /// (not reproduced on iOS 26.5/27.0). The renderer defers such an update (keeping only
   /// the latest) and flushes it from the next layout pass that passes this gate, so the open's
   /// first population still takes the jump-to-bottom.
   public static func canApplySnapshot(width: CGFloat, height: CGFloat, hasWindow: Bool) -> Bool {

@@ -70,8 +70,8 @@ feedback `/goal`/`/moa` give); `prefill` (`/undo`) drops the undone message into
 renders the notice; both-fail → `errorBanner`, never a swallowed `try?` — and when the
 `command.dispatch` fallback ALSO fails with only the routing-noise "not a quick/…/skill command"
 error, the **original `slash.exec` error is preferred** (a worker timeout/crash must not be
-buried under the noise — desktop parity, `slash.ts`). All wrapped in the #17 session-not-found
-heal.
+buried under the noise — desktop parity, `slash.ts`). All share ONE #17 session-not-found heal
+per command (`HealCursor`, `docs/architecture.md` → "Session-not-found self-heal").
 
 ## Not a turn: locking
 

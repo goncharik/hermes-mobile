@@ -169,8 +169,8 @@ survives the hydrate's live → deterministic id rewrite.
 - **No diff apply on an unmeasurable view (#128).** `dataSource.apply` self-sizes every cell
   against the current frame. One landing with no window, a non-finite or zero height, or a width
   that leaves the row no positive width (`≤ 2 × TranscriptLayout.horizontalSectionInset`)
-  measures cells at a 0–1pt fitting width, which iOS 18 rejects with
-  `_UIContentViewAssertValidFittingSize` (background snapshot, rotation, app switching). So
+  measures cells at a 0pt fitting width — the suspected trigger of iOS 18's
+  `_UIContentViewAssertValidFittingSize` (not reproduced on iOS 26.5/27.0). So
   `Coordinator.apply` first checks the pure `TranscriptScrollMath.canApplySnapshot` gate; on a
   "no" it stores only the LATEST update in `pendingApply` (overwritten, never queued) and
   returns. `didLayout()` flushes it through the same `apply`, before the open-at-bottom settle,

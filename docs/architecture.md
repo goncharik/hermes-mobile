@@ -649,16 +649,19 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
 ### Session-not-found self-heal (#17, #132)
 
 An outbound RPC against a stale live id (the server reaped the session while the app was away)
-answers "session not found" (`GatewayError.isSessionNotFound`). Every session-scoped call —
+answers "session not found" (`GatewayError.isSessionNotFound`). These session-scoped calls —
 `prompt.submit` (composer and queue drain), the attachment upload→submit sequence, `slash.exec` /
-`command.dispatch` / `session.compress`, `session.title`, `config.set` — goes through ONE
+`command.dispatch` / `session.compress`, `session.title`, `config.set` — go through ONE
 mechanism, `withSessionHeal`: on that error, `healLiveSessionID` re-resumes the stored id
-(`session.resume`, profile threaded per #114) or, with no stored id (a fresh chat before its
-handshake, an unpersisted #34 branch), recreates via `recreateLiveSession` (`session.create`,
-with the branch's seed + parent link when there is one). Either path applies the fresh ids via
+(`session.resume`, profile threaded per #114) or, with no stored id (an agent whose
+`session.create` returned no `stored_session_id`, or an unpersisted #34 branch, whose row-less
+key `healTarget` hides), recreates via `recreateLiveSession` (`session.create`, with the
+branch's seed + parent link when there is one). Either path applies the fresh ids via
 `.liveSessionIDRefreshed`, then the op is replayed **once**. A heal failure or a second failure
 throws to the caller's own catch, which banners (`.promptSubmitFailed`,
-`.attachmentUploadFailed`, …). There is no retry loop and no recursion.
+`.attachmentUploadFailed`, …). There is no retry loop and no recursion. A multi-RPC action (the
+slash pipeline: exec → directive / `command.dispatch` fallback / alias hop) threads one
+`HealCursor` through its RPCs, so it heals at most once and every later RPC targets the healed id.
 
 **Never-saved fallback (#132).** `session.create` mints the stored key, but the server writes
 the DB row lazily on the first prompt. On agents without `_resume_materialize_minted`,
@@ -674,9 +677,9 @@ session successfully, so a successful resume proves nothing. Every call site cap
 `State.healTarget` (stored id under the #34 branch rule, seed, profile, and the flag as
 `fallbackToCreate`). When it is true AND the resume itself throws `isSessionNotFound`, the heal
 falls back to `recreateLiveSession` (same profile and seed rules). This is one extra heal step,
-not a second replay: the op still replays once. A saved
-or resumed chat whose resume fails still banners and never has a session silently swapped in,
-and any other resume error (transport, timeout) throws as before. Newer agents that
+not a second replay: the op still replays once. A saved or resumed chat whose resume fails
+still banners and never has a session silently swapped in, and any other resume error
+(transport, timeout) throws as before. Newer agents that
 materialise the row on resume never reach the fallback. The foreground `session.resume`
 hydrate already recreated on not-found for every chat, so the heal was the only gap. Known
 limitations: two heals in flight at once in a never-saved chat each create a session and the

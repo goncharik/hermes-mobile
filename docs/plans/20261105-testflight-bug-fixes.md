@@ -211,7 +211,7 @@
       NaN or infinite width → false; no window → as decided in Task 1; first-open configuration → as
       decided in Task 1
 - [x] implement the predicate in `TranscriptScrollMath` (outside the UIKit guard)
-      (`canApplySnapshot(width:height:hasWindow:horizontalSectionInset:)`)
+      (`canApplySnapshot(width:height:hasWindow:)`)
 - [x] add `pendingApply` to the coordinator: defer in `apply` entry (or `updateUIView`) when the
       gate says no, keeping only the latest update (deferred at `apply` entry)
 - [x] flush `pendingApply` from `didLayout()` when the gate passes, before the existing
@@ -386,7 +386,12 @@ iOS 27 iPad simulator.
       pure gate `canApplySnapshot` defers no-window, non-finite, zero/negative and
       ≤ 2 × inset frames (`TranscriptScrollMathTests`, 6 tests); `apply` defers at entry keeping
       only the latest update, `didLayout` flushes through the unchanged `apply` path before the
-      settle, `didMoveToWindow` re-schedules layout on re-attach. Behaviour unchanged per the
+      settle, `didMoveToWindow` re-schedules layout on re-attach — the latest-only overwrite and
+      the re-attach / frame-recovery flush are covered by
+      `testUpdatesWhileDetachedLandOnReattachAndAPinnedReaderFollows`,
+      `testScrolledUpReaderKeepsTheirRowsWhenADetachedSlideLands` and
+      `testUpdatesAtADegenerateFrameLandWhenTheFrameRecovers` in
+      `TranscriptSlidePreservationTests`. Behaviour unchanged per the
       hosted suites — "opens at the bottom" fixture checks and the hydrate re-id follow in
       `TranscriptSlidePreservationTests`, the slide/hold cases there, and
       `TranscriptKeyboardScrollTests` — plus every `ChatSnapshotTests` open now going through
