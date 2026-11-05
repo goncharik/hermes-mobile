@@ -47,7 +47,7 @@ public struct DiagnosticsFeature {
     case task
     case logUpdated([GatewayLogEntry])
     case copyTapped
-    case copiedFeedbackExpired
+    case copiedFeedbackElapsed
   }
 
   private enum CancelID: Hashable {
@@ -93,12 +93,12 @@ public struct DiagnosticsFeature {
           .run { [pasteboard] _ in pasteboard.copy(report) },
           .run { [clock] send in
             try await clock.sleep(for: Self.copiedFeedbackDuration)
-            await send(.copiedFeedbackExpired)
+            await send(.copiedFeedbackElapsed)
           }
           .cancellable(id: CancelID.copyFeedback, cancelInFlight: true)
         )
 
-      case .copiedFeedbackExpired:
+      case .copiedFeedbackElapsed:
         state.copiedToken = nil
         return .none
       }

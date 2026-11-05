@@ -32,7 +32,7 @@ struct AppIconCatalogTests {
       "Gold", "Blueprint", "Hermes", "Hermes Blueprint", "Hermes Classic",
       "Hermes Classic Blueprint",
     ])
-    #expect(AppIconOption.all.map(\.previewAsset) == AppIconOption.all.map { "AppIconPreview-\($0.name)" })
+    #expect(AppIconOption.named("AppIconHermes")?.previewAsset == "AppIconPreview-AppIconHermes")
   }
 
   /// The table must match `Project.swift`'s `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES`,

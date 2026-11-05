@@ -21,12 +21,10 @@ public enum DiagnosticsReport {
     logLimit: Int = defaultLogLimit
   ) -> String {
     var lines = ["Hermes Mobile diagnostics"]
-    lines.append("App: \(bundleInfo.marketingVersion) (\(bundleInfo.build))")
-    lines.append("iOS: \(bundleInfo.osVersion)")
-    lines.append("Device: \(bundleInfo.deviceModel)")
+    lines.append(contentsOf: bundleInfo.environmentLines)
     lines.append("Server: \(redacted(serverURL))")
     lines.append("Auth: \(authLabel)")
-    lines.append("Agent: \(agentVersion?.nonEmptyTrimmed ?? "unknown")")
+    lines.append("Agent: \(agentVersion?.trimmedNonEmpty ?? "unknown")")
     lines.append("")
 
     let recent = log.suffix(max(logLimit, 0))
@@ -50,12 +48,5 @@ public enum DiagnosticsReport {
     components.query = nil
     components.fragment = nil
     return components.string ?? url.host ?? ""
-  }
-}
-
-private extension String {
-  var nonEmptyTrimmed: String? {
-    let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
   }
 }

@@ -60,12 +60,7 @@ public enum FeedbackLinks {
 
   /// The facts every issue body ends with: app version and build, iOS version, device model.
   static func environmentBlock(_ info: BundleInfo) -> String {
-    """
-    ---
-    App: \(info.marketingVersion) (\(info.build))
-    iOS: \(info.osVersion)
-    Device: \(info.deviceModel)
-    """
+    (["---"] + info.environmentLines).joined(separator: "\n")
   }
 
   static func newIssue(title: String, body: String) -> URL {

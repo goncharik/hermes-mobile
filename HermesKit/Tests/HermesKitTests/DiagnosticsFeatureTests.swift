@@ -81,7 +81,7 @@ struct DiagnosticsFeatureTests {
     #expect(copied.value.first?.contains("session.resume — ok") == true)
 
     await clock.advance(by: .seconds(1.5))
-    await store.receive(.copiedFeedbackExpired) { $0.copiedToken = nil }
+    await store.receive(.copiedFeedbackElapsed) { $0.copiedToken = nil }
   }
 
   @Test func copyingAgainInsideTheDwellBumpsTheTokenAndRestartsTheTimer() async {
@@ -102,7 +102,7 @@ struct DiagnosticsFeatureTests {
     await clock.advance(by: .seconds(1.0)) // 2.0 s after the first copy — nothing fires
     #expect(store.state.copiedToken == 2)
     await clock.advance(by: .seconds(0.5)) // 1.5 s after the second copy
-    await store.receive(.copiedFeedbackExpired) { $0.copiedToken = nil }
+    await store.receive(.copiedFeedbackElapsed) { $0.copiedToken = nil }
     await waitUntil({ copied.value.count == 2 })
     #expect(copied.value.count == 2)
   }
@@ -124,6 +124,6 @@ struct DiagnosticsFeatureTests {
     await waitUntil({ copied.value.count == 1 })
     #expect(copied.value.first?.contains("error — socket closed") == true)
     await clock.advance(by: .seconds(1.5))
-    await store.receive(.copiedFeedbackExpired) { $0.copiedToken = nil }
+    await store.receive(.copiedFeedbackElapsed) { $0.copiedToken = nil }
   }
 }

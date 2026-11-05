@@ -21,6 +21,15 @@ public struct BundleInfo: Equatable, Hashable, Sendable {
     self.deviceModel = deviceModel
   }
 
+  /// `"<marketingVersion> (<build>)"`, e.g. `"1.0 (79)"`.
+  public var versionAndBuild: String { "\(marketingVersion) (\(build))" }
+
+  /// The `App:` / `iOS:` / `Device:` lines shared by the diagnostics report and the
+  /// prefilled issue body.
+  public var environmentLines: [String] {
+    ["App: \(versionAndBuild)", "iOS: \(osVersion)", "Device: \(deviceModel)"]
+  }
+
   /// The fixed facts `BundleInfoClient.testValue` returns.
   public static let test = BundleInfo(
     marketingVersion: "1.0",

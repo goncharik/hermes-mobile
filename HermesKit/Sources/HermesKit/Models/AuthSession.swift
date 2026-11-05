@@ -46,14 +46,12 @@ public enum AuthSession: Equatable, Sendable, Codable {
     case let .cookie(session):
       return Self.join("Password", session.username)
     case let .bearer(session):
-      let provider = session.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-      return Self.join(provider.isEmpty ? "OAuth" : provider, session.userID)
+      return Self.join(session.provider.trimmedNonEmpty ?? "OAuth", session.userID)
     }
   }
 
   private static func join(_ head: String, _ identity: String) -> String {
-    let identity = identity.trimmingCharacters(in: .whitespacesAndNewlines)
-    return identity.isEmpty ? head : "\(head) · \(identity)"
+    identity.trimmedNonEmpty.map { "\(head) · \($0)" } ?? head
   }
 }
 

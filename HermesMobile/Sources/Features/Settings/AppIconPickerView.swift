@@ -56,8 +56,10 @@ private struct AppIconTile: View {
           .clipShape(.rect(cornerRadius: Self.cornerRadius, style: .continuous))
           .overlay {
             RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-              .strokeBorder(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator),
-                            lineWidth: isSelected ? 3 : 0.5)
+              .strokeBorder(
+                isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator),
+                lineWidth: isSelected ? 3 : 0.5
+              )
           }
           .overlay(alignment: .bottomTrailing) {
             if isSelected {

@@ -14,16 +14,7 @@ struct AcknowledgementsView: View {
               .font(.caption2.monospaced())
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
-            Link(destination: acknowledgement.url) {
-              HStack {
-                Text("Source on GitHub")
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                  .font(.footnote.weight(.semibold))
-                  .foregroundStyle(.tertiary)
-              }
-              .contentShape(Rectangle())
-            }
+            ExternalLinkRow(title: "Source on GitHub", destination: acknowledgement.url)
           } label: {
             VStack(alignment: .leading, spacing: 2) {
               Text(acknowledgement.name)

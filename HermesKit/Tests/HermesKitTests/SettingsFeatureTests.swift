@@ -157,11 +157,14 @@ struct SettingsFeatureTests {
     await store.send(.doneTapped)
   }
 
-  /// A failed `/api/status` probe leaves the version `nil` (Agent row hidden) — no banner.
+  /// A failed `/api/status` probe leaves the version `nil` (Agent row hidden) — no banner,
+  /// only a debug-log note.
   @Test func statusFailureLeavesAgentVersionNil() async {
+    let debugLog = DebugLogClient.ringBuffer()
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
+      $0.debugLog = debugLog
       $0.hermesREST.status = { @Sendable _ in throw RESTError.unreachable }
       $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
       $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
@@ -171,6 +174,8 @@ struct SettingsFeatureTests {
     await store.send(.task)
     await store.receive(\.agentStatusLoaded, nil)
     #expect(store.state.agentVersion == nil)
+    #expect(debugLog.snapshot().map(\.type) == ["api.status"])
+    #expect(debugLog.snapshot().map(\.summary) == [RESTError.unreachable.message])
     await store.send(.doneTapped)
   }
 

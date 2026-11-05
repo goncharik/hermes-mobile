@@ -1,13 +1,14 @@
 import ComposableArchitecture
 import Foundation
 
-/// Settings sheet: server info, token management (re-paste / clear), a manual reconnect
-/// trigger, notifications, and three rows that push sub-screens through `path`
-/// (`SettingsPath`: App Icon, Diagnostics, Acknowledgements). The live debug log lives in
-/// `DiagnosticsFeature`, subscribed only while that screen is on screen.
+/// Settings sheet, in six groups: Server, App, Notifications, Feedback, About, Sign out.
+/// Three rows push sub-screens through `path` (`SettingsPath`: App Icon, Diagnostics,
+/// Acknowledgements). The live debug log lives in `DiagnosticsFeature`, subscribed only while
+/// that screen is on screen.
 ///
-/// Token-clear and reconnect are surfaced to the parent via delegates: clearing returns
-/// the app to onboarding, reconnect reloads the session list.
+/// Sign out and reconnect are surfaced to the parent via delegates: signing out clears the
+/// stored session in whatever auth regime and returns the app to onboarding, reconnect
+/// reloads the session list.
 @Reducer
 public struct SettingsFeature {
   @ObservableState
@@ -151,7 +152,7 @@ public struct SettingsFeature {
 
     /// The About version row, e.g. `"Version 1.0 (79)"`; `nil` until bundle info loads.
     public var versionLabel: String? {
-      bundleInfo.map { "Version \($0.marketingVersion) (\($0.build))" }
+      bundleInfo.map { "Version \($0.versionAndBuild)" }
     }
 
     /// The Feedback "Report a bug" link: a new issue prefilled with the build facts. Until
@@ -264,11 +265,12 @@ public struct SettingsFeature {
         state.appIconCatalog = appIcon.catalog()
         return .merge(
           // The Agent row: informational only, so a failed probe deliberately maps to `nil`
-          // (row hidden, no banner) rather than surfacing an error.
-          .run { [rest, baseURL = state.connection.baseURL] send in
+          // (row hidden, no banner) rather than surfacing an error — debug log only.
+          .run { [rest, debugLog, baseURL = state.connection.baseURL] send in
             do {
               await send(.agentStatusLoaded(try await rest.status(baseURL).version))
             } catch {
+              if !Task.isCancelled { debugLog.note("api.status", asRESTError(error).message) }
               await send(.agentStatusLoaded(nil))
             }
           },

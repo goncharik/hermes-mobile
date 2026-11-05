@@ -14,7 +14,7 @@ three rows push a sub-screen, and they push through a TCA stack:
   `StackState<SettingsPath.State>`; the body ends with `.forEach(\.path, action: \.path)`.
 - **Rows push by appending in the reducer** (`appIconRowTapped`, `diagnosticsRowTapped`,
   `acknowledgementsRowTapped`), so every push is a `TestStore` assertion with its seed. The
-  rows are a private `SettingsNavigationRow` (a `Button` with a drawn chevron and
+  rows are a `SettingsNavigationRow` (`SettingsRows.swift`; a `Button` with a drawn chevron and
   `.tint(.primary)`, since a Form button resolves `.primary` to the tint), never a
   `NavigationLink`.
 - **`SettingsView` owns the `NavigationStack(path:)`**, with the `Form` as root and
@@ -44,7 +44,7 @@ the push authorization status, and the push plugin info.
    and an empty bearer provider reads `OAuth`. Profile shows only when `profileName != nil`
    (nil when the agent has no profiles API). Agent shows only once `agentVersion` lands: the
    `/api/status` probe is informational, so a failure maps to `nil` with **no banner** (the
-   row stays hidden). The token `SecureField` + "Save token" show only when `showsTokenField`
+   row stays hidden), only an `api.status` debug-log note. The token `SecureField` + "Save token" show only when `showsTokenField`
    (`AuthSession.isToken`): a password or OAuth session has no token to re-paste. Reconnect.
 2. **App.** "App Icon" (value `selectedAppIconLabel`) pushes the picker. "Default swipe
    action" stays gated on `deleteSupported` (`docs/features/session-list.md`).

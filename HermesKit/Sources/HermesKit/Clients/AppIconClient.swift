@@ -34,14 +34,6 @@ extension AppIconClient: DependencyKey {
   }
 }
 
-extension AppIconCatalog {
-  /// The catalog a Release build advertises: `AppIcon` primary, the other five alternates.
-  public static let testCatalog = AppIconCatalog(
-    primary: AppIconOption.all[0],
-    alternates: Array(AppIconOption.all.dropFirst())
-  )
-}
-
 public extension DependencyValues {
   var appIcon: AppIconClient {
     get { self[AppIconClient.self] }

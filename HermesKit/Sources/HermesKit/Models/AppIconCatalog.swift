@@ -54,6 +54,12 @@ public struct AppIconCatalog: Equatable, Sendable {
 
   public static let empty = AppIconCatalog(primary: nil, alternates: [])
 
+  /// The catalog a Release build advertises: `AppIcon` primary, the other five alternates.
+  public static let testCatalog = AppIconCatalog(
+    primary: AppIconOption.named("AppIcon")!,
+    alternates: AppIconOption.all.filter { $0.name != "AppIcon" }
+  )
+
   /// Every selectable icon (primary + alternates) in table display order.
   public var options: [AppIconOption] {
     let names = Set(([primary].compactMap { $0 } + alternates).map(\.name))
