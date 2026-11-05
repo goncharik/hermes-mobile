@@ -205,10 +205,11 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesKit/Sources/HermesKit/Models/FeedbackLinks.swift`
 - Create: `HermesKit/Tests/HermesKitTests/FeedbackLinksTests.swift`
 
-- [ ] add `BundleInfo` + `BundleInfoClient.info()`; `liveValue` reads `CFBundleShortVersionString` / `CFBundleVersion`, `UIDevice.current.systemVersion`, and the `utsname` machine identifier under the UIKit guard; `testValue` fixed strings; register `DependencyValues.bundleInfo`
-- [ ] add `AppStoreIdentity.appID: String? = nil` and `FeedbackLinks` (`reportBug`, `requestFeature`, `allIssues`, `repository`, `hermesAgent`, `privacyPolicy`, `writeReview(appID:)`); new-issue URLs percent-encode a title prefix and a body block with version, build, iOS, device
-- [ ] write tests: `reportBug` / `requestFeature` exact URL strings for the fixed `BundleInfo`; body contains all four facts; constants are the expected URLs; `writeReview` format
-- [ ] run tests - must pass before next task
+- [x] add `BundleInfo` + `BundleInfoClient.info()`; `liveValue` reads `CFBundleShortVersionString` / `CFBundleVersion`, `UIDevice.current.systemVersion`, and the `utsname` machine identifier under the UIKit guard; `testValue` fixed strings; register `DependencyValues.bundleInfo`
+  - ⚠️ actual: the OS version comes from `ProcessInfo.operatingSystemVersion` (formatted like `systemVersion`), not the main-actor `UIDevice`, so `info()` stays synchronous and the live value needs no UIKit guard; a simulator reports `SIMULATOR_MODEL_IDENTIFIER` instead of the host `arm64`.
+- [x] add `AppStoreIdentity.appID: String? = nil` and `FeedbackLinks` (`reportBug`, `requestFeature`, `allIssues`, `repository`, `hermesAgent`, `privacyPolicy`, `writeReview(appID:)`); new-issue URLs percent-encode a title prefix and a body block with version, build, iOS, device
+- [x] write tests: `reportBug` / `requestFeature` exact URL strings for the fixed `BundleInfo`; body contains all four facts; constants are the expected URLs; `writeReview` format
+- [x] run tests - must pass before next task
 
 ### Task 4: Auth row label and diagnostics report (pure)
 
