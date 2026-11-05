@@ -232,11 +232,13 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesKit/Sources/HermesKit/Features/AppIconPickerFeature.swift`
 - Create: `HermesKit/Tests/HermesKitTests/AppIconPickerFeatureTests.swift`
 
-- [ ] state: `catalog: AppIconCatalog`, `selected: String?` (nil = primary), `errorBanner: String?`; `public init`
-- [ ] actions: `task` (loads `appIcon.catalog()` + `appIcon.current()` → `loaded`), `iconTapped(String?)` (optimistic `selected`, runs `appIcon.set`), `setFailed(previous: String?)`, `delegate(.iconChanged(String?))`
-- [ ] tapping the already-selected icon is a no-op; a failed `set` restores `previous` and sets `errorBanner`; a success sends the delegate
-- [ ] write tests: seed on task; tap alternate → `set` called with the name and delegate fires; tap primary → `set(nil)`; failure → rollback + banner; same icon → no effect
-- [ ] run tests - must pass before next task
+- [x] state: `catalog: AppIconCatalog`, `selected: String?` (nil = primary), `errorBanner: String?`; `public init`
+  - ➕ pure tile helpers on `State`: `isSelected(_:)` and `iconName(for:)` (primary tile → `nil`) so the view stays declarative
+- [x] actions: `task` (loads `appIcon.catalog()` + `appIcon.current()` → `loaded`), `iconTapped(String?)` (optimistic `selected`, runs `appIcon.set`), `setFailed(previous: String?)`, `delegate(.iconChanged(String?))`
+- [x] tapping the already-selected icon is a no-op; a failed `set` restores `previous` and sets `errorBanner`; a success sends the delegate
+  - ➕ a new tap clears a stale banner; the `set` effect is `cancelInFlight` so the last tap wins (a superseded set lands no delegate/rollback)
+- [x] write tests: seed on task; tap alternate → `set` called with the name and delegate fires; tap primary → `set(nil)`; failure → rollback + banner; same icon → no effect
+- [x] run tests - must pass before next task
 
 ### Task 6: DiagnosticsFeature reducer
 
