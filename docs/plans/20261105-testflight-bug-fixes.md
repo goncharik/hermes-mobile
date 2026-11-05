@@ -380,13 +380,32 @@ iOS 27 iPad simulator.
 > app-switch zoom.
 
 ### Task 7: Verify acceptance criteria
-- [ ] #128: backgrounding and rotating mid-stream no longer asserts; open-at-bottom, hydrate jump,
+- [x] #128: backgrounding and rotating mid-stream no longer asserts; open-at-bottom, hydrate jump,
       slide/hold and keyboard behaviour are unchanged
-- [ ] #132: a never-saved new chat recovers from a reaped live session on attach and plain
+      (code + tests verified; the iOS 18.7 device repro is in Post-Completion. Proven here: the
+      pure gate `canApplySnapshot` defers no-window, non-finite, zero/negative and
+      ≤ 2 × inset frames (`TranscriptScrollMathTests`, 6 tests); `apply` defers at entry keeping
+      only the latest update, `didLayout` flushes through the unchanged `apply` path before the
+      settle, `didMoveToWindow` re-schedules layout on re-attach. Behaviour unchanged per the
+      hosted suites — "opens at the bottom" fixture checks and the hydrate re-id follow in
+      `TranscriptSlidePreservationTests`, the slide/hold cases there, and
+      `TranscriptKeyboardScrollTests` — plus every `ChatSnapshotTests` open now going through
+      the deferred first-apply flush. The assert itself never reproduced on iOS 26.5/27.0, so
+      "no longer asserts" is not proven against the crash)
+- [x] #132: a never-saved new chat recovers from a reaped live session on attach and plain
       submit; resumed chats keep today's behaviour
-- [ ] #131: fixed with evidence, or findings documented
-- [ ] run full test suite: `make test`
-- [ ] run snapshot/layout suite: `make snapshot`
+      (code + tests verified; the reaped-session repro against an older agent is in
+      Post-Completion. `neverSavedAttachHealFallsBackToCreateWhenResumeFails` and
+      `neverSavedPromptHealFallsBackToCreateWhenResumeFails` cover attach and plain submit;
+      `savedChatHealResumeFailureBannersWithoutCreate(resumed:)` covers resumed and
+      already-prompted chats (banner, no `session.create`); transport-error, failed-fallback,
+      replay-once, profile-threading and branch-seed guards all tested. The foreground
+      `session.resume` path already recreated on not-found for any chat, so the heal was the
+      only gap)
+- [x] #131: fixed with evidence, or findings documented
+      (findings documented in Task 6, with an unposted issue comment draft; #131 stays open)
+- [x] run full test suite: `make test` (2314 tests in 90 suites passed, 2 known issues)
+- [x] run snapshot/layout suite: `make snapshot` (313/313, 0 failures)
 
 ### Task 8: [Final] Update documentation
 - [ ] update `docs/architecture.md` (heal section) and `docs/features/attachments-and-paste.md`
