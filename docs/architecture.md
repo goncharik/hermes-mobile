@@ -532,6 +532,17 @@ response (`applyActivate`), in order:
    message's server `timestamp` (0 → none), so a reloaded turn's header can say "Worked for …".
    The cached tail is replaced, never merged.
 
+   **Hermes-authored notices (#124).** Rows the gateway wrote itself carry `display_kind`
+   (`SessionMessage.displayKind`, plus `display_metadata`, an object or older agents' JSON text).
+   `async_delegation_complete`, `process_complete`, `model_switch`, `auto_continue`,
+   `personality_switch` and `failed_turn` rebuild as a `.status(kind: "notice")` line — the
+   server's `display_metadata.display_text`, else a fixed label, never the model-facing payload
+   (only `failed_turn` shows its own text). `hidden` rows, `display_metadata.model_only` merges and
+   legacy untyped heartbeat wakes are dropped. `steer` / `skill_invocation` stay user bubbles. A
+   notice is not a user row, so it never opens a turn. The running hydrate applies the same rule
+   to `inflight.display_kind`: a turn Hermes started seeds its notice line (or nothing), not a
+   user bubble. Desktop parity: `apps/desktop/src/lib/chat-messages/hydration.ts`.
+
    **#26 running-turn exception.** When `running` is true, the live turn's tool rows (tracked by
    `toolRowIDs`), reasoning bursts (`liveReasoningRowIDs`) and sealed interim commentary
    (`liveCommentaryRowIDs`; all three cleared at `message.complete` / `.error`) are re-appended

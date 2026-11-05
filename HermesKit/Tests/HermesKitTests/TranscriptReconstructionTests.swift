@@ -139,6 +139,131 @@ struct TranscriptReconstructionTests {
     #expect(rows.map(\.kind) == [.message(role: .user, text: "hi", isComplete: true)])
   }
 
+  // MARK: - Hermes-authored notices (`display_kind`, #124)
+
+  /// A history row typed by the gateway: `display_kind` plus optional `display_metadata`.
+  private func notice(
+    _ id: Int, _ role: String = "user", kind: String, text: String = "[model-facing payload]",
+    metadata: JSONValue? = nil, timestamp: Double? = nil
+  ) -> SessionMessage {
+    SessionMessage(
+      id: id, role: role, text: text, timestamp: timestamp, displayKind: kind, displayMetadata: metadata
+    )
+  }
+
+  private func status(_ text: String) -> ChatRow.Kind {
+    .status(kind: ChatRow.Kind.noticeStatusKind, text: text)
+  }
+
+  @Test func noticesBecomeStatusLinesNotUserBubbles() {
+    let rows = reconstructTranscript([
+      msg(1, "user", text: "fan out"),
+      notice(2, kind: "async_delegation_complete", text: "[ASYNC DELEGATION BATCH COMPLETE — deleg_1] …"),
+      notice(3, kind: "process_complete", text: "[IMPORTANT: Background process proc_1 …]"),
+      notice(4, kind: "model_switch", text: "[System: The active model for this chat has changed to x]"),
+      notice(5, kind: "auto_continue", text: "[System note: Your previous turn was interrupted mid-run …]"),
+      notice(6, kind: "personality_switch"),
+      msg(7, "assistant", text: "done"),
+    ])
+    #expect(rows.map(\.kind) == [ChatRow.Kind]([
+      .message(role: .user, text: "fan out", isComplete: true),
+      status("Background agent work finished"),
+      status("Background process finished"),
+      status("Model changed"),
+      status("Resumed interrupted turn"),
+      status("Personality changed"),
+      .message(role: .assistant, text: "done", isComplete: true),
+    ]))
+  }
+
+  @Test func noticeTextPrefersTheServersDisplayTextThenTheTaskCount() {
+    let rows = reconstructTranscript([
+      notice(1, kind: "async_delegation_complete",
+             metadata: .object(["display_text": .string("Subagent Task Completed: audit"), "task_count": .number(1)])),
+      notice(2, kind: "async_delegation_complete", metadata: .object(["task_count": .number(3)])),
+      notice(3, kind: "async_delegation_complete", metadata: .object(["task_count": .number(1)])),
+      notice(4, kind: "process_complete",
+             metadata: .object(["display_text": .string("Background Process Failed (exit 1): make")])),
+    ])
+    #expect(rows.map(\.kind) == [
+      status("Subagent Task Completed: audit"),
+      status("3 background agents finished"),
+      status("1 background agent finished"),
+      status("Background Process Failed (exit 1): make"),
+    ])
+  }
+
+  @Test func aFailedTurnBoundaryIsAStatusLineWithItsOwnText() {
+    let rows = reconstructTranscript([
+      msg(1, "user", text: "do it"),
+      notice(2, "assistant", kind: "failed_turn", text: "This turn did not complete."),
+    ])
+    #expect(rows.map(\.kind) == [
+      .message(role: .user, text: "do it", isComplete: true),
+      status("This turn did not complete."),
+    ])
+  }
+
+  @Test func hiddenModelOnlyAndLegacyHeartbeatRowsAreNotShown() {
+    let rows = reconstructTranscript([
+      notice(1, kind: "hidden", text: "[runbook scaffolding]"),
+      SessionMessage(
+        id: 2, role: "user", text: "merged prompts",
+        displayMetadata: .object(["model_only": .bool(true)])
+      ),
+      msg(3, "user", text: "[Background process proc_9 heartbeat #2 — still running]"),
+      msg(4, "user", text: "hi"),
+    ])
+    #expect(rows.map(\.kind) == [.message(role: .user, text: "hi", isComplete: true)])
+  }
+
+  @Test func userAuthoredKindsStayUserBubbles() {
+    // `steer` / `skill_invocation` text is already the user's own words (server-projected).
+    let rows = reconstructTranscript([
+      notice(1, kind: "skill_invocation", text: "/work fix the leak"),
+      notice(2, kind: "steer", text: "use the other branch"),
+      notice(3, kind: "some_future_kind", text: "plain"),
+    ])
+    #expect(rows.map(\.kind) == [
+      .message(role: .user, text: "/work fix the leak", isComplete: true),
+      .message(role: .user, text: "use the other branch", isComplete: true),
+      .message(role: .user, text: "plain", isComplete: true),
+    ])
+  }
+
+  @Test func aNoticeKeepsItsTimestampAndDoesNotOpenATurn() {
+    // A notice is not a user row, so it never starts a turn of its own: the delegation result
+    // that arrives after a reply stays inside that turn (no extra "Worked for" header).
+    let rows = reconstructTranscript([
+      msg(1, "user", text: "go"),
+      msg(2, "assistant", text: "started"),
+      notice(3, kind: "async_delegation_complete", timestamp: 1_700),
+    ])
+    #expect(rows[2].timestamp == Date(timeIntervalSince1970: 1_700))
+    #expect(turnSpans(rows).map(\.ordinal) == [0])
+  }
+
+  @Test func decodesDisplayKindAndMetadataFromTheWire() throws {
+    // `display_metadata` can arrive as an object or (older agents) as JSON text.
+    let json = """
+    [
+      {"role": "user", "text": "[ASYNC …]", "display_kind": "async_delegation_complete",
+       "display_metadata": {"task_count": 2}},
+      {"role": "user", "text": "[IMPORTANT: …]", "display_kind": "process_complete",
+       "display_metadata": "{\\"display_text\\": \\"Background Process Finished: ls\\"}"},
+      {"role": "tool", "name": "patch", "context": "a.swift",
+       "display_metadata": {"tool_result_metadata": {"inline_diff": "-a\\n+b"}}}
+    ]
+    """
+    let messages = try JSONDecoder().decode([SessionMessage].self, from: Data(json.utf8))
+    #expect(messages[0].displayKind == "async_delegation_complete")
+    #expect(messages[2].inlineDiff == "-a\n+b")
+    #expect(reconstructTranscript(Array(messages.prefix(2))).map(\.kind) == [
+      status("2 background agents finished"),
+      status("Background Process Finished: ls"),
+    ])
+  }
+
   // MARK: - `content` fallback (raw shape tolerance)
 
   @Test func contentIsUsedWhenTextAbsent() {

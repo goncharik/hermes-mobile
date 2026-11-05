@@ -182,6 +182,10 @@ bullets below are the compressed rules.
   measured derivations stay in that file's doc comments.
 - **`review.summary` is live-only (#47)** — never in server history; a hydrate wipes
   the row (accepted). Rendered as a bubble-less footnote status row; blank text dropped.
+- **Hermes-authored notices (#124)**: history rows with a notice `display_kind`
+  (delegation/process results, model/personality switch, resumed or failed turn) rebuild as
+  `.status(kind: "notice")` lines, never bubbles; `hidden` / `model_only` rows are dropped.
+  Same rule for a running turn's `inflight.display_kind`. Details: `docs/architecture.md`.
 - **Message actions & branching (#34)**: copy via the shared
   `copyWithFeedback`/`rowCopyToken` mechanism; branch is a seeded `session.create`
   guarded by strict `canBranch` gates with a client-held `BranchSeed` recovery protocol

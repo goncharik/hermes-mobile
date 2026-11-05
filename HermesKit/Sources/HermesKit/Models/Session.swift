@@ -135,17 +135,29 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
   public var streaming: Bool?
   /// When the turn started (`started_at`, Unix seconds); `nil` when absent, non-numeric or ≤ 0.
   public var startedAt: Date?
+  /// The live turn's starting row type when Hermes started it, not the user — e.g.
+  /// `process_complete` (see ``SessionMessage/displayKind``). `user` is then that notice's
+  /// model-facing text, so the seed must not paint it as the user's bubble.
+  public var displayKind: String?
+  public var displayMetadata: JSONValue?
 
   enum CodingKeys: String, CodingKey {
     case user, assistant, streaming
     case startedAt = "started_at"
+    case displayKind = "display_kind"
+    case displayMetadata = "display_metadata"
   }
 
-  public init(user: String? = nil, assistant: String? = nil, streaming: Bool? = nil, startedAt: Date? = nil) {
+  public init(
+    user: String? = nil, assistant: String? = nil, streaming: Bool? = nil, startedAt: Date? = nil,
+    displayKind: String? = nil, displayMetadata: JSONValue? = nil
+  ) {
     self.user = user
     self.assistant = assistant
     self.streaming = streaming
     self.startedAt = startedAt
+    self.displayKind = displayKind
+    self.displayMetadata = displayMetadata
   }
 
   public init(from decoder: Decoder) throws {
@@ -155,7 +167,17 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
     self.streaming = try c.decodeIfPresent(Bool.self, forKey: .streaming)
     let seconds = (try? c.decodeIfPresent(Double.self, forKey: .startedAt)) ?? nil
     self.startedAt = seconds.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+    self.displayKind = (try? c.decodeIfPresent(String.self, forKey: .displayKind))?.trimmedNonEmpty
+    self.displayMetadata = decodeDisplayMetadata(c, forKey: .displayMetadata)
   }
+}
+
+/// `display_metadata` as an object: an older agent sends it as JSON TEXT, which is parsed;
+/// anything that is not an object (or fails to parse) is `nil`. Desktop `parseDisplayMetadata`.
+func decodeDisplayMetadata<K: CodingKey>(_ c: KeyedDecodingContainer<K>, forKey key: K) -> JSONValue? {
+  let value = (try? c.decodeIfPresent(JSONValue.self, forKey: key)) ?? nil
+  let parsed = value?.stringValue.flatMap(JSONValue.init(parsing:)) ?? value
+  return parsed?.isObject == true ? parsed : nil
 }
 
 /// Result of the `session.resume` hydration call (which serves both stored and live
@@ -288,6 +310,15 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
   /// Cooked `role:"tool"` row: the edit preview the server persisted with the result
   /// (`display_metadata.tool_result_metadata.inline_diff`), or nil.
   public var inlineDiff: String?
+  /// Display-only row type the gateway stamps on rows Hermes wrote itself (`display_kind`):
+  /// `async_delegation_complete`, `process_complete`, `model_switch`, `auto_continue`,
+  /// `personality_switch`, `failed_turn`, `hidden`, and the user-authored `steer` /
+  /// `skill_invocation`. The notices are stored as `role:"user"` (or `"assistant"` for
+  /// `failed_turn`) rows so providers accept them; ``reconstructTranscript(_:)`` must not paint
+  /// them as the user's (or the model's) bubble. `nil` on ordinary rows.
+  public var displayKind: String?
+  /// The row's `display_metadata` object (`display_text`, `task_count`, `model_only`, …), or nil.
+  public var displayMetadata: JSONValue?
 
   /// The single reasoning string for this message, first-non-empty of the three variants
   /// (`reasoning ?? reasoning_content ?? reasoning_details`), or `nil`.
@@ -309,6 +340,7 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     case toolCalls = "tool_calls"
     case reasoningContent = "reasoning_content"
     case reasoningDetails = "reasoning_details"
+    case displayKind = "display_kind"
     case displayMetadata = "display_metadata"
   }
 
@@ -318,7 +350,8 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     timestamp: Double? = nil,
     toolName: String? = nil, toolCallID: String? = nil, toolCalls: [ToolCallRef]? = nil,
     reasoning: String? = nil, reasoningContent: String? = nil, reasoningDetails: String? = nil,
-    args: JSONValue? = nil, inlineDiff: String? = nil
+    args: JSONValue? = nil, inlineDiff: String? = nil,
+    displayKind: String? = nil, displayMetadata: JSONValue? = nil
   ) {
     self.id = id
     self.role = role
@@ -335,6 +368,8 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     self.reasoningDetails = reasoningDetails
     self.args = args
     self.inlineDiff = inlineDiff
+    self.displayKind = displayKind
+    self.displayMetadata = displayMetadata
   }
 
   public init(from decoder: Decoder) throws {
@@ -362,8 +397,9 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     // `reasoning_details` is usually an array of provider blocks; surface only string form.
     reasoningDetails = try? c.decodeIfPresent(String.self, forKey: .reasoningDetails)
     args = ((try? c.decodeIfPresent(JSONValue.self, forKey: .args)) ?? nil)?.nonNull
-    let metadata = (try? c.decodeIfPresent(JSONValue.self, forKey: .displayMetadata)) ?? nil
-    inlineDiff = metadata?["tool_result_metadata"]?["inline_diff"]?.stringValue?.nonEmpty
+    displayKind = (try? c.decodeIfPresent(String.self, forKey: .displayKind))?.trimmedNonEmpty
+    displayMetadata = decodeDisplayMetadata(c, forKey: .displayMetadata)
+    inlineDiff = displayMetadata?["tool_result_metadata"]?["inline_diff"]?.stringValue?.nonEmpty
   }
 }
 

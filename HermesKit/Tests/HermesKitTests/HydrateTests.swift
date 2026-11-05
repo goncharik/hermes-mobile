@@ -770,6 +770,57 @@ struct HydrateTests {
     await store.send(.teardown)
   }
 
+  nonisolated private static func runningNoticeInflight(kind: String, metadata: JSONValue? = nil) -> JSONValue {
+    var inflight: [String: JSONValue] = [
+      "user": .string("[IMPORTANT: Background process proc_1 finished …]"),
+      "assistant": .string(""), "streaming": .bool(true), "display_kind": .string(kind),
+    ]
+    if let metadata { inflight["display_metadata"] = metadata }
+    return .object([
+      "session_id": .string("live123"),
+      "stored_session_id": .string("stored123"),
+      "messages": .array([.object(["role": .string("user"), "text": .string("earlier")])]),
+      "running": .bool(true),
+      "inflight": .object(inflight),
+    ])
+  }
+
+  @Test(arguments: [
+    ("process_complete", Optional(ChatRow.Kind.status(
+      kind: ChatRow.Kind.noticeStatusKind, text: "Background Process Finished: make"
+    ))),
+    ("hidden", nil),
+  ])
+  func aTurnHermesStartedSeedsItsNoticeNotAUserBubble(kind: String, seeded: ChatRow.Kind?) async {
+    // #124: a running turn started by a process completion (or a hidden wake) carries the
+    // notice's model-facing text in `inflight.user`. The seed shows the notice line — or
+    // nothing for `hidden` — never a user bubble with the raw payload.
+    let response = Self.runningNoticeInflight(
+      kind: kind, metadata: .object(["display_text": .string("Background Process Finished: make")])
+    )
+    let store = TestStore(initialState: ChatFeature.State(connection: conn, resumeStoredID: "stored123")) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 1_000))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in response }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.activateResult.success)
+
+    let kinds = store.state.transcript.map(\.kind)
+    #expect(kinds.first == .message(role: .user, text: "earlier", isComplete: true))
+    #expect(Array(kinds.dropFirst().dropLast()) == (seeded.map { [$0] } ?? []))
+    #expect(kinds.last == .message(role: .assistant, text: "", isComplete: false))
+    #expect(store.state.transcript.count(where: ChatFeature.State.isUserMessage) == 1)
+
+    await store.send(.teardown)
+  }
+
   nonisolated private static func runningInflight(
     assistant: String?, startedAt: Double? = nil
   ) -> JSONValue {
