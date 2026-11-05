@@ -342,9 +342,11 @@ and the TestFlight command-line override stay as they are.
   - driven with AXe on the iPhone 17 Pro (iOS 26.5) sim via `HERMES_DEMO=sessions`: picked "Hermes Classic" → home screen showed it; relaunch → row read "Hermes Classic" and the tile kept the checkmark; picking "Blueprint" (the Debug primary) restored it via `set(nil)`
 
 ### Task 12: [Final] Update documentation
-- [ ] re-read `docs/features/settings.md` against the shipped code; fix drift
-- [ ] update CLAUDE.md if new patterns were discovered during implementation
-- [ ] move this plan to `docs/plans/completed/`
+- [x] re-read `docs/features/settings.md` against the shipped code; fix drift
+  - doc: report's `Recent events (last N of M):` header, `errorBanner`/`setFailedBanner` naming, footer disclosure; Diagnostics footer now says events may include message/command snippets (3 Diagnostics baselines re-recorded)
+- [x] update CLAUDE.md if new patterns were discovered during implementation
+  - one Gotchas line: a `.task` on a `NavigationStack` root re-fires on every pop
+- [x] move this plan to docs/plans/completed/ (deferred - orchestrator moves it after reviews)
 
 ## Post-Completion
 

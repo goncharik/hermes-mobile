@@ -19,7 +19,7 @@ struct DiagnosticsView: View {
           Label("Copy diagnostics", systemImage: "doc.on.doc")
         }
       } footer: {
-        Text("App, server and agent versions plus recent gateway events, for a bug report. Never includes your token or sign-in cookies.")
+        Text("App, server and agent versions plus recent gateway events, for a bug report. Events may include snippets of your messages and commands. Never includes your token or sign-in cookies.")
       }
     }
     // On the list itself, nothing below it to swallow the toast (the transient-toast idiom).

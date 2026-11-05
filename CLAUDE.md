@@ -368,6 +368,8 @@ bullets below are the compressed rules.
 
 ## Gotchas
 
+- **A `.task` on a `NavigationStack`'s ROOT view re-fires on every pop back to it** — put
+  once-per-presentation work (probes) on the `NavigationStack` itself (see `SettingsView`).
 - **Tuist only forwards `TUIST_`-prefixed env vars** to the manifest; run scripts
   translate friendly names. For direct `tuist generate`, use `TUIST_DEVELOPMENT_TEAM` /
   `TUIST_SERVER_URL`.

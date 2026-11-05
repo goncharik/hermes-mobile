@@ -119,7 +119,8 @@ six-icon `testCatalog` (primary `AppIcon`).
 
 `AppIconPickerFeature` reloads the catalog and the current icon on `.task`. A tap is
 **optimistic**: the checkmark moves, `appIcon.set` runs, and a refusal sends
-`setFailed(previous:)`, which rolls the checkmark back and raises `setFailedBanner`. A new tap
+`setFailed(previous:)`, which rolls the checkmark back and sets `errorBanner` to
+`setFailedBanner`. A new tap
 clears a stale banner; tapping the already-selected icon is a no-op. The `set` effect is
 `cancelInFlight`, so the last tap wins and a superseded effect lands neither a rollback nor a
 delegate. Only a CONFIRMED change sends `delegate(.iconChanged)`, which the parent maps to
@@ -168,11 +169,13 @@ would hide the button.
 
 The report, in order: a `Hermes Mobile diagnostics` header; `App: <version> (<build>)`, `iOS`,
 `Device` (or `App: unknown` before bundle info loads); `Server:` (redacted); `Auth:` (the label);
-`Agent:` (the version or `unknown`); then the last `DiagnosticsReport.defaultLogLimit` (50) log
-entries as `type — summary`, or `Recent events: none`. A summary is
-`GatewayEvent.debugSummary`, which carries up to 80 characters of event text (message and
-reasoning fragments, commands, clarify questions): conversation excerpts, not credentials.
-The copy is user-initiated and goes only to the pasteboard; `PRIVACY.md` says so.
+`Agent:` (the version or `unknown`); a blank line; then `Recent events (last N of M):` over the
+last `DiagnosticsReport.defaultLogLimit` (50) log entries as `type — summary`, or
+`Recent events: none`. A summary is `GatewayEvent.debugSummary`, which carries up to 80
+characters of event text (message and reasoning fragments, commands, clarify questions):
+conversation excerpts, not credentials. The copy is user-initiated and goes only to the
+pasteboard; `PRIVACY.md` and the screen's footer under the button both say the events may
+include snippets of messages and commands.
 
 **No-secrets invariant.** The report is built only from its arguments, and none carries a
 credential: the auth row arrives pre-rendered as `settingsLabel` (identity only), and the server
