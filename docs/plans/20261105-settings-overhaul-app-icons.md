@@ -333,11 +333,13 @@ and the TestFlight command-line override stay as they are.
 - [x] run tests - must pass before next task
 
 ### Task 11: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented: six groups, six icons selectable, version row, feedback links prefilled, About links, Diagnostics copy, Acknowledgements, sign out semantics unchanged
-- [ ] verify edge cases: gated auth hides the token field; unsupported profiles hide the Profile row; status failure hides the Agent row; icon set failure rolls back with a banner; logout leaves the icon alone
-- [ ] run full test suite: `script -q /dev/null swift test --package-path HermesKit`
-- [ ] run `make snapshot` — must be clean (every failure is a real signal)
-- [ ] build the Debug app via `xcodebuild` after `tuist generate`; pick an icon in the simulator and confirm the home screen changes and the choice survives relaunch
+- [x] verify all requirements from Overview are implemented: six groups, six icons selectable, version row, feedback links prefilled, About links, Diagnostics copy, Acknowledgements, sign out semantics unchanged
+- [x] verify edge cases: gated auth hides the token field; unsupported profiles hide the Profile row; status failure hides the Agent row; icon set failure rolls back with a banner; logout leaves the icon alone
+  - each edge is pinned by a reducer test (`authLabelAndTokenFieldFollowTheRegime`, the `settingsButtonTapped` profile seeding in `SessionListFeatureTests`, `statusFailureLeavesAgentVersionNil`, `failedSetRollsBackAndBanners` / `refusedIconChangeLeavesSelectedIcon`, `clearTokenNeverTouchesTheAppIcon`); no gap found
+- [x] run full test suite: `script -q /dev/null swift test --package-path HermesKit` (2371 tests, 2 pre-existing known issues)
+- [x] run `make snapshot` — must be clean (every failure is a real signal) (328/328)
+- [x] build the Debug app via `xcodebuild` after `tuist generate`; pick an icon in the simulator and confirm the home screen changes and the choice survives relaunch
+  - driven with AXe on the iPhone 17 Pro (iOS 26.5) sim via `HERMES_DEMO=sessions`: picked "Hermes Classic" → home screen showed it; relaunch → row read "Hermes Classic" and the tile kept the checkmark; picking "Blueprint" (the Debug primary) restored it via `set(nil)`
 
 ### Task 12: [Final] Update documentation
 - [ ] re-read `docs/features/settings.md` against the shipped code; fix drift
