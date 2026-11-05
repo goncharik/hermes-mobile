@@ -1,8 +1,10 @@
 import ComposableArchitecture
 import Foundation
 
-/// Settings sheet (Task 12): server info, token management (re-paste / clear), a manual
-/// reconnect trigger, and a live feed of decoded gateway events for debugging.
+/// Settings sheet: server info, token management (re-paste / clear), a manual reconnect
+/// trigger, notifications, and three rows that push sub-screens through `path`
+/// (`SettingsPath`: App Icon, Diagnostics, Acknowledgements). The live debug log lives in
+/// `DiagnosticsFeature`, subscribed only while that screen is on screen.
 ///
 /// Token-clear and reconnect are surfaced to the parent via delegates: clearing returns
 /// the app to onboarding, reconnect reloads the session list.
@@ -14,8 +16,21 @@ public struct SettingsFeature {
     public var token: String
     /// Transient confirmation after saving the token.
     public var savedConfirmation: Bool
-    /// Live debug log, newest last; fed by `DebugLogClient`.
-    public var log: [GatewayLogEntry]
+    /// The sub-screens pushed from the Form (rendered by `SettingsView`'s `NavigationStack`).
+    public var path: StackState<SettingsPath.State>
+    /// The session list's wire profile (`scopedProfileName`); `nil` when the agent has no
+    /// profiles API, which hides the Profile row.
+    public var profileName: String?
+    /// The agent's `/api/status` version, read on appearance; `nil` until it lands (and left
+    /// `nil` on failure), which hides the Agent row.
+    public var agentVersion: String?
+    /// Build + device facts (version row, diagnostics), read on appearance.
+    public var bundleInfo: BundleInfo?
+    /// The icons this build can switch between, read on appearance (labels the App Icon row
+    /// and seeds the picker).
+    public var appIconCatalog: AppIconCatalog
+    /// The current `alternateIconName`; `nil` is the build's primary icon.
+    public var selectedAppIcon: String?
     /// Whether the connected agent exposes the `hermes-push` plugin (passed down from the
     /// session list's capability probe). When false the notifications UI (C6) shows a
     /// "not available on this server" note instead of the toggle.
@@ -73,12 +88,23 @@ public struct SettingsFeature {
       pushPlugin: PushPluginInfo? = nil,
       pluginUpdate: PluginUpdateStatus = .idle,
       defaultSwipeAction: SessionSwipeAction = .default,
-      deleteSupported: Bool = true
+      deleteSupported: Bool = true,
+      profileName: String? = nil,
+      agentVersion: String? = nil,
+      bundleInfo: BundleInfo? = nil,
+      appIconCatalog: AppIconCatalog = .empty,
+      selectedAppIcon: String? = nil,
+      path: StackState<SettingsPath.State> = .init()
     ) {
       self.connection = connection
       self.token = connection.token ?? ""
       self.savedConfirmation = false
-      self.log = []
+      self.path = path
+      self.profileName = profileName
+      self.agentVersion = agentVersion
+      self.bundleInfo = bundleInfo
+      self.appIconCatalog = appIconCatalog
+      self.selectedAppIcon = selectedAppIcon
       self.pushAvailable = pushAvailable
       self.notificationsEnabled = notificationsEnabled
       self.notificationsDenied = notificationsDenied
@@ -109,6 +135,25 @@ public struct SettingsFeature {
       return pushPlugin.isOutdated && !pushPlugin.canUpdateGit
     }
 
+    /// The connection's auth regime — read straight off `connection` (one source of truth:
+    /// `saveTokenTapped` rewrites `connection.token`, so a stored copy could drift).
+    public var authSession: AuthSession { connection.auth }
+
+    /// The Auth row value (`AuthSession.settingsLabel`) — identity only, never a secret.
+    public var authLabel: String { authSession.settingsLabel }
+
+    /// The token re-paste field exists only in the token regime; a gated (password / OAuth)
+    /// session has no token to edit.
+    public var showsTokenField: Bool { authSession.isToken }
+
+    /// The App Icon row value; `nil` until the catalog loads (or for an unknown name).
+    public var selectedAppIconLabel: String? { appIconCatalog.label(for: selectedAppIcon) }
+
+    /// The About version row, e.g. `"Version 1.0 (79)"`; `nil` until bundle info loads.
+    public var versionLabel: String? {
+      bundleInfo.map { "Version \($0.marketingVersion) (\($0.build))" }
+    }
+
     public var serverURLString: String { connection.baseURL.absoluteString }
     public var canSaveToken: Bool {
       !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -119,7 +164,18 @@ public struct SettingsFeature {
   public enum Action: BindableAction {
     case binding(BindingAction<State>)
     case task
-    case logUpdated([GatewayLogEntry])
+    /// `/api/status` answered on appearance; `nil` when the probe failed (hides the Agent row,
+    /// no banner — it's informational).
+    case agentStatusLoaded(String?)
+    /// The current `alternateIconName`, read on appearance; `nil` is the primary icon.
+    case currentAppIconLoaded(String?)
+    /// The "App Icon" row — pushes the picker.
+    case appIconRowTapped
+    /// The "Diagnostics" row — pushes the log + copy-report screen.
+    case diagnosticsRowTapped
+    /// The "Acknowledgements" row — pushes the open-source list.
+    case acknowledgementsRowTapped
+    case path(StackActionOf<SettingsPath>)
     case saveTokenTapped
     case clearTokenTapped
     case reconnectTapped
@@ -172,12 +228,11 @@ public struct SettingsFeature {
     }
   }
 
-  private enum CancelID { case logStream }
-
+  @Dependency(\.appIcon) var appIcon
+  @Dependency(\.bundleInfo) var bundleInfo
   @Dependency(\.keychain) var keychain
   @Dependency(\.preferences) var preferences
   @Dependency(\.chatSnapshot) var chatSnapshot
-  @Dependency(\.debugLog) var debugLog
   @Dependency(\.hermesREST) var rest
   @Dependency(\.push) var push
   @Dependency(\.bearerTokens) var bearerTokens
@@ -191,13 +246,22 @@ public struct SettingsFeature {
     Reduce { state, action in
       switch action {
       case .task:
+        // Synchronous facts: bundle/device info and the bundle-derived icon catalog.
+        state.bundleInfo = bundleInfo.info()
+        state.appIconCatalog = appIcon.catalog()
         return .merge(
-          .run { [debugLog] send in
-            for await entries in debugLog.stream() {
-              await send(.logUpdated(entries))
+          // The Agent row: informational only, so a failed probe deliberately maps to `nil`
+          // (row hidden, no banner) rather than surfacing an error.
+          .run { [rest, baseURL = state.connection.baseURL] send in
+            do {
+              await send(.agentStatusLoaded(try await rest.status(baseURL).version))
+            } catch {
+              await send(.agentStatusLoaded(nil))
             }
-          }
-          .cancellable(id: CancelID.logStream, cancelInFlight: true),
+          },
+          .run { [appIcon] send in
+            await send(.currentAppIconLoaded(appIcon.current()))
+          },
           // Reflect the real OS authorization status in the toggle on appearance.
           .run { [push] send in
             await send(.authorizationStatusLoaded(push.authorizationStatus()))
@@ -321,8 +385,48 @@ public struct SettingsFeature {
           .run { [dismiss] _ in await dismiss() }
         )
 
-      case let .logUpdated(entries):
-        state.log = entries
+      case let .agentStatusLoaded(version):
+        state.agentVersion = version
+        return .none
+
+      case let .currentAppIconLoaded(name):
+        state.selectedAppIcon = name
+        return .none
+
+      case .appIconRowTapped:
+        state.path.append(
+          .appIcon(
+            AppIconPickerFeature.State(
+              catalog: state.appIconCatalog,
+              selected: state.selectedAppIcon
+            )
+          )
+        )
+        return .none
+
+      case .diagnosticsRowTapped:
+        state.path.append(
+          .diagnostics(
+            DiagnosticsFeature.State(
+              bundleInfo: state.bundleInfo,
+              serverURL: state.connection.baseURL,
+              authLabel: state.authLabel,
+              agentVersion: state.agentVersion
+            )
+          )
+        )
+        return .none
+
+      case .acknowledgementsRowTapped:
+        state.path.append(.acknowledgements(AcknowledgementsFeature.State()))
+        return .none
+
+      case let .path(.element(id: _, action: .appIcon(.delegate(.iconChanged(name))))):
+        // Only a CONFIRMED change reaches here, so the row value never shows a refused icon.
+        state.selectedAppIcon = name
+        return .none
+
+      case .path:
         return .none
 
       case .binding(\.token):
@@ -372,6 +476,9 @@ public struct SettingsFeature {
       case .delegate:
         return .none
       }
+    }
+    .forEach(\.path, action: \.path) {
+      SettingsPath.body
     }
   }
 }

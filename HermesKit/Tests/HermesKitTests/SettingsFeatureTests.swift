@@ -105,33 +105,241 @@ struct SettingsFeatureTests {
     await store.send(.saveTokenTapped)
   }
 
-  @Test func taskStreamsDebugLogEntries() async {
-    let entries = [
-      GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
-      GatewayLogEntry(id: 1, type: "message.delta", summary: "Hello"),
-    ]
+  // MARK: Appearance seeding (#137)
+
+  /// `.task` reads bundle info + the icon catalog synchronously, then lands the agent version
+  /// and the current icon. Every other `.task` effect is stubbed to a no-change outcome.
+  @Test func taskSeedsBundleInfoAgentVersionAndCurrentIcon() async {
+    let probedURL = LockIsolated<URL?>(nil)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
-      $0.debugLog.stream = { @Sendable in
-        AsyncStream { continuation in
-          continuation.yield(entries)
-          continuation.finish()
-        }
+      $0.appIcon = .inMemory(current: "AppIconHermes")
+      $0.hermesREST.status = { @Sendable url in
+        probedURL.setValue(url)
+        return ServerStatus(version: "0.17.2")
       }
-      // `.task` also probes the plugin hub for the version. `.unknown` offers no update.
       $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
+      $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
     }
+    // `.task` merges concurrent effects whose completion order isn't guaranteed.
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.task) {
+      $0.bundleInfo = .test
+      $0.appIconCatalog = .testCatalog
+    }
+    await store.receive(\.agentStatusLoaded) { $0.agentVersion = "0.17.2" }
+    await store.receive(\.currentAppIconLoaded) { $0.selectedAppIcon = "AppIconHermes" }
+    #expect(probedURL.value == connection.baseURL)
+    #expect(store.state.versionLabel == "Version 1.0 (79)")
+    #expect(store.state.selectedAppIconLabel == "Hermes")
+    await store.send(.doneTapped)
+  }
+
+  /// A failed `/api/status` probe leaves the version `nil` (Agent row hidden) — no banner.
+  @Test func statusFailureLeavesAgentVersionNil() async {
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in throw RESTError.unreachable }
+      $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
+      $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
 
     await store.send(.task)
-    // `.task` merges three concurrent effects (log stream, OS authorization status, plugin
-    // hub probe); their completion order isn't guaranteed, so assert only this test's
-    // subject rather than pinning an incidental interleaving.
-    store.exhaustivity = .off(showSkippedAssertions: false)
-    await store.receive(\.logUpdated) {
-      $0.log = entries
-    }
+    await store.receive(\.agentStatusLoaded, nil)
+    #expect(store.state.agentVersion == nil)
     await store.send(.doneTapped)
+  }
+
+  /// An agent that answers `/api/status` without a version also leaves the row hidden.
+  @Test func statusWithoutVersionLeavesAgentVersionNil() async {
+    let store = TestStore(
+      initialState: SettingsFeature.State(connection: connection, agentVersion: "stale")
+    ) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in ServerStatus() }
+      $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
+      $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.task)
+    await store.receive(\.agentStatusLoaded) { $0.agentVersion = nil }
+    await store.send(.doneTapped)
+  }
+
+  // MARK: Derived labels (#137)
+
+  @Test func authLabelAndTokenFieldFollowTheRegime() {
+    let base = connection.baseURL
+    let token = SettingsFeature.State(connection: connection)
+    #expect(token.authLabel == "Token")
+    #expect(token.showsTokenField)
+    #expect(token.authSession == .token("tok"))
+
+    let cookie = SettingsFeature.State(
+      connection: ServerConnection(
+        baseURL: base,
+        auth: .cookie(CookieSession(cookies: [], username: "alice", provider: "basic"))
+      )
+    )
+    #expect(cookie.authLabel == "Password · alice")
+    #expect(!cookie.showsTokenField)
+
+    let bearer = SettingsFeature.State(
+      connection: ServerConnection(
+        baseURL: base,
+        auth: .bearer(
+          BearerSession(
+            accessToken: "at", refreshToken: "rt", expiresAt: 1, provider: "nous",
+            userID: "user-42"
+          )
+        )
+      )
+    )
+    #expect(bearer.authLabel == "nous · user-42")
+    #expect(!bearer.showsTokenField)
+  }
+
+  @Test func labelsAreNilUntilLoaded() {
+    let state = SettingsFeature.State(connection: connection)
+    #expect(state.versionLabel == nil)
+    #expect(state.selectedAppIconLabel == nil)
+    #expect(state.agentVersion == nil)
+    #expect(state.profileName == nil)
+  }
+
+  @Test func selectedAppIconLabelNilMeansPrimary() {
+    var state = SettingsFeature.State(connection: connection, appIconCatalog: .testCatalog)
+    #expect(state.selectedAppIconLabel == "Gold")
+    state.selectedAppIcon = "AppIconHermesClassicBlueprint"
+    #expect(state.selectedAppIconLabel == "Hermes Classic Blueprint")
+  }
+
+  // MARK: Sub-screen pushes (#137)
+
+  @Test func appIconRowPushesPickerSeededFromParent() async {
+    let store = TestStore(
+      initialState: SettingsFeature.State(
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+      )
+    ) {
+      SettingsFeature()
+    }
+
+    await store.send(.appIconRowTapped) {
+      $0.path[id: 0] = .appIcon(
+        AppIconPickerFeature.State(catalog: .testCatalog, selected: "AppIconHermes")
+      )
+    }
+  }
+
+  @Test func diagnosticsRowPushesDiagnosticsSeededFromParent() async {
+    let store = TestStore(
+      initialState: SettingsFeature.State(
+        connection: connection, agentVersion: "0.17.2", bundleInfo: .test
+      )
+    ) {
+      SettingsFeature()
+    }
+
+    await store.send(.diagnosticsRowTapped) {
+      $0.path[id: 0] = .diagnostics(
+        DiagnosticsFeature.State(
+          bundleInfo: .test,
+          serverURL: self.connection.baseURL,
+          authLabel: "Token",
+          agentVersion: "0.17.2"
+        )
+      )
+    }
+  }
+
+  @Test func acknowledgementsRowPushesAcknowledgements() async {
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    }
+
+    await store.send(.acknowledgementsRowTapped) {
+      $0.path[id: 0] = .acknowledgements(AcknowledgementsFeature.State())
+    }
+    #expect(Acknowledgement.all.map(\.name) == [
+      "GRDB.swift", "swift-composable-architecture", "swift-dependencies",
+    ])
+  }
+
+  /// A confirmed change in the pushed picker updates the App Icon row value.
+  @Test func iconChangedDelegateUpdatesSelectedIcon() async {
+    let setNames = LockIsolated<[String?]>([])
+    let store = TestStore(
+      initialState: SettingsFeature.State(connection: connection, appIconCatalog: .testCatalog)
+    ) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.appIcon.set = { @Sendable name in setNames.withValue { $0.append(name) } }
+    }
+
+    await store.send(.appIconRowTapped) {
+      $0.path[id: 0] = .appIcon(AppIconPickerFeature.State(catalog: .testCatalog, selected: nil))
+    }
+    await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermesClassic") {
+      $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermesClassic"
+    }
+    await store.receive(\.path[id: 0].appIcon.delegate.iconChanged) {
+      $0.selectedAppIcon = "AppIconHermesClassic"
+    }
+    #expect(setNames.value == ["AppIconHermesClassic"])
+    #expect(store.state.selectedAppIconLabel == "Hermes Classic")
+  }
+
+  /// A refused change never reaches the parent — the row keeps the previous icon.
+  @Test func refusedIconChangeLeavesSelectedIcon() async {
+    struct Refused: Error {}
+    let store = TestStore(
+      initialState: SettingsFeature.State(connection: connection, appIconCatalog: .testCatalog)
+    ) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.appIcon.set = { @Sendable _ in throw Refused() }
+    }
+
+    await store.send(.appIconRowTapped) {
+      $0.path[id: 0] = .appIcon(AppIconPickerFeature.State(catalog: .testCatalog, selected: nil))
+    }
+    await store.send(\.path[id: 0].appIcon.iconTapped, "AppIconHermes") {
+      $0.path[id: 0, case: \.appIcon]?.selected = "AppIconHermes"
+    }
+    await store.receive(\.path[id: 0].appIcon.setFailed) {
+      $0.path[id: 0, case: \.appIcon]?.selected = nil
+      $0.path[id: 0, case: \.appIcon]?.errorBanner = AppIconPickerFeature.setFailedBanner
+    }
+    #expect(store.state.selectedAppIcon == nil)
+  }
+
+  /// Sign out leaves the home-screen icon alone (iOS owns that choice, not the account).
+  @Test func clearTokenNeverTouchesTheAppIcon() async {
+    let setCalled = LockIsolated(false)
+    let store = TestStore(
+      initialState: SettingsFeature.State(
+        connection: connection, appIconCatalog: .testCatalog, selectedAppIcon: "AppIconHermes"
+      )
+    ) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.keychain.deleteSession = { @Sendable in }
+      $0.preferences = .inMemory()
+      $0.chatSnapshot = .inMemory()
+      $0.appIcon.set = { @Sendable _ in setCalled.setValue(true) }
+      $0.dismiss = DismissEffect {}
+    }
+
+    await store.send(.clearTokenTapped)
+    await store.receive(\.delegate.disconnect)
+    #expect(!setCalled.value)
   }
 
   // MARK: Notifications (C6)
@@ -141,8 +349,8 @@ struct SettingsFeatureTests {
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
-      $0.debugLog.stream = { @Sendable in AsyncStream { $0.finish() } }
       $0.push = push.client
+      $0.hermesREST.status = { @Sendable _ in ServerStatus() }
       $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
@@ -312,6 +520,7 @@ struct SettingsFeatureTests {
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in ServerStatus() }
       $0.hermesREST.pushPluginInfo = { @Sendable _ in
         PushPluginInfo(status: .ready, version: "0.1.0", canUpdateGit: true)
       }
@@ -332,6 +541,7 @@ struct SettingsFeatureTests {
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in ServerStatus() }
       $0.hermesREST.pushPluginInfo = { @Sendable _ in
         PushPluginInfo(status: .ready, version: "0.1.0", canUpdateGit: false)
       }
@@ -355,6 +565,7 @@ struct SettingsFeatureTests {
       let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
         SettingsFeature()
       } withDependencies: {
+        $0.hermesREST.status = { @Sendable _ in ServerStatus() }
         $0.hermesREST.pushPluginInfo = { @Sendable _ in info }
       }
       store.exhaustivity = .off

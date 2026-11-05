@@ -261,14 +261,18 @@ and the TestFlight command-line override stay as they are.
 - Modify: `HermesKit/Tests/HermesKitTests/SettingsFeatureTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SessionListFeatureTests.swift` (settings seeding assertion, if one exists)
 
-- [ ] add `AcknowledgementsFeature` (empty state, `EmptyReducer`) with the static `Acknowledgement` list (TCA, swift-dependencies, GRDB: name, URL, license) and the top-level `@Reducer enum SettingsPath` with the three cases
-- [ ] `SettingsFeature.State`: add `path`, `authSession`, `profileName`, `agentVersion`, `bundleInfo`, `selectedAppIcon`, derived `authLabel`, `showsTokenField`, `selectedAppIconLabel`, `versionLabel`; remove `log`; extend `init`
-- [ ] `.task`: drop the log stream; add bundle info load, `rest.status(baseURL)` → `agentStatusLoaded(version)` (failure → nil, no banner), `appIcon.current()` → `currentAppIconLoaded`
-- [ ] row actions append the path element: `appIconRowTapped` → `.appIcon(AppIconPickerFeature.State(...))`, `diagnosticsRowTapped` → `.diagnostics(DiagnosticsFeature.State(seeded from parent))`, `acknowledgementsRowTapped` → `.acknowledgements(.init())`; `.forEach(\.path, action: \.path) { SettingsPath.body }`
-- [ ] handle `.path(.element(id:action:.appIcon(.delegate(.iconChanged(name)))))` → `selectedAppIcon = name`
-- [ ] `clearTokenTapped` unchanged (clear list identical; icon not touched); `SessionListFeature.settingsButtonTapped` passes `scopedProfileName` and the connection's auth session
-- [ ] update existing `SettingsFeatureTests` for the removed `log` / new init; write tests: task seeding (bundle info, agent version, current icon; status failure → nil); each row tap pushes the expected case with the expected seed; `iconChanged` delegate updates `selectedAppIcon`; auth label / `showsTokenField` per regime; profile row nil when unsupported; sign out still clears every prefs entry and never calls `appIcon.set`
-- [ ] run tests - must pass before next task
+- [x] add `AcknowledgementsFeature` (empty state, `EmptyReducer`) with the static `Acknowledgement` list (TCA, swift-dependencies, GRDB: name, URL, license) and the top-level `@Reducer enum SettingsPath` with the three cases
+- [x] `SettingsFeature.State`: add `path`, `authSession`, `profileName`, `agentVersion`, `bundleInfo`, `selectedAppIcon`, derived `authLabel`, `showsTokenField`, `selectedAppIconLabel`, `versionLabel`; remove `log`; extend `init`
+  - ⚠️ actual: `authSession` is a computed `connection.auth` (not a stored copy — `saveTokenTapped` rewrites `connection.token`, so a second copy could drift); ➕ stored `appIconCatalog` (loaded on `.task`) so `selectedAppIconLabel` can resolve `nil` → the build's primary label and the picker push is seeded with the catalog; `versionLabel` = `"Version 1.0 (79)"`
+- [x] `.task`: drop the log stream; add bundle info load, `rest.status(baseURL)` → `agentStatusLoaded(version)` (failure → nil, no banner), `appIcon.current()` → `currentAppIconLoaded`
+  - ⚠️ actual: bundle info and the icon catalog are synchronous client reads, so `.task` assigns them directly — no `bundleInfoLoaded` action
+- [x] row actions append the path element: `appIconRowTapped` → `.appIcon(AppIconPickerFeature.State(...))`, `diagnosticsRowTapped` → `.diagnostics(DiagnosticsFeature.State(seeded from parent))`, `acknowledgementsRowTapped` → `.acknowledgements(.init())`; `.forEach(\.path, action: \.path) { SettingsPath.body }`
+- [x] handle `.path(.element(id:action:.appIcon(.delegate(.iconChanged(name)))))` → `selectedAppIcon = name`
+- [x] `clearTokenTapped` unchanged (clear list identical; icon not touched); `SessionListFeature.settingsButtonTapped` passes `scopedProfileName` and the connection's auth session
+  - ⚠️ actual: the auth session already rides in `connection`; only `profileName: scopedProfileName` was added to the seed
+- [x] update existing `SettingsFeatureTests` for the removed `log` / new init; write tests: task seeding (bundle info, agent version, current icon; status failure → nil); each row tap pushes the expected case with the expected seed; `iconChanged` delegate updates `selectedAppIcon`; auth label / `showsTokenField` per regime; profile row nil when unsupported; sign out still clears every prefs entry and never calls `appIcon.set`
+  - ⚠️ the app target (`SettingsView` reads `store.log`) and `SettingsSnapshotTests` stay broken until Task 8 rebuilds the view
+- [x] run tests - must pass before next task
 
 ### Task 8: SettingsView restructure and sheet hosting
 

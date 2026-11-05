@@ -1204,11 +1204,13 @@ public struct SessionListFeature {
         return .send(.delegate(.createSession(initialComposerText: nil)))
 
       case .settingsButtonTapped:
+        // `connection` carries the auth session (the Auth row / token-field gate read it).
         state.settings = SettingsFeature.State(
           connection: state.connection,
           pushAvailable: state.pushAvailable,
           defaultSwipeAction: state.defaultSwipeAction,
-          deleteSupported: state.deleteSupported
+          deleteSupported: state.deleteSupported,
+          profileName: state.scopedProfileName
         )
         return .none
 
