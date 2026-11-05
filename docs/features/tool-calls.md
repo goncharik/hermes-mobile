@@ -166,6 +166,19 @@ survives the hydrate's live → deterministic id rewrite.
   untouched. The raw window, not the snapped one: at the bottom it keeps its fixed size across
   a live append (#125's `.slide`), while the snapped window shrinks each time its start passes a
   user row — the shape of a hydrate re-trim (`.reset`), which would yank a scrolled-up reader.
+- **No diff apply on an unmeasurable view (#128).** `dataSource.apply` self-sizes every cell
+  against the current frame. One landing with no window, a non-finite or zero height, or a width
+  that leaves the row no positive width (`≤ 2 × TranscriptLayout.horizontalSectionInset`)
+  measures cells at a 0–1pt fitting width, which iOS 18 rejects with
+  `_UIContentViewAssertValidFittingSize` (background snapshot, rotation, app switching). So
+  `Coordinator.apply` first checks the pure `TranscriptScrollMath.canApplySnapshot` gate; on a
+  "no" it stores only the LATEST update in `pendingApply` (overwritten, never queued) and
+  returns. `didLayout()` flushes it through the same `apply`, before the open-at-bottom settle,
+  once the gate passes. `TranscriptCollectionView.didMoveToWindow` schedules a layout pass on
+  re-attach so a window-less deferral flushes even at an unchanged size. Nothing in the diff
+  state (`currentOrder` / `currentRowIDs`) moves until the flush, so the gap classifies as one
+  change. The open's FIRST update always defers (zero frame, no window), and its flush is what
+  takes the open jump. Never call `dataSource.apply` outside this gate.
 - **Fold changes hold the reader's place.** Pinned → normal re-pin. Scrolled up → the first
   visible surviving item keeps its on-screen y, through the same same-pass anchor hold as a
   #125 window slide (pure `TranscriptScrollMath.holdsReaderAnchor` / `preservationAnchor` /

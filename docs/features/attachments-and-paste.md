@@ -30,6 +30,16 @@ handler: the payload rides base64'd in one WebSocket frame and the agent leaves 
 `PickedImageLoader.maxAttachmentBytes`. (PDFs/files still have no client-side cap; same frame
 limit applies to them.)
 
+**A stale session heals the WHOLE upload→submit sequence (#17, #132).** `submitDraft`'s
+attachment branch wraps the uploads and the `prompt.submit` together in `withSessionHeal`. On
+"session not found" the heal gets a fresh live id, then replays the sequence once (the uploads
+are idempotent). A brand-new, untitled chat has no server DB row until its first prompt, so
+re-resuming its stored key fails on older agents. While `awaitsFirstPersist` holds, the heal
+falls back to `session.create` instead (`fallbackToCreate`). Before this, an attach in a new
+chat whose live session had been reaped bannered "Attachment failed: session not found". A
+saved chat whose resume fails still banners via `.attachmentUploadFailed`. Full contract:
+`docs/architecture.md` → "Session-not-found self-heal".
+
 ## The composer is a UIKit text view (#54)
 
 The composer's input is `ComposerTextView`, a `UIViewRepresentable` over

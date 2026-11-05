@@ -408,13 +408,15 @@ iOS 27 iPad simulator.
 - [x] run snapshot/layout suite: `make snapshot` (313/313, 0 failures)
 
 ### Task 8: [Final] Update documentation
-- [ ] update `docs/architecture.md` (heal section) and `docs/features/attachments-and-paste.md`
-      with the never-saved fallback
-- [ ] update CLAUDE.md's #17 heal bullet with a one-line note on the never-saved fallback
+- [x] update `docs/architecture.md` (heal section) and `docs/features/attachments-and-paste.md`
+      with the never-saved fallback (new "Session-not-found self-heal (#17, #132)" subsection
+      in architecture.md; the deferred-apply detail went to `docs/features/tool-calls.md` →
+      "Rendering", the existing `CollectionTranscriptView` mechanics section)
+- [x] update CLAUDE.md's #17 heal bullet with a one-line note on the never-saved fallback
       (keep the bullet short)
-- [ ] document the #128 deferred-apply rule on the `CollectionTranscriptView` bullet in CLAUDE.md
-      if it is a new invariant
-- [ ] move this plan to `docs/plans/completed/`
+- [x] document the #128 deferred-apply rule on the `CollectionTranscriptView` bullet in CLAUDE.md
+      if it is a new invariant (it is: `dataSource.apply` must stay behind the gate)
+- [x] move this plan to `docs/plans/completed/` (done by orchestrator after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
