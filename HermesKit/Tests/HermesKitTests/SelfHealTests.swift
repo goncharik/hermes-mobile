@@ -997,6 +997,62 @@ struct SelfHealTests {
     #expect(store.state.errorBanner == nil)
   }
 
+  /// One slash command heals at most once: after the healed `slash.exec`, the `send`
+  /// directive's `prompt.submit` (and, via the fallback, the `command.dispatch`) targets the
+  /// healed id instead of re-healing from the dead one into a second fresh session.
+  @Test(arguments: [false, true])
+  func neverSavedSlashPipelineHealsOnceAndTargetsHealedID(viaFallback: Bool) async {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = reapedNewChat()
+    initial.status = .ready
+    initial.commandCatalog = CommandCatalog(
+      commands: [
+        SlashCommand(name: "/goal", description: "Set a goal"),
+        SlashCommand(name: "/mycmd", description: "Client-dispatched"),
+      ],
+      canonical: ["/goal": "/goal", "/mycmd": "/mycmd"]
+    )
+    initial.composerText = viaFallback ? "/mycmd ship it" : "/goal ship it"
+    let sendDirective: JSONValue = .object([
+      "type": .string("send"), "message": .string("ship it"), "notice": .string("Goal set"),
+    ])
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        if sid == "stale-live" || sid == "minted-key" { throw GatewayError.server("session not found") }
+        switch method {
+        case "session.create": return self.recreatedHandle
+        case "slash.exec":
+          if viaFallback { throw GatewayError.server("unknown command") }
+          return sendDirective
+        case "command.dispatch": return sendDirective
+        case "prompt.submit": return .object(["status": .string("streaming")])
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.receive(\.slashCommandHandedOff)
+    await store.finish()
+
+    let afterHeal = viaFallback ? ["slash.exec", "command.dispatch", "prompt.submit"] : ["slash.exec", "prompt.submit"]
+    #expect(calls.value.map(\.method) == ["slash.exec", "session.resume", "session.create"] + afterHeal)
+    #expect(calls.value.dropFirst(3).allSatisfy { $0.sessionID == "fresh-live" })
+    #expect(store.state.liveSessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+  }
+
   /// #34 stays intact: a reaped unpersisted branch heals submit, rename and the model chip
   /// straight through the SEEDED create (seed + parent link) — its row-less stored key is
   /// never resumed, so even with the never-saved flag forced on the fallback has nothing to add.

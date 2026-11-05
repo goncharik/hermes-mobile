@@ -630,19 +630,19 @@ public struct ChatFeature {
     /// keeps it (the seed is the only copy of the branch).
     var branchSeed: BranchSeed?
     /// This slot's session (minted by a `session.create` handshake) has (as far as the client
-    /// can prove) no server DB row yet (#132). `session.create` mints the stored key, but the server writes the row
-    /// lazily on the first prompt ("A draft has no row yet"), so on agents without
-    /// `_resume_materialize_minted` a `session.resume(stored)` of a reaped never-prompted
-    /// session answers 4007 — the #17 heal's resume fails itself. This is the fact the
-    /// heal's resume→create fallback keys on: recreating loses nothing while it holds.
+    /// can prove) no server DB row yet (#132). `session.create` mints the stored key, but the
+    /// server writes the row lazily on the first prompt ("A draft has no row yet"), so on
+    /// agents without `_resume_materialize_minted` a `session.resume(stored)` of a reaped
+    /// never-prompted session answers 4007 — the #17 heal's resume fails itself. This is the
+    /// fact the heal's resume→create fallback keys on: recreating loses nothing while it holds.
     /// The plain-chat analogue of the #34 branch bookkeeping (`attachLiveSessionID` /
     /// `branchSeed`), which owns a branch's unpersisted window. Starts false; set only by
     /// every `session.create` handshake (`.sessionResult`, incl. a new chat's, the not-found
-    /// recreate and the branch degrade — a fresh key has no row);
-    /// cleared only on positive evidence of a row: the first
-    /// `message.start` (the prompt persisted it) or a hydrate carrying server history or a
-    /// running turn. An empty hydrate or a heal's `.liveSessionIDRefreshed` keeps it —
-    /// upstream's `_resume_live_unpersisted` answers a still-live row-less session too.
+    /// recreate and the branch degrade — a fresh key has no row); cleared only on positive
+    /// evidence of a row: the first `message.start` (the prompt persisted it) or a hydrate
+    /// carrying server history or a running turn. An empty hydrate or a heal's
+    /// `.liveSessionIDRefreshed` keeps it — upstream's `_resume_live_unpersisted` answers a
+    /// still-live row-less session too.
     var awaitsFirstPersist: Bool
 
     /// What the #17 heal needs to obtain a fresh live id, captured once per outbound op so
@@ -2922,7 +2922,7 @@ public struct ChatFeature {
       state.attachLiveSessionID = nil
       state.branchSeed = nil
       state.hasReplayedBranchSeed = false
-      // Same fact for a plain new chat (#132): its row exists now.
+      // Same fact for a session minted by a `session.create` handshake (#132): its row exists now.
       state.awaitsFirstPersist = false
       // Defensive: a second message.start without an intervening message.complete would
       // otherwise leave the prior turn's open reasoning burst live forever. Freeze it first
@@ -5028,8 +5028,9 @@ public struct ChatFeature {
       // report "Unknown command". The echoed user row above keeps the RAW typed text.
       let wireCommand = catalog.canonicalizedCommandText(text)
       return .run { [gateway] send in
+        var cursor = HealCursor(sessionID: sessionID, heal: heal)
         await executeSlashCommand(
-          command: wireCommand, sessionID: sessionID, heal: heal, gateway: gateway, send: send
+          command: wireCommand, cursor: &cursor, gateway: gateway, send: send
         )
       }
     }
@@ -5431,11 +5432,35 @@ private func withSessionHeal<T>(
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async throws -> T {
+  var cursor = HealCursor(sessionID: sessionID, heal: heal)
+  return try await withSessionHeal(op, cursor: &cursor, gateway: gateway, send: send)
+}
+
+/// The live id the next op of ONE user action targets, plus the heal it may still spend.
+/// A multi-RPC action (the slash pipeline: exec → directive / fallback / alias hop) threads
+/// one cursor through every RPC, so the action heals at most once: the first heal spends
+/// `heal` (even if it fails) and later ops target the healed id.
+private struct HealCursor {
+  var sessionID: String
+  var heal: ChatFeature.State.HealTarget?
+}
+
+/// `withSessionHeal` over a shared `HealCursor`: a not-found with the heal already spent
+/// throws as-is.
+@discardableResult
+private func withSessionHeal<T>(
+  _ op: (_ targetID: String) async throws -> T,
+  cursor: inout HealCursor,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>
+) async throws -> T {
   do {
-    return try await op(sessionID)
+    return try await op(cursor.sessionID)
   } catch let error as GatewayError where error.isSessionNotFound {
-    let healedID = try await healLiveSessionID(heal: heal, gateway: gateway, send: send)
-    return try await op(healedID)
+    guard let heal = cursor.heal else { throw error }
+    cursor.heal = nil
+    cursor.sessionID = try await healLiveSessionID(heal: heal, gateway: gateway, send: send)
+    return try await op(cursor.sessionID)
   }
 }
 
@@ -5508,8 +5533,7 @@ private func runDispatchDirective(
   _ directive: JSONValue,
   name: String,
   arg: String,
-  sessionID: String,
-  heal: ChatFeature.State.HealTarget,
+  cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
   allowAliasHop: Bool
@@ -5534,7 +5558,7 @@ private func runDispatchDirective(
     }
     await executeSlashCommand(
       command: "/\(target)\(arg.isEmpty ? "" : " \(arg)")",
-      sessionID: sessionID, heal: heal, gateway: gateway, send: send,
+      cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: false
     )
 
@@ -5583,7 +5607,7 @@ private func runDispatchDirective(
             ChatFeature.promptSubmitParams(sessionID: targetID, text: message, interrupted: false)
           )
         },
-        sessionID: sessionID, heal: heal, gateway: gateway, send: send
+        cursor: &cursor, gateway: gateway, send: send
       )
       await send(.slashCommandHandedOff)
     } catch let error as GatewayError {
@@ -5624,12 +5648,12 @@ private func runDispatchDirective(
 ///    the fallback only reported the routing-noise "not a quick/…/skill command" error (a
 ///    worker timeout/crash must not be buried under it — desktop parity, `slash.ts`).
 ///
-/// Every RPC rides the standard session-not-found self-heal (#17): a stale live id
-/// re-resumes once and replays.
+/// Every RPC rides the standard session-not-found self-heal (#17) through ONE shared
+/// `cursor`: the first stale-id failure heals once and replays, and every later RPC of the
+/// command targets the healed id.
 private func executeSlashCommand(
   command: String,
-  sessionID: String,
-  heal: ChatFeature.State.HealTarget,
+  cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
   allowAliasHop: Bool = true
@@ -5657,7 +5681,7 @@ private func executeSlashCommand(
           "session_id": .string(targetID),
         ]))
       },
-      sessionID: sessionID, heal: heal, gateway: gateway, send: send
+      cursor: &cursor, gateway: gateway, send: send
     )
     // Directive-shaped success FIRST (desktop parity): `/retry`, `/queue`, `/goal`,
     // `/undo`, bundle skills, … answer their `command.dispatch` directive as the exec
@@ -5665,7 +5689,7 @@ private func executeSlashCommand(
     if isDispatchDirective(result) {
       await runDispatchDirective(
         result, name: name, arg: arg,
-        sessionID: sessionID, heal: heal, gateway: gateway, send: send,
+        cursor: &cursor, gateway: gateway, send: send,
         allowAliasHop: allowAliasHop
       )
     } else {
@@ -5714,11 +5738,11 @@ private func executeSlashCommand(
           "session_id": .string(targetID),
         ]))
       },
-      sessionID: sessionID, heal: heal, gateway: gateway, send: send
+      cursor: &cursor, gateway: gateway, send: send
     )
     await runDispatchDirective(
       directive, name: name, arg: arg,
-      sessionID: sessionID, heal: heal, gateway: gateway, send: send,
+      cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: allowAliasHop
     )
   } catch let error as GatewayError {
