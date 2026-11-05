@@ -303,12 +303,16 @@ and the TestFlight command-line override stay as they are.
 - Create: `HermesMobileTests/AppIconPickerSnapshotTests.swift`
 - Create: `HermesMobileTests/DiagnosticsSnapshotTests.swift`
 
-- [ ] `AppIconPickerView`: three-column `LazyVGrid` inside a `ScrollView`, each tile = `Image(option.previewAsset)` clipped to a continuous rounded rect, label below, checkmark overlay on the selected one, `errorBanner` footnote; sends `iconTapped`, `.task { store.send(.task) }`
-- [ ] `DiagnosticsView`: "Copy diagnostics" button + copied toast off `copiedToken` (VoiceOver announcement), then the existing `ConnectionDebugView(entries:)`; `.task` / `.onDisappear` wiring
-- [ ] `AcknowledgementsView`: static list of name, license, link
-- [ ] wire the three destinations in `SettingsView`; `tuist generate`; build
-- [ ] snapshots: picker grid with an alternate selected (light/dark, pinned width + height), picker with banner; Diagnostics with log entries and the copied toast; Acknowledgements — `make snapshot` twice each
-- [ ] run `make snapshot` + HermesKit tests - must pass before next task
+- [x] `AppIconPickerView`: three-column `LazyVGrid` inside a `ScrollView`, each tile = `Image(option.previewAsset)` clipped to a continuous rounded rect, label below, checkmark overlay on the selected one, `errorBanner` footnote; sends `iconTapped`, `.task { store.send(.task) }`
+  - ⚠️ actual: fixed 76pt tiles (corner 17, home-screen ratio) so the grid lays out identically at every width; the selected tile also gets a tint ring; `AppIconPickerFeature.setFailedBanner` made `public` so the snapshot shows the real copy
+- [x] `DiagnosticsView`: "Copy diagnostics" button + copied toast off `copiedToken` (VoiceOver announcement), then the existing `ConnectionDebugView(entries:)`; `.task` / `.onDisappear` wiring
+  - ⚠️ actual: `ConnectionDebugView` became `ConnectionDebugView(entries:header:)` — the copy button is a leading `Section` of the SAME `List` (no list-in-list), the empty state is a row (an overlay would hide the button), and the title moved to `DiagnosticsView`; the toast is the shared `CopiedToastView` ("Diagnostics copied")
+- [x] `AcknowledgementsView`: static list of name, license, link
+  - ⚠️ actual: takes no store — `AcknowledgementsFeature` has nothing to reduce, so the destination renders `AcknowledgementsView()` directly
+- [x] wire the three destinations in `SettingsView`; `tuist generate`; build
+- [x] snapshots: picker grid with an alternate selected (light/dark, pinned width + height), picker with banner; Diagnostics with log entries and the copied toast; Acknowledgements — `make snapshot` twice each
+  - ⚠️ actual: the picker renders via `deviceImage()` inside a `NavigationStack` (device config pins width AND height); ➕ `testDiagnosticsView_empty`; Acknowledgements live in `SettingsSnapshotTests` (light/dark); the old standalone `testConnectionDebugView` baseline was removed (superseded by `DiagnosticsSnapshotTests`)
+- [x] run `make snapshot` + HermesKit tests - must pass before next task
 
 ### Task 10: Privacy policy and docs
 

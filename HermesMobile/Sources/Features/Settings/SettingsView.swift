@@ -20,12 +20,12 @@ struct SettingsView: View {
       form
     } destination: { pathStore in
       switch pathStore.case {
-      case .appIcon:
-        SettingsPlaceholderView(title: "App Icon")
-      case .diagnostics:
-        SettingsPlaceholderView(title: "Diagnostics")
+      case let .appIcon(store):
+        AppIconPickerView(store: store)
+      case let .diagnostics(store):
+        DiagnosticsView(store: store)
       case .acknowledgements:
-        SettingsPlaceholderView(title: "Acknowledgements")
+        AcknowledgementsView()
       }
     }
     .sheet(isPresented: $showingPushGuide) {
@@ -349,16 +349,5 @@ private struct ExternalRowLabel: View {
         .foregroundStyle(.tertiary)
     }
     .contentShape(Rectangle())
-  }
-}
-
-/// Stand-in destination until the sub-screen views land (Task 9 of the settings overhaul).
-private struct SettingsPlaceholderView: View {
-  let title: String
-
-  var body: some View {
-    ContentUnavailableView(title, systemImage: "hammer")
-      .navigationTitle(title)
-      .navigationBarTitleDisplayMode(.inline)
   }
 }

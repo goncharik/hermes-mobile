@@ -64,7 +64,7 @@ public struct AppIconPickerFeature {
     }
   }
 
-  static let setFailedBanner = "Couldn’t change the app icon. Try again."
+  public static let setFailedBanner = "Couldn’t change the app icon. Try again."
 
   /// One icon change in flight: a newer tap supersedes an older one so the last tap wins
   /// (a superseded effect's sends are dropped — no stale rollback or delegate lands).

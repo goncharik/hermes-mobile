@@ -177,7 +177,7 @@ final class SettingsSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
   }
 
-  // MARK: Push guide + debug log
+  // MARK: Push guide
 
   /// The "how push works" info sheet, plugin NOT installed — install action + Later snooze.
   func testPushSetupGuideView() {
@@ -192,15 +192,18 @@ final class SettingsSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: deviceImage())
   }
 
-  func testConnectionDebugView() {
-    let view = NavigationStack {
-      ConnectionDebugView(entries: [
-        GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
-        GatewayLogEntry(id: 1, type: "tool.start", summary: "read_file"),
-        GatewayLogEntry(id: 2, type: "message.delta", summary: "WebSocket JSON-RPC at /api/ws"),
-        GatewayLogEntry(id: 3, type: "status.update", summary: "[lifecycle] thinking…"),
-      ])
-    }
-    assertSnapshot(of: view, as: deviceImage())
+  // MARK: Acknowledgements
+
+  /// Settings → Acknowledgements: every runtime package with its license and an external-link
+  /// arrow. (The gateway log moved under Diagnostics — `DiagnosticsSnapshotTests`.)
+  func testAcknowledgementsView() {
+    assertSnapshot(of: NavigationStack { AcknowledgementsView() }, as: deviceImage())
+  }
+
+  func testAcknowledgementsView_light() {
+    assertSnapshot(
+      of: NavigationStack { AcknowledgementsView() },
+      as: deviceImage(appearance: .light)
+    )
   }
 }
