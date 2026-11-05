@@ -646,6 +646,49 @@ one, it calls `session.events.since {session_id, last_seen}` (nothing else: no `
   epoch; the cursor then sticks high and each replay folds nothing before the plain hydrate. Not
   worked around.
 
+### Session-not-found self-heal (#17, #132)
+
+An outbound RPC against a stale live id (the server reaped the session while the app was away)
+answers "session not found" (`GatewayError.isSessionNotFound`). These session-scoped calls —
+`prompt.submit` (composer and queue drain), the attachment upload→submit sequence, `slash.exec` /
+`command.dispatch` / `session.compress`, `session.title`, `config.set` — go through ONE
+mechanism, `withSessionHeal`: on that error, `healLiveSessionID` re-resumes the stored id
+(`session.resume`, profile threaded per #114) or, with no stored id (an agent whose
+`session.create` returned no `stored_session_id`, or an unpersisted #34 branch, whose row-less
+key `healTarget` hides), recreates via `recreateLiveSession` (`session.create`, with the
+branch's seed + parent link when there is one). Either path applies the fresh ids via
+`.liveSessionIDRefreshed`, then the op is replayed **once**. A heal failure or a second failure
+throws to the caller's own catch, which banners (`.promptSubmitFailed`,
+`.attachmentUploadFailed`, …). There is no retry loop and no recursion. A multi-RPC action (the
+slash pipeline: exec → directive / `command.dispatch` fallback / alias hop) threads one
+`HealCursor` through its RPCs, so it heals at most once and every later RPC targets the healed id.
+
+**Never-saved fallback (#132).** `session.create` mints the stored key, but the server writes
+the DB row lazily on the first prompt. On agents without `_resume_materialize_minted`,
+`session.resume` of a reaped, never-prompted session answers 4007 "session not found", so the
+heal's own resume failed and an attach in a new untitled chat bannered. `ChatFeature.State
+.awaitsFirstPersist` tracks that window: it starts false and is set by every `session.create`
+handshake (`.sessionResult`) — a new chat, the foreground not-found recreate and the branch
+degrade (a primed branch never handshakes; the #34 branch bookkeeping owns its window). It is
+cleared only on positive evidence of a row: the first `message.start`, or a hydrate carrying
+server history or `running == true`. An empty hydrate and a heal's `.liveSessionIDRefreshed`
+keep it, because upstream's `_resume_live_unpersisted` also resumes a still-live row-less
+session successfully, so a successful resume proves nothing. Every call site captures
+`State.healTarget` (stored id under the #34 branch rule, seed, profile, and the flag as
+`fallbackToCreate`). When it is true AND the resume itself throws `isSessionNotFound`, the heal
+falls back to `recreateLiveSession` (same profile and seed rules). This is one extra heal step,
+not a second replay: the op still replays once. A saved or resumed chat whose resume fails
+still banners and never has a session silently swapped in, and any other resume error
+(transport, timeout) throws as before. Newer agents that
+materialise the row on resume never reach the fallback. The foreground `session.resume`
+hydrate already recreated on not-found for every chat, so the heal was the only gap. Known
+limitations: two heals in flight at once in a never-saved chat each create a session and the
+last `.liveSessionIDRefreshed` wins (the no-stored-id branch path shares this); and a recreated
+session starts on the profile's model/reasoning, not the chip's earlier `config.set` pick (the
+foreground recreate shares this). Tests:
+`SelfHealTests` ("never-saved flag (#132)", `neverSaved*HealFallsBackToCreateWhenResumeFails`,
+`savedChatHealResumeFailureBannersWithoutCreate`).
+
 ### App lifecycle and navigation
 
 App lifecycle (`scenePhase`, observed in the SwiftUI shell and dispatched as

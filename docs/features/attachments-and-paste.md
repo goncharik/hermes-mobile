@@ -30,6 +30,12 @@ handler: the payload rides base64'd in one WebSocket frame and the agent leaves 
 `PickedImageLoader.maxAttachmentBytes`. (PDFs/files still have no client-side cap; same frame
 limit applies to them.)
 
+**A stale session heals the WHOLE upload→submit sequence (#17, #132).** `submitDraft`'s
+attachment branch wraps the uploads and the `prompt.submit` together in `withSessionHeal`. On
+"session not found" the heal gets a fresh live id, then replays the sequence once (the uploads
+are idempotent), falling back to `session.create` for a never-saved session (#132). Full
+contract: `docs/architecture.md` → "Session-not-found self-heal".
+
 ## The composer is a UIKit text view (#54)
 
 The composer's input is `ComposerTextView`, a `UIViewRepresentable` over

@@ -19,9 +19,9 @@ enum TurnState: Equatable {
 /// `#if canImport(UIKit)` extension below, so pure-SwiftUI views can name the namespace on
 /// any platform.
 enum TranscriptLayout {
-  /// Inset applied to each horizontal edge of the transcript section, i.e. a row is
-  /// `screen width − 2 × this`.
-  static let horizontalSectionInset: CGFloat = 16
+  /// Inset applied to each horizontal edge of the transcript section (owned by
+  /// `TranscriptScrollMath`, whose apply gate measures against it).
+  static let horizontalSectionInset = TranscriptScrollMath.horizontalSectionInset
 
   /// The narrowest logical screen width this app can be rendered at.
   ///
@@ -54,9 +54,11 @@ import UIKit
 final class TranscriptCollectionView: UICollectionView {
   var onViewportHeightShrink: (() -> Void)?
   /// Fired after every layout pass (once the view actually has a frame). The coordinator uses it
-  /// to complete the open-at-bottom settle: in a `UIViewRepresentable` the first diff `apply`
-  /// runs *before* the collection view is sized, so a scroll-to-bottom there targets a bogus
-  /// (zero-height) viewport. Re-pinning on real layout passes is what makes "open at bottom" stick.
+  /// to flush an apply deferred while the view couldn't be measured (#128 — in a
+  /// `UIViewRepresentable` the first `updateUIView` runs *before* the collection view is sized or
+  /// in a window) and to complete the open-at-bottom settle: self-sizing cells keep growing
+  /// `contentSize` after the first scroll, and re-pinning on real layout passes is what makes
+  /// "open at bottom" stick.
   var onLayout: (() -> Void)?
   private var lastViewportHeight: CGFloat = 0
 
@@ -68,6 +70,13 @@ final class TranscriptCollectionView: UICollectionView {
     }
     lastViewportHeight = height
     onLayout?()
+  }
+
+  /// Re-attaching to a window at an unchanged size need not schedule a layout pass on its own,
+  /// and the layout pass is what flushes an apply deferred while the view had no window (#128).
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window != nil { setNeedsLayout() }
   }
 }
 
@@ -223,6 +232,12 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     private var currentOrder: [TranscriptItem.ID] = []
     /// The window's row ids at the last apply — the open/hydrate/prepend classification input.
     private var currentRowIDs: [ChatRow.ID] = []
+    /// The latest update that arrived while the view couldn't be measured
+    /// (`TranscriptScrollMath.canApplySnapshot`, #128) — overwritten by each deferred update,
+    /// never queued, and flushed through `apply` by the next `didLayout` that passes the gate.
+    /// Nothing above (`itemsByID`, `currentOrder`, `currentRowIDs`) moves until the flush, so
+    /// the diff classification spans the gap as one change.
+    private var pendingApply: (items: [TranscriptItem], rowIDs: [ChatRow.ID])?
 
     /// Renderer-local pin state. Never lives in the reducer. Starts pinned so the first
     /// population follows the open-at-bottom contract; afterwards only the user's own scrolling
@@ -391,7 +406,17 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// A hydrate is classified like any other update, so it jumps a scrolled-up reader only when
     /// their rows are gone (`.reset`: nothing survives, or the window shrank and lost its head — a
     /// paged-up window re-trimmed to the bottom). A hydrate whose rows survive keeps their place.
+    ///
+    /// An update that lands while the view can't be measured (no window, or a degenerate frame:
+    /// `TranscriptScrollMath.canApplySnapshot`) is deferred instead — only the latest is kept —
+    /// and `didLayout` flushes it back through here (#128). The open's first update is one of
+    /// these (zero frame, no window), so its flush is what performs the open jump.
     func apply(items: [TranscriptItem], rowIDs: [ChatRow.ID]) {
+      guard canApplySnapshotNow else {
+        pendingApply = (items, rowIDs)
+        return
+      }
+      pendingApply = nil
       let newOrder = items.map(\.id)
       let oldOrder = currentOrder
       let diff = TranscriptDiffKind.classify(old: currentRowIDs, new: rowIDs)
@@ -634,9 +659,27 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// Called after every collection-view layout pass. While the initial open-at-bottom is still
     /// settling, keep pinning to the true bottom (the frame/cell sizes are only correct here, not
     /// in the pre-layout `apply` completion).
+    ///
+    /// First, flush an update deferred while the view couldn't be measured (#128), now that it
+    /// can — through the normal `apply`, so a first population still jumps and settles and a
+    /// later one follows or holds by the usual rules.
     func didLayout() {
+      if let pending = pendingApply {
+        apply(items: pending.items, rowIDs: pending.rowIDs)
+      }
       guard needsInitialBottomSettle else { return }
       scrollToBottom(animated: false)
+    }
+
+    /// Whether the collection view can take a diff apply now: in a window, at a finite, positive
+    /// size wide enough to leave a row any width (`TranscriptScrollMath.canApplySnapshot`).
+    private var canApplySnapshotNow: Bool {
+      guard let collectionView else { return false }
+      return TranscriptScrollMath.canApplySnapshot(
+        width: collectionView.bounds.width,
+        height: collectionView.bounds.height,
+        hasWindow: collectionView.window != nil
+      )
     }
 
     /// The viewport lost height (typically the keyboard appeared and SwiftUI shrank our frame).

@@ -18,11 +18,14 @@ struct SelfHealTests {
   /// The pinned `date` the stores use — what the fold stamps on echoed user rows.
   private let t0 = Date(timeIntervalSince1970: 0)
 
-  /// A ready chat with both a stale live id and a stored id to re-resume against.
+  /// A ready chat with both a stale live id and a stored id to re-resume against — a chat
+  /// the server has saved (`awaitsFirstPersist` off), so a failed heal resume banners
+  /// instead of taking the never-saved create fallback (#132).
   private func healableState() -> ChatFeature.State {
     var state = ChatFeature.State(connection: conn)
     state.liveSessionID = "stale-live"
     state.storedSessionID = "stored123"
+    state.awaitsFirstPersist = false
     return state
   }
 
@@ -593,5 +596,689 @@ struct SelfHealTests {
     // No liveSessionIDRefreshed and no second submit: heal threw before applying anything.
     #expect(calls.value == ["prompt.submit", "session.resume"])
     #expect(store.state.liveSessionID == "stale-live")
+  }
+
+  // MARK: never-saved flag (#132)
+  //
+  // A plain new chat's `session.create` mints a stored key but the server writes no DB row
+  // until the first prompt, so until then a `session.resume(stored)` heal can itself 4007.
+  // `awaitsFirstPersist` is the per-slot fact the heal's resume→create fallback keys on.
+
+  /// A hydrate response for the new chat's minted key; `nonisolated` like `resumePayload`.
+  private nonisolated func mintedHydrate(
+    messages: [SessionMessage] = [], running: Bool = false
+  ) -> ActivateResponse {
+    ActivateResponse(
+      sessionID: "live-2", storedSessionID: "minted-key", messages: messages, running: running
+    )
+  }
+
+  /// A new chat as it stands once its `session.create` handshake landed: live id plus the
+  /// minted stored key (which alone can't tell it from a resumed session), flag set.
+  private func handshakenNewChat() -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, status: .ready)
+    state.liveSessionID = "live-1"
+    state.storedSessionID = "minted-key"
+    state.awaitsFirstPersist = true
+    return state
+  }
+
+  /// The real new-chat handshake (`.ready` → `session.create` → `.sessionResult`) sets it.
+  @Test func newChatHandshakeSetsAwaitsFirstPersist() async {
+    #expect(!ChatFeature.State(connection: conn).awaitsFirstPersist)
+    let store = TestStore(initialState: ChatFeature.State(connection: conn)) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        method == "session.create" ? self.recreatedHandle : .object([:])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.gatewayEvent(.ready))
+    await store.receive(\.sessionResult.success) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.finish()
+    #expect(store.state.awaitsFirstPersist)
+  }
+
+  /// Every `session.create` handshake mints a row-less key, so a slot recreated by the
+  /// foreground not-found path — a resumed chat whose row is gone, or a branch whose seed
+  /// replay was spent (the degrade) — is never-saved too, and its next heal takes the
+  /// resume → create fallback instead of bannering.
+  @Test(arguments: [false, true])
+  func recreatedSessionAwaitsFirstPersistAndHealsByCreate(branchDegrade: Bool) async {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    let creates = LockIsolated(0)
+    var initial = healableState()
+    if branchDegrade {
+      initial.attachLiveSessionID = "stale-live"
+      initial.branchSeed = .init(text: "seeded answer", parentSessionID: "parent-1")
+      initial.hasReplayedBranchSeed = true
+    }
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case "session.create":
+          let n = creates.withValue { $0 += 1; return $0 }
+          return n == 1
+            ? .object(["session_id": .string("recreated-live"), "stored_session_id": .string("recreated-key")])
+            : self.recreatedHandle
+        case "prompt.submit":
+          if sid == "recreated-live" { throw GatewayError.server("session not found") }
+          return .object(["status": .string("streaming")])
+        case "session.resume": throw GatewayError.server("session not found")
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.activateResult(.failure(.server("session not found"))))
+    await store.receive(\.sessionResult.success)
+    await store.finish()
+    #expect(store.state.awaitsFirstPersist)
+    #expect(store.state.storedSessionID == "recreated-key")
+
+    calls.setValue([])
+    await store.send(.binding(.set(\.composerText, "hello")))
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.finish()
+
+    #expect(calls.value.map(\.method) == ["prompt.submit", "session.resume", "session.create", "prompt.submit"])
+    #expect(calls.value.dropFirst().first?.sessionID == "recreated-key")
+    #expect(calls.value.last?.sessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+  }
+
+  @Test func resumedChatNeverAwaitsFirstPersist() {
+    #expect(!ChatFeature.State(connection: conn, resumeStoredID: "stored123").awaitsFirstPersist)
+  }
+
+  /// A branch (#34) is primed with its stored key, so it never sets the flag — its own
+  /// `attachLiveSessionID`/`branchSeed` machinery owns the unpersisted window.
+  @Test func branchChatNeverAwaitsFirstPersist() async {
+    let connection = conn
+    var parent = ChatFeature.State(connection: connection, resumeStoredID: "parent")
+    parent.liveSessionID = "parent-live"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "parent")]),
+        liveChat: parent
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.liveChat(.delegate(.branchCreated(.init(
+      handle: SessionHandle(sessionID: "branch-live", storedSessionID: "branch-1"),
+      seed: .init(text: "seeded answer", parentSessionID: "parent")
+    )))))
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.branchSeed != nil)
+    #expect(store.state.liveChat?.awaitsFirstPersist == false)
+
+    await store.send(.liveChat(.teardown))
+    await store.send(.home(.onDisappear))
+  }
+
+  /// The first `message.start` proves the first prompt landed — the server wrote the row
+  /// (`prompt.submit` persists it before `message.start` reaches the client).
+  @Test func firstMessageStartClearsAwaitsFirstPersist() async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+    }
+
+    await store.send(.gatewayEvent(.messageStart)) {
+      $0.isSending = true
+      $0.isTurnLive = true
+      $0.awaitsFirstPersist = false
+    }
+    await store.receive(\.delegate.runningChanged)
+    await store.send(.teardown)
+  }
+
+  enum MintedHydrateShape: Sendable { case history, runningOnly, empty }
+
+  /// A hydrate that returns server history (or a running turn) proves the row exists. An
+  /// EMPTY, idle hydrate proves nothing: upstream's `_resume_live_unpersisted` answers a
+  /// still-live row-less session with empty history, so the chat may still be unsaved.
+  @Test(arguments: [(.history, false), (.runningOnly, false), (.empty, true)] as [(MintedHydrateShape, Bool)])
+  func hydrateClearsAwaitsFirstPersistOnlyOnRowEvidence(shape: MintedHydrateShape, staysSet: Bool) async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = TestClock()
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in .object([:]) }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    let response = switch shape {
+    case .history:
+      mintedHydrate(messages: [
+        SessionMessage(id: 1, role: "user", content: "hi"),
+        SessionMessage(id: 2, role: "assistant", content: "hello"),
+      ])
+    case .runningOnly: mintedHydrate(running: true)
+    case .empty: mintedHydrate()
+    }
+    await store.send(.activateResult(.success(response)))
+    #expect(store.state.awaitsFirstPersist == staysSet)
+    await store.send(.teardown)
+  }
+
+  /// A heal that re-bound fresh ids is no proof of a row either (the resume may have hit the
+  /// same live-unpersisted path, or the heal recreated) — the flag stands.
+  @Test func liveSessionIDRefreshedKeepsAwaitsFirstPersist() async {
+    let store = TestStore(initialState: handshakenNewChat()) { ChatFeature() }
+
+    await store.send(.liveSessionIDRefreshed(liveSessionID: "live-3", storedSessionID: "minted-key")) {
+      $0.liveSessionID = "live-3"
+    }
+    #expect(store.state.awaitsFirstPersist)
+  }
+
+  // MARK: never-saved heal fallback (#132)
+  //
+  // A never-saved new chat whose live session was reaped: the op 4007s, the heal's
+  // `session.resume(minted-key)` 4007s too (no DB row on older agents), so the heal falls
+  // back to `session.create` and replays the op ONCE. Only `awaitsFirstPersist` arms it.
+
+  /// A never-saved new chat (flag on, as its handshake left it) holding a reaped live id and
+  /// its minted key.
+  private func reapedNewChat(profileName: String? = nil) -> ChatFeature.State {
+    var state = ChatFeature.State(connection: conn, profileName: profileName)
+    state.liveSessionID = "stale-live"
+    state.storedSessionID = "minted-key"
+    state.awaitsFirstPersist = true
+    return state
+  }
+
+  private var stagedImage: ComposerAttachment {
+    ComposerAttachment(
+      id: uuid(99), kind: .image, filename: "p.png", mimeType: "image/png", data: Data([0x1, 0x2])
+    )
+  }
+
+  /// The heal's fallback `session.create` answer: fresh live id + freshly minted key.
+  private nonisolated var recreatedHandle: JSONValue {
+    .object(["session_id": .string("fresh-live"), "stored_session_id": .string("fresh-key")])
+  }
+
+  /// The reported case: new chat, staged image, `image.attach_bytes` → "session not found",
+  /// the heal's resume → "session not found", fallback create → fresh ids, then the whole
+  /// upload + submit replayed once against them. No banner.
+  @Test func neverSavedAttachHealFallsBackToCreateWhenResumeFails() async {
+    let calls = LockIsolated<[(method: String, params: JSONValue)]>([])
+    var initial = reapedNewChat()
+    initial.attachments = [stagedImage]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        calls.withValue { $0.append((method, params)) }
+        switch method {
+        case "image.attach_bytes":
+          if params["session_id"]?.stringValue == "stale-live" {
+            throw GatewayError.server("session not found")
+          }
+          return .object([:])
+        case "session.resume": throw GatewayError.server("session not found")
+        case "session.create": return self.recreatedHandle
+        case "prompt.submit": return .object(["status": .string("streaming")])
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.receive(\.attachmentsSubmitted)
+    await store.finish()
+
+    #expect(calls.value.map(\.method) == [
+      "image.attach_bytes", "session.resume", "session.create", "image.attach_bytes", "prompt.submit",
+    ])
+    guard calls.value.count == 5 else { return }
+    #expect(calls.value[1].params == .object(["session_id": .string("minted-key")]))
+    #expect(calls.value[2].params == .object([:])) // plain create: no seed, nil profile omitted
+    #expect(calls.value[3].params["session_id"]?.stringValue == "fresh-live")
+    #expect(calls.value[4].params["session_id"]?.stringValue == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+    #expect(store.state.attachments.isEmpty)
+    #expect(store.state.awaitsFirstPersist) // the recreated session is unsaved too
+  }
+
+  /// The shared heal outside attachments: a plain `prompt.submit` takes the same fallback.
+  @Test func neverSavedPromptHealFallsBackToCreateWhenResumeFails() async {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = reapedNewChat()
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case "prompt.submit":
+          if sid == "stale-live" { throw GatewayError.server("session not found") }
+          return .object(["status": .string("streaming")])
+        case "session.resume": throw GatewayError.server("session not found")
+        case "session.create": return self.recreatedHandle
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted) {
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .message(role: .user, text: "hello", isComplete: true), timestamp: self.t0)]
+      $0.composerText = ""
+      $0.isSending = true
+    }
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.finish()
+
+    #expect(calls.value.map(\.method) == ["prompt.submit", "session.resume", "session.create", "prompt.submit"])
+    #expect(calls.value.last?.sessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+    #expect(store.state.isSending)
+  }
+
+  /// The healed ops other than attach, each driven from the action that issues it.
+  enum HealedOp: CaseIterable, Sendable {
+    case submit, rename, model, reasoning, slashExec, compress
+
+    var method: String {
+      switch self {
+      case .submit: "prompt.submit"
+      case .rename: "session.title"
+      case .model, .reasoning: "config.set"
+      case .slashExec: "slash.exec"
+      case .compress: "session.compress"
+      }
+    }
+
+    var action: ChatFeature.Action {
+      switch self {
+      case .rename: .confirmRename
+      case .model: .modelSelected(model: "claude-sonnet-4-6", provider: nil)
+      case .reasoning: .reasoningSelected("high")
+      case .submit, .slashExec, .compress: .composerSubmitted
+      }
+    }
+
+    func prepare(_ state: inout ChatFeature.State) {
+      state.status = .ready
+      switch self {
+      case .submit: state.composerText = "follow-up"
+      case .rename: state.renameDraft = "New title"
+      case .model, .reasoning: break
+      case .slashExec, .compress:
+        state.commandCatalog = CommandCatalog(
+          commands: [SlashCommand(name: "/status", description: "Show session status")],
+          canonical: ["/status": "/status"]
+        )
+        state.composerText = self == .slashExec ? "/status" : "/compress"
+      }
+    }
+  }
+
+  /// Every heal call site carries the never-saved fallback, not just submit/attach (tested above).
+  @Test(arguments: HealedOp.allCases.filter { $0 != .submit })
+  func neverSavedHealFallsBackToCreateForEveryHealedOp(op: HealedOp) async {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = reapedNewChat()
+    op.prepare(&initial)
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case op.method where sid == "stale-live": throw GatewayError.server("session not found")
+        case "session.resume" where sid == "minted-key": throw GatewayError.server("session not found")
+        case "session.resume": return self.resumePayload(liveID: "fresh-live")
+        case "session.create": return self.recreatedHandle
+        case "slash.exec": return .object(["output": .string("ok")])
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(op.action)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.finish()
+
+    // A slash/compress success follows up with its own refresh hydrate; the heal is the prefix.
+    let heal = Array(calls.value.prefix(4))
+    #expect(heal.map(\.method) == [op.method, "session.resume", "session.create", op.method])
+    #expect(heal.last?.sessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+  }
+
+  /// One slash command heals at most once: after the healed `slash.exec`, the `send`
+  /// directive's `prompt.submit` (and, via the fallback, the `command.dispatch`) targets the
+  /// healed id instead of re-healing from the dead one into a second fresh session.
+  @Test(arguments: [false, true])
+  func neverSavedSlashPipelineHealsOnceAndTargetsHealedID(viaFallback: Bool) async {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = reapedNewChat()
+    initial.status = .ready
+    initial.commandCatalog = CommandCatalog(
+      commands: [
+        SlashCommand(name: "/goal", description: "Set a goal"),
+        SlashCommand(name: "/mycmd", description: "Client-dispatched"),
+      ],
+      canonical: ["/goal": "/goal", "/mycmd": "/mycmd"]
+    )
+    initial.composerText = viaFallback ? "/mycmd ship it" : "/goal ship it"
+    let sendDirective: JSONValue = .object([
+      "type": .string("send"), "message": .string("ship it"), "notice": .string("Goal set"),
+    ])
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.continuousClock = ImmediateClock()
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        if sid == "stale-live" || sid == "minted-key" { throw GatewayError.server("session not found") }
+        switch method {
+        case "session.create": return self.recreatedHandle
+        case "slash.exec":
+          if viaFallback { throw GatewayError.server("unknown command") }
+          return sendDirective
+        case "command.dispatch": return sendDirective
+        case "prompt.submit": return .object(["status": .string("streaming")])
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.receive(\.slashCommandHandedOff)
+    await store.finish()
+
+    let afterHeal = viaFallback ? ["slash.exec", "command.dispatch", "prompt.submit"] : ["slash.exec", "prompt.submit"]
+    #expect(calls.value.map(\.method) == ["slash.exec", "session.resume", "session.create"] + afterHeal)
+    #expect(calls.value.dropFirst(3).allSatisfy { $0.sessionID == "fresh-live" })
+    #expect(store.state.liveSessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+  }
+
+  /// #34 stays intact: a reaped unpersisted branch heals submit, rename and the model chip
+  /// straight through the SEEDED create (seed + parent link) — its row-less stored key is
+  /// never resumed, so even with the never-saved flag forced on the fallback has nothing to add.
+  @Test(arguments: [HealedOp.submit, .rename, .model, .reasoning])
+  func branchHealRecreatesFromSeed(op: HealedOp) async {
+    let calls = LockIsolated<[(method: String, params: JSONValue)]>([])
+    var initial = ChatFeature.State(connection: conn, resumeStoredID: "branch-stored", status: .ready)
+    initial.liveSessionID = "branch-live"
+    initial.attachLiveSessionID = "branch-live"
+    initial.branchSeed = .init(text: "seeded answer", parentSessionID: "parent-1")
+    initial.awaitsFirstPersist = true
+    op.prepare(&initial)
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        calls.withValue { $0.append((method, params)) }
+        switch method {
+        case op.method where params["session_id"]?.stringValue == "branch-live":
+          throw GatewayError.server("session not found")
+        case "session.resume": throw GatewayError.server("session not found")
+        case "session.create": return self.recreatedHandle
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(op.action)
+    await store.receive(\.liveSessionIDRefreshed)
+    await store.finish()
+
+    #expect(calls.value.map(\.method) == [op.method, "session.create", op.method])
+    guard calls.value.count == 3 else { return }
+    #expect(calls.value[1].params["parent_session_id"]?.stringValue == "parent-1")
+    #expect(calls.value[1].params["messages"] != nil)
+    #expect(calls.value[2].params["session_id"]?.stringValue == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+  }
+
+  /// Guard: a resumed chat, or a new chat whose first prompt already landed, has a real DB
+  /// row — a failed heal resume keeps today's behaviour (banner, no session quietly swapped in).
+  @Test(arguments: [true, false])
+  func savedChatHealResumeFailureBannersWithoutCreate(resumed: Bool) async {
+    let calls = LockIsolated<[String]>([])
+    var initial: ChatFeature.State
+    if resumed {
+      initial = ChatFeature.State(connection: conn, resumeStoredID: "minted-key")
+      initial.liveSessionID = "stale-live"
+    } else {
+      initial = reapedNewChat()
+      initial.awaitsFirstPersist = false // as the first `message.start` leaves it
+    }
+    initial.attachments = [stagedImage]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "image.attach_bytes", "session.resume": throw GatewayError.server("session not found")
+        case "session.create": return self.recreatedHandle
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.attachmentUploadFailed) {
+      $0.errorBanner = "Attachment failed: session not found"
+      $0.isSending = false
+    }
+    await store.finish()
+
+    #expect(calls.value == ["image.attach_bytes", "session.resume"])
+    #expect(store.state.liveSessionID == "stale-live")
+    #expect(store.state.storedSessionID == "minted-key")
+    #expect(!store.state.attachments.isEmpty)
+  }
+
+  /// Guard: the fallback only answers a resume "session not found" — a resume failing any
+  /// other way (here a transport drop) surfaces it, with no create.
+  @Test func neverSavedHealResumeTransportFailureBannersWithoutCreate() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = reapedNewChat()
+    initial.attachments = [stagedImage]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "image.attach_bytes": throw GatewayError.server("session not found")
+        case "session.resume": throw GatewayError.disconnected
+        case "session.create": return self.recreatedHandle
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.attachmentUploadFailed) {
+      $0.errorBanner = "Attachment failed: \(GatewayError.disconnected.message)"
+      $0.isSending = false
+    }
+    await store.finish()
+
+    #expect(calls.value == ["image.attach_bytes", "session.resume"])
+  }
+
+  /// The fallback create fails too → banner with the create's error, no replay.
+  @Test func neverSavedHealFallbackCreateFailureBannersWithoutReplay() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = reapedNewChat()
+    initial.attachments = [stagedImage]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "image.attach_bytes", "session.resume": throw GatewayError.server("session not found")
+        case "session.create": throw GatewayError.server("too many sessions")
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.attachmentUploadFailed) {
+      $0.errorBanner = "Attachment failed: too many sessions"
+      $0.isSending = false
+    }
+    await store.finish()
+
+    #expect(calls.value == ["image.attach_bytes", "session.resume", "session.create"])
+    #expect(store.state.liveSessionID == "stale-live") // heal never landed a fresh id
+    #expect(!store.state.attachments.isEmpty)
+  }
+
+  /// The op is replayed exactly ONCE: fallback create succeeds, the replay still fails
+  /// "session not found" → banner, never a second heal or a third attempt.
+  @Test func neverSavedHealReplaysOnceThenBanners() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = reapedNewChat()
+    initial.attachments = [stagedImage]
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        switch method {
+        case "image.attach_bytes", "session.resume": throw GatewayError.server("session not found")
+        case "session.create": return self.recreatedHandle
+        default: return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed) {
+      $0.liveSessionID = "fresh-live"
+      $0.storedSessionID = "fresh-key"
+    }
+    await store.receive(\.attachmentUploadFailed) {
+      $0.errorBanner = "Attachment failed: session not found"
+      $0.isSending = false
+    }
+    await store.finish()
+
+    #expect(calls.value == ["image.attach_bytes", "session.resume", "session.create", "image.attach_bytes"])
+  }
+
+  /// #114: the fallback's resume AND create both carry the chat's profile verbatim (the
+  /// literal `"default"` included); only a nil profile (no profiles API) is omitted.
+  @Test(arguments: [nil, "default"] as [String?])
+  func neverSavedHealFallbackThreadsLiteralProfile(profileName: String?) async {
+    let healCalls = LockIsolated<[(method: String, params: JSONValue)]>([])
+    var initial = reapedNewChat(profileName: profileName)
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        switch method {
+        case "prompt.submit":
+          if params["session_id"]?.stringValue == "stale-live" {
+            throw GatewayError.server("session not found")
+          }
+          return .object(["status": .string("streaming")])
+        case "session.resume":
+          healCalls.withValue { $0.append((method, params)) }
+          throw GatewayError.server("session not found")
+        case "session.create":
+          healCalls.withValue { $0.append((method, params)) }
+          return self.recreatedHandle
+        default:
+          return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.composerSubmitted)
+    await store.receive(\.liveSessionIDRefreshed)
+    await store.finish()
+
+    var resumeParams: [String: JSONValue] = ["session_id": .string("minted-key")]
+    var createParams: [String: JSONValue] = [:]
+    if let profileName {
+      resumeParams["profile"] = .string(profileName)
+      createParams["profile"] = .string(profileName)
+    }
+    #expect(healCalls.value.map(\.method) == ["session.resume", "session.create"])
+    #expect(healCalls.value.first?.params == .object(resumeParams))
+    #expect(healCalls.value.last?.params == .object(createParams))
+    #expect(store.state.errorBanner == nil)
   }
 }

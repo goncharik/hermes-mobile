@@ -629,6 +629,43 @@ public struct ChatFeature {
     /// attach-by-live-id in `liveSessionIDRefreshed`); a TRANSPORT-interrupted replay
     /// keeps it (the seed is the only copy of the branch).
     var branchSeed: BranchSeed?
+    /// This slot's session (minted by a `session.create` handshake) has (as far as the client
+    /// can prove) no server DB row yet (#132). `session.create` mints the stored key, but the
+    /// server writes the row lazily on the first prompt ("A draft has no row yet"), so on
+    /// agents without `_resume_materialize_minted` a `session.resume(stored)` of a reaped
+    /// never-prompted session answers 4007 — the #17 heal's resume fails itself. This is the
+    /// fact the heal's resume→create fallback keys on: recreating loses nothing while it holds.
+    /// The plain-chat analogue of the #34 branch bookkeeping (`attachLiveSessionID` /
+    /// `branchSeed`), which owns a branch's unpersisted window. Starts false; set only by
+    /// every `session.create` handshake (`.sessionResult`, incl. a new chat's, the not-found
+    /// recreate and the branch degrade — a fresh key has no row); cleared only on positive
+    /// evidence of a row: the first `message.start` (the prompt persisted it) or a hydrate
+    /// carrying server history or a running turn. An empty hydrate or a heal's
+    /// `.liveSessionIDRefreshed` keeps it — upstream's `_resume_live_unpersisted` answers a
+    /// still-live row-less session too.
+    var awaitsFirstPersist: Bool
+
+    /// What the #17 heal needs to obtain a fresh live id, captured once per outbound op so
+    /// every heal call site applies the same rules: an unpersisted branch (#34) hides its
+    /// row-less stored id (the heal recreates from the seed instead of resuming), and
+    /// `fallbackToCreate` is `awaitsFirstPersist` (#132, see `healLiveSessionID`).
+    struct HealTarget: Equatable, Sendable {
+      let storedSessionID: String?
+      let branchSeed: BranchSeed?
+      let profile: String?
+      let fallbackToCreate: Bool
+    }
+
+    /// The heal inputs for an op issued now, built under the #34/#132 rules.
+    var healTarget: HealTarget {
+      HealTarget(
+        storedSessionID: attachLiveSessionID == nil ? storedSessionID : nil,
+        branchSeed: branchSeed,
+        profile: profileName,
+        fallbackToCreate: awaitsFirstPersist
+      )
+    }
+
     /// One-shot guard for the seed replay: at most ONE replayed `session.create` per
     /// successful hydrate (reset in `applyActivate` and on `message.start`), so a server
     /// answering "session not found" even for a just-recreated session can't loop
@@ -816,6 +853,7 @@ public struct ChatFeature {
       self.liveSessionID = nil
       self.attachLiveSessionID = nil
       self.branchSeed = nil
+      self.awaitsFirstPersist = false
       self.hasReplayedBranchSeed = false
       self.pendingBranchSeed = nil
       self.streamingRowID = nil
@@ -1609,6 +1647,7 @@ public struct ChatFeature {
         state.liveSessionID = handle.sessionID
         state.storedSessionID = handle.storedSessionID ?? state.storedSessionID
         state.status = .ready
+        state.awaitsFirstPersist = true // a freshly minted key has no DB row yet (#132)
         // The create handshake IS this chat's hydrate (#80): the handle may carry a
         // `stored_session_id`, which would otherwise flip `showsEmptyHero` off for a chat
         // whose only history is the nothing the server just created.
@@ -2680,8 +2719,7 @@ public struct ChatFeature {
         let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
         return configSet(
           key: "model", value: wireValue, previousValue: previousModel, sessionID: sessionID,
-          storedSessionID: state.storedSessionID, branchSeed: state.branchSeed,
-          profile: state.profileName
+          heal: state.healTarget
         )
 
       case let .reasoningSelected(effort):
@@ -2692,8 +2730,7 @@ public struct ChatFeature {
         clearConfigError(&state)
         return configSet(
           key: "reasoning", value: effort, previousValue: previousEffort, sessionID: sessionID,
-          storedSessionID: state.storedSessionID, branchSeed: state.branchSeed,
-          profile: state.profileName
+          heal: state.healTarget
         )
 
       case let .configSetFailed(key, value, previousValue, error):
@@ -2775,8 +2812,7 @@ public struct ChatFeature {
         state.title = trimmed
         state.renameDraft = nil
         state.errorBanner = nil
-        let stored = state.storedSessionID
-        let profile = state.profileName
+        let heal = state.healTarget
         return .run { [gateway] send in
           func rename(_ targetID: String) async throws {
             _ = try await gateway.send("session.title", .object([
@@ -2787,8 +2823,7 @@ public struct ChatFeature {
           do {
             // Stale live id after foreground: self-heal once, then replay the rename (#17).
             try await withSessionHeal(
-              rename, sessionID: sessionID, storedSessionID: stored,
-              profile: profile, gateway: gateway, send: send
+              rename, sessionID: sessionID, heal: heal, gateway: gateway, send: send
             )
           } catch {
             await send(.renameFailed(previousTitle: previousTitle))
@@ -2887,6 +2922,8 @@ public struct ChatFeature {
       state.attachLiveSessionID = nil
       state.branchSeed = nil
       state.hasReplayedBranchSeed = false
+      // Same fact for a session minted by a `session.create` handshake (#132): its row exists now.
+      state.awaitsFirstPersist = false
       // Defensive: a second message.start without an intervening message.complete would
       // otherwise leave the prior turn's open reasoning burst live forever. Freeze it first
       // (idempotent) — this also resets `turnSeconds = 0` and the label/status for the new
@@ -4250,6 +4287,11 @@ public struct ChatFeature {
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
     state.hasReplayedBranchSeed = false // and so does the branch seed-replay budget (#34)
+    // Server history or a running turn proves the row exists (#132); an empty idle
+    // hydrate doesn't (a still-live row-less session resumes with empty history).
+    if !response.messages.isEmpty || response.running == true {
+      state.awaitsFirstPersist = false
+    }
     // Read-aloud inputs (#74), captured BEFORE the rebuild below changes the rows.
     let isFirstHydrate = !state.hasHydrated
     let wasReplyPending = state.completedReplyCount > state.spokenAssistantCount
@@ -4846,13 +4888,7 @@ public struct ChatFeature {
       }
       // Anchor the turn start so a hydrate while it runs resumes the elapsed timer.
       let anchor = setTurnAnchor(state)
-      // An unpersisted branch's stored id has no DB row (#34) — a heal resuming it
-      // would 4007 again, so heal by recreating from the client-held seed (the typed
-      // prompt is replayed and the seeded context + parent link are rebuilt; the
-      // reap only removed them server-side).
-      let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
-      let seed = state.branchSeed
-      let profile = state.profileName
+      let heal = state.healTarget
       // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
       let interrupted = takeReadAloudInterruption(&state)
       return .merge(anchor, .run { [gateway, uuid] send in
@@ -4879,8 +4915,7 @@ public struct ChatFeature {
           // Stale live id: re-resume/recreate for a fresh one, apply it, replay the whole
           // upload→submit sequence once (uploads are idempotent).
           try await withSessionHeal(
-            runUploadAndSubmit, sessionID: sessionID, storedSessionID: stored,
-            branchSeed: seed, profile: profile, gateway: gateway, send: send
+            runUploadAndSubmit, sessionID: sessionID, heal: heal, gateway: gateway, send: send
           )
           // Echo images as thumbnails in the bubble; non-image files (no thumbnail)
           // fall back to their names when there's no typed text.
@@ -4952,17 +4987,11 @@ public struct ChatFeature {
       state.errorBanner = nil
       state.isSending = true
       state.slashExecInFlight = true
-      // Thread storedSessionID/branchSeed/profile through the same #17 session-heal the
-      // slash and prompt paths use (an unpersisted branch heals by recreating from its
-      // client-held seed, not by resuming a row-less stored id).
-      let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
-      let seed = state.branchSeed
-      let profile = state.profileName
+      let heal = state.healTarget
       let focusTopic = parseSlashCommand(text).arg
       return .run { [gateway] send in
         await executeCompress(
-          focusTopic: focusTopic, sessionID: sessionID, storedSessionID: stored,
-          branchSeed: seed, profile: profile, gateway: gateway, send: send
+          focusTopic: focusTopic, sessionID: sessionID, heal: heal, gateway: gateway, send: send
         )
       }
     }
@@ -4992,21 +5021,16 @@ public struct ChatFeature {
       state.errorBanner = nil
       state.isSending = true
       state.slashExecInFlight = true
-      // An unpersisted branch's stored id has no DB row (#34) — a heal resuming it
-      // would 4007 again, so heal by recreating from the client-held seed (context +
-      // parent link rebuilt) exactly like the plain-prompt / attachments paths do.
-      let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
-      let seed = state.branchSeed
-      let profile = state.profileName
+      let heal = state.healTarget
       // Resolve a typed ALIAS to its canonical name for the WIRE command only (#36
       // follow-up): the gateway's live handler recognizes only canonical names, so a
       // raw alias (`/compact`) would fall through to the isolated slash-worker and
       // report "Unknown command". The echoed user row above keeps the RAW typed text.
       let wireCommand = catalog.canonicalizedCommandText(text)
       return .run { [gateway] send in
+        var cursor = HealCursor(sessionID: sessionID, heal: heal)
         await executeSlashCommand(
-          command: wireCommand, sessionID: sessionID, storedSessionID: stored,
-          branchSeed: seed, profile: profile, gateway: gateway, send: send
+          command: wireCommand, cursor: &cursor, gateway: gateway, send: send
         )
       }
     }
@@ -5026,18 +5050,14 @@ public struct ChatFeature {
     // so success does nothing here — only a thrown error (timeout / server / drop)
     // surfaces. Don't swallow it (Issue #6: a stuck server left the spinner hung). A stale
     // live id after background→foreground answers "session not found" — self-heal once by
-    // re-resuming for a fresh id and replaying the submit (#17). An unpersisted branch's
-    // stored id has no DB row (#34) — its heal recreates from the client-held seed
-    // (context + parent link rebuilt) instead of resuming.
-    let stored = state.attachLiveSessionID == nil ? state.storedSessionID : nil
-    let seed = state.branchSeed
-    let profile = state.profileName
+    // re-resuming for a fresh id and replaying the submit (#17); `healTarget` carries the
+    // branch (#34) and never-saved (#132) rules.
+    let heal = state.healTarget
     // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
     let interrupted = takeReadAloudInterruption(&state)
     return .merge(anchor, .run { [gateway] send in
       await submitPrompt(
-        sessionID: sessionID, storedSessionID: stored, branchSeed: seed,
-        profile: profile, gateway: gateway, send: send
+        sessionID: sessionID, heal: heal, gateway: gateway, send: send
       ) { healedID in
         _ = try await gateway.send(
           "prompt.submit",
@@ -5258,7 +5278,7 @@ public struct ChatFeature {
   /// `reasoning`) — never swallowed.
   private func configSet(
     key: String, value: String, previousValue: String?, sessionID: String,
-    storedSessionID: String?, branchSeed: State.BranchSeed?, profile: String?
+    heal: State.HealTarget
   ) -> Effect<Action> {
     .run { [gateway] send in
       func setConfig(_ targetID: String) async throws {
@@ -5270,8 +5290,7 @@ public struct ChatFeature {
       }
       do {
         _ = try await withSessionHeal(
-          setConfig, sessionID: sessionID, storedSessionID: storedSessionID,
-          branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+          setConfig, sessionID: sessionID, heal: heal, gateway: gateway, send: send
         )
       } catch let error as GatewayError {
         await send(.configSetFailed(key: key, value: value, previousValue: previousValue, error: error))
@@ -5299,17 +5318,28 @@ private func backoffDelay(attempt: Int) -> Duration {
 /// fails (the caller surfaces the banner — no second retry, no recursion). A nil profile
 /// (no profiles API) is omitted so those requests stay byte-identical; any name, including
 /// the literal `"default"`, is threaded (#114).
+///
+/// `heal.fallbackToCreate` (the slot's `awaitsFirstPersist`, #132): only when the resume
+/// itself answers "session not found" for a never-saved chat does the heal recreate instead
+/// (same profile/seed rules). One extra heal STEP, not a second replay: the caller still
+/// replays its op once. A saved chat's resume failure throws as before (banner, never a
+/// silent session swap); any other resume error throws too.
 private func healLiveSessionID(
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  heal: ChatFeature.State.HealTarget,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async throws -> String {
-  if let storedSessionID {
+  if let storedSessionID = heal.storedSessionID {
     var fields: [String: JSONValue] = ["session_id": .string(storedSessionID)]
-    if let profile { fields["profile"] = .string(profile) }
-    let result = try await gateway.send("session.resume", .object(fields))
+    if let profile = heal.profile { fields["profile"] = .string(profile) }
+    let result: JSONValue
+    do {
+      result = try await gateway.send("session.resume", .object(fields))
+    } catch let error as GatewayError where heal.fallbackToCreate && error.isSessionNotFound {
+      return try await recreateLiveSession(
+        branchSeed: heal.branchSeed, profile: heal.profile, gateway: gateway, send: send
+      )
+    }
     guard let response = result.decoded(ActivateResponse.self), !response.sessionID.isEmpty else {
       throw GatewayError.server("Malformed session.resume result")
     }
@@ -5319,9 +5349,23 @@ private func healLiveSessionID(
     return response.sessionID
   }
   // No stored id to resume against — recreate a fresh session so the heal still has a
-  // target. An unpersisted branch (#34) whose live session was orphan-reaped recreates
-  // WITH its client-held seed + parent link, so the replayed prompt lands in a session
-  // that still contains the on-screen seeded context and still nests under its parent.
+  // target.
+  return try await recreateLiveSession(
+    branchSeed: heal.branchSeed, profile: heal.profile, gateway: gateway, send: send
+  )
+}
+
+/// The heal's `session.create` step: no stored id to resume, or a never-saved chat's resume
+/// found no row (#132). An unpersisted branch (#34) whose live session was orphan-reaped
+/// recreates WITH its client-held seed + parent link, so the replayed prompt lands in a
+/// session that still contains the on-screen seeded context and still nests under its
+/// parent. Applies the fresh ids via `.liveSessionIDRefreshed` and returns the live id.
+private func recreateLiveSession(
+  branchSeed: ChatFeature.State.BranchSeed?,
+  profile: String?,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>
+) async throws -> String {
   var fields: [String: JSONValue] = branchSeed.map(branchSeedFields) ?? [:]
   if let profile { fields["profile"] = .string(profile) }
   let result = try await gateway.send("session.create", .object(fields))
@@ -5379,25 +5423,44 @@ private func createSessionRPC(
 /// RPCs). This is the SHARED inner mechanism; callers keep their own OUTER catch to map a
 /// failure (heal, retry, or any other error) to the right per-call action
 /// (`.promptSubmitFailed` / `.attachmentUploadFailed` / `.renameFailed` /
-/// `.slashCommandFailed`).
+/// `.slashCommandFailed`). `heal` is the slot's `State.healTarget`, captured at the call site.
 @discardableResult
 private func withSessionHeal<T>(
   _ op: (_ targetID: String) async throws -> T,
   sessionID: String,
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  heal: ChatFeature.State.HealTarget,
+  gateway: HermesGatewayClient,
+  send: Send<ChatFeature.Action>
+) async throws -> T {
+  var cursor = HealCursor(sessionID: sessionID, heal: heal)
+  return try await withSessionHeal(op, cursor: &cursor, gateway: gateway, send: send)
+}
+
+/// The live id the next op of ONE user action targets, plus the heal it may still spend.
+/// A multi-RPC action (the slash pipeline: exec → directive / fallback / alias hop) threads
+/// one cursor through every RPC, so the action heals at most once: the first heal spends
+/// `heal` (even if it fails) and later ops target the healed id.
+private struct HealCursor {
+  var sessionID: String
+  var heal: ChatFeature.State.HealTarget?
+}
+
+/// `withSessionHeal` over a shared `HealCursor`: a not-found with the heal already spent
+/// throws as-is.
+@discardableResult
+private func withSessionHeal<T>(
+  _ op: (_ targetID: String) async throws -> T,
+  cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async throws -> T {
   do {
-    return try await op(sessionID)
+    return try await op(cursor.sessionID)
   } catch let error as GatewayError where error.isSessionNotFound {
-    let healedID = try await healLiveSessionID(
-      storedSessionID: storedSessionID, branchSeed: branchSeed, profile: profile,
-      gateway: gateway, send: send
-    )
-    return try await op(healedID)
+    guard let heal = cursor.heal else { throw error }
+    cursor.heal = nil
+    cursor.sessionID = try await healLiveSessionID(heal: heal, gateway: gateway, send: send)
+    return try await op(cursor.sessionID)
   }
 }
 
@@ -5470,10 +5533,7 @@ private func runDispatchDirective(
   _ directive: JSONValue,
   name: String,
   arg: String,
-  sessionID: String,
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
   allowAliasHop: Bool
@@ -5498,8 +5558,7 @@ private func runDispatchDirective(
     }
     await executeSlashCommand(
       command: "/\(target)\(arg.isEmpty ? "" : " \(arg)")",
-      sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send,
+      cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: false
     )
 
@@ -5548,8 +5607,7 @@ private func runDispatchDirective(
             ChatFeature.promptSubmitParams(sessionID: targetID, text: message, interrupted: false)
           )
         },
-        sessionID: sessionID, storedSessionID: storedSessionID,
-        branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+        cursor: &cursor, gateway: gateway, send: send
       )
       await send(.slashCommandHandedOff)
     } catch let error as GatewayError {
@@ -5590,14 +5648,12 @@ private func runDispatchDirective(
 ///    the fallback only reported the routing-noise "not a quick/…/skill command" error (a
 ///    worker timeout/crash must not be buried under it — desktop parity, `slash.ts`).
 ///
-/// Every RPC rides the standard session-not-found self-heal (#17): a stale live id
-/// re-resumes once and replays.
+/// Every RPC rides the standard session-not-found self-heal (#17) through ONE shared
+/// `cursor`: the first stale-id failure heals once and replays, and every later RPC of the
+/// command targets the healed id.
 private func executeSlashCommand(
   command: String,
-  sessionID: String,
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
   allowAliasHop: Bool = true
@@ -5625,8 +5681,7 @@ private func executeSlashCommand(
           "session_id": .string(targetID),
         ]))
       },
-      sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+      cursor: &cursor, gateway: gateway, send: send
     )
     // Directive-shaped success FIRST (desktop parity): `/retry`, `/queue`, `/goal`,
     // `/undo`, bundle skills, … answer their `command.dispatch` directive as the exec
@@ -5634,8 +5689,7 @@ private func executeSlashCommand(
     if isDispatchDirective(result) {
       await runDispatchDirective(
         result, name: name, arg: arg,
-        sessionID: sessionID, storedSessionID: storedSessionID,
-        branchSeed: branchSeed, profile: profile, gateway: gateway, send: send,
+        cursor: &cursor, gateway: gateway, send: send,
         allowAliasHop: allowAliasHop
       )
     } else {
@@ -5684,13 +5738,11 @@ private func executeSlashCommand(
           "session_id": .string(targetID),
         ]))
       },
-      sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+      cursor: &cursor, gateway: gateway, send: send
     )
     await runDispatchDirective(
       directive, name: name, arg: arg,
-      sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send,
+      cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: allowAliasHop
     )
   } catch let error as GatewayError {
@@ -5726,9 +5778,7 @@ private func executeSlashCommand(
 private func executeCompress(
   focusTopic: String,
   sessionID: String,
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  heal: ChatFeature.State.HealTarget,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async {
@@ -5740,8 +5790,7 @@ private func executeCompress(
         if !topic.isEmpty { fields["focus_topic"] = .string(topic) }
         return try await gateway.send("session.compress", .object(fields))
       },
-      sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+      sessionID: sessionID, heal: heal, gateway: gateway, send: send
     )
     await send(.slashCommandOutput(compressConfirmation(from: result)))
   } catch let error as GatewayError {
@@ -5782,17 +5831,14 @@ private func compressConfirmation(from result: JSONValue) -> String {
 /// heal/retry) surface `.promptSubmitFailed`.
 private func submitPrompt(
   sessionID: String,
-  storedSessionID: String?,
-  branchSeed: ChatFeature.State.BranchSeed? = nil,
-  profile: String?,
+  heal: ChatFeature.State.HealTarget,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
   submit: @escaping (_ targetID: String) async throws -> Void
 ) async {
   do {
     try await withSessionHeal(
-      submit, sessionID: sessionID, storedSessionID: storedSessionID,
-      branchSeed: branchSeed, profile: profile, gateway: gateway, send: send
+      submit, sessionID: sessionID, heal: heal, gateway: gateway, send: send
     )
   } catch let error as GatewayError {
     await send(.promptSubmitFailed(message: error.message))

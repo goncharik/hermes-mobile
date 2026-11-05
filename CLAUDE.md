@@ -49,9 +49,11 @@ bullets below are the compressed rules.
   the hydrate, no drain/turn-end side effects mid-fold, failure = plain hydrate
   (`docs/architecture.md`).
 - **Session-not-found self-heal (#17)**: outbound RPCs re-resume (or `session.create`
-  when there's no stored id) then replay the RPC **once** — single retry, no loop; the
-  banner shows only if the heal also fails. The foreground `session.resume` likewise
-  recreates rather than treating it as a benign drop.
+  when there's no stored id) then replay the RPC **once** — single retry, no loop, at most
+  one heal per user action (`HealCursor`); the banner shows only if the heal also fails.
+  The foreground `session.resume` likewise recreates rather than treating it as a benign
+  drop. A never-saved session (`awaitsFirstPersist`, #132) falls back from a not-found
+  resume to create (`fallbackToCreate`). Details: `docs/architecture.md`.
 - **Every outbound frame is encoded by `JSONRPCRequest.wireEncoder`** — its
   `.withoutEscapingSlashes` is LOAD-BEARING: a bare `JSONEncoder` escapes base64 `/` as
   `\/`, making frame size content-dependent (worst case doubled) against uvicorn's
@@ -165,7 +167,8 @@ bullets below are the compressed rules.
   classification runs on the RAW window's row ids (`windowRowIDs`, unsnapped), so neither a
   fold change nor the snapped start moving reads as a reset. Stick-to-bottom is
   renderer-local, not reducer state; pure scroll-math helpers stay outside the
-  `#if canImport(UIKit)` guard.
+  `#if canImport(UIKit)` guard. No diff apply on an unmeasurable view (#128): gated by
+  `TranscriptScrollMath.canApplySnapshot`, latest deferred (`docs/features/tool-calls.md`).
 - **The empty-chat hero swaps the transcript REGION on `ChatFeature.State.showsEmptyHero`**
   (#80) — a HermesKit predicate (`transcript.isEmpty && !isSending && streamingRowID == nil
   && (storedSessionID == nil || hasHydrated)`), never view-derived. `hasHydrated` is set on

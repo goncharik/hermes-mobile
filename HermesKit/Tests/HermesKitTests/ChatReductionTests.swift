@@ -1319,6 +1319,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     // New sessions create with no title so the server auto-names from the first message.
     #expect(sent.value?["method"]?.stringValue == "session.create")
@@ -1364,6 +1365,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("work")]))
@@ -1410,6 +1412,7 @@ struct ChatReductionTests {
       $0.storedSessionID = "stored123"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the minted key has no row yet (#132)
     }
     #expect(sent.value?["method"]?.stringValue == "session.create")
     #expect(sent.value?["params"] == .object(["profile": .string("default")]))
