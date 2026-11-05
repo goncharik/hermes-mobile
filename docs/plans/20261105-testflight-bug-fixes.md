@@ -291,26 +291,93 @@ is handled by Task 2's gate instead. No source to clamp, so no test or code chan
       outside attachments (`neverSavedPromptHealFallsBackToCreateWhenResumeFails`)
 - [x] run `make test`, which must pass (2314 tests passed, 2 known issues)
 
-### Task 6: Investigate and fix #131's moving toolbar button (time-boxed)
+### Task 6: Investigate and fix #131's moving toolbar button (time-boxed) ⚠️ not reproduced
 
 **Files:**
 - Modify: `docs/plans/20261105-testflight-bug-fixes.md` (findings)
 - Modify (conditional): `HermesKit/Sources/HermesKit/Features/ChatFeature.swift` and its tests,
   or `HermesMobile/Sources/Features/Chat/ChatView.swift` / `ChatMenuButton.swift`
 
-- [ ] try to reproduce on the iOS 27 simulator (AXe screenshots or recording): stream tool-heavy
+- [x] try to reproduce on the iOS 27 simulator (AXe screenshots or recording): stream tool-heavy
       turns, change the title (auto-title after the first reply and a rename), go through
       background/foreground cycles and re-hydrates, and compare compact and regular layouts
-- [ ] check whether `title`, `canRename` or `sessionKey` are written with unchanged values on
+      — not reproduced (findings below)
+- [x] check whether `title`, `canRename` or `sessionKey` are written with unchanged values on
       `session.info` or hydrate in a way that triggers Observation, and whether
-      `.id(slotGeneration)` or a re-hydrate rebuilds the toolbar
-- [ ] if the cause is in the reducer: write a failing `TestStore` test proving the field isn't
-      rewritten, then fix it
-- [ ] if the cause is in the view: apply the fix and record the before/after manual check here (no
-      probe test)
-- [ ] if not reproducible within the time box: record the findings here and as an issue comment
-      draft, and leave #131 open
-- [ ] run `make test` and `make snapshot`, which must pass
+      `.id(slotGeneration)` or a re-hydrate rebuilds the toolbar — no same-value notifications
+      (findings below)
+- [x] if the cause is in the reducer: write a failing `TestStore` test proving the field isn't
+      rewritten, then fix it — n/a, no reducer cause found
+- [x] if the cause is in the view: apply the fix and record the before/after manual check here (no
+      probe test) — n/a, no view cause found
+- [x] if not reproducible within the time box: record the findings here and as an issue comment
+      draft, and leave #131 open — done below; #131 stays open, nothing posted to GitHub
+- [x] run `make test` and `make snapshot`, which must pass (2314 tests passed, 2 known issues;
+      snapshot 313/313)
+
+**#131 findings (not reproducible, ~45 min time box).** All instrumentation was temporary and is
+removed: a streaming gateway stub in `DemoMode.swift`, a scratch hosted harness, and a scratch
+iOS 27 iPad simulator.
+- **Simulator repro, iOS 27.0 (iPhone 18 Pro, compact).** Demo mode with a temporary stub that
+  loops a turn: `message.start`, 12 × (`tool.start`, 120 ms, `tool.complete` + `thinking.delta`
+  + `session.info`), 15 `message.delta`s, `message.complete`. I recorded it with
+  `axe record-video` at 30 fps, extracted the frames, and tracked the centroid and bounding box of
+  the `…` glyph's dark pixels. Over 463 frames (20 s) the glyph held still at 1091.1–1091.2 /
+  251.9 px, with a 1 px bbox jitter from video compression. The back button stayed put too. The
+  menu also stayed open for 4 s while events streamed. Its items render disabled in demo mode
+  because there is no session id, so a rename could not be driven there.
+- **Background/foreground (twice, by launching Settings over the app and back).** The glyph only
+  moves during the system's app-switch zoom. The whole window scales, the button settles
+  285 → 252 px over about 10 frames, and the back button moves with it. Once the zoom finishes
+  the glyph is back at the same pixel. That is OS animation, not the app.
+- **Regular layout, iOS 27.0 (iPad Pro 11-inch M5, split view).** Same streaming stub, 202
+  frames: the glyph held still at (1603, 108).
+- **Hosted harness (scratch, iOS 27.0).** I hosted the pushed `ChatView` in a 402×874 window and
+  sent 60 tool and delta events, then 4 fresh `liveSessionIDRefreshed` ids, then a rename. I
+  sampled the nav bar every 20–30 ms. No `rightBarButtonItems` identity changes, no frame changes
+  on any nav-bar button view, and no `CAAnimation` on any nav-bar layer. On iOS 27 the toolbar is
+  SwiftUI's own platter (`NavigationBarPlatterContainer_v2`, `UIPlatformGlassInteractionView`
+  44×44 around a 30×36 `HostingUIButton`).
+- **Reducer.** TCA 1.26's `@ObservableState` macro emits `shouldNotifyObservers = lhs != rhs`
+  for `Equatable` members, so a same-value write to `title`, `liveSessionID` or `storedSessionID`
+  notifies nothing. `session.info` touches none of them; it writes model, effort, usage and
+  contract only. `title` changes only at init, on rename/rollback and on a slash-refresh hydrate,
+  and it never auto-updates mid-session. One real (not same-value) case remains: `canRename`
+  reads `liveSessionID`, and a cold `session.resume` mints a new live sid. That happens on a
+  foreground after the reap grace, and in the not-found heal paths, which nil it and then reseat
+  it. So `ChatMenuButton.body` re-runs about once per reconnect, never per streaming event. The
+  hosted harness drove exactly that (4 new live ids) and saw no movement or animation.
+- **`.id(slotGeneration)`** keys only the regular-width detail column (`AppView`). It bumps only
+  on a slot fill or replacement, which is a new session and so a new screen anyway. It never
+  changes on a re-hydrate of the same slot.
+- **`Observation tracking feedback loop detected` on `NavigationBarContentView`.** This is
+  pre-existing and has nothing to do with chat. A `make snapshot`-equivalent run on an
+  `origin/main` (64ccbfb) worktree logged 75: Settings 37, SessionList 25, ToolDetailSheet 11,
+  Reauth 1, plus 1 that spilled into `TranscriptKeyboardScrollTests` right after a ToolDetailSheet
+  teardown. This branch logged 67, split the same way (36/19/10/1/1). Neither run logged any in
+  `ChatSnapshotTests`, which hosts `ChatView` in a `NavigationStack`. The scratch harness on
+  iOS 27 logged none either (checked with `log stream`). The only view change on this branch is
+  `CollectionTranscriptView`, which none of those screens host.
+- **Untested.** I could not test a real device or a real agent (no device, and the local agent
+  was deliberately not used), the "app up ~21 hours" condition, or a rename with a live session
+  id in the full app (only in the hosted harness). The tester's "Moving button" may be the
+  Liquid Glass interactive response to a touch, or the system app-switch zoom. Neither is
+  app-controlled.
+
+**Issue comment draft (#131, not posted):**
+
+> Investigated on the iOS 27.0 simulator (iPhone 18 Pro compact, iPad Pro 11" regular) and
+> couldn't reproduce. While a tool-heavy turn streams, the `…` button stays at the same pixel
+> across 20 s of 30 fps video. The back button does too. Nothing in the nav bar animates, and the
+> bar button items keep their identity. The only movement I saw was the system app-switch zoom on
+> returning to the app, which scales the whole window. #86's isolation still holds: Observation
+> re-runs the menu only when `liveSessionID` changes, which is about once per cold reconnect,
+> never per streaming event. TCA skips same-value writes, and `session.info` never touches the
+> title or session ids. The `NavigationBarContentView` observation-feedback-loop warnings in the
+> snapshot logs already exist on `main` and come from the Settings, Sessions and tool-detail
+> screens, not the chat. Leaving this open. Next step: a screen recording from the tester (or
+> device repro steps), to tell an app-side move apart from the Liquid Glass touch response or the
+> app-switch zoom.
 
 ### Task 7: Verify acceptance criteria
 - [ ] #128: backgrounding and rotating mid-stream no longer asserts; open-at-bottom, hydrate jump,
