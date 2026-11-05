@@ -324,6 +324,118 @@ final class TranscriptSlidePreservationTests: XCTestCase {
     )
   }
 
+  // MARK: - Unmeasurable view: defer, then flush (#128)
+
+  /// Updates that reach a populated transcript while it has no window are not applied; once it
+  /// is back in the window at its unchanged size, only the latest lands and a pinned reader
+  /// ends on its bottom. SwiftUI runs no `updateUIView` for an off-window host, so the updates
+  /// go to the coordinator directly — the same `apply` that `updateUIView` calls.
+  @MainActor
+  func testUpdatesWhileDetachedLandOnReattachAndAPinnedReaderFollows() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+    pinReaderAtBottom(transcript)
+    let window = try XCTUnwrap(hosted.controller.view.window)
+    let coordinator = try XCTUnwrap(
+      transcript.delegate as? CollectionTranscriptView<FixedHeightRow>.Coordinator
+    )
+
+    window.rootViewController = nil
+    XCTAssertNil(transcript.window, "Fixture sanity: the transcript is out of the window")
+    // An append, then the live slide on top of it (51 rows, then 52).
+    for rows in [Self.rows(0..<51), Self.rows(1..<53)] {
+      coordinator.apply(items: rows.map(TranscriptItem.row), rowIDs: rows.map(\.id))
+    }
+    XCTAssertEqual(transcript.numberOfItems(inSection: 0), 50, "No apply may land without a window")
+
+    window.rootViewController = hosted.controller
+    assertLandedAtBottom(transcript, itemCount: 52, hosted: hosted)
+  }
+
+  /// A scrolled-up reader's slide that waited out the detach is held like a live one when it
+  /// lands (the hold then runs inside the layout pass that flushes it).
+  @MainActor
+  func testScrolledUpReaderKeepsTheirRowsWhenADetachedSlideLands() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+    let window = try XCTUnwrap(hosted.controller.view.window)
+    let coordinator = try XCTUnwrap(
+      transcript.delegate as? CollectionTranscriptView<FixedHeightRow>.Coordinator
+    )
+    parkReader(transcript) { Self.maxOffsetY(of: $0) / 2 }
+    let watched = Self.fullyVisibleRowIndices(in: transcript)
+    XCTAssertGreaterThanOrEqual(watched.count, 3, "Fixture sanity: several rows must be on screen")
+    let before = watched.map { Self.onScreenMinY(ofRow: $0, in: transcript) }
+
+    window.rootViewController = nil
+    for rows in [Self.rows(1..<51), Self.rows(2..<52)] {
+      coordinator.apply(items: rows.map(TranscriptItem.row), rowIDs: rows.map(\.id))
+    }
+    window.rootViewController = hosted.controller
+    hosted.settle()
+
+    for (index, row) in watched.enumerated() {
+      XCTAssertEqual(
+        Self.onScreenMinY(ofRow: row, in: transcript, firstRow: 2), before[index], accuracy: 0.5,
+        "Row \(row) must stay where the reader saw it once the deferred slide lands"
+      )
+    }
+  }
+
+  /// The same for a degenerate frame (here zero height, the gate's `height > 0` leg): updates
+  /// wait, and restoring the frame lands the latest one with a pinned reader at its bottom.
+  @MainActor
+  func testUpdatesAtADegenerateFrameLandWhenTheFrameRecovers() throws {
+    let hosted = try host(rows: Self.rows(0..<50))
+    let transcript = hosted.transcript
+    pinReaderAtBottom(transcript)
+    let view = hosted.controller.view!
+
+    view.frame.size.height = 0
+    view.layoutIfNeeded()
+    XCTAssertEqual(transcript.bounds.height, 0, "Fixture sanity: the transcript has no height")
+    hosted.deliver(rows: Self.rows(0..<51))
+    hosted.deliver(rows: Self.rows(1..<53))
+    XCTAssertEqual(transcript.numberOfItems(inSection: 0), 50, "No apply may land at a degenerate frame")
+
+    view.frame.size = Self.windowSize
+    view.layoutIfNeeded()
+    assertLandedAtBottom(transcript, itemCount: 52, hosted: hosted)
+  }
+
+  /// A touch at the bottom ends the open settle and leaves the reader pinned.
+  @MainActor
+  private func pinReaderAtBottom(_ transcript: UICollectionView) {
+    transcript.delegate?.scrollViewWillBeginDragging?(transcript)
+    transcript.delegate?.scrollViewDidScroll?(transcript)
+    spinRunLoop()
+    XCTAssertEqual(
+      transcript.contentOffset.y, Self.maxOffsetY(of: transcript), accuracy: 0.5,
+      "Fixture sanity: opens at the bottom"
+    )
+  }
+
+  @MainActor
+  private func assertLandedAtBottom(
+    _ transcript: UICollectionView, itemCount: Int, hosted: Hosted,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let deadline = Date().addingTimeInterval(2)
+    while transcript.numberOfItems(inSection: 0) != itemCount
+      || abs(transcript.contentOffset.y - Self.maxOffsetY(of: transcript)) > 0.5,
+      Date() < deadline {
+      hosted.settle()
+    }
+    XCTAssertEqual(
+      transcript.numberOfItems(inSection: 0), itemCount, "The latest deferred update must land",
+      file: file, line: line
+    )
+    XCTAssertEqual(
+      transcript.contentOffset.y, Self.maxOffsetY(of: transcript), accuracy: 0.5,
+      "A pinned reader must end on the bottom of the flushed update", file: file, line: line
+    )
+  }
+
   // MARK: - Hosting
 
   /// The real `CollectionTranscriptView`, rendered into a hosting controller whose root view the

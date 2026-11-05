@@ -558,6 +558,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the fresh create's key has no row yet (#132)
     }
     // The banner survives the fresh create — the degrade is honest, never silent.
     #expect(store.state.errorBanner == "Couldn’t restore the branch — starting a fresh chat.")
@@ -590,6 +591,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "plain-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the fresh create's key has no row yet (#132)
     }
   }
 
@@ -621,6 +623,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the fresh create's key has no row yet (#132)
     }
   }
 
@@ -659,6 +662,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "fresh-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the fresh create's key has no row yet (#132)
     }
     #expect(methods.value == ["session.create"])
   }
@@ -998,6 +1002,7 @@ struct ChatBranchTests {
       $0.storedSessionID = "plain-stored"
       $0.status = .ready
       $0.hasHydrated = true
+      $0.awaitsFirstPersist = true // the fresh create's key has no row yet (#132)
     }
     // With the seed gone, a later heal CANNOT mis-arm attach-by-live-id mode.
     await store.send(.liveSessionIDRefreshed(liveSessionID: "healed-live", storedSessionID: nil)) {

@@ -664,7 +664,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
     /// can — through the normal `apply`, so a first population still jumps and settles and a
     /// later one follows or holds by the usual rules.
     func didLayout() {
-      if let pending = pendingApply, canApplySnapshotNow {
+      if let pending = pendingApply {
         apply(items: pending.items, rowIDs: pending.rowIDs)
       }
       guard needsInitialBottomSettle else { return }

@@ -666,19 +666,23 @@ the DB row lazily on the first prompt. On agents without `_resume_materialize_mi
 heal's own resume failed and an attach in a new untitled chat bannered. `ChatFeature.State
 .awaitsFirstPersist` tracks that window for a plain new chat: it is set at init when the chat
 does not resume a stored session (a resumed chat and a primed branch start false; the #34
-branch bookkeeping owns the branch window). It is cleared only on positive evidence of a row:
+branch bookkeeping owns the branch window), and by every `session.create` handshake
+(`.sessionResult`), so the foreground not-found recreate and the branch degrade count too. It is cleared only on positive evidence of a row:
 the first `message.start`, or a hydrate carrying server history or `running == true`. An empty
 hydrate and a heal's `.liveSessionIDRefreshed` keep it, because upstream's
 `_resume_live_unpersisted` also resumes a still-live row-less session successfully, so a
-successful resume proves nothing. Each call site captures the flag next to
-`stored`/`seed`/`profile` and passes it as `fallbackToCreate` (a required parameter on the heal
-and every helper, so the compiler checks each site). When it is true AND the resume itself
+successful resume proves nothing. Every call site captures `State.healTarget` (stored id under
+the #34 branch rule, seed, profile, and the flag as `fallbackToCreate`). When it is true AND the resume itself
 throws `isSessionNotFound`, the heal falls back to `recreateLiveSession` (same profile and seed
 rules). This is one extra heal step, not a second replay: the op still replays once. A saved
 or resumed chat whose resume fails still banners and never has a session silently swapped in,
 and any other resume error (transport, timeout) throws as before. Newer agents that
 materialise the row on resume never reach the fallback. The foreground `session.resume`
-hydrate already recreated on not-found for every chat, so the heal was the only gap. Tests:
+hydrate already recreated on not-found for every chat, so the heal was the only gap. Known
+limitations: two heals in flight at once in a never-saved chat each create a session and the
+last `.liveSessionIDRefreshed` wins (the no-stored-id branch path shares this); and a recreated
+session starts on the profile's model/reasoning, not the chip's earlier `config.set` pick (the
+foreground recreate shares this). Tests:
 `SelfHealTests` ("never-saved flag (#132)", `neverSaved*HealFallsBackToCreateWhenResumeFails`,
 `savedChatHealResumeFailureBannersWithoutCreate`).
 
