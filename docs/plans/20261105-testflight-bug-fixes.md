@@ -272,20 +272,24 @@ is handled by Task 2's gate instead. No source to clamp, so no test or code chan
   `withSessionHeal`, and their call sites that capture effect inputs)
 - Modify: `HermesKit/Tests/HermesKitTests/SelfHealTests.swift`
 
-- [ ] write a failing test for the reported case: new chat, staged image, `image.attach_bytes`
+- [x] write a failing test for the reported case: new chat, staged image, `image.attach_bytes`
       → "session not found", `session.resume(stored)` → "session not found", then
       `session.create` → fresh ids, `.liveSessionIDRefreshed`, upload + `prompt.submit` replayed
       once, `.attachmentsSubmitted` (no banner)
-- [ ] write failing tests for the guards: a resumed or already-prompted chat whose resume fails
+      (`neverSavedAttachHealFallsBackToCreateWhenResumeFails`)
+- [x] write failing tests for the guards: a resumed or already-prompted chat whose resume fails
       still banners, with no `session.create`; if the fallback create also fails → banner, no
       replay; the op is replayed exactly once (fallback + replay failing → banner, no loop); the
       profile is threaded and nil is omitted (#114); a branch seed still goes through the seeded
-      create
-- [ ] implement `fallbackToCreate` in `healLiveSessionID` and capture the flag at every
-      `withSessionHeal` call site
-- [ ] add a plain `prompt.submit` variant of the reported-case test so the shared heal is covered
-      outside attachments
-- [ ] run `make test`, which must pass
+      create (➕ also: a resume failing with a transport error, not "session not found", banners
+      with no create)
+- [x] implement `fallbackToCreate` in `healLiveSessionID` and capture the flag at every
+      `withSessionHeal` call site (the create step is extracted as `recreateLiveSession`, shared
+      with the no-stored-id path; `fallbackToCreate` is a required parameter on the heal and
+      every helper, so the compiler enforces each call site)
+- [x] add a plain `prompt.submit` variant of the reported-case test so the shared heal is covered
+      outside attachments (`neverSavedPromptHealFallsBackToCreateWhenResumeFails`)
+- [x] run `make test`, which must pass (2314 tests passed, 2 known issues)
 
 ### Task 6: Investigate and fix #131's moving toolbar button (time-boxed)
 
