@@ -4346,7 +4346,27 @@ public struct ChatFeature {
     var seededStreamingRow: ChatRow?
     var seedSlot = 0
     if let inflight = response.inflight {
-      if let user = inflight.user?.nonEmpty {
+      // A turn Hermes started itself (#124: a process completion, a resumed turn) carries its
+      // notice's model-facing text in `user`: seed the notice's status line, or nothing for a
+      // `hidden` wake — never a user bubble. Desktop parity (`projection.inflight.display_kind`).
+      let inflightNotice = SessionMessage(
+        id: 0, role: "user", text: inflight.user,
+        displayKind: inflight.displayKind, displayMetadata: inflight.displayMetadata
+      )
+      if !inflightNotice.isPainted {
+        // Nothing to seed for the prompt.
+      } else if inflightNotice.isTimelineNotice {
+        let noticeKind = ChatRow.Kind.status(
+          kind: ChatRow.Kind.noticeStatusKind, text: timelineNoticeText(inflightNotice)
+        )
+        state.transcript.append(ChatRow(
+          id: ChatRow.deterministicID(
+            sequenceIndex: state.transcript.count, role: noticeKind.role,
+            kindDiscriminator: noticeKind.discriminator
+          ),
+          kind: noticeKind
+        ))
+      } else if let user = inflight.user?.nonEmpty {
         let userKind = ChatRow.Kind.message(role: .user, text: user, isComplete: true)
         // Stamped with the turn's start (the server's, else this client's persisted turn
         // anchor) so the finished turn's header can say how long it worked.

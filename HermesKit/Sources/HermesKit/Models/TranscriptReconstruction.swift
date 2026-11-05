@@ -59,6 +59,18 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
         detail: cookedToolDetail(message), durationS: nil
       ), timestamp: timestamp)
 
+    case _ where !message.isPainted:
+      // Hidden scaffolding / a model-only merge: never shown.
+      continue
+
+    case _ where message.isTimelineNotice:
+      // A notice Hermes wrote itself (#124), stored as a user/assistant row: a status line,
+      // never a bubble the user (or the model) appears to have written.
+      append(
+        .status(kind: ChatRow.Kind.noticeStatusKind, text: timelineNoticeText(message)),
+        timestamp: timestamp
+      )
+
     case "assistant":
       // 1. Reasoning row (one completed burst per assistant message).
       if let reasoning = message.reasoningText {
@@ -82,6 +94,64 @@ public func reconstructTranscript(_ messages: [SessionMessage]) -> [ChatRow] {
   }
 
   return rows
+}
+
+/// `display_kind` values for rows Hermes wrote itself, not the user or the model: shown as a
+/// status line. Desktop `NOTICE_DISPLAY_KINDS` (`apps/desktop/src/lib/chat-messages/hydration.ts`).
+/// `steer` and `skill_invocation` are NOT here: they are the user's own words (the server
+/// already projects them to the visible text), so they stay user bubbles.
+let timelineNoticeDisplayKinds: Set<String> = [
+  "model_switch", "async_delegation_complete", "process_complete", "auto_continue",
+  "personality_switch", "failed_turn",
+]
+
+extension SessionMessage {
+  /// Whether the row paints at all: `hidden` rows, model-only merges
+  /// (`display_metadata.model_only`) and legacy heartbeat wakes don't (desktop `isPainted` +
+  /// `transcriptContent`).
+  var isPainted: Bool {
+    if displayKind == "hidden" { return false }
+    if displayMetadata?["model_only"]?.boolValue == true { return false }
+    if role == "user", displayKind == nil, let text = displayText, Self.isLegacyHeartbeat(text) {
+      return false
+    }
+    return true
+  }
+
+  /// A background-process heartbeat wake persisted by an agent older than the one that types it
+  /// `display_kind: "hidden"` — `[Background process <id> heartbeat #<n> …`: model scaffolding,
+  /// never a bubble (desktop `LEGACY_HEARTBEAT_ROW_RE`).
+  static func isLegacyHeartbeat(_ text: String) -> Bool {
+    let words = text.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ", maxSplits: 5)
+    guard words.count >= 5, words[0] == "[Background", words[1] == "process", words[3] == "heartbeat"
+    else { return false }
+    return words[4].first == "#" && words[4].dropFirst().allSatisfy(\.isNumber) && words[4].count > 1
+  }
+
+  /// A Hermes-authored notice (see ``timelineNoticeDisplayKinds``).
+  var isTimelineNotice: Bool { displayKind.map(timelineNoticeDisplayKinds.contains) ?? false }
+}
+
+/// The one-line text of a timeline notice — desktop `timelineDisplayContent`: the server's
+/// compact `display_metadata.display_text` when it sent one, else a fixed label. The row's own
+/// text is the model-facing payload (a whole subagent result), so it is shown only for a
+/// `failed_turn`, whose text IS the user-facing notice.
+func timelineNoticeText(kind: String?, metadata: JSONValue?, text: String?) -> String {
+  if let display = metadata?["display_text"]?.stringValue?.trimmedNonEmpty { return display }
+  switch kind {
+  case "model_switch": return "Model changed"
+  case "auto_continue": return "Resumed interrupted turn"
+  case "personality_switch": return "Personality changed"
+  case "async_delegation_complete":
+    guard let count = metadata?["task_count"]?.intValue else { return "Background agent work finished" }
+    return "\(count) background agent\(count == 1 ? "" : "s") finished"
+  case "process_complete": return "Background process finished"
+  default: return text?.trimmedNonEmpty ?? "Turn did not complete"
+  }
+}
+
+func timelineNoticeText(_ message: SessionMessage) -> String {
+  timelineNoticeText(kind: message.displayKind, metadata: message.displayMetadata, text: message.displayText)
 }
 
 /// The detail of a cooked `role:"tool"` history row: the structured `args` (newer agents), the

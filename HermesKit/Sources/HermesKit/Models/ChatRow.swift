@@ -69,6 +69,11 @@ public struct ChatRow: Equatable, Sendable, Identifiable, Codable {
     /// cross-module contract can't drift between two string literals.
     public static let reviewStatusKind = "review"
 
+    /// The `kind` token for a Hermes-authored timeline notice rebuilt from history (#124): a
+    /// background agent or process finished, the model changed, an interrupted turn resumed, a
+    /// turn failed. Stored server-side as a user/assistant row; shown as a status line.
+    public static let noticeStatusKind = "notice"
+
     /// A stable, role-agnostic token per case (NOT its mutable payload). The **single source**
     /// for the row-identity discriminator — `ChatRow.kindDiscriminator` and
     /// `reconstructTranscript` both read this so the value can never drift between them.
