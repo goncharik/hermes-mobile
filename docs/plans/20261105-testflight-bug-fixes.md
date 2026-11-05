@@ -125,15 +125,78 @@
 **Files:**
 - Modify: `docs/plans/20261105-testflight-bug-fixes.md` (findings)
 
-- [ ] reproduce on the iOS 18 and iOS 26 simulators: stream a long turn, then background the app
+- [x] reproduce on the iOS 18 and iOS 26 simulators: stream a long turn, then background the app
       (and rotate in the app switcher) while deltas arrive; capture any assert/console output
-- [ ] log `collectionView.bounds`, `window != nil`, and the first-apply conditions at
+      (partial — see findings: no iOS 18 runtime installed and no Simulator GUI to rotate; iOS
+      26.5 background run done, no assert)
+- [x] log `collectionView.bounds`, `window != nil`, and the first-apply conditions at
       `updateUIView` time on first open, on a background update, and mid-rotation (temporary
-      logging, removed before commit)
-- [ ] audit cell content (`CappedWidthLayout`, `BoundedHeightLayout`, `MarkdownTableView`,
+      logging, removed before commit; mid-rotation not drivable here)
+- [x] audit cell content (`CappedWidthLayout`, `BoundedHeightLayout`, `MarkdownTableView`,
       `GeometryReader`, `.infinity` frames) for non-finite or negative sizes under a zero-width
       or zero-height proposal
-- [ ] record the findings and the exact gate conditions in this plan (➕ any extra source fix)
+- [x] record the findings and the exact gate conditions in this plan (➕ any extra source fix)
+
+**Task 1 findings (2026-11-05)**
+
+- **Environment limits.** The only installed runtimes are iOS 26.5, 27.0 and 27.1; the iOS
+  18.x runtimes are "unavailable" on this host, so the crash's own OS (18.7) could not be run.
+  There is no Simulator GUI app in this environment, so rotation (and the app switcher) could
+  not be driven; `axe button home` is a no-op here (backgrounding was done by launching
+  Settings over the app). No real agent was driven: the live repro used demo mode with a
+  temporary gateway stub streaming a `message.delta` every 150 ms plus a `tool.start` every
+  40 frames. **The assert did not reproduce** on iOS 26.5 or 27.0.
+- **First open** (instrumented `updateUIView` / `apply` / `didLayout`, iOS 26.5 demo chat):
+  the FIRST `updateUIView` → `apply` runs at `bounds = 0×0`, `window == nil`,
+  `applicationState = .inactive`, `didInitialJump == false`. The apply's completion runs
+  before any real layout (`didLayout` at 0×0, no window, already `didInitialJump == true`),
+  then the next `didLayout` is the first real one: `402×619.67`, window present. So today's
+  open-at-bottom is "first apply with no window and a zero frame, settled by `didLayout`".
+- **Background update** (Settings launched over the app, deltas still arriving): applies kept
+  landing through `.inactive` (≈1 s) and `.background` (≈10 s) at the unchanged
+  `402×619.67` with the window attached. No size change, no assert. A plain background on the
+  simulator does NOT produce the degenerate frame — the device-side trigger is most likely the
+  system's background snapshot / app-switcher re-layout in the other orientation, or a
+  transient size during a rotation, which this environment can't produce.
+- **Degenerate collection-view sizes** (scratch hosted harness on the production
+  `TranscriptLayout.makeLayout()`, iOS 26.5 and 27.0, deleted before commit): the
+  compositional layout gives an item `width − 2 × horizontalSectionInset` (32pt), clamped at
+  0. Width ≤ 32 → item width 0 (width exactly 32 lays out no cells at all; 20 and 33 lay out
+  cells at 0pt and 1pt wide) → every cell is self-sized at a 0–1pt fitting width and reports
+  1000–4700pt of character-wrapped height. Finite, so no assert on 26/27, but it is a
+  fully degenerate self-sizing pass. Zero width, zero height (any width), and no window lay
+  out no cells (no fitting call). Shrinking a populated view to 20pt or 0×0 and then applying
+  a reconfigure: no assert.
+- **Cell content audit** — every display item the fold produces (user message, reasoning,
+  collapsed/expanded run summaries, call lines, every expanded tool body: terminal, read_file,
+  patch, skill_view, running terminal; turn header live and finished; markdown with heading,
+  lists, quote, code block, table, rule, file link, bare path, `MEDIA:` tag; status, error,
+  command output, streaming partial reply), hosted in a real `UICollectionViewCell` through
+  `UIHostingConfiguration` + `ChatView.itemView`, measured with
+  `systemLayoutSizeFitting` AND `preferredLayoutAttributesFitting` at fitting sizes 0×60, 0×0,
+  0.5×60, 1×60, 8×60, 288×60, 288×0, on iOS 26.5 and 27.0: **0 non-finite or negative sizes**.
+  At 0pt several items report a width wider than offered (14–111pt) and very tall heights,
+  all finite. Static read: `CappedWidthLayout` ignores the proposal (constant cap, finite);
+  `BoundedHeightLayout` is only used by the prompt cards' `BoundedScrollRegion` (the pinned
+  row, never a transcript cell) and is finite for finite input; the only cell
+  `GeometryReader` is the turn header's shimmer overlay (an overlay, does not size the cell);
+  the `.infinity` frames in cell content are all `maxWidth: .infinity`, which a width-fixed
+  fitting pass resolves to the offered width. **No non-finite sizing source found → Task 3 is
+  expected to be "not needed".**
+- **Conclusion.** The crash could not be reproduced on the available runtimes; the strongest
+  code-level candidate is a diff apply (and its self-sizing pass) landing while the collection
+  view is narrower than its section insets or has no window — on iOS 18.7 the 0pt-wide
+  self-sizing pass (or a transient non-finite frame during the background snapshot / rotation)
+  is what UIKit rejects. The gate removes every such pass from our side; it cannot be proven
+  red/green against the device crash here.
+- **Gate conditions for Task 2** (decided): apply now only when ALL hold —
+  `hasWindow`, `width.isFinite`, `height.isFinite`, `height > 0`, and
+  `width > 2 × TranscriptLayout.horizontalSectionInset` (the row width is positive; passed in
+  as a parameter, since the inset lives in the app target and the predicate in HermesKit).
+  Otherwise keep only the latest `(items, rowIDs)` and flush it from `didLayout()`. The first
+  open meets "zero frame, no window", so its first apply IS deferred; the flush happens on the
+  first real `didLayout` (window + real size, seen above) and, because `didInitialJump` is
+  still false, takes the normal open jump-and-settle path.
 
 ### Task 2: Gate transcript snapshot applies on a measurable view (#128)
 
