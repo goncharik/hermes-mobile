@@ -220,17 +220,29 @@
 - [x] run `make test` and `make snapshot`, which must pass, including
       `TranscriptSlidePreservationTests` and `TranscriptKeyboardScrollTests`
 
-### Task 3: Fix any non-finite row sizing source found in Task 1 (#128)
+### Task 3: Fix any non-finite row sizing source found in Task 1 (#128) ⚠️ not needed
+
+⚠️ **Not needed.** Task 1's cell-content audit found no non-finite or negative sizing source.
+Every display item the fold produces was hosted in a real `UICollectionViewCell` through
+`UIHostingConfiguration` + `ChatView.itemView` and measured with `systemLayoutSizeFitting` and
+`preferredLayoutAttributesFitting` at fitting sizes 0×60, 0×0, 0.5×60, 1×60, 8×60, 288×60 and
+288×0 on iOS 26.5 and 27.0. That gave 0 non-finite or negative sizes. A static read found the
+same: `CappedWidthLayout` ignores the proposal (constant cap), `BoundedHeightLayout` is used only
+by the prompt-card pinned row and is finite for finite input, the only cell `GeometryReader` is
+an overlay, and every cell `.infinity` frame is `maxWidth`. The degenerate 0–1pt self-sizing pass
+is handled by Task 2's gate instead. No source to clamp, so no test or code change.
 
 **Files:**
 - Modify: the layout(s) identified in Task 1 (e.g. `CappedWidthLayout` / `BoundedHeightLayout`)
 - Modify: the matching measured layout test (e.g. `HermesMobileTests/MarkdownTableLayoutTests.swift`)
 
-- [ ] write a failing measured `UIWindow`-hosted layout test: the layout's `sizeThatFits` under a
+- [x] write a failing measured `UIWindow`-hosted layout test: the layout's `sizeThatFits` under a
       zero-width (and zero-height) proposal returns finite, non-negative values
-- [ ] clamp or guard at the source
-- [ ] run `make snapshot` and `make test`, which must pass
-- [ ] if Task 1 found no such source, mark this task ⚠️ "not needed" with the evidence and skip it
+      (not needed: no non-finite source found in Task 1)
+- [x] clamp or guard at the source (not needed: nothing to clamp)
+- [x] run `make snapshot` and `make test`, which must pass (not needed: no code change in
+      this task; both passed at the end of Task 2)
+- [x] if Task 1 found no such source, mark this task ⚠️ "not needed" with the evidence and skip it
 
 ### Task 4: Track "never saved on the server" for plain new chats (#132)
 
