@@ -24,7 +24,7 @@ the phone's toggle. Upstream moved the desktop toggle to localStorage for this r
 v0.21.6). The desktop also seeds its local value once from `voice.auto_tts`, as a migration of
 its own legacy state. Mobile has no legacy state, so it does not seed.
 
-All three full logouts clear the pref: Settings → Log Out, the retry screen's Log Out, and the
+All three full logouts clear the pref: Settings → Sign out, the retry screen's Log Out, and the
 re-auth sheet's "Quit to start". It is NOT part of `clearIdentityScopedPrefs`. A re-auth user
 switch keeps device UI prefs, the same as the swipe default.
 

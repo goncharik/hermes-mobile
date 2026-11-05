@@ -4,14 +4,19 @@
 
 Hermes Mobile is an iPhone and iPad app for controlling a [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 that you run yourself, on your own computer or server. This policy explains what the app
-does with your information. The short version: the app talks to your own agent, keeps what
-it needs on your device, and sends nothing to the developer.
+does with your information. The short version: the app talks to your own agent and keeps
+what it needs on your device. The developer never receives your conversations, files or
+credentials.
 
 ## What the developer collects
 
-Nothing. Hermes Mobile has no analytics, no advertising, no tracking, and no third-party
-SDKs or services. There is no Hermes Mobile account, and the developer runs no server that
-receives your conversations, files or credentials.
+Hermes Mobile has no analytics, no advertising, no tracking, and no third-party SDKs or
+services. There is no Hermes Mobile account.
+
+The only data that passes through a server the developer runs is for push notifications, and
+only if you turn them on: your device's notification token, a session identifier and a
+generic title and body, used only to deliver the notification (see
+[Push notifications](#push-notifications)).
 
 ## Your Hermes agent
 
@@ -59,9 +64,9 @@ Notifications are optional and off until you turn them on. They also require the
 
 When you turn them on, the app gives your agent the device token that Apple assigns for
 notifications, along with the app version. When your agent needs your attention, its plugin
-sends that token, a generic title and body, and a session identifier to a small push gateway operated by the developer. The gateway forwards the
-notification to Apple Push Notification service, which delivers it to your device. The
-gateway does not store notifications.
+sends that token, a generic title and body, and a session identifier to a small push gateway
+operated by the developer. The gateway forwards the notification to Apple Push Notification
+service, which delivers it to your device.
 
 A notification never contains message text, commands, tool arguments or anything else from
 your conversation. When you tap one, the app fetches the content directly from your agent.

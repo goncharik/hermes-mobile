@@ -52,7 +52,9 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
 │  │                       //   working-glow auto-poll; profile pill/switcher (per-call scoped) +
 │  │                       //   presents Settings + Archived + AddProfile sheets
-│  ├─ SettingsFeature      // token mgmt, manual reconnect, debug log
+│  ├─ SettingsFeature      // six-group Form; SettingsPath stack → AppIconPickerFeature /
+│  │                       //   DiagnosticsFeature (live debug log + copy report) /
+│  │                       //   AcknowledgementsFeature (docs/features/settings.md)
 │  ├─ ArchivedSessionsFeature // archived list (?archived=only); restore + open delegate +
 │  │                       //   immediate delete — the `deleted` delegate carries the rollback
 │  │                       //   payload and the PARENT list runs the DELETE round-trip (a
@@ -171,6 +173,10 @@ a `testValue`/`.inMemory()` variant):
 - **`DebugLogClient`** — an event ring buffer for the in-app debug log; `note(type, summary)`
   adds free-text client entries to the same ring (a swallowed `session.events.since` failure,
   #98).
+- **`AppIconClient`** — the alternate app icons: bundle catalog, current icon, `set`.
+  Contract: `docs/features/settings.md`.
+- **`BundleInfoClient`** — app version/build, iOS version and device model for the feedback
+  links and the diagnostics report. Contract: `docs/features/settings.md`.
 
 ## Wire protocol
 

@@ -35,8 +35,8 @@ bullets below are the compressed rules.
   exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
   the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
-  swallow them with `try?` (the logout hops, below, and the #98 replay read — debug log
-  only — are the carved-out exceptions).
+  swallow them with `try?` (the logout hops, below, and the debug-log-only #98 replay read
+  and Settings `/api/status` probe are the carved-out exceptions).
 - **Commit messages**: capitalized verb, no conventional-commit prefixes, concise.
 
 ## Gateway & session lifecycle
@@ -296,8 +296,8 @@ bullets below are the compressed rules.
 ## UI idioms
 
 - **Auto-poll**: cancellable `continuousClock` sleep-loop started on `.task`, cancelled
-  by an explicit `.onDisappear` action (not bare `.task` cancellation); paused while
-  searching; `TestClock`-drivable.
+  by an explicit `.onDisappear` action (not bare `.task` cancellation; on a pushed stack
+  screen the stack's own cancellation replaces it); paused while searching; `TestClock`-drivable.
 - **Destructive actions** use TCA `ConfirmationDialogState` (`@Presents`) so
   confirm/cancel is state-driven and unit-testable — but present it via
   `.bottomActionSheet`, never `.confirmationDialog`: iOS 26 renders the system
@@ -361,7 +361,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (313/313), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (331/331), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

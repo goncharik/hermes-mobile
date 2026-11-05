@@ -179,6 +179,7 @@ and the TestFlight command-line override stay as they are.
 - [x] add `AppIconOption` (name, label, previewAsset) with the static six-entry table in display order
 - [x] add `AppIconCatalog` + pure `parse(infoDictionary:)` outside any UIKit guard (primary from `CFBundlePrimaryIcon.CFBundleIconName`, alternates from `CFBundleAlternateIcons` keys, unknown names dropped, primary filtered out, order from the table); `label(for name: String?)` helper (nil → primary's label)
 - [x] add `AppIconClient` (`@DependencyClient`): `catalog`, `current`, `set`; `liveValue` under `#if canImport(UIKit)` over `Bundle.main.infoDictionary` + `UIApplication.shared.alternateIconName` / `setAlternateIconName` (main-actor hop inside the client); non-UIKit `liveValue = testValue`; `testValue` in-memory with the full six-icon catalog, primary `AppIcon`
+  - ⚠️ actual: `current()` is `async` (not `-> String?` as in Technical Details): `alternateIconName` is main-actor isolated, so the hop lives inside the client
 - [x] register `DependencyValues.appIcon`
 - [x] write tests: parse a fixture plist dict (primary filtered, unknown dropped, table order kept); empty/malformed dict → empty catalog; `label(for:)` nil and unknown names
 - [x] run tests - must pass before next task
@@ -236,7 +237,7 @@ and the TestFlight command-line override stay as they are.
   - ➕ pure tile helpers on `State`: `isSelected(_:)` and `iconName(for:)` (primary tile → `nil`) so the view stays declarative
 - [x] actions: `task` (loads `appIcon.catalog()` + `appIcon.current()` → `loaded`), `iconTapped(String?)` (optimistic `selected`, runs `appIcon.set`), `setFailed(previous: String?)`, `delegate(.iconChanged(String?))`
 - [x] tapping the already-selected icon is a no-op; a failed `set` restores `previous` and sets `errorBanner`; a success sends the delegate
-  - ➕ a new tap clears a stale banner; the `set` effect is `cancelInFlight` so the last tap wins (a superseded set lands no delegate/rollback)
+  - ➕ a new tap clears a stale banner; taps are ignored while a change is in flight (`isApplying`), and a failed `set` re-reads `appIcon.current()` and shows what iOS reports rather than the previous checkmark (see `docs/features/settings.md`)
 - [x] write tests: seed on task; tap alternate → `set` called with the name and delegate fires; tap primary → `set(nil)`; failure → rollback + banner; same icon → no effect
 - [x] run tests - must pass before next task
 
@@ -359,7 +360,7 @@ and the TestFlight command-line override stay as they are.
   shows the system review prompt.
 
 **External updates:**
-- Fill in `AppStoreIdentity.appID` once the App Store Connect record exists (write-review
-  fallback stays off until then).
+- Fill in `AppStoreIdentity.appID` once the app is live on the App Store (the App Store
+  Connect record already exists for TestFlight; the Rate row stays hidden until then).
 - Add the `PRIVACY.md` GitHub URL as the privacy policy URL in App Store Connect.
 - Close #135 and #137 when merged; #140 / #141 remain open.

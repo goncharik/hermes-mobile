@@ -53,13 +53,13 @@ the push authorization status, and the push plugin info.
    `requestFeatureURL`, which fall back to `FeedbackLinks.allIssues` until `bundleInfo`
    loads, so the view never unwraps. "Rate Hermes Mobile" opens `FeedbackLinks.rateApp` (the
    write-review page) and is hidden while that is `nil`, i.e. until `AppStoreIdentity.appID`
-   is set once the app is live on the App Store. "All
-   issues on GitHub".
+   is set once the app is live on the App Store. "All issues on GitHub" opens
+   `FeedbackLinks.allIssues`.
 5. **About.** `versionLabel` (`"Version 1.0 (79)"`); GitHub repository; Hermes Agent; Privacy
    policy (`FeedbackLinks.privacyPolicy`, the repo's `PRIVACY.md` on GitHub);
    Acknowledgements and Diagnostics push. The Diagnostics row shows no entry count.
 6. **Sign out.** A destructive button sending the same `clearTokenTapped`, with the same
-   name and the same clear list (logout clears every prefs entry); only the copy changed. It
+   name and the same clear list (logout clears every prefs entry) plus `debugLog.clear()`. It
    never calls `appIcon.set`: the icon survives logout.
 
 External rows (`ExternalLinkRow`) are `Link`s with a trailing `arrow.up.right`.
@@ -160,8 +160,10 @@ a version that lands after the push is forwarded into the open screen. Build fac
 `bundleInfo.info()` at copy time. It owns the live gateway log: `.task` subscribes to
 `debugLog.stream()` (cancellable `logStream`); popping the screen ends it, because the stack
 cancels a removed element's effects (no `.onDisappear` action, which would reach a missing
-element). The log streams only while the screen is pushed; sign out clears it
-(`debugLog.clear()`), so a report never mixes in a previous server's events.
+element). The log streams only while the screen is pushed. Every logout path clears it
+(`debugLog.clear()`: Settings → Sign out, the retry screen's Log Out, re-auth's "Quit to
+start"), so a report never mixes in a previous server's events. A re-auth that signs back in
+(same or different user, same server) keeps it.
 
 "Copy diagnostics" puts `DiagnosticsReport.render` on the pasteboard, bumps
 `copiedToken` and runs the `cancelInFlight` `copiedFeedbackDuration` dwell (the transient-toast

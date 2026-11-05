@@ -60,7 +60,7 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
   calendar via `SessionListFeature.State(calendar:)` (UTC, `en_US`, Monday-first), or the
   date-section headers would follow the simulator's time zone and week start;
   `deviceImage(height:)` renders a list taller than one screen. The suite passes clean
-  (313 of 313) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
+  (331 of 331) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
   changes a view re-records that view's baselines itself. If a future runtime drifts
   again, judge by render size first (a size mismatch is a real regression; equal size with
   a small pixel residual is drift), and land the re-record as its own commit.
@@ -170,7 +170,7 @@ The provisioning profile must be installed locally first
 
 ### App icon per build (TestFlight vs App Store)
 
-Two icons distinguish builds on-device: the orange **`AppIcon`** ONLY for **App Store
+Two icons distinguish builds on-device: the Gold **`AppIcon`** ONLY for **App Store
 release** builds, and the blue blueprint **`AppIconDev`** for everything else — dev
 builds and **ALL TestFlight builds, internal and external alike** (a TestFlight build
 is one build; internal and external groups share it). Debug builds use `AppIconDev`
@@ -184,7 +184,7 @@ to the archive command above:
 
 (A custom Xcode configuration would break Tuist's SwiftPM integration, so the icon is
 switched via this build setting rather than a separate config.) Omit the override only
-when archiving an App Store release submission to get the orange icon.
+when archiving an App Store release submission to get the Gold icon.
 
 #### Alternate icons (Settings → App Icon)
 
