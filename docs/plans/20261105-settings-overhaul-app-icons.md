@@ -323,12 +323,14 @@ and the TestFlight command-line override stay as they are.
 - Modify: `README.md` (feature list)
 - Modify: `CLAUDE.md` (one bullet under UI idioms or Session list pointing at the feature doc)
 
-- [ ] write `PRIVACY.md`: the app talks only to the user's own agent; no analytics, no third-party services; what is stored on device (Keychain secrets, prefs, snapshot cache); push payloads are generic (link `docs/features/push-notifications.md`)
-- [ ] `docs/features/settings.md`: groups and gating rules, `SettingsPath` model, icon catalog derivation and the all-six alternates rule, the six-icon table with labels and asset names, feedback link composition, diagnostics report contents and the no-secrets invariant
-- [ ] `docs/development.md`: extend the icon section with the alternates list and the "primary differs per build, parser filters it" note; how to add a seventh icon (set + preview + table + alternates)
-- [ ] README feature list: app icon picker, feedback links, About; CLAUDE.md bullet (5–8 lines, rule + pointer)
-- [ ] verify every code identifier named in the docs exists (grep)
-- [ ] run tests - must pass before next task
+- [x] write `PRIVACY.md`: the app talks only to the user's own agent; no analytics, no third-party services; what is stored on device (Keychain secrets, prefs, snapshot cache); push payloads are generic (link `docs/features/push-notifications.md`)
+  - ➕ also covers OAuth provider pages, diagnostics excerpts (the log summaries carry up to 80 chars of event text), Apple-provided crash reports, and permissions
+- [x] `docs/features/settings.md`: groups and gating rules, `SettingsPath` model, icon catalog derivation and the all-six alternates rule, the six-icon table with labels and asset names, feedback link composition, diagnostics report contents and the no-secrets invariant
+- [x] `docs/development.md`: extend the icon section with the alternates list and the "primary differs per build, parser filters it" note; how to add a seventh icon (set + preview + table + alternates)
+- [x] README feature list: app icon picker, feedback links, About; CLAUDE.md bullet (5–8 lines, rule + pointer)
+  - ➕ README Documentation list links `PRIVACY.md`; the CLAUDE.md bullet sits under "UI idioms" (6 lines)
+- [x] verify every code identifier named in the docs exists (grep)
+- [x] run tests - must pass before next task
 
 ### Task 11: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented: six groups, six icons selectable, version row, feedback links prefilled, About links, Diagnostics copy, Acknowledgements, sign out semantics unchanged

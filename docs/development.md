@@ -185,3 +185,37 @@ to the archive command above:
 (A custom Xcode configuration would break Tuist's SwiftPM integration, so the icon is
 switched via this build setting rather than a separate config.) Omit the override only
 when archiving an App Store release submission to get the orange icon.
+
+#### Alternate icons (Settings → App Icon)
+
+Users can switch between six icons in Settings (`docs/features/settings.md`). The base
+settings in `Project.swift` list **all six** sets as alternates, the primary included:
+
+```
+ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIcon AppIconDev AppIconHermes
+  AppIconHermesBlueprint AppIconHermesClassic AppIconHermesClassicBlueprint
+ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES
+```
+
+The primary differs per build (above), so listing every set lets any build reach any icon
+without a per-configuration list. actool still omits the primary from the built
+`CFBundleAlternateIcons` (a Debug `Info.plist` lists five alternates, with `AppIconDev` as
+`CFBundlePrimaryIcon`), and `AppIconCatalog.parse` filters the primary out regardless:
+choosing it is `setAlternateIconName(nil)`. The command-line primary override above needs no
+change.
+
+**Adding a seventh icon:**
+
+1. Add `Assets.xcassets/<SetName>.appiconset` with a 1024×1024 PNG without alpha
+   (`sips -Z 1024`; check `hasAlpha: no` with `sips -g hasAlpha`) and the `Contents.json`
+   copied from `AppIcon.appiconset`.
+2. Add a plain image set `AppIconPreview-<SetName>.imageset` with a 180 px preview
+   (`sips -Z 180`), single scale: the picker cannot load an `.appiconset` with `Image(_:)`.
+3. Add an `AppIconOption` row to `AppIconOption.all` in HermesKit (display order = table
+   order; the preview name is derived).
+4. Append the set name to `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` in `Project.swift`,
+   then update the literals in `AppIconCatalogTests`: the Project list in
+   `tableNamesMatchProjectAlternateIconNames`, the labels in `tableIsSixIconsInDisplayOrder`,
+   and the option count in `testValueIsInMemoryWithFullCatalog`.
+5. Add the row to the icon table in `docs/features/settings.md` and re-record the picker
+   snapshots (`AppIconPickerSnapshotTests`).

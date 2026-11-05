@@ -307,6 +307,12 @@ bullets below are the compressed rules.
   duplicated per feature. Attach the overlay where nothing can swallow it (before a
   bottom `.safeAreaInset`; on the transcript, not the outer `VStack`); announce every
   copy to VoiceOver off the token.
+- **Settings is ONE `Form` (six groups) + a `SettingsPath` stack** owned by `SettingsView`
+  (the sheet adds no `NavigationStack`); rows push by reducer append, never `NavigationLink`.
+  App icons: all six sets are alternates in `Project.swift` (primary included — it differs
+  per build); `AppIconCatalog.parse` filters the primary, which is always `set(nil)`; iOS
+  persists the choice, logout never touches it. `DiagnosticsReport` takes no `AuthSession`
+  (no-secrets invariant). Gates, icon table, links: `docs/features/settings.md`.
 
 ## Push notifications
 
