@@ -206,15 +206,18 @@
   `TranscriptApplyGateTests.swift`)
 - Modify: `HermesMobile/Sources/Features/Chat/Transcript/CollectionTranscriptView.swift`
 
-- [ ] write failing unit tests for the gate predicate: valid size + window → true; zero, negative,
+- [x] write failing unit tests for the gate predicate: valid size + window → true; zero, negative,
       NaN or infinite width → false; no window → as decided in Task 1; first-open configuration → as
       decided in Task 1
-- [ ] implement the predicate in `TranscriptScrollMath` (outside the UIKit guard)
-- [ ] add `pendingApply` to the coordinator: defer in `apply` entry (or `updateUIView`) when the
-      gate says no, keeping only the latest update
-- [ ] flush `pendingApply` from `didLayout()` when the gate passes, before the existing
+- [x] implement the predicate in `TranscriptScrollMath` (outside the UIKit guard)
+      (`canApplySnapshot(width:height:hasWindow:horizontalSectionInset:)`)
+- [x] add `pendingApply` to the coordinator: defer in `apply` entry (or `updateUIView`) when the
+      gate says no, keeping only the latest update (deferred at `apply` entry)
+- [x] flush `pendingApply` from `didLayout()` when the gate passes, before the existing
       initial-settle logic, so the first-open jump and the follow behaviour still happen
-- [ ] run `make test` and `make snapshot`, which must pass, including
+      (➕ `TranscriptCollectionView.didMoveToWindow` schedules a layout pass on re-attach, so a
+      window-less deferral flushes even when the size didn't change)
+- [x] run `make test` and `make snapshot`, which must pass, including
       `TranscriptSlidePreservationTests` and `TranscriptKeyboardScrollTests`
 
 ### Task 3: Fix any non-finite row sizing source found in Task 1 (#128)

@@ -469,4 +469,51 @@ import Testing
       #expect(!kind.holdsReaderAnchor)
     }
   }
+
+  // MARK: - canApplySnapshot (#128)
+
+  /// The production section inset (`TranscriptLayout.horizontalSectionInset`, app target).
+  private let inset: CGFloat = 16
+
+  private func canApply(width: CGFloat, height: CGFloat, hasWindow: Bool = true) -> Bool {
+    TranscriptScrollMath.canApplySnapshot(
+      width: width, height: height, hasWindow: hasWindow, horizontalSectionInset: inset
+    )
+  }
+
+  @Test func appliesAtARealSizeInAWindow() {
+    // The first real layout pass on open (iPhone 17 Pro, measured in the #128 investigation).
+    #expect(canApply(width: 402, height: 619.67))
+    #expect(canApply(width: 320, height: 568))
+  }
+
+  @Test func defersTheFirstOpenApply() {
+    // The first `updateUIView` on open runs at a zero frame with no window: deferred, so the
+    // flush on the first real `didLayout` takes the open jump.
+    #expect(!canApply(width: 0, height: 0, hasWindow: false))
+  }
+
+  @Test func defersWithoutAWindow() {
+    #expect(!canApply(width: 402, height: 619.67, hasWindow: false))
+  }
+
+  @Test func defersAZeroNegativeOrNonFiniteWidth() {
+    for width: CGFloat in [0, -1, -402, .nan, .infinity, -.infinity] {
+      #expect(!canApply(width: width, height: 619.67), "width \(width)")
+    }
+  }
+
+  @Test func defersAWidthThatLeavesNoRowWidth() {
+    // A row is `width − 2 × inset`: at or below 32pt it is 0pt wide, a degenerate self-sizing
+    // pass (every cell measured at a 0–1pt fitting width).
+    #expect(!canApply(width: 20, height: 619.67))
+    #expect(!canApply(width: 32, height: 619.67))
+    #expect(canApply(width: 33, height: 619.67))
+  }
+
+  @Test func defersAZeroNegativeOrNonFiniteHeight() {
+    for height: CGFloat in [0, -1, .nan, .infinity, -.infinity] {
+      #expect(!canApply(width: 402, height: height), "height \(height)")
+    }
+  }
 }
