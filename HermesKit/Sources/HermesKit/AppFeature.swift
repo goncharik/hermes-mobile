@@ -286,6 +286,7 @@ public struct AppFeature {
   @Dependency(\.push) var push
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
+  @Dependency(\.debugLog) var debugLog
   // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.idleTimer) var idleTimer
@@ -405,6 +406,7 @@ public struct AppFeature {
         preferences.clearIdentityScopedPrefs()
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
+        debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
         state.liveChat = nil
@@ -780,6 +782,7 @@ public struct AppFeature {
         preferences.clearIdentityScopedPrefs()
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
+        debugLog.clear()
         state.reauth = nil
         state.path = .init()
         state.liveChat = nil
