@@ -232,7 +232,7 @@ build, archive the Release config but override the icon on the command line — 
 to the archive command above:
 
 ```sh
-  ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev   # blue icon for all TestFlight builds
+  HERMES_APP_ICON=AppIconDev   # blue icon for all TestFlight builds (app target only)
 ```
 
 (A custom Xcode configuration would break Tuist's SwiftPM integration, so the icon is

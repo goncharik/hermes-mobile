@@ -122,10 +122,13 @@ let project = Project(
           // App Store release default — the orange "AppIcon". ONLY App Store submission
           // builds keep it. Debug builds override to the blue "AppIconDev" below, and ALL
           // TestFlight archives (internal AND external — they share one build) override it
-          // on the xcodebuild command line (`ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev`)
-          // — a custom configuration breaks Tuist's SwiftPM integration, so we switch the
-          // icon via a build setting.
-          "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+          // on the xcodebuild command line (`HERMES_APP_ICON=AppIconDev`) — a custom
+          // configuration breaks Tuist's SwiftPM integration, so we switch the icon via a
+          // build setting. A custom one, not `ASSETCATALOG_COMPILER_APPICON_NAME` itself: a
+          // command-line setting reaches EVERY target, and the widget extension's catalog has
+          // no such icon set (actool fails the archive).
+          "HERMES_APP_ICON": "AppIcon",
+          "ASSETCATALOG_COMPILER_APPICON_NAME": "$(HERMES_APP_ICON)",
           // The Settings icon picker (#135). EVERY set is an alternate — the primary
           // included on purpose: the primary differs per build (gold for App Store, blueprint
           // for Debug/TestFlight), so listing every set lets any build reach any icon.
@@ -138,7 +141,7 @@ let project = Project(
           // Local dev → blue icon, so it's visually distinct from the production app.
           // `APS_ENVIRONMENT=development` → sandbox APNs (matches DEBUG `apns_env`).
           .debug(name: "Debug", settings: [
-            "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIconDev",
+            "HERMES_APP_ICON": "AppIconDev",
             "APS_ENVIRONMENT": "development",
           ]),
           // App Store release → orange (base). Every TestFlight archive reuses this config
