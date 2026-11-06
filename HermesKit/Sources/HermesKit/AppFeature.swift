@@ -79,6 +79,15 @@ public struct AppFeature {
     /// Accepted corner: the worst outcome is the same spurious-empty-chat the self-heal
     /// produces for any unknown id, and logout's unregister keeps the window narrow.
     var pendingPushTapServerURL: URL?
+    /// An App Intent launch request (#93) that arrived before the session list existed — the
+    /// cold-launch Action button / Siri / Shortcuts case, where `home` only appears once the
+    /// auto-connect probe (or a manual login) finishes. Same shape as `pendingPushTap`: single
+    /// stash, last-wins, replayed in `landOnHome`, process-lifetime only, cleared on every
+    /// logout path. Last-wins ACROSS both stashes too: stashing an intent clears the tap stash
+    /// and vice versa, so the landing replays only the most recent request. No server-origin
+    /// guard: a new chat belongs to no session, so it is valid on whatever server the user
+    /// signs into.
+    var pendingLaunchIntent: LaunchIntent?
 
     public init(
       onboarding: ConnectionFeature.State = .init(),
@@ -235,6 +244,12 @@ public struct AppFeature {
     /// different session → replace the slot and SET the path (one marker in compact, empty
     /// in regular; never stack). Approval taps clear their pending-badge entry on view.
     case pushTapped(PushTap)
+    /// An App Intent asked for a new chat (#93) — routed through the exact "New session" path
+    /// (`reduceCreateSession`: selected-profile scoping, the reusable-seat shortcut, compact
+    /// marker vs regular detail, a busy slot replaced through `teardownSlot(thenFill:)`). With
+    /// no session list yet (cold launch) it is stashed in `pendingLaunchIntent` and replayed
+    /// by `landOnHome`.
+    case launchIntentReceived(LaunchIntent)
     case onboarding(ConnectionFeature.Action)
     /// The launch retry screen's actions (present only while the slot is filled).
     case connectionFailed(ConnectionFailedFeature.Action)
@@ -272,8 +287,9 @@ public struct AppFeature {
     case reauth(PresentationAction<ReauthFeature.Action>)
   }
 
-  /// Ids for the long-running incoming-tap observer and the background-grace listener.
-  private enum CancelID { case pushTaps, backgroundGrace }
+  /// Ids for the long-running incoming-tap and launch-intent observers and the
+  /// background-grace listener.
+  private enum CancelID { case backgroundGrace, launchIntents, pushTaps }
 
   /// Name of the finite background task requested while a running turn is backgrounded
   /// (shows up in OS background-task diagnostics). Tests re-type the literal on purpose —
@@ -284,6 +300,7 @@ public struct AppFeature {
   @Dependency(\.preferences) var preferences
   @Dependency(\.hermesREST) var rest
   @Dependency(\.push) var push
+  @Dependency(\.launchIntents) var launchIntents
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
@@ -314,6 +331,15 @@ public struct AppFeature {
           }
         }
         .cancellable(id: CancelID.pushTaps, cancelInFlight: true)
+        // App Intent launch requests (#93), observed the same way — an intent can raise the
+        // app cold or while it runs; the routing happens in `.launchIntentReceived`.
+        let intentObserver: Effect<Action> = .run { [launchIntents] send in
+          for await intent in launchIntents.incoming() {
+            await send(.launchIntentReceived(intent))
+          }
+        }
+        .cancellable(id: CancelID.launchIntents, cancelInFlight: true)
+        let observers: Effect<Action> = .merge(tapObserver, intentObserver)
         // Launch auto-connect: if a persisted session (token *or* gated cookie) + server
         // URL exist, silently validate and skip onboarding. Only runs once, before we have
         // a home. `loadSession` rehydrates a `.cookie` session's cookies into `.shared` so
@@ -327,15 +353,15 @@ public struct AppFeature {
               let session = keychain.loadSession(.shared),
               let urlString = preferences.loadServerURL(),
               let url = parseServerURL(urlString)
-        else { return tapObserver }
+        else { return observers }
         // A `.token` session with an empty token is treated as "no creds" (matches the old
         // `loadToken()`-non-empty guard) so we stay on onboarding rather than probe blindly.
-        if case .token("") = session { return tapObserver }
+        if case .token("") = session { return observers }
         state.didRunLaunchProbe = true
         state.autoConnecting = true
         let connection = ServerConnection(baseURL: url, auth: session)
         return .merge(
-          tapObserver,
+          observers,
           .run { [rest, keychain, bearerTokens] send in
             // Bearer restore (#19) must happen BEFORE the probe: a `.bearer` connection
             // resolves its `Authorization` header through the token store, so probing an
@@ -414,6 +440,7 @@ public struct AppFeature {
         state.onboarding = .init()
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
+        state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
         return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
@@ -500,6 +527,22 @@ public struct AppFeature {
       case let .pushTapped(tap):
         return reducePushTapped(&state, tap: tap)
 
+      case let .launchIntentReceived(intent):
+        guard state.home != nil else {
+          // No session list yet (cold launch still auto-connecting, or on onboarding / the
+          // retry screen) — stash for `landOnHome`, never drop: the Action button from a cold
+          // start is the main use case. Last-wins across both stashes, so a tap that came
+          // earlier no longer replays (its approval badge entry, inserted independently,
+          // stays).
+          state.pendingLaunchIntent = intent
+          state.pendingPushTap = nil
+          state.pendingPushTapServerURL = nil
+          return .none
+        }
+        return reduceCreateSession(
+          &state, composerText: nil, startsDictation: intent == .newChatWithDictation
+        )
+
       case let .onboarding(.delegate(.connected(connection))):
         // Defensive, mirroring `.autoConnectSucceeded`: a retry screen and a live list must
         // never coexist. `AppView` would render `home` while the `ifLet` child stayed alive,
@@ -576,33 +619,9 @@ public struct AppFeature {
         return .merge(badge, read, teardownSlot(thenFill: chat))
 
       case let .home(.delegate(.createSession(initialComposerText))):
-        guard let home = state.home else { return .none }
-        // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
-        // — regular width keeps one such seat in the detail column at all times): tearing it
-        // down to fill an identical fresh one would redial its socket for nothing. Reset the
-        // composer draft (text + staged attachments) instead — the only visible difference a
-        // fresh chat would have; `initialComposerText` still seeds it. Anything the shortcut
-        // can't reproduce (a stale profile, in-flight composer input, a failed handshake)
-        // falls through to the real refill. The marker guard is the compact safety net: a
-        // detached seat re-attaches rather than leaving the tap without a screen.
-        if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
-          state.liveChat?.composerText = initialComposerText ?? ""
-          state.liveChat?.attachments = []
-          if state.isChatDetached {
-            state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
-          }
-          return .none
-        }
-        // New chats are created under the currently-selected profile. `initialComposerText`
-        // (push "Ask agent to install") seeds the composer draft but is NOT auto-sent.
-        let chat = newChat(for: home, composerText: initialComposerText ?? "")
-        guard state.liveChat != nil else {
-          seatLiveChat(chat, into: &state)
-          return .none
-        }
-        // Slot occupied: flush + fully tear the old chat down before filling (same rule
-        // as open — the replacement goes through the nil-out).
-        return teardownSlot(thenFill: chat)
+        return reduceCreateSession(
+          &state, composerText: initialComposerText, startsDictation: false
+        )
 
       case let .fillLiveChat(chat):
         seatLiveChat(chat, into: &state)
@@ -713,6 +732,7 @@ public struct AppFeature {
         state.onboarding = .init()
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
+        state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
         return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
@@ -759,6 +779,7 @@ public struct AppFeature {
         state.liveChat = nil
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
+        state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
         let identityCleanup: Effect<Action> = .merge(releaseSlot, setBadge(state))
@@ -790,6 +811,7 @@ public struct AppFeature {
         state.onboarding = .init()
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
+        state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
         return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
 
@@ -948,6 +970,42 @@ public struct AppFeature {
     return .none
   }
 
+  /// "New session": the list's button (`.home(.delegate(.createSession))`) and an App Intent
+  /// (`.launchIntentReceived`, #93) both land here, so the two can never drift. No list → no-op.
+  /// `startsDictation` is the intent's dictation request (`.newChatWithDictation`).
+  private func reduceCreateSession(
+    _ state: inout State, composerText: String?, startsDictation: Bool
+  ) -> Effect<Action> {
+    guard let home = state.home else { return .none }
+    // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
+    // — regular width keeps one such seat in the detail column at all times): tearing it
+    // down to fill an identical fresh one would redial its socket for nothing. Reset the
+    // composer draft (text + staged attachments) instead — the only visible difference a
+    // fresh chat would have; `composerText` still seeds it. Anything the shortcut
+    // can't reproduce (a stale profile, in-flight composer input, a failed handshake)
+    // falls through to the real refill. The marker guard is the compact safety net: a
+    // detached seat re-attaches rather than leaving the tap without a screen.
+    if let chat = state.liveChat, Self.isReusableNewChat(chat, for: home) {
+      state.liveChat?.composerText = composerText ?? ""
+      state.liveChat?.attachments = []
+      if state.isChatDetached {
+        state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
+      }
+      return .none
+    }
+    // New chats are created under the currently-selected profile. `composerText` (push "Ask
+    // agent to install") seeds the composer draft but is NOT auto-sent.
+    let chat = newChat(for: home, composerText: composerText ?? "")
+    guard state.liveChat != nil else {
+      seatLiveChat(chat, into: &state)
+      return .none
+    }
+    // Slot occupied: flush + fully tear the old chat down before filling (same rule
+    // as open — the replacement goes through the nil-out). A busy slot (running turn, queued
+    // work) is replaced too: the turn continues on the server and stays reachable from the list.
+    return teardownSlot(thenFill: chat)
+  }
+
   /// Mark a session read under the profile that owns the active chat. Every open sends this
   /// best-effort write—even when a cold-launch push has no loaded row—so a null server
   /// watermark becomes tracked. Older agents reject/ignore the field and keep using the
@@ -990,9 +1048,11 @@ public struct AppFeature {
       // open. Stash the tap for replay once the list exists (#46), remembering which
       // server it belongs to (the stored URL — the agent this device's push
       // registration points at) so a login to a DIFFERENT server drops it instead of
-      // replaying; the badge reflects the now-pending approval either way.
+      // replaying; the badge reflects the now-pending approval either way. Last-wins across
+      // both stashes: an earlier App Intent request (#93) no longer replays.
       state.pendingPushTap = tap
       state.pendingPushTapServerURL = preferences.loadServerURL().flatMap(parseServerURL)
+      state.pendingLaunchIntent = nil
       return setBadge(state)
     }
     // The tapped session is the one ALREADY on screen (`currentViewingSessionID` — the
@@ -1171,7 +1231,15 @@ public struct AppFeature {
   /// only other clear path), and would otherwise stick for the process lifetime. An
   /// unknown origin (`nil` — no stored URL at stash time) replays unverified; see
   /// `pendingPushTapServerURL`.
+  ///
+  /// A stashed App Intent request (#93) replays the same way, through `.launchIntentReceived`
+  /// — the "New session" path fills the slot, so no detail seat is filled first. The two
+  /// stashes are mutually exclusive (last-wins across both), so at most one replays.
   private func landOnHome(_ state: inout State) -> Effect<Action> {
+    if let intent = state.pendingLaunchIntent {
+      state.pendingLaunchIntent = nil
+      return .send(.launchIntentReceived(intent))
+    }
     guard let tap = state.pendingPushTap else {
       fillNewChatIfDetailEmpty(&state)
       return .none

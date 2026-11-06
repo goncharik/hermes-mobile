@@ -169,26 +169,26 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] add `pendingLaunchIntent`, the `launchIntentReceived` action, and the `launchIntents`
+- [x] add `pendingLaunchIntent`, the `launchIntentReceived` action, and the `launchIntents`
       observer merged with `tapObserver` on every `.task` return path
-- [ ] extract the `createSession` body into `reduceCreateSession(_:composerText:startsDictation:)`.
+- [x] extract the `createSession` body into `reduceCreateSession(_:composerText:startsDictation:)`.
       The delegate case calls it with `startsDictation: false` and behaves identically
-- [ ] `launchIntentReceived`: when `home == nil`, stash it and clear `pendingPushTap` (plus its
+- [x] `launchIntentReceived`: when `home == nil`, stash it and clear `pendingPushTap` (plus its
       server URL); otherwise call `reduceCreateSession`
-- [ ] in `reducePushTapped`'s stash branch, clear `pendingLaunchIntent` (last-wins). In
+- [x] in `reducePushTapped`'s stash branch, clear `pendingLaunchIntent` (last-wins). In
       `landOnHome`, replay a stashed intent via `.send(.launchIntentReceived(_))`. Clear
       `pendingLaunchIntent` at every site that clears `pendingPushTap` on logout
-- [ ] write tests:
+- [x] write tests:
   - intent with `home` set, compact: the slot is seated and the path is a single new marker
   - intent with `home` set, regular: the detail is filled and the path stays empty
   - intent over an occupied slot: the slot is replaced via teardown, never stacked
   - intent over a reusable new-chat seat: the seat is reused with no redial
-- [ ] write tests:
+- [x] write tests:
   - pre-home intent is stashed, then replayed when `home` lands
   - logout clears the stash
   - intent then push tap pre-home → only the tap replays
   - push tap then intent → only the intent replays
-- [ ] run tests, which must pass before Task 3
+- [x] run tests, which must pass before Task 3
 
 ### Task 3: Start dictation once on the new chat
 
