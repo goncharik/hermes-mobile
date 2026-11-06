@@ -126,21 +126,18 @@ struct ChatView: View {
         ToolDetailSheet(call: call)
       }
     }
-    .sheet(isPresented: modelPickerBinding) {
-      if let picker = store.modelPicker {
-        ModelPickerSheet(
-          picker: picker,
-          currentModel: store.model,
-          currentEffort: store.reasoningEffort,
-          isBusy: store.isSending,
-          extendedReasoningSupported: store.extendedReasoningSupported,
-          onSelectModel: { store.send(.modelSelected(model: $0, provider: $1)) },
-          onSelectEffort: { store.send(.reasoningSelected($0)) },
-          onDone: { store.send(.modelPickerDismissed) }
-        )
-      }
+    // The model picker (#81, #130): an `@Presents` child. Swipe-down and Done both end in
+    // `.modelPicker(.dismiss)`; the chat-owned display inputs are passed straight through.
+    .sheet(item: $store.scope(state: \.modelPicker, action: \.modelPicker)) { pickerStore in
+      ModelPickerSheet(
+        store: pickerStore,
+        currentModel: store.model,
+        currentEffort: store.reasoningEffort,
+        isBusy: store.isSending,
+        extendedReasoningSupported: store.extendedReasoningSupported
+      )
     }
-    // The file preview (file preview in chat): the first `@Presents` child on this feature.
+    // The file preview (file preview in chat): an `@Presents` child on this feature.
     // Swipe-down and `Done` both nil the scoped binding, which TCA delivers as
     // `.filePreview(.dismiss)` — the reducer's temp-file cleanup hook — before `.ifLet`
     // cancels the child's in-flight read or download.
@@ -179,13 +176,6 @@ struct ChatView: View {
     Binding(
       get: { store.renameDraft ?? "" },
       set: { store.renameDraft = $0 }
-    )
-  }
-
-  private var modelPickerBinding: Binding<Bool> {
-    Binding(
-      get: { store.modelPicker != nil },
-      set: { if !$0 { store.send(.modelPickerDismissed) } }
     )
   }
 

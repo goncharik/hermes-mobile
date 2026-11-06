@@ -154,6 +154,70 @@ struct PreferencesClientTests {
     #expect(prefs.loadAutoSpeakReplies() == false)
   }
 
+  // MARK: Model picker collapse + favorites (#130)
+
+  @Test func inMemoryModelPickerPrefsRoundTripAndClear() {
+    let prefs = PreferencesClient.inMemory()
+    #expect(prefs.loadCollapsedModelProviders() == []) // default: every card expanded
+    #expect(prefs.loadFavoriteModels() == [])
+
+    prefs.saveCollapsedModelProviders(["openrouter", "cursor"])
+    let favorites = [
+      FavoriteModel(providerID: "openrouter", model: "anthropic/claude-opus-4.6"),
+      FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6"),
+    ]
+    prefs.saveFavoriteModels(favorites)
+    #expect(prefs.loadCollapsedModelProviders() == ["openrouter", "cursor"])
+    #expect(prefs.loadFavoriteModels() == favorites) // star order preserved
+
+    prefs.clearModelPickerPrefs()
+    #expect(prefs.loadCollapsedModelProviders() == [])
+    #expect(prefs.loadFavoriteModels() == [])
+  }
+
+  @Test func liveModelPickerPrefsBackOntoProvidedDefaults() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.modelpicker")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.modelpicker")
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    #expect(prefs.loadCollapsedModelProviders() == [])
+    #expect(prefs.loadFavoriteModels() == [])
+
+    prefs.saveCollapsedModelProviders(["openrouter", "cursor"])
+    #expect(suite.array(forKey: "hermes.model-picker.collapsed-providers") as? [String] == ["cursor", "openrouter"])
+    #expect(prefs.loadCollapsedModelProviders() == ["openrouter", "cursor"])
+
+    let favorites = [
+      FavoriteModel(providerID: "openrouter", model: "anthropic/claude-opus-4.6"),
+      FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6"),
+    ]
+    prefs.saveFavoriteModels(favorites)
+    #expect(suite.data(forKey: "hermes.model-picker.favorite-models") != nil) // JSON blob
+    #expect(prefs.loadFavoriteModels() == favorites)
+
+    // A rebuilt client (app relaunch) reads the same values back.
+    let relaunched = PreferencesClient.live(defaults: suite)
+    #expect(relaunched.loadCollapsedModelProviders() == ["openrouter", "cursor"])
+    #expect(relaunched.loadFavoriteModels() == favorites)
+
+    prefs.clearModelPickerPrefs()
+    #expect(suite.object(forKey: "hermes.model-picker.collapsed-providers") == nil) // removed
+    #expect(suite.object(forKey: "hermes.model-picker.favorite-models") == nil)
+    #expect(prefs.loadCollapsedModelProviders() == [])
+    #expect(prefs.loadFavoriteModels() == [])
+  }
+
+  @Test func liveFavoriteModelsDecodeFailureFallsBackToEmpty() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.modelpicker.corrupt")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.modelpicker.corrupt")
+    suite.set(Data("not json".utf8), forKey: "hermes.model-picker.favorite-models")
+    suite.set("garbage", forKey: "hermes.model-picker.collapsed-providers") // wrong type
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    #expect(prefs.loadFavoriteModels() == [])
+    #expect(prefs.loadCollapsedModelProviders() == [])
+  }
+
   // MARK: Push prompt snooze
 
   @Test func inMemoryPushPromptSnoozeRoundTripAndClear() {

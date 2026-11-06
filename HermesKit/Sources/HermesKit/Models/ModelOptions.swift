@@ -6,21 +6,47 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
   public var providers: [Provider]
   /// Currently-selected model id.
   public var currentModel: String?
+  /// The provider the current model runs on: the payload's top-level `provider`, which
+  /// upstream `hermes_cli/inventory.py::build_models_payload` fills with
+  /// `ctx.current_provider` — a provider ID (`coerce_provider_id(model.provider)`, overlaid
+  /// with the live agent's provider by `model.options`), i.e. a row's `slug`, never its
+  /// display name. Custom providers are the exception: it reads the canonical
+  /// `custom:<key>` while the row's `slug` is the bare key, so rows carry `aliases`
+  /// (see `Provider.matches(providerID:)`). Decoded leniently; blank → nil. Absent on
+  /// older gateways, where `isCurrent(model:in:currentModel:)` falls back to model-only.
+  public var currentProvider: String?
 
   enum CodingKeys: String, CodingKey {
     case providers
     case currentModel = "model"
+    case currentProvider = "provider"
   }
 
-  public init(providers: [Provider] = [], currentModel: String? = nil) {
+  public init(providers: [Provider] = [], currentModel: String? = nil, currentProvider: String? = nil) {
     self.providers = providers
     self.currentModel = currentModel
+    self.currentProvider = currentProvider
   }
 
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     providers = (try? c.decode([Provider].self, forKey: .providers)) ?? []
     currentModel = try c.decodeIfPresent(String.self, forKey: .currentModel)
+    currentProvider = ((try? c.decodeIfPresent(String.self, forKey: .currentProvider)) ?? nil)?
+      .trimmedNonEmpty
+  }
+
+  /// Whether `model` listed under `provider` is the current selection. With a
+  /// `currentProvider` the match is on `(provider, model)` — desktop parity
+  /// (`model-catalog-menu.tsx` `rowIsCurrent`: `catalogProviderMatches && model ==`), so the
+  /// same model id offered by two providers (e.g. `openai/gpt-5.6` direct and via
+  /// OpenRouter) checks only the active one. Without it (an older gateway) the match is on
+  /// the model name alone, the pre-#130 behaviour. `currentModel` is a parameter, not
+  /// `self.currentModel`, because the chat's optimistic pick is the display truth.
+  public func isCurrent(model: String, in provider: Provider, currentModel: String?) -> Bool {
+    guard let currentModel, model == currentModel else { return false }
+    guard let currentProvider else { return true }
+    return provider.matches(providerID: currentProvider)
   }
 
   public struct Provider: Equatable, Sendable, Decodable, Identifiable {
@@ -33,8 +59,19 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
     /// Per-model capabilities (`{model: {fast, reasoning}}`). Used to gate the reasoning
     /// control — a model that doesn't support reasoning hides the effort picker.
     public var capabilities: [String: Capability]
+    /// Every accepted spelling of a user-defined provider's ID (upstream
+    /// `inventory.py::_apply_custom_aliases`, #87035) — `model.options` reports the current
+    /// provider as `custom:<key>` while the row's `slug` is the bare key. Empty elsewhere.
+    public var aliases: [String]
 
     public var id: String { slug ?? name }
+
+    /// Whether `providerID` (the payload's top-level `provider`) names this row: its slug,
+    /// display name, or one of its aliases — desktop `catalogProviderMatches` verbatim.
+    public func matches(providerID: String) -> Bool {
+      guard !providerID.isEmpty else { return false }
+      return slug == providerID || name == providerID || aliases.contains(providerID)
+    }
 
     /// The identifier to send as `--provider` on a model switch. The SLUG only — desktop
     /// parity (`use-model-controls.ts` sends `provider.slug`, no fallback). The gateway's
@@ -53,12 +90,13 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
     public var isConfigured: Bool { (authenticated ?? false) && !models.isEmpty }
 
     enum CodingKeys: String, CodingKey {
-      case name, slug, models, authenticated, warning, capabilities
+      case name, slug, models, authenticated, warning, capabilities, aliases
     }
 
     public init(
       name: String, slug: String? = nil, models: [String] = [],
-      authenticated: Bool? = nil, warning: String? = nil, capabilities: [String: Capability] = [:]
+      authenticated: Bool? = nil, warning: String? = nil, capabilities: [String: Capability] = [:],
+      aliases: [String] = []
     ) {
       self.name = name
       self.slug = slug
@@ -66,6 +104,7 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
       self.authenticated = authenticated
       self.warning = warning
       self.capabilities = capabilities
+      self.aliases = aliases
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,6 +115,7 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
       authenticated = try c.decodeIfPresent(Bool.self, forKey: .authenticated)
       warning = try c.decodeIfPresent(String.self, forKey: .warning)
       capabilities = (try? c.decode([String: Capability].self, forKey: .capabilities)) ?? [:]
+      aliases = (try? c.decode([String].self, forKey: .aliases)) ?? []
     }
   }
 
@@ -123,7 +163,8 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
         models: matchingModels,
         authenticated: provider.authenticated,
         warning: provider.warning,
-        capabilities: provider.capabilities
+        capabilities: provider.capabilities,
+        aliases: provider.aliases
       )
     }
   }

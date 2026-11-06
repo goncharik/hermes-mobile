@@ -32,6 +32,19 @@ import Testing
     #expect(info.running == true)
     #expect(info.profileName == "default")
     #expect(info.desktopContract == nil) // absent on legacy/old agents
+    #expect(info.provider == nil) // absent → nil
+  }
+
+  @Test(arguments: [
+    (#""openrouter""#, "openrouter"), (#"" openrouter\n""#, "openrouter"), (#""  ""#, nil), (#"42"#, nil),
+  ] as [(String, String?)])
+  func sessionInfoEventCarriesProvider(raw: String, expected: String?) throws {
+    let f = try frame(#"{"jsonrpc":"2.0","method":"event","params":{"type":"session.info","session_id":"s","payload":{"model":"gpt-5.5","provider":\#(raw)}}}"#)
+    guard case let (_, .sessionInfo(info))? = f.eventParts else {
+      Issue.record("expected sessionInfo event, got \(f)"); return
+    }
+    #expect(info.provider == expected)
+    #expect(info.model == "gpt-5.5") // a malformed provider never costs the other fields
   }
 
   @Test(arguments: [(#"7"#, 7), (#""8""#, 8), (#""x""#, nil)] as [(String, Int?)])

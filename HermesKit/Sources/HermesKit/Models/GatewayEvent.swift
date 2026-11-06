@@ -302,6 +302,9 @@ extension Usage {
 /// the few fields the UI needs and ignore the rest (Codable skips unknown keys).
 public struct SessionInfo: Equatable, Sendable, Decodable {
   public var model: String?
+  /// The provider routing `model` (upstream `_session_info`: a pending switch's provider, else
+  /// the agent's). Decoded leniently (wrong type → nil) so it can never drop the whole info.
+  public var provider: String?
   public var reasoningEffort: String?
   public var running: Bool?
   public var version: String?
@@ -321,18 +324,19 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
   public var desktopContract: Int?
 
   enum CodingKeys: String, CodingKey {
-    case model, running, version, cwd, usage, title
+    case model, provider, running, version, cwd, usage, title
     case reasoningEffort = "reasoning_effort"
     case profileName = "profile_name"
     case desktopContract = "desktop_contract"
   }
 
   public init(
-    model: String? = nil, reasoningEffort: String? = nil, running: Bool? = nil,
-    version: String? = nil, cwd: String? = nil, profileName: String? = nil, usage: Usage? = nil,
-    title: String? = nil, desktopContract: Int? = nil
+    model: String? = nil, provider: String? = nil, reasoningEffort: String? = nil,
+    running: Bool? = nil, version: String? = nil, cwd: String? = nil, profileName: String? = nil,
+    usage: Usage? = nil, title: String? = nil, desktopContract: Int? = nil
   ) {
     self.model = model
+    self.provider = provider
     self.reasoningEffort = reasoningEffort
     self.running = running
     self.version = version
@@ -343,11 +347,12 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     self.desktopContract = desktopContract
   }
 
-  /// Hand-written only for `desktopContract`'s lenient decode; every other field keeps the
-  /// synthesized semantics (absent → nil, wrong type → throw).
+  /// Hand-written only for the lenient `desktopContract` / `provider` decodes; every other field
+  /// keeps the synthesized semantics (absent → nil, wrong type → throw).
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     model = try c.decodeIfPresent(String.self, forKey: .model)
+    provider = ((try? c.decodeIfPresent(String.self, forKey: .provider)) ?? nil)?.trimmedNonEmpty
     reasoningEffort = try c.decodeIfPresent(String.self, forKey: .reasoningEffort)
     running = try c.decodeIfPresent(Bool.self, forKey: .running)
     version = try c.decodeIfPresent(String.self, forKey: .version)

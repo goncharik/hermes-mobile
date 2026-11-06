@@ -174,10 +174,13 @@ public struct ChatFeature {
     /// Latest context-window usage (from `session.info` / `message.complete`), driving the
     /// composer's context pill. `nil` until the agent reports usage (old agents never do).
     public var usage: Usage?
-    /// The model/reasoning picker sheet, when open (Task 7).
-    public var modelPicker: ModelPicker?
-    /// The file preview sheet raised by a `hermes-file:` link tap, when open. The first (and
-    /// deliberately `@Presents`) child of this feature: dismissing it must cancel an in-flight
+    /// The model/reasoning picker sheet, when open (#81, #130). An `@Presents` child like
+    /// `filePreview`: dismissing it cancels an in-flight `model.options` load via `.ifLet`.
+    /// Selection stays here — the child forwards row taps as delegate actions. Transient and
+    /// never persisted.
+    @Presents public var modelPicker: ModelPickerFeature.State?
+    /// The file preview sheet raised by a `hermes-file:` link tap, when open. A deliberately
+    /// `@Presents` child of this feature: dismissing it must cancel an in-flight
     /// read or a multi-megabyte Share download, and `.ifLet` auto-cancellation gives exactly
     /// that. Transient and never persisted — `ChatSnapshot` carries no trace of it.
     @Presents public var filePreview: FilePreviewFeature.State?
@@ -573,28 +576,6 @@ public struct ChatFeature {
 
       /// Anything other than `.idle` means the composer is in voice mode.
       public var isBusy: Bool { self != .idle }
-    }
-
-    /// State for the interactive model + reasoning-effort picker.
-    public struct ModelPicker: Equatable, Sendable {
-      public var isLoading: Bool
-      public var options: ModelOptions?
-      /// The `model.options` LOAD failure — the sheet has no list to show at all.
-      public var error: String?
-      /// The last `config.set` rejection while this sheet was up. Rendered inline over a
-      /// still-usable list (the rollback happens in the rows behind it); cleared by the
-      /// next selection.
-      public var applyError: String?
-
-      public init(
-        isLoading: Bool = true, options: ModelOptions? = nil, error: String? = nil,
-        applyError: String? = nil
-      ) {
-        self.isLoading = isLoading
-        self.options = options
-        self.error = error
-        self.applyError = applyError
-      }
     }
 
     // Bookkeeping (internal).
@@ -1291,19 +1272,19 @@ public struct ChatFeature {
     case toolTapped(id: ChatRow.ID)
     case toolDetailDismissed
     case modelChipTapped
-    case modelOptionsResponse(Result<ModelOptions, GatewayError>)
-    /// The provider SLUG of the section the row was tapped in (nil for a programmatic
-    /// selection with no section context). Appended to the `config.set` value as
-    /// `--provider <slug>` so the gateway routes the model to the provider the picker
-    /// showed it under, instead of guessing from the model id (a `openai/…` OpenRouter
-    /// row would otherwise resolve to the direct OpenAI provider and fail on its key).
-    case modelSelected(model: String, provider: String?)
-    case reasoningSelected(String)
+    /// The picker sheet. Its `.delegate(.modelSelected(model:provider:))` carries the provider
+    /// SLUG of the section the row was tapped in (nil when there is none), appended to the
+    /// `config.set` value as `--provider <slug>` so the gateway routes the model to the
+    /// provider the picker showed it under, instead of guessing from the model id (a `openai/…`
+    /// OpenRouter row would otherwise resolve to the direct OpenAI provider and fail on its key).
+    case modelPicker(PresentationAction<ModelPickerFeature.Action>)
     /// A `config.set` that failed for good (the #17 heal has already had its single replay).
     /// Carries the rejected `value` so the latch banner can name it and `previousValue` so the
-    /// optimistic picker write can roll back. One path serves both keys (#81).
-    case configSetFailed(key: String, value: String, previousValue: String?, error: GatewayError)
-    case modelPickerDismissed
+    /// optimistic picker write can roll back (`previousProvider`: the sheet's provider, `model`
+    /// key only). One path serves both keys (#81).
+    case configSetFailed(
+      key: String, value: String, previousValue: String?, previousProvider: String?, error: GatewayError
+    )
     /// A `hermes-file:` link in the transcript was tapped (routed by `ChatView`'s one
     /// `OpenURLAction`). Raises the preview sheet for `path`; a no-op while one is already up.
     case fileReferenceTapped(path: String)
@@ -1530,11 +1511,13 @@ public struct ChatFeature {
       case .teardown:
         state.isReplayReadPending = false
         state.fold = FoldExpansion()
-        // `filePreview` (the `@Presents` child) is deliberately NOT in this list: its load and
-        // download effects are wrapped by `.ifLet`, which cancels them when the sheet is
-        // dismissed and when `AppFeature` nils the whole slot (`.clearLiveChat` — the
-        // mandatory nil-out) — the same `ifLet` cancellation this feature's own un-ID'd
-        // one-shot effects rely on. There is no child `CancelID` to name here. The child's
+        // `filePreview` and `modelPicker` (the `@Presents` children) are deliberately NOT in
+        // this list: their load and download effects are wrapped by `.ifLet`, which cancels
+        // them when the sheet is dismissed and when `AppFeature` nils the whole slot
+        // (`.clearLiveChat` — the mandatory nil-out) — the same `ifLet` cancellation this
+        // feature's own un-ID'd one-shot effects rely on. There is no child `CancelID` to
+        // name here. (The picker's `config.set`s are the PARENT's `CancelID.configSet`
+        // effects, which outlive the sheet on purpose — a pick still applies.) The preview's
         // finished Share download (`downloadedURL`, a file, not an effect) is removed by
         // `AppFeature` at the nil-out (`releaseSlotFilePreviewTemp`).
         return .merge(
@@ -2681,67 +2664,28 @@ public struct ChatFeature {
         return .none
 
       case .modelChipTapped:
-        guard let sessionID = state.liveSessionID else { return .none }
-        state.modelPicker = State.ModelPicker(isLoading: true)
-        return .run { [gateway] send in
-          do {
-            let result = try await gateway.send("model.options", .object(["session_id": .string(sessionID)]))
-            if let options = result.decoded(ModelOptions.self) {
-              await send(.modelOptionsResponse(.success(options)))
-            } else {
-              await send(.modelOptionsResponse(.failure(.server("Malformed model.options result"))))
-            }
-          } catch let error as GatewayError {
-            await send(.modelOptionsResponse(.failure(error)))
-          } catch {
-            await send(.modelOptionsResponse(.failure(.disconnected)))
-          }
-        }
-
-      case let .modelOptionsResponse(.success(options)):
-        state.modelPicker?.isLoading = false
-        state.modelPicker?.options = options
+        // The child loads `model.options` itself on its `.task` (#130). A second tap (a
+        // double-tap, or one landing while the sheet animates in) must not reset the open picker.
+        guard state.modelPicker == nil, let sessionID = state.liveSessionID else { return .none }
+        state.modelPicker = ModelPickerFeature.State(sessionID: sessionID)
         return .none
 
-      case let .modelOptionsResponse(.failure(error)):
-        state.modelPicker?.isLoading = false
-        state.modelPicker?.error = error.message
+      case let .modelPicker(.presented(.delegate(.modelSelected(model, providerSlug)))):
+        return selectModel(model, providerSlug: providerSlug, state: &state)
+
+      case let .modelPicker(.presented(.delegate(.reasoningSelected(effort)))):
+        return selectReasoning(effort, state: &state)
+
+      case .modelPicker:
         return .none
 
-      case let .modelSelected(model, providerSlug):
-        // Blocked mid-turn (server returns 4009); the picker disables selection too.
-        guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
-        // Roll back to the last SERVER-confirmed value, not to a still-in-flight pick's.
-        let previousModel = state.pendingConfigRollback["model"] ?? state.model
-        state.pendingConfigRollback.updateValue(previousModel, forKey: "model")
-        state.model = model // optimistic; reconciled by the next session.info
-        clearConfigError(&state)
-        // Desktop parity (`use-model-controls.ts`): the value carries the picker
-        // section's provider slug so the gateway's model routing never guesses from
-        // the model id alone. A nil slug (no section context) stays a bare model id —
-        // the gateway's own detection ladder handles it exactly as before.
-        let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
-        return configSet(
-          key: "model", value: wireValue, previousValue: previousModel, sessionID: sessionID,
-          heal: state.healTarget
-        )
-
-      case let .reasoningSelected(effort):
-        guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
-        let previousEffort = state.pendingConfigRollback["reasoning"] ?? state.reasoningEffort
-        state.pendingConfigRollback.updateValue(previousEffort, forKey: "reasoning")
-        state.reasoningEffort = effort
-        clearConfigError(&state)
-        return configSet(
-          key: "reasoning", value: effort, previousValue: previousEffort, sessionID: sessionID,
-          heal: state.healTarget
-        )
-
-      case let .configSetFailed(key, value, previousValue, error):
+      case let .configSetFailed(key, value, previousValue, previousProvider, error):
         // Roll the optimistic picker write back so the chip stops lying (the next authoritative
         // `session.info` wins again anyway), then surface the failure — never swallowed.
         switch key {
-        case "model": state.model = previousValue
+        case "model":
+          state.model = previousValue
+          state.modelPicker?.rollBackModelPick(to: previousProvider)
         case "reasoning": state.reasoningEffort = previousValue
         default: break
         }
@@ -2761,10 +2705,6 @@ public struct ChatFeature {
         state.modelPicker?.applyError = message
         // Deliberately no `isSending`/`activity` change: a config change is not a turn. The
         // sheet stays open, the row deselects under the inline error (desktop parity).
-        return .none
-
-      case .modelPickerDismissed:
-        state.modelPicker = nil
         return .none
 
       case let .fileReferenceTapped(path):
@@ -2852,6 +2792,9 @@ public struct ChatFeature {
         idleTimer.setDisabled(wantsAwake)
         return .none
       }
+    }
+    .ifLet(\.$modelPicker, action: \.modelPicker) {
+      ModelPickerFeature()
     }
     .ifLet(\.$filePreview, action: \.filePreview) {
       FilePreviewFeature()
@@ -5284,22 +5227,64 @@ public struct ChatFeature {
     }
   }
 
-  /// Drop the previous `config.set` rejection when a new pick is made, so a successful retry
-  /// isn't read under a stale failure (nothing else clears it: success has no action and
-  /// `session.info` leaves the banner alone).
   /// Drop the rollback target for every key this authoritative `SessionInfo` carries: the chip
   /// now holds the server's own value, so the next pick captures it fresh instead of an older
   /// one. Keys the info omits keep their entry — an absent field preserves, it doesn't confirm.
+  /// The sheet's current provider takes the info's `provider` with the model
+  /// (`ModelPickerFeature.State.confirmModelPick`).
   private func confirmConfigKeys(_ info: SessionInfo, into state: inout State) {
-    if info.model?.nonEmpty != nil { state.pendingConfigRollback.removeValue(forKey: "model") }
+    if info.model?.nonEmpty != nil {
+      state.pendingConfigRollback.removeValue(forKey: "model")
+      state.modelPicker?.confirmModelPick(provider: info.provider)
+    }
     if info.reasoningEffort?.nonEmpty != nil {
       state.pendingConfigRollback.removeValue(forKey: "reasoning")
     }
   }
 
+  /// Drop the previous `config.set` rejection when a new pick is made, so a successful retry
+  /// isn't read under a stale failure (nothing else clears it: success has no action and
+  /// `session.info` leaves the banner alone).
   private func clearConfigError(_ state: inout State) {
     state.errorBanner = nil
     state.modelPicker?.applyError = nil
+  }
+
+  /// A model row tapped in the picker (its `.modelSelected` delegate). `providerSlug` is the
+  /// slug of the section the row was tapped in (nil when there is none).
+  private func selectModel(_ model: String, providerSlug: String?, state: inout State) -> Effect<Action> {
+    // Blocked mid-turn (server returns 4009); the picker disables selection too.
+    guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
+    // Roll back to the last SERVER-confirmed value, not to a still-in-flight pick's.
+    let previousModel = state.pendingConfigRollback["model"] ?? state.model
+    state.pendingConfigRollback.updateValue(previousModel, forKey: "model")
+    state.model = model // optimistic; reconciled by the next session.info
+    // The sheet's current-row match is on (provider, model): move its provider with the pick
+    // (rolled back with the model by `.configSetFailed`).
+    let previousProvider = state.modelPicker?.applyOptimisticModelPick(providerSlug: providerSlug)
+    clearConfigError(&state)
+    // Desktop parity (`use-model-controls.ts`): the value carries the picker
+    // section's provider slug so the gateway's model routing never guesses from
+    // the model id alone. A nil slug (no section context) stays a bare model id —
+    // the gateway's own detection ladder handles it exactly as before.
+    let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
+    return configSet(
+      key: "model", value: wireValue, previousValue: previousModel,
+      previousProvider: previousProvider, sessionID: sessionID, heal: state.healTarget
+    )
+  }
+
+  /// An effort row tapped in the picker (its `.reasoningSelected` delegate).
+  private func selectReasoning(_ effort: String, state: inout State) -> Effect<Action> {
+    guard !state.isSending, let sessionID = state.liveSessionID else { return .none }
+    let previousEffort = state.pendingConfigRollback["reasoning"] ?? state.reasoningEffort
+    state.pendingConfigRollback.updateValue(previousEffort, forKey: "reasoning")
+    state.reasoningEffort = effort
+    clearConfigError(&state)
+    return configSet(
+      key: "reasoning", value: effort, previousValue: previousEffort, sessionID: sessionID,
+      heal: state.healTarget
+    )
   }
 
   /// Change a session setting (model / reasoning) over the gateway. If iOS resumed with a
@@ -5308,8 +5293,8 @@ public struct ChatFeature {
   /// single replay is surfaced as `.configSetFailed` (rollback + banner, and the 4002 latch for
   /// `reasoning`) — never swallowed.
   private func configSet(
-    key: String, value: String, previousValue: String?, sessionID: String,
-    heal: State.HealTarget
+    key: String, value: String, previousValue: String?, previousProvider: String? = nil,
+    sessionID: String, heal: State.HealTarget
   ) -> Effect<Action> {
     .run { [gateway] send in
       func setConfig(_ targetID: String) async throws {
@@ -5324,10 +5309,14 @@ public struct ChatFeature {
           setConfig, sessionID: sessionID, heal: heal, gateway: gateway, send: send
         )
       } catch let error as GatewayError {
-        await send(.configSetFailed(key: key, value: value, previousValue: previousValue, error: error))
+        await send(.configSetFailed(
+          key: key, value: value, previousValue: previousValue, previousProvider: previousProvider,
+          error: error
+        ))
       } catch {
         await send(.configSetFailed(
-          key: key, value: value, previousValue: previousValue, error: .disconnected
+          key: key, value: value, previousValue: previousValue, previousProvider: previousProvider,
+          error: .disconnected
         ))
       }
     }

@@ -45,6 +45,25 @@ public struct PreferencesClient: Sendable {
   public var loadAutoSpeakReplies: @Sendable () -> Bool = { false }
   public var saveAutoSpeakReplies: @Sendable (_ enabled: Bool) -> Void
   public var clearAutoSpeakReplies: @Sendable () -> Void
+  /// Model picker (#130): the provider ids (`ModelOptions.Provider.id`) whose cards are
+  /// collapsed. Default empty = every card expanded (desktop parity). Device-global, cleared
+  /// on logout via `clearModelPickerPrefs()`.
+  public var loadCollapsedModelProviders: @Sendable () -> Set<String> = { [] }
+  public var saveCollapsedModelProviders: @Sendable (_ providerIDs: Set<String>) -> Void
+  /// Model picker (#130): starred models, order = star order (the Favorites card's order).
+  /// Device-global, cleared on logout via `clearModelPickerPrefs()`.
+  public var loadFavoriteModels: @Sendable () -> [FavoriteModel] = { [] }
+  public var saveFavoriteModels: @Sendable (_ favorites: [FavoriteModel]) -> Void
+}
+
+public extension PreferencesClient {
+  /// Drop the model picker's collapse + favorites prefs. Part of every logout ("logout clears
+  /// every prefs entry"); deliberately NOT in `clearIdentityScopedPrefs` — like the read-aloud
+  /// toggle they are device-global UI prefs, not tied to an account.
+  func clearModelPickerPrefs() {
+    saveCollapsedModelProviders([])
+    saveFavoriteModels([])
+  }
 }
 
 public extension PreferencesClient {
@@ -71,6 +90,8 @@ public extension PreferencesClient {
     let pushSnoozeCountKey = "hermes.push-prompt-snooze-count"
     let pushSnoozeUntilKey = "hermes.push-prompt-snooze-until"
     let autoSpeakKey = "hermes.auto-speak-replies"
+    let collapsedProvidersKey = "hermes.model-picker.collapsed-providers"
+    let favoriteModelsKey = "hermes.model-picker.favorite-models"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
 
@@ -116,7 +137,30 @@ public extension PreferencesClient {
       },
       loadAutoSpeakReplies: { store.bool(forKey: autoSpeakKey) }, // unset → false
       saveAutoSpeakReplies: { store.set($0, forKey: autoSpeakKey) },
-      clearAutoSpeakReplies: { store.removeObject(forKey: autoSpeakKey) }
+      clearAutoSpeakReplies: { store.removeObject(forKey: autoSpeakKey) },
+      loadCollapsedModelProviders: {
+        Set((store.array(forKey: collapsedProvidersKey) as? [String]) ?? [])
+      },
+      saveCollapsedModelProviders: { ids in
+        // An empty set removes the key, so a logout leaves no default behind.
+        if ids.isEmpty {
+          store.removeObject(forKey: collapsedProvidersKey)
+        } else {
+          store.set(ids.sorted(), forKey: collapsedProvidersKey)
+        }
+      },
+      loadFavoriteModels: {
+        // Missing or undecodable data → no favorites (a corrupt blob must not crash the picker).
+        guard let data = store.data(forKey: favoriteModelsKey) else { return [] }
+        return (try? JSONDecoder().decode([FavoriteModel].self, from: data)) ?? []
+      },
+      saveFavoriteModels: { favorites in
+        if favorites.isEmpty {
+          store.removeObject(forKey: favoriteModelsKey)
+        } else if let data = try? JSONEncoder().encode(favorites) {
+          store.set(data, forKey: favoriteModelsKey)
+        }
+      }
     )
   }
 
@@ -130,6 +174,8 @@ public extension PreferencesClient {
     let pushToken = LockIsolated<String?>(nil)
     let pushSnooze = LockIsolated<(count: Int, until: Date)?>(nil)
     let autoSpeak = LockIsolated(false)
+    let collapsedProviders = LockIsolated<Set<String>>([])
+    let favoriteModels = LockIsolated<[FavoriteModel]>([])
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -151,7 +197,11 @@ public extension PreferencesClient {
       clearPushPromptSnooze: { pushSnooze.setValue(nil) },
       loadAutoSpeakReplies: { autoSpeak.value },
       saveAutoSpeakReplies: { autoSpeak.setValue($0) },
-      clearAutoSpeakReplies: { autoSpeak.setValue(false) }
+      clearAutoSpeakReplies: { autoSpeak.setValue(false) },
+      loadCollapsedModelProviders: { collapsedProviders.value },
+      saveCollapsedModelProviders: { collapsedProviders.setValue($0) },
+      loadFavoriteModels: { favoriteModels.value },
+      saveFavoriteModels: { favoriteModels.setValue($0) }
     )
   }
 }
