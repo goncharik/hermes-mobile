@@ -41,45 +41,6 @@ public struct SessionCardContent: Equatable, Sendable {
   }
 }
 
-/// The one state a card's leading status dot paints, mirroring the desktop's
-/// `SessionDotState` for the states mobile can know: a pending approval or clarify, a running
-/// turn, finished-while-away, or nothing. The desktop's stalled / background / draft states
-/// need live socket events for every session, which the list does not have.
-public enum SessionStatus: Equatable, Sendable {
-  /// An approval or clarify is blocking the turn — the one state that asks the user to act.
-  case needsInput
-  /// A turn is running.
-  case working
-  /// New activity since the user last opened the session.
-  case unread
-  /// Nothing to report.
-  case idle
-
-  /// Resolves the flags to one state, highest priority first (desktop order: needs-input
-  /// over working over unread).
-  public init(needsInput: Bool, isWorking: Bool, isUnread: Bool) {
-    if needsInput {
-      self = .needsInput
-    } else if isWorking {
-      self = .working
-    } else if isUnread {
-      self = .unread
-    } else {
-      self = .idle
-    }
-  }
-
-  /// What VoiceOver says for the dot; idle says nothing.
-  public var accessibilityText: String? {
-    switch self {
-    case .needsInput: "Needs input"
-    case .working: "Working"
-    case .unread: "Unread"
-    case .idle: nil
-    }
-  }
-}
-
 extension Session {
   /// The card header's workspace label: the folder basename of `cwd`, else "No workspace".
   /// Mirrors desktop `baseName(path) || path` (root "/" has no basename, so the path itself

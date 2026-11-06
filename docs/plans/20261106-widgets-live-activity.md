@@ -305,11 +305,11 @@ guard.
 - Create: `HermesKit/Sources/HermesKit/HermesWidgetKitExports.swift` (`@_exported import HermesWidgetKit`)
 - Create: `HermesKit/Tests/HermesWidgetKitTests/LaunchIntentTests.swift`
 
-- [ ] add `.library(name: "HermesWidgetKit", targets: ["HermesWidgetKit"])`, a Foundation-only `HermesWidgetKit` target, make `HermesKit` depend on it, and add a `HermesWidgetKitTests` test target
-- [ ] move `SessionStatus` (add `Codable`) and `LaunchIntent` (with its quick-action literals, unchanged) into HermesWidgetKit as `public`; re-export from HermesKit so no call site changes
-- [ ] confirm the app still builds (`tuist generate --no-open && make build`)
-- [ ] write tests for the moved `LaunchIntent` quick-action mapping (round-trip `shortcutItemType`, unknown → nil) in `HermesWidgetKitTests`
-- [ ] run tests (`swift test --package-path HermesKit`) - must pass before task 2
+- [x] add `.library(name: "HermesWidgetKit", targets: ["HermesWidgetKit"])`, a Foundation-only `HermesWidgetKit` target, make `HermesKit` depend on it, and add a `HermesWidgetKitTests` test target
+- [x] move `SessionStatus` (add `Codable`) and `LaunchIntent` (with its quick-action literals, unchanged) into HermesWidgetKit as `public`; re-export from HermesKit so no call site changes
+- [x] confirm the app still builds (`tuist generate --no-open && make build`)
+- [x] write tests for the moved `LaunchIntent` quick-action mapping (round-trip `shortcutItemType`, unknown → nil) in `HermesWidgetKitTests` (➕ plus a `SessionStatus` Codable raw-value test; the existing HermesKit mapping tests stay untouched)
+- [x] run tests (`swift test --package-path HermesKit`) - must pass before task 2
 
 ### Task 2: Add the widget data types, deep links and staleness rules to HermesWidgetKit
 
