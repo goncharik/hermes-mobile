@@ -91,9 +91,10 @@ Regular renders the detail column at all times, so an empty slot would be a blan
 `scopedProfileName` from the list) in regular, `nil` in compact — and every fill goes through it:
 
 - **Home appearance** — `landOnHome` (the cold-launch replay funnel, shared by the launch probe,
-  the retry screen, and manual login). Replay decides first: a stashed tap's `openSession` fills
-  the slot itself, so a replayed tap never has to tear down a throwaway seat; only the no-replay
-  and dropped-foreign-origin branches call `fillNewChatIfDetailEmpty` (nil slot + `detailRefill`).
+  the retry screen, and manual login). Replay decides first: a stashed App Intent's new chat
+  (#93, `docs/features/app-intents.md`) or a stashed tap's `openSession` fills the slot itself,
+  so a replay never has to tear down a throwaway seat; only the no-replay and
+  dropped-foreign-origin branches call `fillNewChatIfDetailEmpty` (nil slot + `detailRefill`).
 - **`layoutChanged(.regular)`** with a nil slot seats one; narrowing never fills.
 - **Archive / delete of the on-screen session** — `teardownSlot(thenFill: detailRefill(state))`.
   Delete keeps its `flushSnapshot: false` + snapshot wipe (`docs/features/session-list.md`).
@@ -124,7 +125,8 @@ Regular renders the detail column at all times, so an empty slot would be a blan
   `isDiscardableNewChat` AND the same `scopedProfileName` AND `errorBanner == nil`. Tearing
   such a seat down to fill an identical fresh one would redial the socket for nothing, so it
   resets the composer draft (text → the `initialComposerText` seed or empty; attachments
-  cleared) and returns `.none`. Everything the reset cannot reproduce falls through to a real
+  cleared) and returns `.none` (the dictation App Intent, which shares this path, also starts
+  the mic: `docs/features/app-intents.md`). Everything the reset cannot reproduce falls through to a real
   refill: a stale profile, in-flight composer input, and a surfaced failure — a seat whose
   `session.create` failed keeps `liveSessionID == nil` with `hasRequestedSession` still true,
   so it can neither send nor retry until the socket drops, and a composer reset would leave the

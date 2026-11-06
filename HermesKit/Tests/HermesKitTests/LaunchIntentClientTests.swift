@@ -31,19 +31,12 @@ struct LaunchIntentClientTests {
     }
   }
 
-  // MARK: Client doubles
+  // MARK: Client double
 
   @Test func testValueYieldsAFinishedStream() async {
     var values: [LaunchIntent] = []
     for await value in LaunchIntentClient.testValue.incoming() { values.append(value) }
     #expect(values.isEmpty)
-  }
-
-  @Test func inMemoryDeliversEmittedIntentToLiveSubscriber() async {
-    let launchIntents = LaunchIntentClient.inMemory()
-    let stream = launchIntents.client.incoming()
-    launchIntents.emit(.newChatWithDictation)
-    #expect(await collect(1, from: stream) == [.newChatWithDictation])
   }
 
   // MARK: LaunchIntentBridge buffering (cold-launch race)
@@ -97,8 +90,8 @@ struct LaunchIntentClientTests {
   /// must not defeat the buffer: an intent sent in the re-subscribe gap is buffered again.
   @Test func bridgeBuffersAgainAfterSubscriberTermination() async {
     let bridge = LaunchIntentBridge()
-    // Dropping the stream deallocates its storage, which terminates the continuation
-    // synchronously, so the bridge prunes it.
+    // Dropping the stream terminates its continuation, so a yield to it is not `.enqueued`.
+    // This checks the re-buffer only, not that the dead entry is pruned.
     var stream: AsyncStream<LaunchIntent>? = bridge.stream()
     _ = stream
     stream = nil

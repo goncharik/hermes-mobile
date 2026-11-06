@@ -35,7 +35,8 @@
     gated on connection state. So dictation does NOT need to wait for `.ready`.
 - `ChatFeature.task` (`ChatFeature.swift:1485`): the slot's first-start branch
   (`hasStarted` guard). In compact it fires from the chat view's `.task`; in regular it comes
-  from `.fillLiveChat`.
+  from `.fillLiveChat` when an occupied slot is replaced, otherwise from the
+  `.id(slotGeneration)`-keyed detail view's `.task`.
 - No App Intents code exists yet, so the app target needs `tuist generate` after adding files.
 
 ## Development Approach
@@ -89,10 +90,12 @@
    - The flag is consumed immediately, at the slot's first `.task` (or right away on the
      reused-seat path), not on a later `.ready`. So it can't fire minutes later after a backoff
      reconnect, or after the user starts typing.
+   - A stashed dictation intent keeps its dictation only on the launch auto-connect landing;
+     the retry screen and onboarding landings replay it as a plain new chat.
    - It only starts recording when `recording == .idle`, so it never toggles an existing
      recording off.
-   - It goes through the normal `voiceButtonTapped` → permission flow. A denial shows the
-     existing banner.
+   - It goes through the mic button's own permission flow (the shared `startVoiceRecording`
+     helper). A denial shows the existing banner.
 4. **No static Quick Actions, no scene delegate.** The app is scene-based, so
    `UIApplicationShortcutItems` would need a scene delegate (the PR #95 review's bug 1).
    App Shortcuts may cover the long-press menu on iOS 17+. That gets verified on device (see
@@ -107,7 +110,8 @@
 `LaunchIntentClient.incoming()` stream (observed in `AppFeature.task` next to the push-tap
 observer) → `AppFeature.launchIntentReceived(intent)`:
 - `home == nil` → stash it (clearing `pendingPushTap`) and return.
-- otherwise → run the `createSession` body with `startsDictation: intent == .newChatWithDictation`.
+- otherwise → dismiss the list's presentations and run the `createSession` body with
+  `startsDictation: intent == .newChatWithDictation` (false behind the re-auth modal).
 
 ## Technical Details
 - `LaunchIntent` (HermesKit `Models/`): `enum LaunchIntent: Equatable, Sendable { case newChat,
@@ -121,7 +125,7 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - `LaunchIntentClient` (`@DependencyClient`):
   - `incoming: @Sendable () -> AsyncStream<LaunchIntent>`.
   - `liveValue` wraps `LaunchIntentBridge.shared`.
-  - `testValue` is a finished stream. A test helper yields intents live.
+  - `testValue` is a finished stream. Tests put a fresh `LaunchIntentBridge()` behind it.
 - `AppFeature.State.pendingLaunchIntent: LaunchIntent?`.
 - New action `launchIntentReceived(LaunchIntent)`.
 - `CancelID.launchIntents` observer, merged with `tapObserver` in every return path of `.task`
@@ -130,12 +134,11 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
   `reduceCreateSession(&state, composerText:, startsDictation:)`, called by both the delegate
   case and the intent.
 - `ChatFeature.State.pendingDictation: Bool` (default `false`, not persisted).
-- New action `startPendingDictation`:
-  - clear the flag
-  - return `.none` unless `recording == .idle`
-  - otherwise `.send(.voiceButtonTapped)`
-  - It is sent from the `.task` first-start branch (merged with `connect`) when the flag is set,
-    and from `reduceCreateSession`'s reused-seat branch.
+- `voiceButtonTapped`'s idle leg is extracted into `startVoiceRecording(&state)`, shared by:
+  - `consumePendingDictation(&state)`, called from the `.task` first-start branch (merged with
+    `connect`): clear the flag, start recording only if it was set and `recording == .idle`;
+  - the new action `startDictation` (start recording only if `recording == .idle`), sent by
+    `reduceCreateSession`'s reused-seat branch, whose slot has already started.
 
 ## What Goes Where
 - **Implementation Steps**: HermesKit model/bridge/client, reducer routing, intents in the app
@@ -250,6 +253,11 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - [x] nothing outside scope changed: no `reduceCore`, no `slotGeneration` change, push observer
       untouched
 - [x] run the full suite: `make test` and `make snapshot`
+- [x] ➕ review fixes: dictation replays only on the auto-connect landing; list presentations
+      dismissed and no dictation behind re-auth; the intent stash keeps the tap's origin URL so
+      the cross-server badge scrub still runs; the replay calls `reduceCreateSession` directly;
+      `startPendingDictation` became the flag-free `startDictation`; the in-memory client
+      double was dropped for a real bridge in tests
 
 ### Task 6: [Final] Update documentation
 - [x] create `docs/features/app-intents.md`: intents, phrases, bridge/stash/replay, the

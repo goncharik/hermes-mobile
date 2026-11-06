@@ -758,9 +758,9 @@ public struct ChatFeature {
     /// `AppFeature` through `.reattached`, which guards the live socket.
     var hasStarted: Bool
     /// One-shot "start the mic as soon as this chat opens" request from the dictation App
-    /// Intent (#93). Consumed — cleared whatever happens — at the slot's first `.task` or by
-    /// `.startPendingDictation` (the reused-seat path), so it can never fire later (after a
-    /// reconnect, or once the user has started typing). Starts recording only from `.idle`.
+    /// Intent (#93). Consumed — cleared whatever happens — at the slot's first `.task`, so it
+    /// can never fire later (after a reconnect, or once the user has started typing). Starts
+    /// recording only from `.idle`.
     /// Per-slot, unpersisted.
     var pendingDictation: Bool
     /// Set when the gated session died (`.authExpired`): reconnect backoff is paused and the
@@ -1256,9 +1256,10 @@ public struct ChatFeature {
     case copiedIDToastExpired
     // Voice input (#7)
     case voiceButtonTapped
-    /// Consume `pendingDictation` on an already-started slot (sent by `AppFeature` when the
-    /// dictation App Intent reuses the new-chat seat, #93). Never sent by the view.
-    case startPendingDictation
+    /// Start the mic now if idle — on an already-started slot, which no first `.task` will
+    /// reach (sent by `AppFeature` when the dictation App Intent reuses the new-chat seat, #93).
+    /// Never sent by the view.
+    case startDictation
     case recordingPermission(Bool)
     case recordingStarted
     case recordingLevel(Float)
@@ -1517,7 +1518,6 @@ public struct ChatFeature {
         if state.autoSpeakReplies { arm(&state) }
         // The dictation App Intent's one-shot (#93) is consumed HERE, at first start — never
         // on a later `.ready`. Recording is REST-transcribed, so it needn't wait for the socket.
-        guard state.pendingDictation else { return connect(state.connection) }
         return .merge(connect(state.connection), consumePendingDictation(&state))
 
       case .viewDisappeared:
@@ -2253,8 +2253,8 @@ public struct ChatFeature {
           return .none
         }
 
-      case .startPendingDictation:
-        return consumePendingDictation(&state)
+      case .startDictation:
+        return state.recording == .idle ? startVoiceRecording(&state) : .none
 
       case let .recordingPermission(granted):
         guard granted else {
@@ -3871,10 +3871,9 @@ public struct ChatFeature {
   /// mic only from `.idle` — never toggle a recording (or a pending permission / transcription)
   /// the user already has going. A denial lands on `.recordingPermission`'s existing banner.
   private func consumePendingDictation(_ state: inout State) -> Effect<Action> {
-    let wanted = state.pendingDictation
+    guard state.pendingDictation else { return .none }
     state.pendingDictation = false
-    guard wanted, state.recording == .idle else { return .none }
-    return startVoiceRecording(&state)
+    return state.recording == .idle ? startVoiceRecording(&state) : .none
   }
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI

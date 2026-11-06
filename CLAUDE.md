@@ -331,8 +331,9 @@ bullets below are the compressed rules.
   regular; never stack). Cold-launch taps replay through this same path.
 - **App Intents (#93) only route**: `LaunchIntentBridge` → `launchIntentReceived` → the
   "New session" `reduceCreateSession` (busy slot silently replaced). Pre-home intents stash
-  last-wins with `pendingPushTap`, replay in `landOnHome`, clear on logout; dictation is a
-  one-shot consumed at first `.task`, idle-only. Details: `docs/features/app-intents.md`.
+  last-wins with `pendingPushTap`, replay in `landOnHome` (dictation only on the launch
+  auto-connect landing), clear on logout; dictation is a one-shot consumed at the slot's first
+  start (or at once on a reused seat), idle-only. Details: `docs/features/app-intents.md`.
 
 ## Multi-profile
 

@@ -4,8 +4,9 @@ The short rule lives in `CLAUDE.md` → "Push notifications" (next to the push-t
 mirrors); this doc is the full contract. Design history: `docs/plans/completed/`
 (`20261106-app-intents-new-chat.md`).
 
-Two App Intents open the app on a fresh chat under the selected profile, from Shortcuts, Siri,
-Spotlight and the Action button (iPhone 15 Pro and later). The app is a thin client here too:
+Two App Intents open the app on a fresh chat under the selected profile, from Shortcuts, Siri
+and Spotlight, and from the Action button (iPhone 15 Pro and later) once the user assigns one
+there. The app is a thin client here too:
 both intents are `openAppWhenRun = true` and only ROUTE. No agent logic runs in the intent.
 
 ## Intents and phrases
@@ -20,7 +21,7 @@ both intents are `openAppWhenRun = true` and only ROUTE. No agent logic runs in 
   .received(_:)`. The intent never fails, not even on a denied mic permission (that surfaces
   in the app, below).
 - `HermesAppShortcuts` (`HermesMobile/Sources/Intents/HermesAppShortcuts.swift`) is the one
-  `AppShortcutsProvider`, so every surface works without user setup.
+  `AppShortcutsProvider`, so Shortcuts, Siri and Spotlight work without user setup.
 - **Explicit phrases only.** There is deliberately no "Open \(.applicationName)" phrase mapped
   to a new chat (opening the app should just open it), and no "Talk to \(.applicationName)":
   that phrase is reserved for the voice-conversation intent (#92), which will add a third
@@ -44,9 +45,8 @@ a smaller payload:
   once by the first subscriber. It is Foundation-only, so it sits outside any UIKit guard, the
   `liveValue` needs no `#if canImport(UIKit)`, and the buffering is unit-tested on macOS.
 - **`LaunchIntentClient`** is a `@DependencyClient` with `incoming`. `liveValue` wraps the
-  shared bridge, `testValue` is a finished stream, and `.inMemory()` yields live only (no
-  buffering, like `PushClient.InMemory`); put a real bridge behind the client to test the
-  buffer.
+  shared bridge and `testValue` is a finished stream; tests put a fresh `LaunchIntentBridge()`
+  behind `incoming`.
 - **The observer** (`CancelID.launchIntents`, `cancelInFlight`) is merged with the push-tap
   observer on every return path of `.task`. The push observer itself is unchanged.
 - **Stash before sign-in, never drop.** On a cold launch `home` doesn't exist until the
@@ -54,11 +54,15 @@ a smaller payload:
   the main use case. With `home == nil`, `launchIntentReceived` stores the intent in
   `State.pendingLaunchIntent` and returns. The stash survives onboarding and the retry screen;
   every `landOnHome` caller (auto-connect success, the retry screen's connect, onboarding's
-  connect) replays it via `.send(.launchIntentReceived(_))`. The replay seats the chat itself,
-  so `landOnHome` skips its regular-width detail fill for that landing.
-- **Last-wins across both stashes.** Stashing an intent clears `pendingPushTap` (and its server
-  URL); stashing a push tap clears `pendingLaunchIntent`. `landOnHome` replays only the most
-  recent request. Approval badge entries are inserted independently and stay.
+  connect) replays it through `reduceCreateSession`. The replay seats the chat itself, so
+  `landOnHome` skips its regular-width detail fill for that landing.
+- **Only the launch auto-connect landing keeps the dictation.** The retry screen re-probes on
+  every foreground and a manual login can come much later, so those landings replay a stashed
+  `.newChatWithDictation` as a plain new chat: the mic never starts hours after the request.
+- **Last-wins across both stashes.** Stashing an intent clears `pendingPushTap`; stashing a
+  push tap clears `pendingLaunchIntent`. `landOnHome` replays only the most recent request.
+  Approval badge entries are inserted independently and stay, but the tap's server URL is
+  kept, so a login to a different server still scrubs them (the #46 cross-server guard).
 - **No server-origin guard.** Unlike a push tap, a new chat belongs to no session, so it is
   valid on whatever server the user signs into.
 - **Cleared on every logout path**, at each site that clears `pendingPushTap`: Settings → Sign
@@ -79,11 +83,19 @@ two can never drift. That gives, unchanged:
   its `slotGeneration` bump) and an empty path in regular;
 - slot replacement through `teardownSlot(thenFill:)`, never stacking.
 
+Two things differ from the button, because an intent can arrive at any moment:
+
+- **List presentations are dismissed first** (`SessionListFeature.State.dismissPresentations`:
+  Settings, Archived, Add Profile, the action sheet, the push-setup sheet, the rename alerts),
+  so the new chat isn't seated behind a sheet.
+- **Behind the re-auth modal** the chat still seats (it resumes with the re-auth), but the
+  dictation is dropped: no recording the user can't see.
+
 **Busy-slot policy: silent replace.** A slot with a running turn or `hasQueuedWork` is replaced
 without a prompt, exactly as the "New session" button and a push tap to a different session
-replace it (the PR #95 review asked for the policies to match). The running turn continues on
-the server, keeps its working glow in the list and is reachable from there; the client-side
-queue (#66) goes with the slot, as it does for the button.
+replace it. The running turn continues on the server, keeps its working glow in the list and
+is reachable from there; the client-side queue (#66) goes with the slot, as it does for the
+button.
 
 ## Dictation: a one-shot, consumed at first start
 
@@ -92,14 +104,16 @@ the chat it seats. The flag is consumed by `consumePendingDictation`, which alwa
 and starts the mic only when it was set AND `recording == .idle`:
 
 - **New chat**: at the slot's first `.task` (the `hasStarted` branch, merged with `connect`).
-  In compact that is the chat view's `.task`; in regular the `.id(slotGeneration)`-keyed detail
-  view sends `.task` on appear. A re-appearance never re-fires (`hasStarted`).
-- **Reused seat**: that slot has already started, so `reduceCreateSession` sets the flag and
-  sends `.liveChat(.startPendingDictation)` right away. The action exists only so the parent can
-  reach a started slot; the view never sends it.
+  In compact that is the chat view's `.task`. In regular it is the reducer's `.fillLiveChat`
+  dial (`.liveChat(.task)`) when the intent replaced an occupied slot, otherwise the
+  `.id(slotGeneration)`-keyed detail view's `.task`. A re-appearance never re-fires
+  (`hasStarted`).
+- **Reused seat**: that slot has already started, so `reduceCreateSession` sends
+  `.liveChat(.startDictation)` (no flag), which starts the mic only from `.idle`. The action
+  exists only so the parent can reach a started slot; the view never sends it.
 
-Consequences, all deliberate (they replace PR #95's "arm on `.ready`", which could fire minutes
-later after a backoff reconnect and toggled the user's own recording off):
+Consequences, all deliberate (an "arm on `.ready`" design could fire minutes later after a
+backoff reconnect and toggle the user's own recording off):
 
 - It never waits for the socket. Transcription is REST (`POST /api/audio/transcribe`) and the
   mic button is not gated on connection state, so there is nothing to wait for, and a flag
@@ -122,31 +136,6 @@ screenshot capture still opens the app, but never swaps the curated chat for a n
 
 The app is scene-based (SwiftUI `App`). Static `UIApplicationShortcutItems` would need a scene
 delegate (`application(_:configurationForConnecting:)` → `windowScene(_:performActionFor:)`,
-plus `connectionOptions.shortcutItem` for a cold launch), which was PR #95's first review bug.
-App Shortcuts may already appear in the Home Screen icon's long-press menu on iOS 17+. **Verify
-that on device**; static items become a follow-up only if the App Shortcuts are absent there.
-
-## Tests
-
-- `LaunchIntentClientTests`: the bridge's buffer (pre-subscribe delivery to the first subscriber
-  only, last-wins, no buffering on live delivery, fan-out, re-buffer after a subscriber
-  terminates) and the finished `testValue`.
-- `AppFeatureTests`: compact marker, regular fill, profile scoping, busy-slot replace, reusable
-  seat (no redial), pre-home stash replayed after auto-connect, the retry screen and the
-  onboarding fallback, logout clears, intent/tap last-wins both ways, dictation flag on a new
-  chat and `startPendingDictation` on a reused seat.
-- `ChatReductionTests`: first `.task` with the flag → permission → recording, no re-fire on a
-  second `.task`, denial banner, no toggle while recording, `startPendingDictation` consumes
-  once.
-
-The intent structs are declarations only (no tests); App Intents metadata extraction lists both.
-
-## Device checks still open
-
-- Shortcuts lists both shortcuts with no setup; each runs warm and from a killed app.
-- Siri: "New Hermes chat" and "Dictate to Hermes". Spotlight: "Hermes" shows both.
-- Action button: the dictation shortcut starts the mic on a fresh chat, including the first-run
-  mic prompt.
-- Home Screen long-press: whether the App Shortcuts appear (see above).
-- Busy slot: fire an intent during a long turn; the new chat opens, the old session glows in
-  the list and continues when reopened.
+plus `connectionOptions.shortcutItem` for a cold launch). App Shortcuts may already appear in
+the Home Screen icon's long-press menu on iOS 17+; static items become a follow-up only if a
+device check shows they don't.

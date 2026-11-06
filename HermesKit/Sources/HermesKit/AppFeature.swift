@@ -65,9 +65,10 @@ public struct AppFeature {
     /// covers is intra-launch — and cleared on logout (the stash dies with the identity).
     var pendingPushTap: PushTap?
     /// The server the stashed tap belongs to: the persisted server URL at stash time (the
-    /// agent whose push plugin this device registered with). Guards the replay — a login
-    /// that targets a DIFFERENT server drops the stash instead of resuming a foreign
-    /// session id there (the resume self-heal would silently create a spurious empty
+    /// agent whose push plugin this device registered with). Kept when an App Intent
+    /// supersedes the tap, so the landing still scrubs foreign approval badge entries. Guards
+    /// the replay — a login that targets a DIFFERENT server drops the stash instead of
+    /// resuming a foreign session id there (the resume self-heal would silently create a spurious empty
     /// chat). `nil` when no URL was stored at stash time (fully logged out); the replay
     /// then proceeds unverified — the plan's logged-out → login → open flow, accepted
     /// because pushes only come from a server this device registered with.
@@ -82,11 +83,11 @@ public struct AppFeature {
     /// An App Intent launch request (#93) that arrived before the session list existed — the
     /// cold-launch Action button / Siri / Shortcuts case, where `home` only appears once the
     /// auto-connect probe (or a manual login) finishes. Same shape as `pendingPushTap`: single
-    /// stash, last-wins, replayed in `landOnHome`, process-lifetime only, cleared on every
-    /// logout path. Last-wins ACROSS both stashes too: stashing an intent clears the tap stash
-    /// and vice versa, so the landing replays only the most recent request. No server-origin
-    /// guard: a new chat belongs to no session, so it is valid on whatever server the user
-    /// signs into.
+    /// stash, last-wins, replayed in `landOnHome` (dictation only on the launch auto-connect
+    /// landing), process-lifetime only, cleared on every logout path. Last-wins ACROSS both
+    /// stashes too: stashing an intent clears the tap stash and vice versa, so the landing
+    /// replays only the most recent request. No server-origin guard: a new chat belongs to no
+    /// session, so it is valid on whatever server the user signs into.
     var pendingLaunchIntent: LaunchIntent?
 
     public init(
@@ -386,7 +387,7 @@ public struct AppFeature {
         // Defensive: a retry screen and a live list must never coexist (see the `.task` guard).
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return landOnHome(&state)
+        return landOnHome(&state, replaysDictation: true)
 
       case let .autoConnectFailed(connection, error):
         state.autoConnecting = false
@@ -410,7 +411,7 @@ public struct AppFeature {
         // auto-connect, cold-launch push-tap replay included.
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return landOnHome(&state)
+        return landOnHome(&state, replaysDictation: false)
 
       case let .connectionFailed(.delegate(.credentialsRejected(connection))):
         // The retry reached the server and it turned us away — retrying can't fix that, so
@@ -532,15 +533,20 @@ public struct AppFeature {
           // No session list yet (cold launch still auto-connecting, or on onboarding / the
           // retry screen) — stash for `landOnHome`, never drop: the Action button from a cold
           // start is the main use case. Last-wins across both stashes, so a tap that came
-          // earlier no longer replays (its approval badge entry, inserted independently,
-          // stays).
+          // earlier no longer replays. Its origin URL is kept: the landing's cross-server
+          // guard still scrubs that tap's approval badge entry on a foreign login.
           state.pendingLaunchIntent = intent
           state.pendingPushTap = nil
-          state.pendingPushTapServerURL = nil
           return .none
         }
+        // Unlike the button, an intent can arrive over a list sheet: dismiss them so the new
+        // chat is what the user sees. Behind the re-auth modal the chat still seats (it resumes
+        // with the re-auth), but never with a hot mic the user can't see.
+        state.home?.dismissPresentations()
         return reduceCreateSession(
-          &state, composerText: nil, startsDictation: intent == .newChatWithDictation
+          &state,
+          composerText: nil,
+          startsDictation: intent == .newChatWithDictation && state.reauth == nil
         )
 
       case let .onboarding(.delegate(.connected(connection))):
@@ -551,7 +557,7 @@ public struct AppFeature {
         state.home = makeHomeState(connection: connection)
         // Auto-connect failure falls back to onboarding, so a manual login must also replay
         // a stashed cold-launch tap (#46).
-        return landOnHome(&state)
+        return landOnHome(&state, replaysDictation: false)
 
       case let .home(.delegate(.openSession(session))):
         guard let home = state.home else { return .none }
@@ -973,7 +979,7 @@ public struct AppFeature {
   /// "New session": the list's button (`.home(.delegate(.createSession))`) and an App Intent
   /// (`.launchIntentReceived`, #93) both land here, so the two can never drift. No list → no-op.
   /// `startsDictation` is the intent's dictation request (`.newChatWithDictation`): a one-shot
-  /// `pendingDictation` on the chat, consumed at its first `.task` — or right here on the
+  /// `pendingDictation` on the chat, consumed at its first `.task` — or `.startDictation` on the
   /// reused-seat path, whose slot has already started.
   private func reduceCreateSession(
     _ state: inout State, composerText: String?, startsDictation: Bool
@@ -993,9 +999,7 @@ public struct AppFeature {
       if state.isChatDetached {
         state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
       }
-      guard startsDictation else { return .none }
-      state.liveChat?.pendingDictation = true
-      return .send(.liveChat(.startPendingDictation))
+      return startsDictation ? .send(.liveChat(.startDictation)) : .none
     }
     // New chats are created under the currently-selected profile. `composerText` (push "Ask
     // agent to install") seeds the composer draft but is NOT auto-sent.
@@ -1237,28 +1241,42 @@ public struct AppFeature {
   /// unknown origin (`nil` — no stored URL at stash time) replays unverified; see
   /// `pendingPushTapServerURL`.
   ///
-  /// A stashed App Intent request (#93) replays the same way, through `.launchIntentReceived`
-  /// — the "New session" path fills the slot, so no detail seat is filled first. The two
-  /// stashes are mutually exclusive (last-wins across both), so at most one replays.
-  private func landOnHome(_ state: inout State) -> Effect<Action> {
-    if let intent = state.pendingLaunchIntent {
-      state.pendingLaunchIntent = nil
-      return .send(.launchIntentReceived(intent))
-    }
-    guard let tap = state.pendingPushTap else {
-      fillNewChatIfDetailEmpty(&state)
-      return .none
-    }
+  /// A stashed App Intent request (#93) replays through the "New session" path, which fills
+  /// the slot, so no detail seat is filled first. The two stashes are mutually exclusive
+  /// (last-wins across both), so at most one replays; the cross-server badge scrub runs either
+  /// way. The intent keeps its dictation only on the launch auto-connect landing
+  /// (`replaysDictation`): a retry-screen re-probe or a manual login can come minutes or hours
+  /// later, so those replay it as a plain new chat.
+  private func landOnHome(_ state: inout State, replaysDictation: Bool) -> Effect<Action> {
+    let intent = state.pendingLaunchIntent
+    let tap = state.pendingPushTap
     let origin = state.pendingPushTapServerURL
+    state.pendingLaunchIntent = nil
     state.pendingPushTap = nil
     state.pendingPushTapServerURL = nil
-    if let origin, let connected = state.home?.connection.baseURL,
-       !Self.isSameServer(origin, connected) {
-      // Dropped, not replayed — nothing will fill the slot, so seat the detail here.
-      fillNewChatIfDetailEmpty(&state)
-      guard !state.pendingApprovalSessionIDs.isEmpty else { return .none }
+    var isForeign = false
+    if let origin, let connected = state.home?.connection.baseURL {
+      isForeign = !Self.isSameServer(origin, connected)
+    }
+    var badge: Effect<Action> = .none
+    if isForeign, !state.pendingApprovalSessionIDs.isEmpty {
       state.pendingApprovalSessionIDs.removeAll()
-      return setBadge(state)
+      badge = setBadge(state)
+    }
+    if let intent {
+      return .merge(
+        badge,
+        reduceCreateSession(
+          &state,
+          composerText: nil,
+          startsDictation: replaysDictation && intent == .newChatWithDictation
+        )
+      )
+    }
+    guard let tap, !isForeign else {
+      // No tap, or dropped as foreign — nothing will fill the slot, so seat the detail here.
+      fillNewChatIfDetailEmpty(&state)
+      return badge
     }
     // The replayed tap's `openSession` fills the slot (marker only in compact).
     return .send(.pushTapped(tap))

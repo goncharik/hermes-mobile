@@ -19,7 +19,9 @@ extension LaunchIntentClient: DependencyKey {
     LaunchIntentClient(incoming: { LaunchIntentBridge.shared.stream() })
   }
 
-  /// No-op double: a finished stream. Use `.inMemory()` to yield intents live.
+  /// No-op double: a finished stream. Spelled out, not `Self()`: the macro reports the
+  /// property default as unimplemented when called. Tests that need intents put a fresh
+  /// `LaunchIntentBridge()` behind `incoming`.
   public static var testValue: LaunchIntentClient {
     LaunchIntentClient(incoming: { AsyncStream { $0.finish() } })
   }
@@ -30,53 +32,6 @@ public extension DependencyValues {
     get { self[LaunchIntentClient.self] }
     set { self[LaunchIntentClient.self] = newValue }
   }
-}
-
-// MARK: - In-memory (deterministic test variant)
-
-/// Thread-safe mailbox behind the in-memory client: live subscribers only, no buffering.
-private final class LaunchIntentBox: @unchecked Sendable {
-  private let lock = NSLock()
-  private var continuations: [UUID: AsyncStream<LaunchIntent>.Continuation] = [:]
-
-  func stream() -> AsyncStream<LaunchIntent> {
-    AsyncStream { continuation in
-      let id = UUID()
-      lock.withLock { continuations[id] = continuation }
-      continuation.onTermination = { [weak self] _ in
-        guard let self else { return }
-        self.lock.withLock { _ = self.continuations.removeValue(forKey: id) }
-      }
-    }
-  }
-
-  func emit(_ intent: LaunchIntent) {
-    let live = lock.withLock { Array(continuations.values) }
-    for continuation in live { continuation.yield(intent) }
-  }
-}
-
-public extension LaunchIntentClient {
-  /// A controllable client for tests. Intents are delivered LIVE-ONLY: unlike the production
-  /// `LaunchIntentBridge`, the double does no launch-race buffering, so an intent emitted with
-  /// no active subscriber is dropped (subscribe first, then emit). To exercise the buffer
-  /// itself, put a real `LaunchIntentBridge` behind a `LaunchIntentClient` instead.
-  struct InMemory: Sendable {
-    public let client: LaunchIntentClient
-    private let box: LaunchIntentBox
-
-    public init() {
-      let box = LaunchIntentBox()
-      self.box = box
-      self.client = LaunchIntentClient(incoming: { box.stream() })
-    }
-
-    /// Yield an intent into every live `incoming()` stream, as if an App Intent ran.
-    public func emit(_ intent: LaunchIntent) { box.emit(intent) }
-  }
-
-  /// Convenience: a controllable in-memory client + handle for driving its stream.
-  static func inMemory() -> InMemory { InMemory() }
 }
 
 // MARK: - App Intent bridge (process-wide hub)

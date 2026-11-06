@@ -212,7 +212,8 @@ take the latch, so a stamp left there rides the next regular prompt or expires.
 auto-speak, and it must not cut off the reply it just triggered. A drained prompt can still
 CARRY a stamp from the user's earlier queued submit (`docs/features/prompt-queue.md`).
 
-**Mic ordering.** `.voiceButtonTapped` runs `await tts.stop()` at the top of its permission
+**Mic ordering.** `startVoiceRecording` (the mic button's idle leg, also the dictation App
+Intent's entry, #93) runs `await tts.stop()` at the top of its permission
 effect, before `requestPermission` and recording. It runs unconditionally, which is safe
 because `stop()` is idempotent, and it also serializes behind a Stop tapped just before the
 mic. `stop()` deactivates the session with `.notifyOthersOnDeactivation`. If that raced the
