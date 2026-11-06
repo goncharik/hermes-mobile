@@ -19,6 +19,8 @@ struct SettingsFeatureTests {
     preferences.saveAutoSpeakReplies(true)
     preferences.saveCollapsedModelProviders(["openrouter"])
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
+    preferences.saveLiveActivityEnabled(false)
+    preferences.saveLiveActivityShowsTitles(false)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -39,6 +41,8 @@ struct SettingsFeatureTests {
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
     #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
     #expect(preferences.loadFavoriteModels() == [])
+    #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
+    #expect(preferences.loadLiveActivityShowsTitles())
   }
 
   /// The gateway event log belongs to the old server: sign out empties it, so a later

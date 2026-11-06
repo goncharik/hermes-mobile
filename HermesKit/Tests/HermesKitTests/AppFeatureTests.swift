@@ -1734,6 +1734,7 @@ struct AppFeatureTests {
     let autoSpeakCleared = LockIsolated(false)
     let collapsedCleared = LockIsolated(false)
     let favoritesCleared = LockIsolated(false)
+    let liveActivityCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1759,6 +1760,7 @@ struct AppFeatureTests {
       $0.preferences.saveFavoriteModels = { @Sendable favorites in
         if favorites.isEmpty { favoritesCleared.setValue(true) }
       }
+      $0.preferences.clearLiveActivityPrefs = { @Sendable in liveActivityCleared.setValue(true) }
     }
     store.exhaustivity = .off
 
@@ -1775,6 +1777,7 @@ struct AppFeatureTests {
     #expect(autoSpeakCleared.value) // read-aloud toggle cleared on the quit logout (#74)
     #expect(collapsedCleared.value) // model picker collapse + favorites cleared too (#130)
     #expect(favoritesCleared.value)
+    #expect(liveActivityCleared.value) // Live Activity toggles reset on the quit logout (#138)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -4376,6 +4379,8 @@ struct AppFeatureTests {
     preferences.saveAutoSpeakReplies(true)
     preferences.saveCollapsedModelProviders(["openrouter"])
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
+    preferences.saveLiveActivityEnabled(false)
+    preferences.saveLiveActivityShowsTitles(false)
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -4413,6 +4418,8 @@ struct AppFeatureTests {
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off (#74)
     #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
     #expect(preferences.loadFavoriteModels() == [])
+    #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
+    #expect(preferences.loadLiveActivityShowsTitles())
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)

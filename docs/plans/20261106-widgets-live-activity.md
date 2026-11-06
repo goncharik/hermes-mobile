@@ -436,12 +436,12 @@ guard.
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/WidgetSurfacesTests.swift`
 
-- [ ] implement `HermesActivityAttributes` and the client (live: `Activity.request(attributes:content:pushType: nil)`, `update`, `end(_:dismissalPolicy:)`, `Activity<HermesActivityAttributes>.activities` for `endAll`, `ActivityAuthorizationInfo().areActivitiesEnabled`)
-- [ ] add the two prefs (default true) and include them in the logout clear; seed `AppFeature` state from prefs at landing
-- [ ] in the sync effect, decide start / update / end per Technical Details (start only while not backgrounded and enabled; `liveActivityStarted(id)` stores the id; start failure → debug log only; end sends final `.done` content and dismisses after 5 min; the activity `staleDate = freshUntil`); `nil` projection → hold
-- [ ] the Live Activity toggle off → `endAll` + clear the id; every logout site → `endAll` + clear the id
-- [ ] write `TestStore` tests: start on the first active count, update on change, end at zero with `.done`, no start while backgrounded, no start when disabled, the start-failure path, the background edge updates `staleDate`, toggle off ends, show-titles off removes the title, logout ends
-- [ ] run tests - must pass before task 10
+- [x] implement `HermesActivityAttributes` and the client (live: `Activity.request(attributes:content:pushType: nil)`, `update`, `end(_:dismissalPolicy:)`, `Activity<HermesActivityAttributes>.activities` for `endAll`, `ActivityAuthorizationInfo().areActivitiesEnabled`) (⚠️ test value is a no-op reporting activities disabled, not unimplemented — same reason as `WidgetMirrorClient`: every logout reaches `endAll`)
+- [x] add the two prefs (default true) and include them in the logout clear; seed `AppFeature` state from prefs at landing (➕ one `clearLiveActivityPrefs()`, called at the Settings logout and both `AppFeature` full logouts; seeded in `landOnHome`)
+- [x] in the sync effect, decide start / update / end per Technical Details (start only while not backgrounded and enabled; `liveActivityStarted(id)` stores the id; start failure → debug log only; end sends final `.done` content and dismisses after 5 min; the activity `staleDate = freshUntil`); `nil` projection → hold (➕ decided in the reducer by `syncLiveActivity`: a start goes out at once (foreground-only, can't wait out the debounce) and takes a `LiveActivitySeat` with a pending id so a second change can't start a second activity; update / end are debounced 1 s via `.liveActivitySyncDue` (a turn ending right before the next queued one starts never shows "Done"); unchanged content isn't re-sent; scene edges restamp at once, `.active` also starts a missed activity; an orphaned start (seat dropped mid-request) is ended at once; "Done" keeps the last headline)
+- [x] the Live Activity toggle off → `endAll` + clear the id; every logout site → `endAll` + clear the id (➕ `AppFeature.Action.liveActivityToggled` / `.liveActivityShowsTitlesToggled` — Settings persists and sends them in Task 10; the different-user re-auth ends it too)
+- [x] write `TestStore` tests: start on the first active count, update on change, end at zero with `.done`, no start while backgrounded, no start when disabled, the start-failure path, the background edge updates `staleDate`, toggle off ends, show-titles off removes the title, logout ends (➕ debounce gap, catch-up after an in-flight start, orphaned start, foreground restamp / missed start, landing seeds prefs, prefs client round-trips, logout pref resets)
+- [x] run tests - must pass before task 10
 
 ### Task 10: Add the Live Activity UI and the Settings toggles
 

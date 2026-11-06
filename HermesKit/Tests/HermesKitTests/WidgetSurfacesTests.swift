@@ -279,6 +279,403 @@ struct WidgetSurfacesTests {
     }
   }
 
+  // MARK: The Live Activity
+
+  private static let foreground: TimeInterval = 8 * 60 * 60
+
+  /// The activity content for `ids` working, headlined by the first.
+  private func working(
+    _ ids: [String], status: AgentActivityContent.Status = .working, titled: Bool = true
+  ) -> AgentActivityContent {
+    AgentActivityContent(
+      activeCount: ids.count,
+      headlineTitle: titled ? "Title \(ids[0])" : nil,
+      headlineSessionID: ids[0],
+      status: status
+    )
+  }
+
+  private func seat(_ id: String?, _ content: AgentActivityContent) -> AppFeature.LiveActivitySeat {
+    AppFeature.LiveActivitySeat(id: id, content: content)
+  }
+
+  private func makeStore(
+    _ state: AppFeature.State,
+    activity: ActivityRecorder,
+    clock: TestClock<Duration> = TestClock(),
+    preferences: PreferencesClient = .inMemory()
+  ) -> TestStoreOf<AppFeature> {
+    TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = MirrorRecorder().client
+      $0.liveActivity = activity.client
+      $0.continuousClock = clock
+      $0.date = .constant(now)
+      $0.preferences = preferences
+    }
+  }
+
+  /// The first active agent starts the activity AT ONCE (a start is foreground-only, so it
+  /// can't wait out the debounce), stale at the foreground freshness; the seat is taken before
+  /// the request returns and adopts the id when it does.
+  @Test func theFirstActiveAgentStartsTheActivity() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    let store = makeStore(
+      AppFeature.State(home: fetchedHome([session("s1")])), activity: activity, clock: clock
+    )
+
+    await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
+      $0.home?.sessions[id: "s1"]?.isActive = true
+      $0.home?.statusSessions?[id: "s1"]?.isActive = true
+      $0.liveActivity = self.seat(nil, self.working(["s1"]))
+    }
+    await store.receive(\.liveActivityStarted) {
+      $0.liveActivity?.id = "activity-1"
+    }
+    #expect(store.state.liveActivityID == "activity-1")
+    await clock.advance(by: .seconds(1)) // the mirror's debounced write
+    await store.finish()
+    #expect(activity.calls.value == [
+      .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  @Test func aChangeUpdatesTheActivityAfterTheDebounce() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true), session("s2")]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.setSessionRunning(id: "s2", running: true))) {
+      $0.home?.sessions[id: "s2"]?.isActive = true
+      $0.home?.statusSessions?[id: "s2"]?.isActive = true
+    }
+    await clock.advance(by: .milliseconds(999))
+    #expect(activity.calls.value.isEmpty)
+    await clock.advance(by: .milliseconds(1))
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity?.content = self.working(["s1", "s2"])
+    }
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1", "s2"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// Nothing active: the activity ends showing its last headline as "Done", left on the Lock
+  /// Screen for five minutes.
+  @Test func zeroActiveEndsTheActivityWithDone() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.setSessionRunning(id: "s1", running: false))) {
+      $0.home?.sessions[id: "s1"]?.isActive = false
+      $0.home?.statusSessions?[id: "s1"]?.isActive = false
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity = nil
+    }
+    await store.finish()
+    let done = AgentActivityContent(
+      activeCount: 0, headlineTitle: "Title s1", headlineSessionID: "s1", status: .done
+    )
+    #expect(activity.calls.value == [
+      .end("a1", done, dismissAfter: now.addingTimeInterval(5 * 60)),
+    ])
+  }
+
+  /// A turn ending right before the next one starts (a drained queue) settles inside the
+  /// debounce: no "Done", no restart — and an unchanged content isn't re-sent.
+  @Test func aGapInsideTheDebounceNeitherEndsNorUpdates() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.setSessionRunning(id: "s1", running: false))) {
+      $0.home?.sessions[id: "s1"]?.isActive = false
+      $0.home?.statusSessions?[id: "s1"]?.isActive = false
+    }
+    await clock.advance(by: .milliseconds(500))
+    await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
+      $0.home?.sessions[id: "s1"]?.isActive = true
+      $0.home?.statusSessions?[id: "s1"]?.isActive = true
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.liveActivitySyncDue)
+    await store.finish()
+    #expect(activity.calls.value.isEmpty)
+  }
+
+  /// `Activity.request` is foreground-only: an agent going active while backgrounded starts
+  /// nothing (the foreground edge starts it).
+  @Test func noStartWhileBackgrounded() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1")]))
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(10)
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
+      $0.home?.sessions[id: "s1"]?.isActive = true
+      $0.home?.statusSessions?[id: "s1"]?.isActive = true
+    }
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(activity.calls.value.isEmpty)
+  }
+
+  /// The Settings toggle off, or Live Activities disabled for the app in iOS Settings: no start.
+  @Test func noStartWhenDisabled() async {
+    for (prefOn, iOSOn) in [(false, true), (true, false)] {
+      let activity = ActivityRecorder(enabled: iOSOn)
+      let clock = TestClock()
+      var state = AppFeature.State(home: fetchedHome([session("s1")]))
+      state.liveActivityEnabled = prefOn
+      let store = makeStore(state, activity: activity, clock: clock)
+
+      await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
+        $0.home?.sessions[id: "s1"]?.isActive = true
+        $0.home?.statusSessions?[id: "s1"]?.isActive = true
+      }
+      await clock.advance(by: .seconds(1))
+      await store.finish()
+      #expect(activity.calls.value.isEmpty, "pref \(prefOn), iOS \(iOSOn)")
+    }
+  }
+
+  /// iOS refusing the start is only debug-logged (no banner) and frees the seat, so the next
+  /// change may try again.
+  @Test func aStartFailureIsOnlyLoggedAndFreesTheSeat() async {
+    let activity = ActivityRecorder(startFails: true)
+    let notes = LockIsolated<[String]>([])
+    let clock = TestClock()
+    let store = TestStore(initialState: AppFeature.State(home: fetchedHome([session("s1")]))) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = MirrorRecorder().client
+      $0.liveActivity = activity.client
+      $0.continuousClock = clock
+      $0.date = .constant(now)
+      $0.debugLog.note = { @Sendable type, _ in notes.withValue { $0.append(type) } }
+    }
+
+    await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
+      $0.home?.sessions[id: "s1"]?.isActive = true
+      $0.home?.statusSessions?[id: "s1"]?.isActive = true
+      $0.liveActivity = self.seat(nil, self.working(["s1"]))
+    }
+    await store.receive(\.liveActivityStartFailed) {
+      $0.liveActivity = nil
+    }
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(notes.value == ["live.activity"])
+    #expect(activity.calls.value == [
+      .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// A change while the start is in flight is caught up the moment the id lands.
+  @Test func aChangeDuringTheStartIsCaughtUpWhenItLands() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true), session("s2")]))
+    state.liveActivity = seat(nil, working(["s1"]))
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.setSessionRunning(id: "s2", running: true))) {
+      $0.home?.sessions[id: "s2"]?.isActive = true
+      $0.home?.statusSessions?[id: "s2"]?.isActive = true
+    }
+    await store.send(.liveActivityStarted(id: "a1")) {
+      $0.liveActivity = self.seat("a1", self.working(["s1", "s2"]))
+    }
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1", "s2"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// A start that lands after its seat was dropped (toggle off, logout) is an orphan: ended at
+  /// once.
+  @Test func anOrphanedStartIsEndedAtOnce() async {
+    let activity = ActivityRecorder()
+    let store = makeStore(
+      AppFeature.State(home: fetchedHome([session("s1", active: true)])), activity: activity
+    )
+
+    await store.send(.liveActivityStarted(id: "a9"))
+    await store.finish()
+    #expect(activity.calls.value == [.end("a9", nil, dismissAfter: nil)])
+  }
+
+  /// The background edge moves the activity's stale date to the mirror's promise, so the
+  /// Lock Screen shows "Outdated" once the app can no longer observe.
+  @Test func backgroundRestampsTheStaleDate() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.scenePhaseChanged(.background)) {
+      $0.isSceneBackgrounded = true
+      $0.backgroundFreshUntil = self.now.addingTimeInterval(10)
+    }
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1"]), staleDate: now.addingTimeInterval(10)),
+    ])
+  }
+
+  /// Foregrounding restores the foreground stale date at once, and starts the activity when
+  /// agents went active while the app couldn't.
+  @Test func foregroundRestampsAndStartsAMissedActivity() async {
+    let sessions = [session("s1", active: true)]
+    for hasActivity in [true, false] {
+      let activity = ActivityRecorder()
+      var state = AppFeature.State(home: fetchedHome(sessions))
+      state.isSceneBackgrounded = true
+      state.backgroundFreshUntil = now.addingTimeInterval(10)
+      if hasActivity { state.liveActivity = seat("a1", working(["s1"])) }
+      let store = TestStore(initialState: state) {
+        AppFeature()
+      } withDependencies: {
+        $0.widgetMirror = MirrorRecorder().client
+        $0.liveActivity = activity.client
+        $0.continuousClock = TestClock()
+        $0.date = .constant(now)
+        $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in sessions }
+        $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+        $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      }
+      store.exhaustivity = .off(showSkippedAssertions: false)
+
+      await store.send(.scenePhaseChanged(.active))
+      await store.skipReceivedActions()
+      await store.finish()
+      let staleDate = now.addingTimeInterval(Self.foreground)
+      #expect(activity.calls.value == [
+        hasActivity
+          ? .update("a1", working(["s1"]), staleDate: staleDate)
+          : .start(working(["s1"]), staleDate: staleDate),
+      ])
+      #expect(store.state.liveActivityID == (hasActivity ? "a1" : "activity-1"))
+    }
+  }
+
+  /// The toggle off ends every activity at once and drops the seat; back on, it starts again.
+  @Test func theToggleOffEndsAndOnRestarts() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.liveActivityToggled(false)) {
+      $0.liveActivityEnabled = false
+      $0.liveActivity = nil
+    }
+    await store.send(.liveActivityToggled(true)) {
+      $0.liveActivityEnabled = true
+      $0.liveActivity = self.seat(nil, self.working(["s1"]))
+    }
+    await store.receive(\.liveActivityStarted) {
+      $0.liveActivity?.id = "activity-1"
+    }
+    await store.finish()
+    #expect(activity.calls.value == [
+      .endAll,
+      .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// "Show session titles" off omits the headline title from the activity (through the edge).
+  @Test func showTitlesOffRemovesTheTitle() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.liveActivityShowsTitlesToggled(false)) {
+      $0.liveActivityShowsTitles = false
+    }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity?.content = self.working(["s1"], titled: false)
+    }
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update(
+        "a1", working(["s1"], titled: false), staleDate: now.addingTimeInterval(Self.foreground)
+      ),
+    ])
+  }
+
+  /// Every identity teardown ends every activity, drops the seat and a pending update.
+  @Test func everyLogoutEndsTheActivity() async {
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: ServerConnection(baseURL: connection.baseURL, token: "other"),
+        sameUser: false
+      )))),
+    ] {
+      let label = "\(action)"
+      let activity = ActivityRecorder()
+      let clock = TestClock()
+      var state = AppFeature.State(
+        home: fetchedHome([session("s1", active: true), session("s2")]),
+        connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+        reauth: ReauthFeature.State(serverURL: connection.baseURL, method: .token)
+      )
+      state.liveActivity = seat("a1", working(["s1"]))
+      let store = TestStore(initialState: state) {
+        AppFeature()
+      } withDependencies: {
+        $0.widgetMirror = MirrorRecorder().client
+        $0.liveActivity = activity.client
+        $0.continuousClock = clock
+        $0.date = .constant(now)
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+      }
+      store.exhaustivity = .off(showSkippedAssertions: false)
+
+      await store.send(.home(.setSessionRunning(id: "s2", running: true)))
+      await store.send(action)
+      #expect(store.state.liveActivity == nil, "\(label) kept the seat")
+      await clock.advance(by: .seconds(5))
+      await store.finish()
+      #expect(activity.calls.value == [.endAll], "\(label)")
+    }
+  }
+
+  /// Every landing seeds the toggles from the device prefs.
+  @Test func landingSeedsTheTogglesFromPreferences() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveLiveActivityEnabled(false)
+    preferences.saveLiveActivityShowsTitles(false)
+    let store = makeStore(AppFeature.State(), activity: ActivityRecorder(), preferences: preferences)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    #expect(store.state.liveActivityEnabled == false)
+    #expect(store.state.liveActivityShowsTitles == false)
+  }
+
   // MARK: The file-backed client
 
   @Test func fileBackedClientWritesAndClearsTheMirrorAtomically() throws {
@@ -305,6 +702,43 @@ struct WidgetSurfacesTests {
     let client = WidgetMirrorClient.fileBacked(at: nil) {}
     #expect(throws: WidgetMirrorUnavailable()) { try client.write(.signedOut) }
     #expect(throws: WidgetMirrorUnavailable()) { try client.clear() }
+  }
+}
+
+/// Records every Live Activity call, in order. `start` returns `activity-<n>` (or throws).
+private final class ActivityRecorder: Sendable {
+  enum Call: Equatable, Sendable {
+    case start(AgentActivityContent, staleDate: Date)
+    case update(String, AgentActivityContent, staleDate: Date)
+    case end(String, AgentActivityContent?, dismissAfter: Date?)
+    case endAll
+  }
+
+  let calls = LockIsolated<[Call]>([])
+  let enabled: Bool
+  let startFails: Bool
+
+  init(enabled: Bool = true, startFails: Bool = false) {
+    self.enabled = enabled
+    self.startFails = startFails
+  }
+
+  var client: LiveActivityClient {
+    LiveActivityClient(
+      areActivitiesEnabled: { [enabled] in enabled },
+      start: { [calls, startFails] content, staleDate in
+        calls.withValue { $0.append(.start(content, staleDate: staleDate)) }
+        if startFails { throw LiveActivitiesUnavailable() }
+        return "activity-\(calls.value.count { if case .start = $0 { true } else { false } })"
+      },
+      update: { [calls] id, content, staleDate in
+        calls.withValue { $0.append(.update(id, content, staleDate: staleDate)) }
+      },
+      end: { [calls] id, final, dismissAfter in
+        calls.withValue { $0.append(.end(id, final, dismissAfter: dismissAfter)) }
+      },
+      endAll: { [calls] in calls.withValue { $0.append(.endAll) } }
+    )
   }
 }
 

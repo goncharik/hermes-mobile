@@ -100,6 +100,17 @@ public struct AppFeature {
     /// from the activity content (the Home Screen widgets keep it). Part of `agentStatus`,
     /// so flipping it updates the activity through the one edge.
     public var liveActivityShowsTitles = true
+    /// The "Live Activity" pref (#138): off ends the activity and starts none. Seeded from
+    /// `PreferencesClient` at every landing; the Settings toggle persists it and reports the
+    /// change (`liveActivityToggled`).
+    public var liveActivityEnabled = true
+    /// The aggregate Live Activity this process started, or `nil` when none is up. Its `id` is
+    /// `nil` while the start request is in flight (`liveActivityStarted` adopts it), so a second
+    /// change can never start a second activity.
+    var liveActivity: LiveActivitySeat?
+    /// The running Live Activity's ActivityKit id (`nil` while none is up or its start is
+    /// still in flight).
+    public var liveActivityID: String? { liveActivity?.id }
     /// Until when the widget mirror may vouch for working / needs-input while backgrounded:
     /// stamped by the `.background` edge (`now` + the running slot's ~30 s grace + a margin)
     /// and reused by every write until `.active` clears it, so a change during the grace can't
@@ -233,6 +244,15 @@ public struct AppFeature {
     var offersQuickActions: Bool { rootScreen != .onboarding }
   }
 
+  /// The aggregate Live Activity as `AppFeature` last drove it (#138).
+  struct LiveActivitySeat: Equatable, Sendable {
+    /// ActivityKit's id; `nil` while the start request is in flight.
+    var id: String?
+    /// The content last sent (start or update): the dedupe for the edge's updates and the
+    /// headline the final "Done" content keeps.
+    var content: AgentActivityContent
+  }
+
   /// The root branches of the app shell, in the order `State.rootScreen` resolves them.
   public enum RootScreen: Equatable, Sendable {
     case home
@@ -334,14 +354,43 @@ public struct AppFeature {
     /// foreground re-hydrate.
     case backgroundGraceExpired
     case reauth(PresentationAction<ReauthFeature.Action>)
+    /// The Settings "Live Activity" toggle changed (Settings persists it). Off ends every
+    /// activity at once; on starts one if agents are active.
+    case liveActivityToggled(Bool)
+    /// The Settings "Show session titles" toggle changed (Settings persists it). Part of
+    /// `agentStatus`, so the edge updates the activity.
+    case liveActivityShowsTitlesToggled(Bool)
+    /// Internal: the debounced Live Activity update / end fell due.
+    case liveActivitySyncDue
+    /// Internal: ActivityKit accepted the start request.
+    case liveActivityStarted(id: String)
+    /// Internal: ActivityKit refused the start request (already debug-logged; no banner).
+    case liveActivityStartFailed
   }
 
   /// Ids for the long-running incoming-tap and launch-intent observers, the
-  /// background-grace listener, the chat menu's session removals, and the widget-surfaces
-  /// sync (debounced, last-wins).
+  /// background-grace listener, the chat menu's session removals, the widget-surfaces sync
+  /// and the Live Activity's debounced update / end (both debounced, last-wins).
   private enum CancelID {
     case backgroundGrace, launchIntents, pushTaps, sessionRemovals, surfacesSync
+    case liveActivitySync
   }
+
+  /// How `syncLiveActivity` applies the projection to the activity.
+  private enum LiveActivitySync {
+    /// The `agentStatus` edge: a start goes out at once (the user may background the app any
+    /// moment, and a start is foreground-only); an update or end waits out
+    /// `surfacesSyncDebounce`, so a turn ending right before the next queued one starts updates
+    /// the activity instead of ending and restarting it.
+    case debounced
+    /// Apply now; an update whose content didn't change is skipped.
+    case immediate
+    /// Apply now and always update: a scene edge moved the stale date.
+    case restamp
+  }
+
+  /// How long an ended activity keeps its final "Done" content on the Lock Screen.
+  static let liveActivityDismissal: TimeInterval = 5 * 60
 
   /// How long a foreground mirror write vouches for its rows: the app observes the list for
   /// as long as it stays in the foreground, so this only bounds a crash / kill that skips
@@ -370,6 +419,7 @@ public struct AppFeature {
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
   @Dependency(\.widgetMirror) var widgetMirror
+  @Dependency(\.liveActivity) var liveActivity
   @Dependency(\.date) var date
   @Dependency(\.continuousClock) var clock
   // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
@@ -501,6 +551,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearLiveActivityPrefs()
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -513,7 +564,7 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), clearSurfaces(),
+          releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
@@ -531,9 +582,11 @@ public struct AppFeature {
           state.isSceneBackgrounded = false
           state.backgroundFreshUntil = nil
           return .merge(
-            // The app observes again: restamp the mirror with the foreground freshness so the
-            // "Outdated" the background edge scheduled doesn't fire under a live app.
+            // The app observes again: restamp the mirror and the Live Activity with the
+            // foreground freshness so the "Outdated" the background edge scheduled doesn't
+            // fire under a live app (and start the activity if agents are active without one).
             syncSurfaces(state, debounced: false),
+            syncLiveActivity(&state, .restamp),
             .cancel(id: CancelID.backgroundGrace),
             .run { [backgroundTask] _ in await backgroundTask.end() },
             state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
@@ -561,7 +614,12 @@ public struct AppFeature {
             var freshFor = Self.backgroundFreshnessMargin
             if state.liveChat?.isRunning == true { freshFor += Self.backgroundGraceFreshness }
             state.backgroundFreshUntil = date.now.addingTimeInterval(freshFor)
-            surfaces = syncSurfaces(state, debounced: false)
+            // The Live Activity goes "Outdated" at the same instant (`staleDate`); no start
+            // from here — `Activity.request` is foreground-only.
+            surfaces = .merge(
+              syncSurfaces(state, debounced: false),
+              syncLiveActivity(&state, .restamp)
+            )
           }
           guard let chat = state.liveChat else { return surfaces }
           // Read aloud (#74): no background audio — stop the clip first, idle AND running
@@ -771,7 +829,7 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), clearSurfaces(),
+          releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
@@ -825,7 +883,8 @@ public struct AppFeature {
         // The mirror shows the previous user's sessions: clear it like a logout; the new
         // list's first fetch writes the new user's rows through the `agentStatus` edge.
         let identityCleanup: Effect<Action> = .merge(
-          releaseSlot, setBadge(state), clearSurfaces(), .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(&state),
+          .cancel(id: CancelID.sessionRemovals)
         )
         // The stash was just cleared, so there is nothing to replay — but in regular the new
         // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
@@ -848,6 +907,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearLiveActivityPrefs()
         debugLog.clear()
         state.reauth = nil
         state.path = .init()
@@ -860,7 +920,7 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), clearSurfaces(),
+          releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
@@ -1013,6 +1073,44 @@ public struct AppFeature {
         }
         return .none
 
+      case let .liveActivityToggled(enabled):
+        state.liveActivityEnabled = enabled
+        guard enabled else {
+          // Off: end every activity of the app at once (an in-flight start is ended when it
+          // lands — `liveActivityStarted` finds no seat) and drop a pending update.
+          state.liveActivity = nil
+          return .merge(
+            .cancel(id: CancelID.liveActivitySync),
+            .run { [liveActivity] _ in await liveActivity.endAll() }
+          )
+        }
+        return syncLiveActivity(&state, .immediate)
+
+      case let .liveActivityShowsTitlesToggled(shows):
+        // Part of `agentStatus`: the edge below updates the activity with or without the title.
+        state.liveActivityShowsTitles = shows
+        return .none
+
+      case .liveActivitySyncDue:
+        return syncLiveActivity(&state, .immediate)
+
+      case let .liveActivityStarted(id):
+        // Adopt the id only for the seat whose start this was. No seat (the toggle went off or
+        // the user logged out mid-request) or an already-adopted one (a toggle off→on started a
+        // second request): this activity is an orphan — end it at once.
+        guard let seat = state.liveActivity, seat.id == nil else {
+          return .run { [liveActivity] _ in await liveActivity.end(id, nil, nil) }
+        }
+        state.liveActivity?.id = id
+        // Catch up with whatever changed while the request was in flight (changes skip a seat
+        // without an id). A background edge during the request moved the stale date too.
+        return syncLiveActivity(&state, state.isSceneBackgrounded ? .restamp : .immediate)
+
+      case .liveActivityStartFailed:
+        // Free the seat so the next change may try again; the failure is only debug-logged.
+        if state.liveActivity?.id == nil { state.liveActivity = nil }
+        return .none
+
       case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
         return .none
       }
@@ -1079,15 +1177,90 @@ public struct AppFeature {
     }
     // The ONE edge the widget surfaces sync from (#138): whatever moved the projection — a
     // list fetch, a slot's running flip, an approval card, the show-titles pref — rewrites the
-    // App Group mirror once the burst settles. Evaluated after every child reducer, so it reads
-    // the reduced state. `nil` is "unknown" (signed out, or no unfiltered fetch yet): hold —
-    // write nothing; a logout clears the mirror on its own.
+    // App Group mirror once the burst settles and syncs the Live Activity (start / update / end).
+    // Evaluated after every child reducer, so it reads the reduced state. `nil` is "unknown"
+    // (signed out, or no unfiltered fetch yet): hold — write nothing, never end; a logout clears
+    // the surfaces on its own.
     .onChange(of: \.agentStatus) { _, status in
       Reduce { state, _ in
         guard status != nil else { return .none }
-        return syncSurfaces(state, debounced: true)
+        return .merge(
+          syncSurfaces(state, debounced: true),
+          syncLiveActivity(&state, .debounced)
+        )
       }
     }
+  }
+
+  /// How long the surfaces may vouch for the projection: `backgroundFreshUntil` while
+  /// backgrounded (`now` + the margin when the background edge had nothing to stamp), else
+  /// `now` + `foregroundFreshness`. The mirror's `freshUntil` and the activity's `staleDate`.
+  private func freshUntil(_ state: State) -> Date {
+    let now = date.now
+    return state.isSceneBackgrounded
+      ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
+      : now.addingTimeInterval(Self.foregroundFreshness)
+  }
+
+  /// Drives the aggregate Live Activity from `state.agentStatus` (#138). `nil` (unknown) holds.
+  /// - No activity and agents active → start one, only while the pref is on, the scene is in
+  ///   the foreground and iOS allows activities; the seat is taken at once (id pending) so a
+  ///   second change can't start a second one, and `liveActivityStarted` adopts the id. A
+  ///   start failure is only debug-logged.
+  /// - An activity and agents active → update it (skipped when the content didn't change,
+  ///   unless a scene edge `restamp`s the stale date).
+  /// - An activity and nothing active → end it with its last headline as "Done", dismissed
+  ///   after `liveActivityDismissal`.
+  /// The edge debounces the update / end (`LiveActivitySync.debounced`); the stale date is
+  /// `freshUntil`, the same promise as the widget mirror.
+  private func syncLiveActivity(_ state: inout State, _ mode: LiveActivitySync) -> Effect<Action> {
+    guard let status = state.agentStatus else { return .none }
+    let content = status.activityContent
+    guard let seat = state.liveActivity else {
+      guard let content, state.liveActivityEnabled, !state.isSceneBackgrounded,
+        liveActivity.areActivitiesEnabled()
+      else { return .none }
+      state.liveActivity = LiveActivitySeat(id: nil, content: content)
+      let staleDate = freshUntil(state)
+      return .run { [liveActivity, debugLog] send in
+        do {
+          let id = try await liveActivity.start(content, staleDate)
+          await send(.liveActivityStarted(id: id))
+        } catch {
+          debugLog.note("live.activity", "start failed: \(error)")
+          await send(.liveActivityStartFailed)
+        }
+      }
+    }
+    // A start in flight: `liveActivityStarted` catches up with whatever changed meanwhile.
+    guard let id = seat.id else { return .none }
+    if mode == .debounced {
+      return .run { [clock] send in
+        try await clock.sleep(for: Self.surfacesSyncDebounce)
+        await send(.liveActivitySyncDue)
+      }
+      .cancellable(id: CancelID.liveActivitySync, cancelInFlight: true)
+    }
+    // Applied now: supersedes a debounced update / end still waiting.
+    let pending: Effect<Action> = .cancel(id: CancelID.liveActivitySync)
+    guard let content else {
+      state.liveActivity = nil
+      var final = seat.content
+      final.activeCount = 0
+      final.status = .done
+      let dismissAfter = date.now.addingTimeInterval(Self.liveActivityDismissal)
+      return .merge(
+        pending,
+        .run { [liveActivity, final] _ in await liveActivity.end(id, final, dismissAfter) }
+      )
+    }
+    guard mode == .restamp || content != seat.content else { return pending }
+    state.liveActivity?.content = content
+    let staleDate = freshUntil(state)
+    return .merge(
+      pending,
+      .run { [liveActivity] _ in await liveActivity.update(id, content, staleDate) }
+    )
   }
 
   /// Writes `state.agentStatus` into the widget mirror and reloads the sessions widget, stamped
@@ -1100,12 +1273,8 @@ public struct AppFeature {
   /// non-authoritative cache the next change rewrites.
   private func syncSurfaces(_ state: State, debounced: Bool) -> Effect<Action> {
     guard let status = state.agentStatus else { return .none }
-    let now = date.now
-    let freshUntil = state.isSceneBackgrounded
-      ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
-      : now.addingTimeInterval(Self.foregroundFreshness)
     let snapshot = WidgetSessionSnapshot(
-      freshUntil: freshUntil, isSignedIn: true, rows: status.rows
+      freshUntil: freshUntil(state), isSignedIn: true, rows: status.rows
     )
     return .run { [widgetMirror, clock, debugLog] _ in
       if debounced { try await clock.sleep(for: Self.surfacesSyncDebounce) }
@@ -1119,19 +1288,25 @@ public struct AppFeature {
     .cancellable(id: CancelID.surfacesSync, cancelInFlight: true)
   }
 
-  /// The logout half of the mirror: replace it with the signed-out snapshot and reload, so the
-  /// widget stops showing the old identity's sessions. Shares the sync's cancel id, so a write
-  /// still waiting out its debounce can't land after the clear.
-  private func clearSurfaces() -> Effect<Action> {
-    .run { [widgetMirror, debugLog] _ in
-      do {
-        try widgetMirror.clear()
-      } catch {
-        debugLog.note("widget.mirror", "clear failed: \(error)")
+  /// The logout half of the surfaces: replace the mirror with the signed-out snapshot and
+  /// reload, so the widget stops showing the old identity's sessions, and end every Live
+  /// Activity (an in-flight start is ended when it lands — no seat adopts it). Shares the
+  /// syncs' cancel ids, so a write or update still waiting out its debounce can't land after.
+  private func clearSurfaces(_ state: inout State) -> Effect<Action> {
+    state.liveActivity = nil
+    return .merge(
+      .run { [widgetMirror, debugLog] _ in
+        do {
+          try widgetMirror.clear()
+        } catch {
+          debugLog.note("widget.mirror", "clear failed: \(error)")
+        }
+        widgetMirror.reloadTimelines()
       }
-      widgetMirror.reloadTimelines()
-    }
-    .cancellable(id: CancelID.surfacesSync, cancelInFlight: true)
+      .cancellable(id: CancelID.surfacesSync, cancelInFlight: true),
+      .cancel(id: CancelID.liveActivitySync),
+      .run { [liveActivity] _ in await liveActivity.endAll() }
+    )
   }
 
   /// The layout regime changed: set `layout` FIRST (the view's column move fires
@@ -1543,6 +1718,9 @@ public struct AppFeature {
   /// `.openSession` replays through the push-tap routing instead, under the same cross-server
   /// guard as a tap (its own `pendingLaunchIntentServerURL`).
   private func landOnHome(_ state: inout State, replaysLaunchAction: Bool) -> Effect<Action> {
+    // The Live Activity prefs (#138): device-local, reset to on by a logout.
+    state.liveActivityEnabled = preferences.loadLiveActivityEnabled()
+    state.liveActivityShowsTitles = preferences.loadLiveActivityShowsTitles()
     let intent = state.pendingLaunchIntent
     let intentOrigin = state.pendingLaunchIntentServerURL
     let tap = state.pendingPushTap

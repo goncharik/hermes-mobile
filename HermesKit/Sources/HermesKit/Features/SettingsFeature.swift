@@ -493,6 +493,7 @@ public struct SettingsFeature {
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
         preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
         preferences.clearModelPickerPrefs() // model picker collapse + favorites (#130)
+        preferences.clearLiveActivityPrefs() // Live Activity toggles back to on (#138)
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         debugLog.clear() // the gateway event log is per-server too (diagnostics report)
         return .merge(
