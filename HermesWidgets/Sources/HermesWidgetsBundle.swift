@@ -8,6 +8,7 @@ import WidgetKit
 struct HermesWidgetsBundle: WidgetBundle {
   var body: some Widget {
     QuickActionsWidget()
+    SessionsWidget()
     NewChatAccessoryWidget()
     NewChatControl()
     DictateControl()

@@ -417,15 +417,15 @@ guard.
 - Create: `HermesWidgets/Sources/SessionsWidget.swift`
 - Create: `HermesWidgets/Sources/SessionsTimelineProvider.swift`
 - Create: `HermesWidgets/Sources/Views/SessionsWidgetView.swift`
-- Create: `HermesWidgets/Sources/Views/SessionRowView.swift`
+- Create: `HermesWidgets/Sources/Views/SessionRowView.swift` (⚠️ created as `SessionsWidgetRowView.swift`: the app already has a `SessionRowView`, and the test target compiles these views next to `@testable import HermesMobile`)
 - Modify: `HermesWidgets/Sources/HermesWidgetsBundle.swift`
 - Modify: `HermesMobileTests/WidgetSnapshotTests.swift`
 
-- [ ] provider: read the mirror from the App Group container, `decodeLeniently`; entries = fresh now + outdated at `freshUntil` (when it is in the future), policy `.never`; placeholder / gallery snapshot use demo rows
-- [ ] views: medium = "Hermes" header + the headline row; large = header + up to 5 rows; row = title, workspace (folder icon) + `Text(updatedAt, style: .relative)`, trailing glyph (working = static spinner-style symbol in blue, needs input = `questionmark.circle` in yellow, outdated = `clock` in secondary); `Link` per row to `WidgetDeepLink.url(for: .openSession(...))`; empty states (signed out → "Sign in to Hermes"; no sessions → "No sessions yet" + New chat link)
-- [ ] `tuist generate --no-open && make build`
-- [ ] write snapshot tests: medium and large in light / dark, the outdated entry, signed out, empty; pinned dates for the relative text (pass a fixed `now` into the view, render the relative text deterministically); `make snapshot` twice
-- [ ] run tests - must pass before task 9
+- [x] provider: read the mirror from the App Group container, `decodeLeniently`; entries = fresh now + outdated at `freshUntil` (when it is in the future), policy `.never`; placeholder / gallery snapshot use demo rows (➕ the pure `WidgetStaleness.timelineDates(for:now:)` and `WidgetSessionSnapshot.read(from:)` live in HermesWidgetKit and are unit-tested; a missing / unreadable mirror = `.signedOut`)
+- [x] views: medium = "Hermes" header + the headline row; large = header + up to 5 rows; row = title, workspace (folder icon) + `Text(updatedAt, style: .relative)`, trailing glyph (working = static spinner-style symbol in blue, needs input = `questionmark.circle` in yellow, outdated = `clock` in secondary); `Link` per row to `WidgetDeepLink.url(for: .openSession(...))`; empty states (signed out → "Sign in to Hermes"; no sessions → "No sessions yet" + New chat link) (➕ working glyph = `progress.indicator`; the relative time reads "… ago"; no `widgetURL` — a tap outside a row opens the app as is)
+- [x] `tuist generate --no-open && make build`
+- [x] write snapshot tests: medium and large in light / dark, the outdated entry, signed out, empty; pinned dates for the relative text (pass a fixed `now` into the view, render the relative text deterministically); `make snapshot` twice (➕ `WidgetRelativeTime.fixed(now:)` renders the `.relative` style's wording via `DateComponentsFormatter`; 10 snapshots)
+- [x] run tests - must pass before task 9
 
 ### Task 9: Drive the aggregate Live Activity from `AppFeature`
 

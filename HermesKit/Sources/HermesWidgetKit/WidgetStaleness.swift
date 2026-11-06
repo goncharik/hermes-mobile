@@ -36,4 +36,12 @@ public enum WidgetStaleness {
     }
     return isOutdated(snapshot, at: now) ? .outdated : live
   }
+
+  /// The dates of the sessions widget's timeline entries for `snapshot` read at `now`: the
+  /// entry for now, plus an "outdated" entry at `freshUntil` while that is still ahead. Past
+  /// it, the one entry already renders outdated. The timeline's policy is `.never` — the app
+  /// reloads it after every mirror write.
+  public static func timelineDates(for snapshot: WidgetSessionSnapshot, now: Date) -> [Date] {
+    snapshot.freshUntil > now ? [now, snapshot.freshUntil] : [now]
+  }
 }

@@ -83,6 +83,12 @@ public struct WidgetSessionSnapshot: Codable, Equatable, Sendable {
     return snapshot
   }
 
+  /// The mirror at `url` (the extension passes `AppGroup.snapshotFileURL()`), or `nil` when
+  /// there is no container, no file, or `decodeLeniently` rejects it.
+  public static func read(from url: URL?) -> WidgetSessionSnapshot? {
+    decodeLeniently(url.flatMap { try? Data(contentsOf: $0) })
+  }
+
   private struct VersionHeader: Decodable {
     var version: Int
   }

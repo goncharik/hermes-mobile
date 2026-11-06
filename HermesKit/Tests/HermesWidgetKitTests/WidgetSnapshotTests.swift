@@ -111,6 +111,40 @@ struct WidgetSnapshotTests {
     )
   }
 
+  // MARK: Timeline
+
+  @Test func timelineSchedulesOutdatedEntryWhileFresh() {
+    let now = Self.freshUntil.addingTimeInterval(-30)
+    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, now: now) == [now, Self.freshUntil])
+  }
+
+  @Test func timelineHasOneEntryOnceOutdated() {
+    #expect(
+      WidgetStaleness.timelineDates(for: Self.snapshot, now: Self.freshUntil) == [Self.freshUntil]
+    )
+    let later = Self.freshUntil.addingTimeInterval(60)
+    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, now: later) == [later])
+    let signedOut = Date(timeIntervalSinceReferenceDate: 1)
+    #expect(WidgetStaleness.timelineDates(for: .signedOut, now: signedOut) == [signedOut])
+  }
+
+  // MARK: Reading the mirror
+
+  @Test func readsTheMirrorFile() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("widget-sessions-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try Self.snapshot.encoded().write(to: url)
+    #expect(WidgetSessionSnapshot.read(from: url) == Self.snapshot)
+  }
+
+  @Test func readingNoContainerOrNoFileIsNil() {
+    #expect(WidgetSessionSnapshot.read(from: nil) == nil)
+    let missing = FileManager.default.temporaryDirectory
+      .appendingPathComponent("missing-\(UUID().uuidString).json")
+    #expect(WidgetSessionSnapshot.read(from: missing) == nil)
+  }
+
   // MARK: Activity content and App Group
 
   @Test func activityContentCodesStableStatus() throws {
