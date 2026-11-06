@@ -241,13 +241,15 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
       runtime drift at equal render size, re-recorded in their own commit; suite is 331/331)
 
 ### Task 5: Verify acceptance criteria
-- [ ] both intents route to a fresh chat under the selected profile, in compact and regular
-- [ ] cold launch from an intent lands on the new chat once auto-connect finishes. A launch that
+- [x] both intents route to a fresh chat under the selected profile, in compact and regular
+- [x] cold launch from an intent lands on the new chat once auto-connect finishes. A launch that
       ends on onboarding or the retry screen holds the intent until `home` exists
-- [ ] dictation starts only from idle, and a denied permission shows the existing banner
-- [ ] nothing outside scope changed: no `reduceCore`, no `slotGeneration` change, push observer
+      (➕ added the two missing tests: held through the retry screen, held through the
+      onboarding fallback)
+- [x] dictation starts only from idle, and a denied permission shows the existing banner
+- [x] nothing outside scope changed: no `reduceCore`, no `slotGeneration` change, push observer
       untouched
-- [ ] run the full suite: `make test` and `make snapshot`
+- [x] run the full suite: `make test` and `make snapshot`
 
 ### Task 6: [Final] Update documentation
 - [ ] create `docs/features/app-intents.md`: intents, phrases, bridge/stash/replay, the

@@ -3849,10 +3849,6 @@ public struct ChatFeature {
     return now.timeIntervalSince(stamp) < Self.readAloudInterruptTTL
   }
 
-  /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
-  /// state, cancel the level/tick effects, and release the mic/session if we leave
-  /// mid-recording. Also silences a read-aloud clip (#74) — playback never outlives the
-  /// chat leaving the screen.
   /// The mic button's idle → recording leg, shared by `.voiceButtonTapped` and the dictation
   /// App Intent (`consumePendingDictation`, #93) so the barge-in order can never drift.
   private func startVoiceRecording(_ state: inout State) -> Effect<Action> {
@@ -3881,6 +3877,10 @@ public struct ChatFeature {
     return startVoiceRecording(&state)
   }
 
+  /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
+  /// state, cancel the level/tick effects, and release the mic/session if we leave
+  /// mid-recording. Also silences a read-aloud clip (#74) — playback never outlives the
+  /// chat leaving the screen.
   private func releaseVoiceResources(_ state: inout State) -> Effect<Action> {
     let wasRecording = state.recording.isBusy
     state.recording = .idle

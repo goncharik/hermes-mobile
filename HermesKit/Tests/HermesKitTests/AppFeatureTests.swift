@@ -3667,6 +3667,64 @@ struct AppFeatureTests {
     #expect(store.state.path.isEmpty)
   }
 
+  /// A cold launch whose auto-connect ends on the RETRY screen holds the stashed intent until
+  /// the retry lands the list, then replays it there.
+  @Test func preHomeLaunchIntentHeldThroughRetryScreenThenReplayed() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.pendingLaunchIntent = .newChat
+    }
+    await store.send(.autoConnectFailed(connection, .offline)) {
+      $0.autoConnecting = false
+      $0.connectionFailed = ConnectionFailedFeature.State(
+        connection: self.connection, reason: .offline
+      )
+    }
+    await store.send(.connectionFailed(.delegate(.connected(connection)))) {
+      $0.connectionFailed = nil
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.receive(\.launchIntentReceived) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.count == 1)
+  }
+
+  /// A cold launch whose auto-connect ends on ONBOARDING (credentials verdict) holds the
+  /// stashed intent until the manual login lands the list, then replays it there.
+  @Test func preHomeLaunchIntentHeldThroughOnboardingFallbackThenReplayed() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.pendingLaunchIntent = .newChatWithDictation
+    }
+    await store.send(.autoConnectFailed(connection, .unauthorized)) {
+      $0.autoConnecting = false
+      $0.onboarding = ConnectionFeature.State(
+        serverURL: self.connection.baseURL.absoluteString,
+        token: self.connection.auth.token ?? ""
+      )
+    }
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.receive(\.launchIntentReceived) {
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingDictation = true
+      $0.liveChat = chat
+    }
+    #expect(store.state.path.count == 1)
+  }
+
   /// End-to-end launch race: the intent performs BEFORE the reducer's `.task` subscribes. The
   /// real bridge buffers it, the `.task` observer drains it, the pre-home stash holds it, and
   /// the login replays it.
