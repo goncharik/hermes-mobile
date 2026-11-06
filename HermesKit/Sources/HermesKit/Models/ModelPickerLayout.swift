@@ -19,8 +19,10 @@ import Foundation
 /// `filteredProviders(matching:)` with favorited models kept in their card (filled star).
 ///
 /// Unconfigured / lost-credential providers (upstream `inventory.py` keeps the CURRENT
-/// provider with `authenticated: false` + `warning` once its credentials are gone) are a
-/// card with no rows; the view renders their `warning` as a disabled row.
+/// provider with `authenticated: false` + `warning` + its saved model once its credentials are
+/// gone) are a non-selectable card: the view renders their `warning`, then their models (if
+/// any) as disabled rows without stars — desktop `pickerProviders` lists the saved model as
+/// the checked current row.
 public struct ModelPickerLayout: Equatable, Sendable {
   public var sections: [Section]
   /// The id to center on when the sheet opens: the current model's favorite row, else its
@@ -45,7 +47,9 @@ public struct ModelPickerLayout: Equatable, Sendable {
   public struct ProviderSection: Equatable, Sendable {
     public var provider: ModelOptions.Provider
     public var isCollapsed: Bool
-    /// The rows to render: empty when collapsed or for an unconfigured provider.
+    /// False while searching (every card is forced open): the header is not a toggle then.
+    public var isCollapsible: Bool
+    /// The rows to render: empty when collapsed or for a provider with no models.
     public var rows: [Row]
     /// How many models the card holds, collapsed or not (favorited ones excluded).
     public var modelCount: Int
@@ -54,15 +58,17 @@ public struct ModelPickerLayout: Equatable, Sendable {
     public var currentModelName: String?
 
     public var headerID: String { ModelPickerLayout.headerID(providerID: provider.id) }
-    /// Configured providers list selectable rows; the rest render their `warning`.
+    /// Configured providers list selectable rows; the rest render their `warning` above
+    /// disabled rows.
     public var isSelectable: Bool { provider.isConfigured }
 
-    public init(
-      provider: ModelOptions.Provider, isCollapsed: Bool, rows: [Row], modelCount: Int,
-      currentModelName: String? = nil
+    init(
+      provider: ModelOptions.Provider, isCollapsed: Bool, isCollapsible: Bool, rows: [Row],
+      modelCount: Int, currentModelName: String? = nil
     ) {
       self.provider = provider
       self.isCollapsed = isCollapsed
+      self.isCollapsible = isCollapsible
       self.rows = rows
       self.modelCount = modelCount
       self.currentModelName = currentModelName
@@ -100,15 +106,10 @@ public struct ModelPickerLayout: Equatable, Sendable {
     }
   }
 
-  public static func headerID(providerID: String) -> String { "header::\(providerID)" }
-  public static func rowID(providerID: String, model: String) -> String { "\(providerID)::\(model)" }
-  public static func favoriteRowID(providerID: String, model: String) -> String {
+  private static func headerID(providerID: String) -> String { "header::\(providerID)" }
+  private static func rowID(providerID: String, model: String) -> String { "\(providerID)::\(model)" }
+  private static func favoriteRowID(providerID: String, model: String) -> String {
     "fav::\(providerID)::\(model)"
-  }
-
-  public init(sections: [Section], scrollTarget: String?) {
-    self.sections = sections
-    self.scrollTarget = scrollTarget
   }
 
   /// - Parameters:
@@ -155,22 +156,23 @@ public struct ModelPickerLayout: Equatable, Sendable {
     var providerSections: [ProviderSection] = []
     for provider in options.filteredProviders(matching: query) {
       let isCollapsed = !isSearching && collapsedProviders.contains(provider.id)
-      guard provider.isConfigured else {
-        providerSections.append(.init(provider: provider, isCollapsed: isCollapsed, rows: [], modelCount: 0))
-        continue
-      }
       var seen = Set<String>()
       let cardRows = provider.models.compactMap { model -> Row? in
         guard seen.insert(model).inserted else { return nil }
-        let isFavorite = favoriteSet.contains(FavoriteModel(providerID: provider.id, model: model))
+        // Favorites resolve against configured providers only, so a non-configured card keeps
+        // every model and shows no star.
+        let isFavorite = provider.isConfigured
+          && favoriteSet.contains(FavoriteModel(providerID: provider.id, model: model))
         // Favorites already render above (not while searching): never list a model twice.
         if isFavorite && !isSearching { return nil }
         return row(model, provider, isFavorite: isFavorite, inFavorites: false)
       }
-      guard !cardRows.isEmpty else { continue }
+      // A non-configured card always shows (its warning is the point).
+      guard !cardRows.isEmpty || !provider.isConfigured else { continue }
       providerSections.append(.init(
         provider: provider,
         isCollapsed: isCollapsed,
+        isCollapsible: !isSearching,
         rows: isCollapsed ? [] : cardRows,
         modelCount: cardRows.count,
         currentModelName: isCollapsed ? cardRows.first(where: \.isCurrent)?.model : nil
@@ -211,7 +213,8 @@ public struct ModelPickerLayout: Equatable, Sendable {
     if let collapsed = providerSections.first(where: { $0.currentModelName != nil }) {
       return collapsed.headerID
     }
-    // A lost-credential current provider: center its warning so the reason is visible.
+    // A lost-credential current provider without models: center its header (and its warning
+    // row, when expanded) so the reason is visible.
     if let currentProvider,
        let lost = providerSections.first(where: {
          !$0.isSelectable && $0.provider.matches(providerID: currentProvider)

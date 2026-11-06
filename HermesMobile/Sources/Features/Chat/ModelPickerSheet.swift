@@ -6,7 +6,7 @@ import SwiftUI
 /// `ModelPickerLayout` derivation as cards: an Options card whose `Reasoning` row pushes the
 /// effort list, a Favorites card of starred models, then one collapsible card per provider
 /// (configured providers only — the fetch sends `explicit_only: true`; a lost-credential
-/// current provider shows its `warning` as a disabled row). Every rule — section order,
+/// current provider shows its `warning` over its saved model, disabled). Every rule — section order,
 /// favorites resolution, collapse, search, the scroll target — lives in the layout; the view
 /// only iterates it and centers on `scrollTarget` once per presentation.
 ///
@@ -51,7 +51,7 @@ struct ModelPickerSheet: View {
       }
       .navigationTitle("Model")
       .navigationBarTitleDisplayMode(.inline)
-      .searchable(text: $searchText, prompt: "Search models")
+      .searchable(text: $searchText, placement: searchPlacement, prompt: "Search models")
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done", systemImage: "checkmark") { store.send(.doneButtonTapped) }
@@ -67,6 +67,12 @@ struct ModelPickerSheet: View {
       }
     }
     .task { store.send(.task) }
+  }
+
+  /// iOS 18's automatic placement is a nav-bar drawer that collapses once the list scrolls —
+  /// which the open-time centering does — so pin it there; iOS 26 keeps its default.
+  private var searchPlacement: SearchFieldPlacement {
+    if #available(iOS 26, *) { .automatic } else { .navigationBarDrawer(displayMode: .always) }
   }
 
   private func modelList(_ layout: ModelPickerLayout) -> some View {
@@ -146,56 +152,69 @@ struct ModelPickerSheet: View {
 
   private func providerCard(_ section: ModelPickerLayout.ProviderSection) -> some View {
     Section {
-      if section.isSelectable {
-        ForEach(section.rows) { modelRow($0) }
-      } else if !section.isCollapsed {
+      if !section.isSelectable && !section.isCollapsed {
         Label(section.provider.warning ?? "Not configured", systemImage: "lock")
           .font(.footnote)
           .foregroundStyle(.secondary)
       }
+      ForEach(section.rows) { modelRow($0, isSelectable: section.isSelectable) }
     } header: {
       providerHeader(section)
     }
   }
 
+  /// The collapse toggle — inert while searching (every card is forced open). The section's
+  /// own `ForEach(layout.sections)` id is the scroll target for a collapsed card; the header
+  /// carries no `.id` of its own.
+  @ViewBuilder
   private func providerHeader(_ section: ModelPickerLayout.ProviderSection) -> some View {
-    Button {
-      store.send(.providerHeaderTapped(section.provider.id), animation: reduceMotion ? nil : .snappy)
-    } label: {
-      HStack(spacing: 6) {
-        Text(section.provider.name)
-        if section.isCollapsed && section.isSelectable {
-          Text("\(section.modelCount)")
-            .monospacedDigit()
-            .foregroundStyle(.tertiary)
-        }
-        Spacer(minLength: 8)
-        if let current = section.currentModelName {
-          Text(current)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Image(systemName: "checkmark")
-            .fontWeight(.semibold)
-            .foregroundStyle(Color.hermesAccent)
-        }
-        Image(systemName: "chevron.down")
-          .fontWeight(.semibold)
-          .rotationEffect(.degrees(section.isCollapsed ? -90 : 0))
+    if section.isCollapsible {
+      Button {
+        store.send(.providerHeaderTapped(section.provider.id), animation: reduceMotion ? nil : .snappy)
+      } label: {
+        providerHeaderLabel(section)
       }
-      .textCase(nil)
-      .contentShape(.rect)
+      .buttonStyle(.plain)
+      .accessibilityLabel(headerAccessibilityLabel(section))
+      .accessibilityValue(section.isCollapsed ? "Collapsed" : "Expanded")
+      .accessibilityHint(section.isCollapsed ? "Expand" : "Collapse")
+      .accessibilityAddTraits(.isHeader)
+    } else {
+      providerHeaderLabel(section)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(headerAccessibilityLabel(section))
+        .accessibilityAddTraits(.isHeader)
     }
-    .buttonStyle(.plain)
-    .id(section.headerID)
-    .accessibilityLabel(headerAccessibilityLabel(section))
-    .accessibilityValue(section.isCollapsed ? "Collapsed" : "Expanded")
-    .accessibilityHint(section.isCollapsed ? "Expand" : "Collapse")
-    .accessibilityAddTraits(.isHeader)
+  }
+
+  private func providerHeaderLabel(_ section: ModelPickerLayout.ProviderSection) -> some View {
+    HStack(spacing: 6) {
+      Text(section.provider.name)
+      if section.isCollapsed && section.modelCount > 0 {
+        Text("\(section.modelCount)")
+          .monospacedDigit()
+          .foregroundStyle(.tertiary)
+      }
+      Spacer(minLength: 8)
+      if let current = section.currentModelName {
+        Text(current)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        Image(systemName: "checkmark")
+          .fontWeight(.semibold)
+          .foregroundStyle(Color.hermesAccent)
+      }
+      Image(systemName: "chevron.down")
+        .fontWeight(.semibold)
+        .rotationEffect(.degrees(section.isCollapsed ? -90 : 0))
+    }
+    .textCase(nil)
+    .contentShape(.rect)
   }
 
   private func headerAccessibilityLabel(_ section: ModelPickerLayout.ProviderSection) -> String {
     var label = section.provider.name
-    if section.isCollapsed && section.isSelectable {
+    if section.isCollapsed && section.modelCount > 0 {
       label += ", \(section.modelCount) \(section.modelCount == 1 ? "model" : "models")"
     }
     if let current = section.currentModelName { label += ", current model \(current)" }
@@ -204,17 +223,18 @@ struct ModelPickerSheet: View {
 
   // MARK: Model rows
 
-  /// A selectable model (tap applies; disabled while busy) with its own star button (always
+  /// A model row (tap applies; disabled while busy) with its own star button (always
   /// enabled — favorites are display-only). Both buttons are `.plain` so a `List` row keeps
-  /// two separate tap targets instead of firing both.
-  private func modelRow(_ row: ModelPickerLayout.Row) -> some View {
+  /// two separate tap targets instead of firing both. A non-configured card's row
+  /// (`isSelectable == false`: the lost-credential saved model) is disabled and has no star.
+  private func modelRow(_ row: ModelPickerLayout.Row, isSelectable: Bool = true) -> some View {
     HStack(spacing: 12) {
       Button {
         store.send(.modelRowTapped(model: row.model, providerSlug: row.providerSlug))
       } label: {
         HStack {
           VStack(alignment: .leading, spacing: 2) {
-            Text(row.model).foregroundStyle(isBusy ? .secondary : .primary)
+            Text(row.model).foregroundStyle(isBusy || !isSelectable ? .secondary : .primary)
             if row.showsProviderCaption {
               Text(row.providerName).font(.caption).foregroundStyle(.secondary)
             }
@@ -227,19 +247,21 @@ struct ModelPickerSheet: View {
         .contentShape(.rect)
       }
       .buttonStyle(.plain)
-      .disabled(isBusy)
+      .disabled(isBusy || !isSelectable)
       .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
 
-      Button {
-        store.send(.starButtonTapped(row.favorite), animation: reduceMotion ? nil : .snappy)
-      } label: {
-        Image(systemName: row.isFavorite ? "star.fill" : "star")
-          .foregroundStyle(row.isFavorite ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
-          .frame(minWidth: 28, minHeight: 28)
-          .contentShape(.rect)
+      if isSelectable {
+        Button {
+          store.send(.starButtonTapped(row.favorite), animation: reduceMotion ? nil : .snappy)
+        } label: {
+          Image(systemName: row.isFavorite ? "star.fill" : "star")
+            .foregroundStyle(row.isFavorite ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
+            .frame(minWidth: 28, minHeight: 28)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(row.isFavorite ? "Remove from favorites" : "Add to favorites")
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel(row.isFavorite ? "Remove from favorites" : "Add to favorites")
     }
     .id(row.id)
   }

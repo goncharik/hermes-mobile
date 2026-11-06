@@ -21,7 +21,6 @@ public struct ModelPickerFeature {
   public struct State: Equatable {
     /// The chat's live session id at open — the `model.options` scope.
     public var sessionID: String
-    public var isLoading: Bool
     public var options: ModelOptions?
     /// The `model.options` LOAD failure — the sheet has no list to show at all.
     public var error: String?
@@ -34,14 +33,15 @@ public struct ModelPickerFeature {
     /// Starred models, star order. Loaded on `.task`.
     public var favorites: [FavoriteModel]
     /// The server-reported `options.currentProvider` captured before the FIRST optimistic
-    /// model pick of a run, so a rejected pick restores the checkmark's provider along with
-    /// the chat's model (`ChatFeature.pendingConfigRollback` semantics). Nil = no pick in
-    /// flight. Internal bookkeeping.
+    /// model pick of a run — the rollback target the parent carries through its `config.set`
+    /// effect (`ChatFeature.pendingConfigRollback` semantics). Nil = no pick in flight.
+    /// Internal bookkeeping.
     var pendingProviderPick: PendingProviderPick?
+
+    public var isLoading: Bool { options == nil && error == nil }
 
     public init(
       sessionID: String,
-      isLoading: Bool = true,
       options: ModelOptions? = nil,
       error: String? = nil,
       applyError: String? = nil,
@@ -49,7 +49,6 @@ public struct ModelPickerFeature {
       favorites: [FavoriteModel] = []
     ) {
       self.sessionID = sessionID
-      self.isLoading = isLoading
       self.options = options
       self.error = error
       self.applyError = applyError
@@ -66,25 +65,30 @@ public struct ModelPickerFeature {
     /// The chat optimistically switched to a model under `providerSlug`: move the current
     /// provider with it so the layout's `(provider, model)` match follows the pick (else a
     /// cross-provider pick would check no row until the sheet reopens). A nil slug clears it —
-    /// the model-only fallback, the same as an older gateway.
-    mutating func applyOptimisticModelPick(providerSlug: String?) {
-      guard options != nil else { return }
+    /// the model-only fallback, the same as an older gateway. Returns the provider a rejection
+    /// restores (the last server-reported one).
+    mutating func applyOptimisticModelPick(providerSlug: String?) -> String? {
+      guard options != nil else { return nil }
       if pendingProviderPick == nil {
         pendingProviderPick = PendingProviderPick(rollbackProvider: options?.currentProvider)
       }
       options?.currentProvider = providerSlug
+      return pendingProviderPick?.rollbackProvider
     }
 
-    /// The pick was rejected: restore the provider the server last reported.
-    mutating func rollBackModelPick() {
-      guard let pending = pendingProviderPick else { return }
-      options?.currentProvider = pending.rollbackProvider
+    /// The pick was rejected: restore `provider`, the value `applyOptimisticModelPick`
+    /// returned (carried through the effect, so an intervening `session.info` can't lose it).
+    mutating func rollBackModelPick(to provider: String?) {
+      guard options != nil else { return }
+      options?.currentProvider = provider
       pendingProviderPick = nil
     }
 
-    /// An authoritative `session.info` confirmed the model: the picked provider stands.
-    mutating func confirmModelPick() {
+    /// An authoritative `session.info` / hydrate reported the model: drop the rollback stash
+    /// and, when it names the provider (`SessionInfo.provider`), take the server's.
+    mutating func confirmModelPick(provider: String?) {
       pendingProviderPick = nil
+      if let provider, options != nil { options?.currentProvider = provider }
     }
   }
 
@@ -132,12 +136,10 @@ public struct ModelPickerFeature {
         return .send(.delegate(.reasoningSelected(effort)))
 
       case let .modelOptionsResponse(.success(options)):
-        state.isLoading = false
         state.options = options
         return .none
 
       case let .modelOptionsResponse(.failure(error)):
-        state.isLoading = false
         state.error = error.message
         return .none
 
@@ -167,7 +169,6 @@ public struct ModelPickerFeature {
         // A re-appearance (the sheet's `.task` can fire again) never refetches a loaded list
         // or discards a shown load failure.
         guard state.options == nil, state.error == nil else { return .none }
-        state.isLoading = true
         state.collapsedProviders = preferences.loadCollapsedModelProviders()
         state.favorites = preferences.loadFavoriteModels()
         let sessionID = state.sessionID

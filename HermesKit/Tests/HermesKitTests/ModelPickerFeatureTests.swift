@@ -50,7 +50,6 @@ struct ModelPickerFeatureTests {
       $0.favorites = [FavoriteModel(providerID: "anthropic", model: "claude-sonnet-4-6")]
     }
     await store.receive(\.modelOptionsResponse.success) {
-      $0.isLoading = false
       $0.options = self.decodedOptions
     }
 
@@ -64,10 +63,19 @@ struct ModelPickerFeatureTests {
   /// The sheet's `.task` can fire again on a re-appearance: a loaded list is never refetched.
   @Test func taskAfterALoadIsANoOp() async {
     let store = TestStore(
-      initialState: ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+      initialState: ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
     ) {
       ModelPickerFeature()
     }
+    await store.send(.task)
+  }
+
+  /// A shown load failure is not discarded by a re-appearance either (no refetch).
+  @Test func taskAfterALoadErrorIsANoOp() async {
+    let store = TestStore(initialState: ModelPickerFeature.State(sessionID: "live", error: "boom")) {
+      ModelPickerFeature()
+    }
+    #expect(!store.state.isLoading)
     await store.send(.task)
   }
 
@@ -81,7 +89,6 @@ struct ModelPickerFeatureTests {
 
     await store.send(.task)
     await store.receive(\.modelOptionsResponse.failure) {
-      $0.isLoading = false
       $0.error = GatewayError.server("Malformed model.options result").message
     }
   }
@@ -96,7 +103,6 @@ struct ModelPickerFeatureTests {
 
     await store.send(.task)
     await store.receive(\.modelOptionsResponse.failure) {
-      $0.isLoading = false
       $0.error = "boom"
     }
   }
@@ -113,7 +119,6 @@ struct ModelPickerFeatureTests {
 
     await store.send(.task)
     await store.receive(\.modelOptionsResponse.failure) {
-      $0.isLoading = false
       $0.error = GatewayError.disconnected.message
     }
   }
@@ -123,7 +128,7 @@ struct ModelPickerFeatureTests {
   @Test func providerHeaderTogglesCollapseAndPersists() async {
     let prefs = PreferencesClient.inMemory()
     let store = TestStore(
-      initialState: ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+      initialState: ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
     ) {
       ModelPickerFeature()
     } withDependencies: {
@@ -152,7 +157,7 @@ struct ModelPickerFeatureTests {
     let opus = FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8")
     let routed = FavoriteModel(providerID: "openrouter", model: "claude-opus-4-8")
     let store = TestStore(
-      initialState: ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+      initialState: ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
     ) {
       ModelPickerFeature()
     } withDependencies: {
@@ -173,7 +178,7 @@ struct ModelPickerFeatureTests {
 
   @Test func rowAndEffortTapsAreForwardedToTheParent() async {
     let store = TestStore(
-      initialState: ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+      initialState: ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
     ) {
       ModelPickerFeature()
     }
@@ -191,7 +196,7 @@ struct ModelPickerFeatureTests {
   @Test func doneDismisses() async {
     let dismissed = LockIsolated(false)
     let store = TestStore(
-      initialState: ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+      initialState: ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
     ) {
       ModelPickerFeature()
     } withDependencies: {
@@ -199,34 +204,52 @@ struct ModelPickerFeatureTests {
     }
 
     await store.send(.doneButtonTapped)
+    await store.finish()
     #expect(dismissed.value)
   }
 
   // MARK: - Optimistic provider bookkeeping (driven by ChatFeature)
 
-  @Test func optimisticPickMovesTheProviderAndRollsBackToTheFirstCapturedValue() {
-    var state = ModelPickerFeature.State(sessionID: "live", isLoading: false, options: decodedOptions)
+  @Test func optimisticPickMovesTheProviderAndReturnsTheFirstCapturedValue() {
+    var state = ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
 
-    state.applyOptimisticModelPick(providerSlug: "openrouter")
+    #expect(state.applyOptimisticModelPick(providerSlug: "openrouter") == "anthropic")
     #expect(state.options?.currentProvider == "openrouter")
     // A second pick of the run keeps the SERVER's value as the rollback target.
-    state.applyOptimisticModelPick(providerSlug: nil)
+    #expect(state.applyOptimisticModelPick(providerSlug: nil) == "anthropic")
     #expect(state.options?.currentProvider == nil)
 
-    state.rollBackModelPick()
+    state.rollBackModelPick(to: "anthropic")
     #expect(state.options?.currentProvider == "anthropic")
     #expect(state.pendingProviderPick == nil)
+  }
 
-    // Confirmed: the picked provider stands and a later rollback has nothing to restore.
-    state.applyOptimisticModelPick(providerSlug: "openrouter")
-    state.confirmModelPick()
-    state.rollBackModelPick()
+  /// The rollback target travels with the effect, so a model-carrying `session.info` that
+  /// dropped the stash in between can't strand the sheet on the rejected provider.
+  @Test func rollbackAfterAConfirmStillRestoresTheCarriedProvider() {
+    var state = ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
+    let previous = state.applyOptimisticModelPick(providerSlug: "openrouter")
+    state.confirmModelPick(provider: nil)
+    #expect(state.pendingProviderPick == nil)
     #expect(state.options?.currentProvider == "openrouter")
+
+    state.rollBackModelPick(to: previous)
+    #expect(state.options?.currentProvider == "anthropic")
+  }
+
+  @Test func confirmTakesTheServersProviderWhenNamed() {
+    var state = ModelPickerFeature.State(sessionID: "live", options: decodedOptions)
+    _ = state.applyOptimisticModelPick(providerSlug: "openrouter")
+    state.confirmModelPick(provider: "openai")
+    #expect(state.options?.currentProvider == "openai")
+    #expect(state.pendingProviderPick == nil)
   }
 
   @Test func optimisticPickBeforeALoadIsIgnored() {
     var state = ModelPickerFeature.State(sessionID: "live")
-    state.applyOptimisticModelPick(providerSlug: "openrouter")
+    #expect(state.applyOptimisticModelPick(providerSlug: "openrouter") == nil)
+    state.confirmModelPick(provider: "openai")
+    state.rollBackModelPick(to: "anthropic")
     #expect(state.options == nil)
     #expect(state.pendingProviderPick == nil)
   }

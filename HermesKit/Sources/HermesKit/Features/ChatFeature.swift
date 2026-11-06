@@ -1280,8 +1280,11 @@ public struct ChatFeature {
     case modelPicker(PresentationAction<ModelPickerFeature.Action>)
     /// A `config.set` that failed for good (the #17 heal has already had its single replay).
     /// Carries the rejected `value` so the latch banner can name it and `previousValue` so the
-    /// optimistic picker write can roll back. One path serves both keys (#81).
-    case configSetFailed(key: String, value: String, previousValue: String?, error: GatewayError)
+    /// optimistic picker write can roll back (`previousProvider`: the sheet's provider, `model`
+    /// key only). One path serves both keys (#81).
+    case configSetFailed(
+      key: String, value: String, previousValue: String?, previousProvider: String?, error: GatewayError
+    )
     /// A `hermes-file:` link in the transcript was tapped (routed by `ChatView`'s one
     /// `OpenURLAction`). Raises the preview sheet for `path`; a no-op while one is already up.
     case fileReferenceTapped(path: String)
@@ -2661,8 +2664,9 @@ public struct ChatFeature {
         return .none
 
       case .modelChipTapped:
-        // The child loads `model.options` itself on its `.task` (#130).
-        guard let sessionID = state.liveSessionID else { return .none }
+        // The child loads `model.options` itself on its `.task` (#130). A second tap (a
+        // double-tap, or one landing while the sheet animates in) must not reset the open picker.
+        guard state.modelPicker == nil, let sessionID = state.liveSessionID else { return .none }
         state.modelPicker = ModelPickerFeature.State(sessionID: sessionID)
         return .none
 
@@ -2675,13 +2679,13 @@ public struct ChatFeature {
       case .modelPicker:
         return .none
 
-      case let .configSetFailed(key, value, previousValue, error):
+      case let .configSetFailed(key, value, previousValue, previousProvider, error):
         // Roll the optimistic picker write back so the chip stops lying (the next authoritative
         // `session.info` wins again anyway), then surface the failure — never swallowed.
         switch key {
         case "model":
           state.model = previousValue
-          state.modelPicker?.rollBackModelPick()
+          state.modelPicker?.rollBackModelPick(to: previousProvider)
         case "reasoning": state.reasoningEffort = previousValue
         default: break
         }
@@ -5223,22 +5227,24 @@ public struct ChatFeature {
     }
   }
 
-  /// Drop the previous `config.set` rejection when a new pick is made, so a successful retry
-  /// isn't read under a stale failure (nothing else clears it: success has no action and
-  /// `session.info` leaves the banner alone).
   /// Drop the rollback target for every key this authoritative `SessionInfo` carries: the chip
   /// now holds the server's own value, so the next pick captures it fresh instead of an older
   /// one. Keys the info omits keep their entry — an absent field preserves, it doesn't confirm.
+  /// The sheet's current provider takes the info's `provider` with the model
+  /// (`ModelPickerFeature.State.confirmModelPick`).
   private func confirmConfigKeys(_ info: SessionInfo, into state: inout State) {
     if info.model?.nonEmpty != nil {
       state.pendingConfigRollback.removeValue(forKey: "model")
-      state.modelPicker?.confirmModelPick()
+      state.modelPicker?.confirmModelPick(provider: info.provider?.nonEmpty)
     }
     if info.reasoningEffort?.nonEmpty != nil {
       state.pendingConfigRollback.removeValue(forKey: "reasoning")
     }
   }
 
+  /// Drop the previous `config.set` rejection when a new pick is made, so a successful retry
+  /// isn't read under a stale failure (nothing else clears it: success has no action and
+  /// `session.info` leaves the banner alone).
   private func clearConfigError(_ state: inout State) {
     state.errorBanner = nil
     state.modelPicker?.applyError = nil
@@ -5255,7 +5261,7 @@ public struct ChatFeature {
     state.model = model // optimistic; reconciled by the next session.info
     // The sheet's current-row match is on (provider, model): move its provider with the pick
     // (rolled back with the model by `.configSetFailed`).
-    state.modelPicker?.applyOptimisticModelPick(providerSlug: providerSlug)
+    let previousProvider = state.modelPicker?.applyOptimisticModelPick(providerSlug: providerSlug)
     clearConfigError(&state)
     // Desktop parity (`use-model-controls.ts`): the value carries the picker
     // section's provider slug so the gateway's model routing never guesses from
@@ -5263,8 +5269,8 @@ public struct ChatFeature {
     // the gateway's own detection ladder handles it exactly as before.
     let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
     return configSet(
-      key: "model", value: wireValue, previousValue: previousModel, sessionID: sessionID,
-      heal: state.healTarget
+      key: "model", value: wireValue, previousValue: previousModel,
+      previousProvider: previousProvider, sessionID: sessionID, heal: state.healTarget
     )
   }
 
@@ -5287,8 +5293,8 @@ public struct ChatFeature {
   /// single replay is surfaced as `.configSetFailed` (rollback + banner, and the 4002 latch for
   /// `reasoning`) — never swallowed.
   private func configSet(
-    key: String, value: String, previousValue: String?, sessionID: String,
-    heal: State.HealTarget
+    key: String, value: String, previousValue: String?, previousProvider: String? = nil,
+    sessionID: String, heal: State.HealTarget
   ) -> Effect<Action> {
     .run { [gateway] send in
       func setConfig(_ targetID: String) async throws {
@@ -5303,10 +5309,14 @@ public struct ChatFeature {
           setConfig, sessionID: sessionID, heal: heal, gateway: gateway, send: send
         )
       } catch let error as GatewayError {
-        await send(.configSetFailed(key: key, value: value, previousValue: previousValue, error: error))
+        await send(.configSetFailed(
+          key: key, value: value, previousValue: previousValue, previousProvider: previousProvider,
+          error: error
+        ))
       } catch {
         await send(.configSetFailed(
-          key: key, value: value, previousValue: previousValue, error: .disconnected
+          key: key, value: value, previousValue: previousValue, previousProvider: previousProvider,
+          error: .disconnected
         ))
       }
     }

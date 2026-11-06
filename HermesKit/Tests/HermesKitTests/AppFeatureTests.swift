@@ -1677,6 +1677,11 @@ struct AppFeatureTests {
     let pinsCleared = LockIsolated(false)
     let seenCleared = LockIsolated(false)
     let profileCleared = LockIsolated(false)
+    // The model picker prefs are device-global (like read-aloud): a user switch keeps them.
+    let pickerPrefs = PreferencesClient.inMemory()
+    let favorite = FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8")
+    pickerPrefs.saveCollapsedModelProviders(["openrouter"])
+    pickerPrefs.saveFavoriteModels([favorite])
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1695,6 +1700,10 @@ struct AppFeatureTests {
       $0.preferences.savePinnedIDs = { @Sendable ids in if ids.isEmpty { pinsCleared.setValue(true) } }
       $0.preferences.saveSeenCounts = { @Sendable c in if c.isEmpty { seenCleared.setValue(true) } }
       $0.preferences.clearSelectedProfileID = { @Sendable in profileCleared.setValue(true) }
+      $0.preferences.loadCollapsedModelProviders = pickerPrefs.loadCollapsedModelProviders
+      $0.preferences.saveCollapsedModelProviders = pickerPrefs.saveCollapsedModelProviders
+      $0.preferences.loadFavoriteModels = pickerPrefs.loadFavoriteModels
+      $0.preferences.saveFavoriteModels = pickerPrefs.saveFavoriteModels
       $0.push = push.client
     }
     store.exhaustivity = .off
@@ -1712,6 +1721,8 @@ struct AppFeatureTests {
     #expect(profileCleared.value)
     await store.finish()
     #expect(push.badgeCount == 0)
+    #expect(pickerPrefs.loadCollapsedModelProviders() == ["openrouter"])
+    #expect(pickerPrefs.loadFavoriteModels() == [favorite])
   }
 
   @Test func quitFromReauthFullyLogsOutToOnboarding() async {

@@ -922,7 +922,7 @@ struct ChatInteractionTests {
   /// A ready chat with the picker sheet up — selection only ever arrives through it.
   private func pickerState(options: ModelOptions? = nil) -> ChatFeature.State {
     var state = readyState()
-    state.modelPicker = ModelPickerFeature.State(sessionID: "live", isLoading: false, options: options)
+    state.modelPicker = ModelPickerFeature.State(sessionID: "live", options: options)
     return state
   }
 
@@ -949,7 +949,6 @@ struct ChatInteractionTests {
     }
     await store.send(.modelPicker(.presented(.task)))
     await store.receive(\.modelPicker.presented.modelOptionsResponse.success) {
-      $0.modelPicker?.isLoading = false
       $0.modelPicker?.options = self.sampleOptions()
     }
 
@@ -963,6 +962,37 @@ struct ChatInteractionTests {
   @Test func modelChipTappedWithoutALiveSessionIsANoOp() async {
     let store = TestStore(initialState: ChatFeature.State(connection: conn)) { ChatFeature() }
     await store.send(.modelChipTapped)
+  }
+
+  /// A second chip tap (a double-tap, or one landing while the sheet animates in) leaves the
+  /// presented picker — its loaded prefs included — alone; a reset would save empty prefs over
+  /// the user's on the next star / header tap.
+  @Test func secondChipTapLeavesThePresentedPickerAlone() async {
+    var initial = pickerState(options: sampleOptions())
+    initial.modelPicker?.favorites = [FavoriteModel(providerID: "anthropic", model: "claude-sonnet-4-6")]
+    initial.modelPicker?.collapsedProviders = ["anthropic"]
+    let store = TestStore(initialState: initial) { ChatFeature() }
+    await store.send(.modelChipTapped)
+  }
+
+  /// Dismissing while `model.options` is still loading cancels the child's load (`.ifLet`).
+  @Test func dismissDuringTheLoadCancelsIt() async {
+    let clock = TestClock()
+    let store = TestStore(initialState: readyState()) { ChatFeature() } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in
+        try await clock.sleep(for: .seconds(1))
+        return .object([:])
+      }
+    }
+
+    await store.send(.modelChipTapped) {
+      $0.modelPicker = ModelPickerFeature.State(sessionID: "live")
+    }
+    await store.send(.modelPicker(.presented(.task)))
+    await store.send(.modelPicker(.dismiss)) { $0.modelPicker = nil }
+    await clock.advance(by: .seconds(1))
+    await store.finish() // no `.modelOptionsResponse` arrives
   }
 
   /// Done self-dismisses through the presentation (`@Dependency(\.dismiss)`).
@@ -1266,9 +1296,126 @@ struct ChatInteractionTests {
     await store.finish()
     #expect(store.state.modelPicker?.pendingProviderPick == .init(rollbackProvider: "openai"))
 
+    // An info without the model confirms nothing.
+    await store.send(.gatewayEvent(.sessionInfo(SessionInfo(reasoningEffort: "high"))))
+    #expect(store.state.modelPicker?.pendingProviderPick == .init(rollbackProvider: "openai"))
+    #expect(store.state.modelPicker?.options?.currentProvider == "openrouter")
+
     await store.send(.gatewayEvent(.sessionInfo(SessionInfo(model: "gpt-5-mini"))))
     #expect(store.state.modelPicker?.pendingProviderPick == nil)
     #expect(store.state.modelPicker?.options?.currentProvider == "openrouter")
+  }
+
+  /// `session.info` names the provider (upstream `_session_info`): the sheet follows it, so a
+  /// server-driven switch (another client, a re-hydrate) moves the checkmark too.
+  @Test func sessionInfoProviderReconcilesTheSheet() async {
+    var initial = configuredState()
+    initial.modelPicker?.options = ModelOptions(
+      providers: [
+        .init(name: "OpenAI", slug: "openai", models: ["gpt-5"], authenticated: true),
+        .init(name: "OpenRouter", slug: "openrouter", models: ["gpt-5"], authenticated: true),
+      ],
+      currentModel: "gpt-5",
+      currentProvider: "openai"
+    )
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false) // the snapshot-persist debounce
+
+    await store.send(.gatewayEvent(.sessionInfo(SessionInfo(model: "gpt-5", provider: "openrouter"))))
+    #expect(store.state.modelPicker?.options?.currentProvider == "openrouter")
+    // A provider without the model is not a model confirmation.
+    await store.send(.gatewayEvent(.sessionInfo(SessionInfo(provider: "openai"))))
+    #expect(store.state.modelPicker?.options?.currentProvider == "openrouter")
+  }
+
+  /// A `session.info` landing between a cross-provider pick and its rejection (dropping the
+  /// sheet's stash) can't strand the checkmark on the rejected provider: the rollback target
+  /// travels with the `config.set` effect.
+  @Test func rejectionAfterAnInterveningSessionInfoStillRestoresTheProvider() async {
+    let clock = TestClock()
+    var initial = configuredState()
+    initial.modelPicker?.options = ModelOptions(
+      providers: [
+        .init(name: "OpenAI", slug: "openai", models: ["gpt-5"], authenticated: true),
+        .init(name: "OpenRouter", slug: "openrouter", models: ["gpt-5"], authenticated: true),
+      ],
+      currentModel: "gpt-5",
+      currentProvider: "openai"
+    )
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable _, _ in
+        try await clock.sleep(for: .seconds(1))
+        throw GatewayError.server("no credits")
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false) // the snapshot-persist debounce
+
+    await store.send(.pickModel(model: "gpt-5", provider: "openrouter"))
+    await store.send(.gatewayEvent(.sessionInfo(SessionInfo(model: "gpt-5"))))
+    #expect(store.state.modelPicker?.pendingProviderPick == nil)
+    #expect(store.state.modelPicker?.options?.currentProvider == "openrouter")
+
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.configSetFailed)
+    #expect(store.state.modelPicker?.options?.currentProvider == "openai")
+    #expect(store.state.model == "gpt-5")
+    #expect(store.state.errorBanner == "Couldn’t change model: no credits")
+  }
+
+  /// The picker's `config.set` is the PARENT's effect, so it outlives the sheet: a rejection
+  /// after Done still rolls the chip back and banners (the gone sheet's mirror is a no-op).
+  @Test func aRejectedPickStillRollsBackAfterTheSheetCloses() async {
+    let clock = TestClock()
+    let store = TestStore(initialState: configuredState()) { ChatFeature() } withDependencies: {
+      $0.hermesGateway.send = { @Sendable _, _ in
+        try await clock.sleep(for: .seconds(1))
+        throw GatewayError.server("no credits")
+      }
+    }
+
+    await store.send(.pickModel(model: "gpt-5-mini", provider: "openai")) {
+      $0.model = "gpt-5-mini"
+      $0.pendingConfigRollback.updateValue("gpt-5", forKey: "model")
+    }
+    await store.send(.modelPicker(.dismiss)) { $0.modelPicker = nil }
+    await clock.advance(by: .seconds(1))
+    await store.receive(\.configSetFailed) {
+      $0.model = "gpt-5"
+      $0.pendingConfigRollback.removeValue(forKey: "model")
+      $0.errorBanner = "Couldn’t change model: no credits"
+    }
+    await store.finish()
+  }
+
+  /// …and a successful one still goes out on the wire after the sheet closes.
+  @Test func aPickStillAppliesAfterTheSheetCloses() async {
+    let clock = TestClock()
+    let sent = LockIsolated<JSONValue?>(nil)
+    let store = TestStore(initialState: configuredState()) { ChatFeature() } withDependencies: {
+      $0.hermesGateway.send = { @Sendable method, params in
+        try await clock.sleep(for: .seconds(1))
+        sent.setValue(.object(["method": .string(method), "params": params]))
+        return .object([:])
+      }
+    }
+
+    await store.send(.pickModel(model: "gpt-5-mini", provider: "openai")) {
+      $0.model = "gpt-5-mini"
+      $0.pendingConfigRollback.updateValue("gpt-5", forKey: "model")
+    }
+    await store.send(.modelPicker(.dismiss)) { $0.modelPicker = nil }
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+
+    #expect(sent.value?["method"]?.stringValue == "config.set")
+    #expect(sent.value?["params"]?["value"]?.stringValue == "gpt-5-mini --provider openai")
   }
 
   private struct UnexpectedFailure: Error {}

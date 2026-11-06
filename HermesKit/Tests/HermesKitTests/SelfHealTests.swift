@@ -45,7 +45,7 @@ struct SelfHealTests {
   /// `healableState()` with the model picker up — the only source of a config pick.
   private func healablePickerState() -> ChatFeature.State {
     var state = healableState()
-    state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live", isLoading: false)
+    state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live")
     return state
   }
 
@@ -955,7 +955,7 @@ struct SelfHealTests {
       case .rename: state.renameDraft = "New title"
       case .model, .reasoning:
         // Picks arrive only through the presented picker sheet.
-        state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live", isLoading: false)
+        state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live")
       case .slashExec, .compress:
         state.commandCatalog = CommandCatalog(
           commands: [SlashCommand(name: "/status", description: "Show session status")],

@@ -191,18 +191,61 @@ struct ModelPickerLayoutTests {
     #expect(section.provider.warning == "paste OPENAI_API_KEY to activate")
   }
 
-  @Test func lostCredentialCurrentProviderIsNonSelectableAndCentered() throws {
-    // inventory.py keeps the current provider with its models but authenticated=false.
+  /// inventory.py `_append_unconfigured_rows(current_only=True)` keeps the current provider with
+  /// its saved model, `authenticated: false` + a warning: the card lists that model as the
+  /// (non-selectable, star-less) checked row — desktop `pickerProviders` parity.
+  @Test func lostCredentialCurrentProviderListsItsSavedModelAsTheCenteredCurrentRow() throws {
     let lost = ModelOptions.Provider(
       name: "Anthropic", slug: "anthropic", models: ["opus"], authenticated: false,
       warning: "ANTHROPIC_API_KEY is no longer valid"
     )
-    let result = layout(options([lost, openRouter], currentProvider: "anthropic"))
+    // Even a stale favorite naming it doesn't pull the row out of its card.
+    let result = layout(
+      options([lost, openRouter], currentProvider: "anthropic"),
+      favorites: [.init(providerID: "anthropic", model: "opus")]
+    )
     let section = try #require(providerSection(result, "anthropic"))
     #expect(!section.isSelectable)
-    #expect(section.rows.isEmpty)
+    expectNoDifference(section.rows, [
+      .init(id: "anthropic::opus", model: "opus", providerID: "anthropic", providerSlug: "anthropic",
+            providerName: "Anthropic", isFavorite: false, isCurrent: true),
+    ])
+    #expect(section.modelCount == 1)
     #expect(result.sections.map(\.id).last == "header::anthropic")
-    #expect(result.scrollTarget == "header::anthropic")
+    #expect(!result.sections.map(\.id).contains("favorites"))
+    #expect(result.scrollTarget == "anthropic::opus")
+
+    let collapsed = layout(options([lost, openRouter], currentProvider: "anthropic"), collapsed: ["anthropic"])
+    let collapsedSection = try #require(providerSection(collapsed, "anthropic"))
+    #expect(collapsedSection.rows.isEmpty)
+    #expect(collapsedSection.modelCount == 1)
+    #expect(collapsedSection.currentModelName == "opus")
+    #expect(collapsed.scrollTarget == "header::anthropic")
+  }
+
+  /// A lost-credential current provider reported without models still centers its header.
+  @Test func lostCredentialCurrentProviderWithoutModelsCentersItsHeader() {
+    let lost = ModelOptions.Provider(
+      name: "Anthropic", slug: "anthropic", models: [], authenticated: false,
+      warning: "ANTHROPIC_API_KEY is no longer valid"
+    )
+    #expect(layout(options([lost, openRouter], currentProvider: "anthropic")).scrollTarget == "header::anthropic")
+  }
+
+  // MARK: Duplicates
+
+  @Test func repeatedModelIdsInAProviderAreListedOnce() throws {
+    let doubled = ModelOptions.Provider(
+      name: "Anthropic", slug: "anthropic", models: ["opus", "opus", "haiku"], authenticated: true
+    )
+    let expanded = try #require(providerSection(layout(options([doubled])), "anthropic"))
+    #expect(expanded.rows.map(\.id) == ["anthropic::opus", "anthropic::haiku"])
+    #expect(expanded.modelCount == 2)
+
+    let collapsed = try #require(providerSection(layout(options([doubled]), collapsed: ["anthropic"]), "anthropic"))
+    #expect(collapsed.rows.isEmpty)
+    #expect(collapsed.modelCount == 2)
+    #expect(collapsed.currentModelName == "opus")
   }
 
   // MARK: Search
@@ -216,6 +259,8 @@ struct ModelPickerLayoutTests {
     expectNoDifference(result.sections.map(\.id), ["header::anthropic", "header::openrouter"])
     let anthropicSection = try #require(providerSection(result, "anthropic"))
     #expect(!anthropicSection.isCollapsed)
+    // The header is no toggle while searching: a tap would flip a pref the user can't see.
+    #expect(!anthropicSection.isCollapsible)
     #expect(anthropicSection.currentModelName == nil)
     expectNoDifference(anthropicSection.rows, [
       .init(id: "anthropic::opus", model: "opus", providerID: "anthropic", providerSlug: "anthropic",
@@ -231,6 +276,13 @@ struct ModelPickerLayoutTests {
   @Test func whitespaceQueryIsNotSearching() {
     let result = layout(favorites: [.init(providerID: "anthropic", model: "haiku")], query: "   ")
     #expect(result.sections.map(\.id).prefix(2) == ["options", "favorites"])
+    #expect(providerSection(result, "anthropic")?.isCollapsible == true)
+  }
+
+  @Test func searchWithNoMatchesYieldsNothing() {
+    let result = layout(favorites: [.init(providerID: "anthropic", model: "haiku")], query: "zzz")
+    #expect(result.sections.isEmpty)
+    #expect(result.scrollTarget == nil)
   }
 
   @Test func searchMatchingProviderNameKeepsItsModels() throws {
