@@ -315,6 +315,19 @@ public struct HermesRESTClient: Sendable {
   /// `RESTError` — the agent answers 400 with a `detail` (not a git checkout, no remote,
   /// non-fast-forward, git missing) that `RESTError.server` carries verbatim.
   public var updatePushPlugin: @Sendable (_ connection: ServerConnection) async throws -> PushPluginUpdateResult
+  /// Whether the agent install can be updated — `GET /api/hermes/update/check?force=true`
+  /// (`force` busts the server's 24 h cache, matching the dashboard's "Check now"). A missing
+  /// endpoint surfaces as `RESTError.notFound` / 405 so Settings hides the updater.
+  /// Contract: `docs/features/agent-update.md`.
+  public var checkAgentUpdate: @Sendable (_ connection: ServerConnection) async throws -> AgentUpdateCheck
+  /// Start `hermes update` on the server — `POST /api/hermes/update`. Sent at most ONCE per
+  /// confirmation and never retried: a transport failure is ambiguous (the server may have
+  /// started it). A 2xx `{ok:false}` refusal throws `RESTError.server(status: 200, detail:)`
+  /// carrying the server's message.
+  public var startAgentUpdate: @Sendable (_ connection: ServerConnection) async throws -> AgentUpdateStart
+  /// Read-only progress of the server's update action —
+  /// `GET /api/actions/hermes-update/status?lines=1`.
+  public var agentUpdateStatus: @Sendable (_ connection: ServerConnection) async throws -> AgentUpdateActionStatus
 }
 
 public extension HermesRESTClient {
@@ -558,6 +571,32 @@ public extension HermesRESTClient {
         }
         // Absent `unchanged` (older agent) → assume something changed and ask for the restart.
         return PushPluginUpdateResult(unchanged: response.unchanged ?? false)
+      },
+      checkAgentUpdate: { conn in
+        let url = try makeURL(conn.baseURL, "/api/hermes/update/check", query: [
+          URLQueryItem(name: "force", value: "true")
+        ])
+        return try await get(url, auth: authFor(conn), session: session)
+      },
+      startAgentUpdate: { conn in
+        let url = try makeURL(conn.baseURL, "/api/hermes/update")
+        let response: AgentUpdateStartResponse = try await postJSON(
+          url, body: Data("{}".utf8), auth: authFor(conn), session: session
+        )
+        // A refusal (commit build, docker/nix/apt install, externally managed runtime) is a
+        // 2xx `{ok:false, message}` — a failure, never an accepted update.
+        guard response.ok else {
+          throw RESTError.server(status: 200, detail: response.message ?? response.error)
+        }
+        if response.alreadyRunning == true { return .alreadyRunning }
+        let id = response.actionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .started(actionID: (id?.isEmpty ?? true) ? nil : id)
+      },
+      agentUpdateStatus: { conn in
+        let url = try makeURL(conn.baseURL, "/api/actions/hermes-update/status", query: [
+          URLQueryItem(name: "lines", value: "1")
+        ])
+        return try await get(url, auth: authFor(conn), session: session)
       }
     )
   }
@@ -573,6 +612,11 @@ extension HermesRESTClient: DependencyKey {
   public static var testValue: HermesRESTClient {
     var client = HermesRESTClient()
     client.setUnread = { _, _, _, _ in }
+    // Settings probes the updater on every appearance; an unstubbed agent reads as one that
+    // lacks the endpoint (feature hidden, no further calls), so unrelated Settings tests
+    // don't each have to stub it. `startAgentUpdate` stays unimplemented: it is only ever
+    // sent after an explicit confirmation, so an unexpected call must fail loudly.
+    client.checkAgentUpdate = { _ in throw RESTError.notFound }
     return client
   }
 }
@@ -1057,6 +1101,20 @@ private struct PluginUpdateResponse: Decodable {
   let ok: Bool?
   let unchanged: Bool?
   let error: String?
+}
+
+/// `POST /api/hermes/update` → `{ok, pid, name, action_id?, already_running?}`, or a 2xx
+/// refusal `{ok:false, error, message, update_command}`.
+private struct AgentUpdateStartResponse: Decodable {
+  let ok: Bool
+  let actionID: String?
+  let alreadyRunning: Bool?
+  let message: String?
+  let error: String?
+
+  enum CodingKeys: String, CodingKey {
+    case ok, message, error, actionID = "action_id", alreadyRunning = "already_running"
+  }
 }
 
 /// Fetch the plugin hub and map our row onto `PushPluginInfo`. Shared by `pushPluginStatus`

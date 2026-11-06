@@ -2,7 +2,7 @@ import ComposableArchitecture
 import Foundation
 
 /// Settings sheet, in six groups: Server, App, Notifications, Feedback, About, Sign out.
-/// Three rows push sub-screens through `path` (`SettingsPath`: App Icon, Diagnostics,
+/// The Server group's Agent row hosts the agent updater (`AgentUpdateFeature`). Three rows push sub-screens through `path` (`SettingsPath`: App Icon, Diagnostics,
 /// Acknowledgements). The live debug log lives in `DiagnosticsFeature`, subscribed only while
 /// that screen is on screen.
 ///
@@ -25,6 +25,8 @@ public struct SettingsFeature {
     /// The agent's `/api/status` version, read on appearance; `nil` until it lands (and left
     /// `nil` on failure), which hides the Agent row.
     public var agentVersion: String?
+    /// The agent updater beside the Agent row (`docs/features/agent-update.md`).
+    public var agentUpdate: AgentUpdateFeature.State
     /// Build + device facts (version row, feedback links), read on appearance.
     public var bundleInfo: BundleInfo?
     /// The icons this build can switch between, read on appearance (labels the App Icon row
@@ -103,6 +105,7 @@ public struct SettingsFeature {
       self.path = path
       self.profileName = profileName
       self.agentVersion = agentVersion
+      self.agentUpdate = AgentUpdateFeature.State(connection: connection)
       self.bundleInfo = bundleInfo
       self.appIconCatalog = appIconCatalog
       self.selectedAppIcon = selectedAppIcon
@@ -195,6 +198,7 @@ public struct SettingsFeature {
     /// The "Acknowledgements" row — pushes the open-source list.
     case acknowledgementsRowTapped
     case path(StackActionOf<SettingsPath>)
+    case agentUpdate(AgentUpdateFeature.Action)
     case saveTokenTapped
     case clearTokenTapped
     case reconnectTapped
@@ -263,6 +267,9 @@ public struct SettingsFeature {
 
   public var body: some ReducerOf<Self> {
     BindingReducer()
+    Scope(state: \.agentUpdate, action: \.agentUpdate) {
+      AgentUpdateFeature()
+    }
     Reduce { state, action in
       switch action {
       case .task:
@@ -291,7 +298,9 @@ public struct SettingsFeature {
           // an unreachable/old agent maps to `.unknown`, which offers nothing.
           .run { [rest, connection = state.connection] send in
             await send(.pushPluginInfoLoaded(rest.pushPluginInfo(connection)))
-          }
+          },
+          // The updater probes the agent's own update endpoints (hidden when absent).
+          .send(.agentUpdate(.task))
         )
 
       case let .pushPluginInfoLoaded(info):
@@ -463,6 +472,14 @@ public struct SettingsFeature {
       case .path:
         return .none
 
+      case let .agentUpdate(.delegate(.updated(version))):
+        // Our update's receipt names the new version; the Agent row follows it.
+        guard let version else { return .none }
+        return .send(.agentStatusLoaded(version))
+
+      case .agentUpdate:
+        return .none
+
       case .binding(\.token):
         state.savedConfirmation = false
         return .none
@@ -474,6 +491,7 @@ public struct SettingsFeature {
         guard state.canSaveToken else { return .none }
         let token = state.token
         state.connection.token = token
+        state.agentUpdate.connection = state.connection
         state.savedConfirmation = true
         try? keychain.saveToken(token)
         return .send(.delegate(.tokenSaved(token)))
@@ -493,6 +511,7 @@ public struct SettingsFeature {
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
         preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
         preferences.clearModelPickerPrefs() // model picker collapse + favorites (#130)
+        preferences.clearOwnedAgentUpdate(nil) // the updater's owned run is per-server
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         debugLog.clear() // the gateway event log is per-server too (diagnostics report)
         return .merge(

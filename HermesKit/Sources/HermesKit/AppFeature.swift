@@ -440,6 +440,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearOwnedAgentUpdate(nil)
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -817,6 +818,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearOwnedAgentUpdate(nil)
         debugLog.clear()
         state.reauth = nil
         state.path = .init()
