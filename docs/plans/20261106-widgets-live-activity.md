@@ -375,12 +375,12 @@ guard.
 - Create: `HermesWidgets/Resources/Assets.xcassets` (monochrome Hermes glyph as a template image; reuse the existing artwork in `HermesMobile/Resources`)
 - Create: `HermesMobileTests/WidgetSnapshotTests.swift`
 
-- [ ] add the `HermesWidgets` target (`me.honcharenko.HermesMobile.Widgets`, iOS 18, `NSExtension` widgetkit point, links only `HermesWidgetKit`, same `DEVELOPMENT_TEAM` / version settings as the app) and embed it in the app; App Group `group.me.honcharenko.HermesMobile` entitlement on both targets (keep `aps-environment` on the app); `NSSupportsLiveActivities = true` on the app
-- [ ] implement `OpenHermesURLIntent` returning `.result(opensIntent: OpenURLIntent(url))`; the quick-actions widget: small = "Ask Hermes" pill (new chat) + Camera + Mic buttons via `Button(intent:)`; medium = pill + Camera + Photos + Mic via `Link`; `.widgetAccentable()` glyphs; `containerBackground`
-- [ ] implement `NewChatAccessoryWidget` (`accessoryCircular`, `widgetURL` new chat) and the two `ControlWidget`s (titles and symbols from `LaunchIntent.shortcutTitle` / `shortcutSymbolName`)
-- [ ] `tuist generate --no-open && make build` - app plus extension build for the Simulator
-- [ ] write snapshot tests for `QuickActionsView` small and medium in light / dark (and tinted if `widgetRenderingMode` can be injected; otherwise note it) at the widget family sizes; run `make snapshot` twice
-- [ ] run tests - must pass before task 6
+- [x] add the `HermesWidgets` target (`me.honcharenko.HermesMobile.Widgets`, iOS 18, `NSExtension` widgetkit point, links only `HermesWidgetKit`, same `DEVELOPMENT_TEAM` / version settings as the app) and embed it in the app; App Group `group.me.honcharenko.HermesMobile` entitlement on both targets (keep `aps-environment` on the app); `NSSupportsLiveActivities = true` on the app (➕ `marketingVersion` / `currentProjectVersion` / `appGroupIdentifier` constants in `Project.swift` so the two targets can't drift; `APPLICATION_EXTENSION_API_ONLY = YES` on the extension; the test target also bundles `HermesWidgets/Resources` for the glyph)
+- [x] implement `OpenHermesURLIntent` returning `.result(opensIntent: OpenURLIntent(url))`; the quick-actions widget: small = "Ask Hermes" pill (new chat) + Camera + Mic buttons via `Button(intent:)`; medium = pill + Camera + Photos + Mic via `Link`; `.widgetAccentable()` glyphs; `containerBackground` (➕ `QuickActionsView` is generic over a `tap` wrapper so the small / medium / test wiring share one layout; the small pill reads "Ask" — "Ask Hermes" truncates at 126 pt — VoiceOver still reads "Ask Hermes"; an unrecognised intent target falls back to a new chat; glyph = template "HA" mask extracted from the App Store icon)
+- [x] implement `NewChatAccessoryWidget` (`accessoryCircular`, `widgetURL` new chat) and the two `ControlWidget`s (titles and symbols from `LaunchIntent.shortcutTitle` / `shortcutSymbolName`) (➕ `Views/NewChatAccessoryView.swift`, snapshotted too)
+- [x] `tuist generate --no-open && make build` - app plus extension build for the Simulator (extension binary links only system frameworks: no TCA / GRDB symbols)
+- [x] write snapshot tests for `QuickActionsView` small and medium in light / dark (and tinted if `widgetRenderingMode` can be injected; otherwise note it) at the widget family sizes; run `make snapshot` twice (⚠️ `widgetRenderingMode` is read-only, so tinted / clear stay an on-device check, noted in `WidgetSnapshotTests`)
+- [x] run tests - must pass before task 6
 
 ### Task 6: Add `statusSessions` and the pure `AgentStatusProjection`
 
