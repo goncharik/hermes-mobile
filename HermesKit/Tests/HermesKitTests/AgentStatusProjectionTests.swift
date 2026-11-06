@@ -183,6 +183,32 @@ struct AgentStatusProjectionTests {
     #expect(listed?.rows.map(\.title) == ["Title new"])
   }
 
+  /// An untitled new chat is named by its whole first prompt — a pasted log here. The rows keep
+  /// its first line, cut, so the activity content stays far under ActivityKit's ~4 KB.
+  @Test func aMultiKilobyteFirstPromptIsClampedForBothSurfaces() throws {
+    let line = String(repeating: "error: build failed at step 42 ", count: 60)
+    let prompt = line + "\n" + String(repeating: "stack frame\n", count: 300)
+    #expect(prompt.utf8.count > 4096)
+    let slot = Session(id: "new", preview: prompt, cwd: "/" + String(repeating: "deep", count: 500))
+    let projection = make([], slotRunning: (id: "new", running: true), slotSession: slot)
+
+    let headline = try #require(projection?.headline)
+    #expect(headline.title.unicodeScalars.count == AgentStatusProjection.maxTextScalars)
+    #expect(headline.title.hasPrefix("error: build failed"))
+    #expect(headline.title.hasSuffix("…"))
+    #expect(headline.workspace?.unicodeScalars.count == AgentStatusProjection.maxTextScalars)
+    let content = try #require(projection?.activityContent)
+    #expect(content.headlineTitle == headline.title)
+    #expect(try JSONEncoder().encode(content).count < 1024)
+
+    // A short first line is kept whole.
+    let short = make(
+      [], slotRunning: (id: "new", running: true),
+      slotSession: Session(id: "new", preview: "fix it\nthen run tests")
+    )
+    #expect(short?.headline?.title == "fix it")
+  }
+
   @Test func activityContentCarriesTheHeadline() {
     let projection = make([session("a", minutesAgo: 1, active: true)])
     expectNoDifference(

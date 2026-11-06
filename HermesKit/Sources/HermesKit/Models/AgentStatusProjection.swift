@@ -8,7 +8,8 @@ import Foundation
 /// `agentStatus` edge fires only on a real change.
 public struct AgentStatusProjection: Equatable, Sendable {
   /// The top `WidgetSessionSnapshot.maxRows` interactive sessions, in display order:
-  /// needs-input, then working, then `updatedAt` newest first.
+  /// needs-input, then working, then `updatedAt` newest first. Titles and workspaces are
+  /// `clamped`, so neither the mirror nor the activity content grows with them.
   public var rows: [WidgetSessionRow]
   /// Interactive sessions that need input or are working — the whole list, not just `rows`.
   public var activeCount: Int
@@ -71,8 +72,8 @@ public struct AgentStatusProjection: Equatable, Sendable {
         )
         return (offset: offset, row: WidgetSessionRow(
           id: session.id,
-          title: session.displayName,
-          workspace: session.workspaceName,
+          title: clamped(session.displayName),
+          workspace: session.workspaceName.map(clamped),
           status: status,
           updatedAt: session.updatedAt,
           profile: profile
@@ -107,6 +108,20 @@ public struct AgentStatusProjection: Equatable, Sendable {
       headlineProfile: headline.profile,
       status: headline.status == .needsInput ? .needsInput : .working
     )
+  }
+
+  /// The most Unicode scalars a row's title or workspace keeps. ActivityKit refuses (start) or
+  /// drops (update) content over ~4 KB, and an untitled session's name is its whole first
+  /// prompt; a bounded scalar count bounds the encoded bytes whatever the text.
+  static let maxTextScalars = 120
+
+  /// `text`'s first line, cut to `maxTextScalars` (the last one an ellipsis when cut).
+  static func clamped(_ text: String) -> String {
+    let line = text.prefix { !$0.isNewline }
+    guard line.unicodeScalars.count > maxTextScalars else { return String(line) }
+    var scalars = String.UnicodeScalarView()
+    scalars.append(contentsOf: line.unicodeScalars.prefix(maxTextScalars - 1))
+    return String(scalars) + "…"
   }
 
   private static func isActive(_ row: WidgetSessionRow) -> Bool {
