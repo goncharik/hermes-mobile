@@ -492,6 +492,7 @@ public struct SettingsFeature {
         preferences.saveDefaultSessionSwipeAction(.default) // reset the swipe-action pref on logout
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
         preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
+        preferences.clearModelPickerPrefs() // model picker collapse + favorites (#130)
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         debugLog.clear() // the gateway event log is per-server too (diagnostics report)
         return .merge(

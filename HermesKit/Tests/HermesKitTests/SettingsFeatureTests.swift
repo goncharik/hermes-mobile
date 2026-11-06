@@ -17,6 +17,8 @@ struct SettingsFeatureTests {
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.saveSelectedProfileID("staging")
     preferences.saveAutoSpeakReplies(true)
+    preferences.saveCollapsedModelProviders(["openrouter"])
+    preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -35,6 +37,8 @@ struct SettingsFeatureTests {
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive) // swipe pref reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
+    #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
+    #expect(preferences.loadFavoriteModels() == [])
   }
 
   /// The gateway event log belongs to the old server: sign out empties it, so a later

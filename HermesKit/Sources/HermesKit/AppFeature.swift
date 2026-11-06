@@ -439,6 +439,7 @@ public struct AppFeature {
         preferences.clearIdentityScopedPrefs()
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
+        preferences.clearModelPickerPrefs()
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -815,6 +816,7 @@ public struct AppFeature {
         preferences.clearIdentityScopedPrefs()
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
+        preferences.clearModelPickerPrefs()
         debugLog.clear()
         state.reauth = nil
         state.path = .init()

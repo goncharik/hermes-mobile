@@ -216,15 +216,15 @@
 - Modify: `HermesKit/Sources/HermesKit/Features/SettingsFeature.swift`
 - Modify: the existing PreferencesClient / logout tests (locate with grep)
 
-- [ ] add `FavoriteModel` (`Codable, Hashable, Sendable`, public init)
-- [ ] add load/save closures for collapsed providers and favorites to `PreferencesClient`
+- [x] add `FavoriteModel` (`Codable, Hashable, Sendable`, public init)
+- [x] add load/save closures for collapsed providers and favorites to `PreferencesClient`
       (defaults `[]`), `live` (keys above, JSON for favorites) and `inMemory`
-- [ ] add `clearModelPickerPrefs()` extension and call it at every logout site (`AppFeature`
+- [x] add `clearModelPickerPrefs()` extension and call it at every logout site (`AppFeature`
       ×2, `SettingsFeature`)
-- [ ] write tests: in-memory round-trip; `live(defaults:)` with a throwaway suite round-trip and
+- [x] write tests: in-memory round-trip; `live(defaults:)` with a throwaway suite round-trip and
       corrupt-data → `[]`
-- [ ] update logout tests to assert both prefs are cleared
-- [ ] run `make test` — must pass before next task
+- [x] update logout tests to assert both prefs are cleared
+- [x] run `make test` — must pass before next task
 
 ### Task 3: Add the pure ModelPickerLayout derivation
 

@@ -1719,6 +1719,8 @@ struct AppFeatureTests {
     let urlCleared = LockIsolated(false)
     let swipeActionReset = LockIsolated(false)
     let autoSpeakCleared = LockIsolated(false)
+    let collapsedCleared = LockIsolated(false)
+    let favoritesCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1738,6 +1740,12 @@ struct AppFeatureTests {
         if action == .default { swipeActionReset.setValue(true) }
       }
       $0.preferences.clearAutoSpeakReplies = { @Sendable in autoSpeakCleared.setValue(true) }
+      $0.preferences.saveCollapsedModelProviders = { @Sendable ids in
+        if ids.isEmpty { collapsedCleared.setValue(true) }
+      }
+      $0.preferences.saveFavoriteModels = { @Sendable favorites in
+        if favorites.isEmpty { favoritesCleared.setValue(true) }
+      }
     }
     store.exhaustivity = .off
 
@@ -1752,6 +1760,8 @@ struct AppFeatureTests {
     #expect(urlCleared.value)
     #expect(swipeActionReset.value) // swipe-action pref reset on the quit logout too
     #expect(autoSpeakCleared.value) // read-aloud toggle cleared on the quit logout (#74)
+    #expect(collapsedCleared.value) // model picker collapse + favorites cleared too (#130)
+    #expect(favoritesCleared.value)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -4349,6 +4359,8 @@ struct AppFeatureTests {
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.savePushDeviceToken("cafef00d")
     preferences.saveAutoSpeakReplies(true)
+    preferences.saveCollapsedModelProviders(["openrouter"])
+    preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -4384,6 +4396,8 @@ struct AppFeatureTests {
     #expect(preferences.loadSelectedProfileID() == nil)
     #expect(preferences.loadDefaultSessionSwipeAction() == .default) // swipe pref reset too
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off (#74)
+    #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
+    #expect(preferences.loadFavoriteModels() == [])
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)
