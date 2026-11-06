@@ -391,11 +391,11 @@ guard.
 - Create: `HermesKit/Tests/HermesKitTests/AgentStatusProjectionTests.swift`
 - Modify: the list tests (`statusSessions` assertions)
 
-- [ ] add `statusSessions` to `SessionListFeature.State` per Technical Details (set on an unfiltered success, untouched by search, patched by `runningChanged`, reset on a profile switch)
-- [ ] implement `AgentStatusProjection.make(...)` and `activityContent`; add `AppFeature.State.agentStatus`
-- [ ] write projection tests: nil before the first fetch, cron excluded, sort order, cap at 5, headline choice, slot override, count, title omitted when show-titles is off, nil activity content at zero
-- [ ] write list `TestStore` tests: an unfiltered fetch sets `statusSessions`; a search fetch leaves it; `runningChanged` patches it; a profile switch resets it
-- [ ] run tests - must pass before task 7
+- [x] add `statusSessions` to `SessionListFeature.State` per Technical Details (set on an unfiltered success, untouched by search, patched by `runningChanged`, reset on a profile switch) (➕ "unfiltered" = `!isSearching` when the response lands — list and search share the cancel-in-flight fetch id; the reset fires on any `scopedProfileName` change — select, deleted active profile, the probe re-homing or withdrawing the scope — but not on a rename)
+- [x] implement `AgentStatusProjection.make(...)` and `activityContent`; add `AppFeature.State.agentStatus` (➕ `AppFeature.State.liveActivityShowsTitles` (default true, prefs seeding in Task 9); the slot override applies only when the slot is in the list's profile (`isSameProfile`, now internal); rows never carry `.unread`; a blank `cwd` → `workspace: nil`)
+- [x] write projection tests: nil before the first fetch, cron excluded, sort order, cap at 5, headline choice, slot override, count, title omitted when show-titles is off, nil activity content at zero (➕ `AppAgentStatusTests` for the `AppFeature.State` wiring: search ignored, needs-input sources, cross-profile slot)
+- [x] write list `TestStore` tests: an unfiltered fetch sets `statusSessions`; a search fetch leaves it; `runningChanged` patches it; a profile switch resets it (➕ existing list / cron / AppFeature tests assert `statusSessions` on every unfiltered response)
+- [x] run tests - must pass before task 7
 
 ### Task 7: Write the App Group mirror from the single `agentStatus` edge
 

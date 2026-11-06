@@ -6662,7 +6662,9 @@ struct AppFeatureTests {
       $0.home?.now = Date(timeIntervalSince1970: 0)
       $0.home?.isLoading = true
     }
-    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.statusSessions = []
+    }
     await store.receive(\.home.cronJobsResponse) {
       $0.home?.isLoading = false
       $0.home?.cronJobsSupported = false
@@ -6699,7 +6701,9 @@ struct AppFeatureTests {
       $0.home?.now = Date(timeIntervalSince1970: 0)
       $0.home?.isLoading = true
     }
-    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.statusSessions = []
+    }
     await store.receive(\.home.cronJobsResponse) {
       $0.home?.isLoading = false
       $0.home?.cronJobsSupported = false

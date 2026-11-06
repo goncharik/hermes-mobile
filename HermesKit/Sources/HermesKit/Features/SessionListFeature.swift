@@ -28,6 +28,14 @@ public struct SessionListFeature {
   public struct State: Equatable {
     public var connection: ServerConnection
     public var sessions: IdentifiedArrayOf<Session>
+    /// The last UNFILTERED list response — the source of the widgets / Live Activity
+    /// projection (`AgentStatusProjection`), which must not follow a search's result set
+    /// the way `sessions` does. `nil` until the first successful unfiltered fetch of the
+    /// process: that is the "a cached guess never starts anything" gate. Replaced on each
+    /// unfiltered success (search responses never touch it), patched by `setSessionRunning`
+    /// like `sessions`, and reset to `nil` when the list's profile scope changes (the
+    /// refetch repopulates it).
+    public var statusSessions: IdentifiedArrayOf<Session>?
     public var searchQuery: String
     public var isLoading: Bool
     public var loadError: String?
@@ -157,6 +165,7 @@ public struct SessionListFeature {
     public init(
       connection: ServerConnection,
       sessions: IdentifiedArrayOf<Session> = [],
+      statusSessions: IdentifiedArrayOf<Session>? = nil,
       searchQuery: String = "",
       isLoading: Bool = false,
       loadError: String? = nil,
@@ -190,6 +199,7 @@ public struct SessionListFeature {
     ) {
       self.connection = connection
       self.sessions = sessions
+      self.statusSessions = statusSessions
       self.searchQuery = searchQuery
       self.isLoading = isLoading
       self.loadError = loadError
@@ -727,9 +737,15 @@ public struct SessionListFeature {
       case let .setSessionRunning(id, running):
         // Patch the in-memory row's working flag (drives the glow) the instant the open chat
         // tells us this session's authoritative running state changed. No-op if the session
-        // isn't in the current list (e.g. archived/filtered) — the poll handles those.
-        guard state.sessions[id: id]?.isActive != running else { return .none }
-        state.sessions[id: id]?.isActive = running
+        // isn't in the current list (e.g. archived/filtered) — the poll handles those. The
+        // unfiltered `statusSessions` gets the same patch on its own: a search can hide the
+        // row from `sessions` while the widgets still show it.
+        if state.sessions[id: id]?.isActive != running {
+          state.sessions[id: id]?.isActive = running
+        }
+        if state.statusSessions?[id: id]?.isActive != running {
+          state.statusSessions?[id: id]?.isActive = running
+        }
         return .none
 
       case let .cronJobsResponse(.success(jobs)):
@@ -917,6 +933,12 @@ public struct SessionListFeature {
         // (#78). `IdentifiedArray(uniqueElements:)` preconditions on unique ids and
         // trapped in the field, so dedupe first — keep the FIRST occurrence (server order).
         state.sessions = IdentifiedArray(filtered, uniquingIDsWith: { first, _ in first })
+        // Only an unfiltered response feeds the widgets' source. The list and search fetches
+        // share `CancelID.fetch` (cancel-in-flight), so the response landing now is the one
+        // the current query started: searching ⇔ a search response.
+        if !state.isSearching {
+          state.statusSessions = state.sessions
+        }
         state.isLoading = state.awaitsCronJobs
         let visible = state.sessions
         // Seed last-seen counts for newly-discovered sessions so they don't all show as
@@ -1338,12 +1360,14 @@ public struct SessionListFeature {
       // MARK: Profiles
 
       case let .profilesResponse(.success(result)):
+        let scopeBefore = state.scopedProfileName
         state.profilesSupported = true
         state.profiles = Self.dedupedProfiles(result)
         // If the persisted selection no longer exists on the server, re-home to default.
         if state.profiles[id: state.selectedProfileName] == nil {
           state.selectedProfileName = Self.State.defaultProfileName
         }
+        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         // Persisted on EVERY successful probe, "default" included: a persisted selection is
         // what `AppFeature.makeHomeState` reads as "this agent has the profiles API", so the
         // next launch scopes chats opened before its own probe answers (#114).
@@ -1355,8 +1379,10 @@ public struct SessionListFeature {
         // Only the 404 verdict withdraws the persisted capability (a transient failure
         // keeps it for the next launch).
         if error == .notFound { preferences.clearSelectedProfileID() }
+        let scopeBefore = state.scopedProfileName
         state.profilesSupported = false
         state.profiles = []
+        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         return load(&state)
 
       case let .profilesRefreshed(result):
@@ -1367,7 +1393,9 @@ public struct SessionListFeature {
       case let .selectProfile(name):
         // No-op when already selected (avoids a redundant refetch / UI reset).
         guard name != state.selectedProfileName else { return .none }
+        let scopeBefore = state.scopedProfileName
         state.selectedProfileName = name
+        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         // Reset the list UI on switch (search doesn't carry across profiles).
         state.searchQuery = ""
         // Cron jobs are profile-scoped too: drop the old profile's jobs + peek so the
@@ -1473,7 +1501,9 @@ public struct SessionListFeature {
         state.profiles[id: name] = nil
         // If the deleted profile was active, re-home to default and refetch its sessions.
         if state.selectedProfileName == name {
+          let scopeBefore = state.scopedProfileName
           state.selectedProfileName = Self.State.defaultProfileName
+          resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
           state.searchQuery = ""
           state.cronJobs = []
           state.expandedCronJobID = nil
@@ -1578,6 +1608,16 @@ public struct SessionListFeature {
   /// is the backstop). A JUST-CLEARED search is covered by the `isLoading` arm: clearing
   /// the query reloads through `load` (see the `searchQuery` binding), which raises the
   /// flag — the debounced search effect is the only fetch that raises neither.
+  /// A profile switch (a selection, a deleted active profile re-homing to default, the probe
+  /// re-homing or withdrawing the scope) makes the old unfiltered rows another profile's:
+  /// drop them so the widgets hold ("unknown") until the scoped refetch lands, instead of
+  /// projecting the previous profile's sessions. A rename keeps the same sessions, so it
+  /// doesn't go through here.
+  private func resetStatusSessionsIfScopeChanged(_ state: inout State, from scopeBefore: String?) {
+    guard state.scopedProfileName != scopeBefore else { return }
+    state.statusSessions = nil
+  }
+
   private func cancelOrRestartFetch(_ state: inout State) -> Effect<Action> {
     guard state.isLoading || state.isSearching else { return .cancel(id: CancelID.fetch) }
     return load(&state)

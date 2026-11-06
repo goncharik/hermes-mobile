@@ -96,6 +96,10 @@ public struct AppFeature {
     /// resuming a foreign session id there. `nil` for the new-chat intents (no session to
     /// guard) and when no URL was stored (the replay then proceeds unverified).
     var pendingLaunchIntentServerURL: URL?
+    /// The "Show session titles" pref for the Live Activity: off omits the headline title
+    /// from the activity content (the Home Screen widgets keep it). Part of `agentStatus`,
+    /// so flipping it updates the activity through the one edge.
+    public var liveActivityShowsTitles = true
 
     public init(
       onboarding: ConnectionFeature.State = .init(),
@@ -157,6 +161,29 @@ public struct AppFeature {
         ids.insert(key)
       }
       return ids
+    }
+
+    /// What the widgets and the aggregate Live Activity show (`AgentStatusProjection`), or
+    /// `nil` ("unknown" — hold, write nothing, never end) while signed out or before the
+    /// list's first unfiltered fetch of the process. The live slot's running flag overrides
+    /// its row only when the slot is in the list's profile (the same rule as the row-glow
+    /// patch): another profile's id can't be in these rows.
+    public var agentStatus: AgentStatusProjection? {
+      guard let home, let sessions = home.statusSessions else { return nil }
+      let slotRunning: (id: String, running: Bool)?
+      if let chat = liveChat, let key = chat.sessionKey,
+        AppFeature.isSameProfile(home.scopedProfileName, chat.profileName) {
+        slotRunning = (key, chat.isRunning)
+      } else {
+        slotRunning = nil
+      }
+      return AgentStatusProjection.make(
+        sessions: Array(sessions),
+        needsInput: needsInputSessionIDs,
+        slotRunning: slotRunning,
+        showsTitles: liveActivityShowsTitles,
+        profile: home.scopedProfileName
+      )
     }
 
     /// What the regular-width seat reseat (`reduceProfileReseat`) is watching: the list's
@@ -1322,7 +1349,7 @@ public struct AppFeature {
   /// patches (glow, unread) that match by session id: a chat opened before the profiles
   /// probe answered carries `nil` while the list moved on to the literal `"default"` (#114).
   /// The reseat paths compare WIRE values instead — a `nil` seat must be re-created scoped.
-  private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
+  static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
     (lhs ?? SessionListFeature.State.defaultProfileName)
       == (rhs ?? SessionListFeature.State.defaultProfileName)
   }
