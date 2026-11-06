@@ -22,15 +22,6 @@ struct OpenHermesURLIntent: AppIntent {
   }
 
   func perform() async throws -> some IntentResult & OpensIntent {
-    .result(opensIntent: OpenURLIntent(Self.destination(for: target)))
-  }
-
-  /// A target `WidgetDeepLink` doesn't recognise (a stale or hand-edited parameter) opens a
-  /// plain new chat rather than a URL the app would ignore.
-  static func destination(for target: String) -> URL {
-    if let url = URL(string: target), WidgetDeepLink.intent(from: url) != nil {
-      return url
-    }
-    return WidgetDeepLink.url(for: .newChat)
+    .result(opensIntent: OpenURLIntent(WidgetDeepLink.destination(for: target)))
   }
 }

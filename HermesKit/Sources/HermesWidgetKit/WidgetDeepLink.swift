@@ -52,6 +52,16 @@ public enum WidgetDeepLink {
     return url
   }
 
+  /// The URL a widget / control intent opens for its string `target`: the target itself when
+  /// it is a Hermes deep link, else (a stale or hand-edited parameter) a plain new chat rather
+  /// than a URL the app would ignore.
+  public static func destination(for target: String) -> URL {
+    if let url = URL(string: target), intent(from: url) != nil {
+      return url
+    }
+    return url(for: .newChat)
+  }
+
   /// The intent `url` requests; `nil` for anything that isn't a well-formed Hermes deep link.
   public static func intent(from url: URL) -> LaunchIntent? {
     guard

@@ -92,6 +92,19 @@ struct WidgetDeepLinkTests {
     #expect(LaunchIntent.openSession(id: "x", profile: nil).launchAction == nil)
   }
 
+  /// A widget / control intent's string target opens itself when it is a Hermes deep link;
+  /// anything else (stale, hand-edited, empty) opens a plain new chat.
+  @Test func destinationFallsBackToANewChat() {
+    for intent in Self.everyIntent {
+      let target = WidgetDeepLink.url(for: intent).absoluteString
+      #expect(WidgetDeepLink.destination(for: target) == WidgetDeepLink.url(for: intent))
+    }
+    let newChat = WidgetDeepLink.url(for: .newChat)
+    for garbage in ["", "not a url", "https://example.com/session/x", "hermesmobile://nope"] {
+      #expect(WidgetDeepLink.destination(for: garbage) == newChat, "\(garbage)")
+    }
+  }
+
   /// The widget-only intents never become quick actions and never parse from one.
   @Test func widgetOnlyIntentsAreNotQuickActions() {
     #expect(LaunchIntent.quickActions == [.newChat, .newChatWithDictation])
