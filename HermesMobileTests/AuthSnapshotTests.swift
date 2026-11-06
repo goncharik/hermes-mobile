@@ -262,6 +262,29 @@ final class AuthSnapshotTests: SnapshotTestCase {
     )
   }
 
+  // MARK: - Show/hide credential toggle (#129)
+
+  /// The credential field rendered on its own at a phone row width, both states side by side
+  /// in one image: masked with the `eye` button, then revealed (plain text) with `eye.slash`.
+  /// The whole-screen auth, re-auth and Settings baselines show the masked state in context;
+  /// this one pins the revealed state, which a snapshot can only reach via `initiallyRevealed`.
+  func testRevealableSecureField_maskedAndRevealed() {
+    assertSnapshot(
+      of: VStack(spacing: 16) {
+        RevealableSecureField("Password", text: .constant("hunter2-correct-horse"), textContentType: .password)
+        RevealableSecureField(
+          "Session token",
+          text: .constant("hm_tok_9f2c41e7a0b84d55"),
+          initiallyRevealed: true
+        )
+      }
+      .padding()
+      .frame(width: 358)
+      .background(Color(.secondarySystemGroupedBackground)),
+      as: componentImage()
+    )
+  }
+
   // MARK: - Re-auth sheet
 
   /// Re-auth sheet, password variant: fixed server, prefilled username, password field,

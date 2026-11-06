@@ -76,8 +76,7 @@ struct SettingsView: View {
       // Only the token regime has a credential the user can re-paste; a password / OAuth
       // session re-authenticates through sign-in instead.
       if store.showsTokenField {
-        SecureField("Session token", text: $store.token)
-          .textContentType(.password)
+        RevealableSecureField("Session token", text: $store.token, textContentType: .password)
         Button("Save token") { store.send(.saveTokenTapped) }
           .disabled(!store.canSaveToken)
         if store.savedConfirmation {
