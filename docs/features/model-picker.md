@@ -9,7 +9,8 @@ Design history: `docs/plans/completed/`. The #130 redesign follows the desktop's
 
 The composer's `model · effort` chip is the ONE affordance for both settings. Tapping it sends
 `.modelChipTapped`, which (with a live session id) presents the `ModelPickerFeature` child —
-`@Presents var modelPicker` + `.ifLet`, the same shape as `filePreview`. The sheet's `.task`
+`@Presents var modelPicker` + `.ifLet`, the same shape as `filePreview`; a tap while the sheet
+is open is ignored, so it never resets the open picker. The sheet's `.task`
 loads the picker prefs and fetches `model.options`; a row tap or effort tap goes out as a
 `Delegate` action (`.modelSelected(model:provider:)` / `.reasoningSelected`) to `ChatFeature`'s
 private `selectModel` / `selectReasoning` → `configSet(key:value:previousValue:…)` →
@@ -44,9 +45,11 @@ list or clears a shown load error. A load failure (`.server("Malformed…")` for
 result, `.disconnected` for a non-`GatewayError`) is the full-sheet `ContentUnavailableView`.
 
 Upstream `hermes_cli/inventory.py` keeps the CURRENT provider in the list with
-`authenticated: false` + a `warning` once its credentials are gone. That card (like any
-unconfigured provider) has no selectable rows: the sheet renders its `warning` as a disabled
-lock row, and it can't be fixed from mobile.
+`authenticated: false` + a `warning` + its saved model once its credentials are gone. That card
+(like any unconfigured provider) is not selectable: the sheet shows its `warning` as a lock label
+above its model(s), listed as disabled rows with no star (`Row.isSelectable == false`; desktop
+`pickerProviders` lists the saved model as the checked current row). The card shows even with no
+models, and it can't be fixed from mobile.
 
 ### Provider routing on a pick
 
@@ -92,10 +95,15 @@ field (an older gateway) the match is on the model name alone, the pre-#130 beha
 
 `currentModel` is a parameter because the chat's optimistic pick is the display truth. The
 provider half follows the pick too: `selectModel` sets the child's `options.currentProvider` to
-the picked slug (`applyOptimisticModelPick`; a nil slug falls back to model-only), a rejected
-model pick restores the provider the server last reported (`rollBackModelPick`, captured on the
-first pick of a run like `pendingConfigRollback`), and a `session.info` carrying the model
-confirms it. Without this a cross-provider pick would check no row until the sheet reopened.
+the picked slug (`applyOptimisticModelPick`; a nil slug falls back to model-only). Without this a
+cross-provider pick would check no row until the sheet reopened. A `session.info` (or hydrate)
+carrying the model drops the pick's rollback stash and, when it also carries `provider`
+(`SessionInfo.provider`, decoded like `currentProvider`), sets `currentProvider` to it
+(`confirmModelPick`) — the server wins, as for `state.model`. A rejected model pick restores the
+provider the server last reported: `applyOptimisticModelPick` captures it on the first pick of a
+run (like `pendingConfigRollback`), the `config.set` effect carries it as `previousProvider`, and
+`rollBackModelPick` restores it, so a rejection arriving after an intervening `session.info`
+still rolls back.
 
 ## The sheet layout
 
@@ -115,8 +123,9 @@ Not searching, `ModelPickerLayout` produces, in order:
   the resolved favorites span more than one provider.
 - **One card per provider**, in `orderedProviders` order (configured first). Favorited models
   are removed from their card so nothing is listed twice; a configured provider whose every
-  model is favorited drops its card entirely (desktop `groupModels`). Each model row has a
-  trailing star button (`star` / `star.fill`, "Add to / Remove from favorites").
+  model is favorited drops its card entirely (desktop `groupModels`). Each row in a configured
+  card has a trailing star button (`star` / `star.fill`, "Add to / Remove from favorites"); a
+  non-configured card's rows have none and never enter Favorites.
 
 Row ids are `fav::<providerID>::<model>` (Favorites) and `<providerID>::<model>`; a card header is
 `header::<providerID>`. `providerID` is `ModelOptions.Provider.id` (`slug ?? name`) everywhere —
@@ -124,20 +133,24 @@ favorites, collapse and ids share it.
 
 ### Collapse
 
-Each provider header is a button: name, rotating chevron, and — when collapsed — the model count
-plus the current model's name and a checkmark if the current row lives in that card (a favorited
-current lives in Favorites, so its card doesn't claim it). Cards default to expanded (desktop
-`provider-collapse.ts`); collapsed ids naming no listed provider are ignored. Collapse and star
+Outside search, each provider header is a button: name, rotating chevron, and — when collapsed —
+the model count (if the card lists any models) plus the current model's name and a checkmark if
+the current row lives in that card (a favorited current lives in Favorites, so its card doesn't
+claim it). Collapsing a non-configured card also hides its warning label. Cards default to
+expanded (desktop `provider-collapse.ts`); collapsed ids naming no listed provider are ignored.
+Collapse and star
 toggles animate with `.snappy`, or not at all under Reduce Motion. VoiceOver: the header carries
 `.isHeader`, a Collapsed/Expanded value and an Expand/Collapse hint.
 
 ### Search
 
-`.searchable(prompt: "Search models")` with default placement (iOS 26 puts it at the bottom on
-iPhone; iOS 18 keeps the drawer). The query is view-local `@State` — internal only so a snapshot
-can seed it. A non-blank query switches the layout to search mode: no Options card, no Favorites
-card, every card expanded regardless of the collapse pref, favorited models kept in their card
-with a filled star, and no scroll target. Rows come from `ModelOptions.filteredProviders(matching:)`
+`.searchable(prompt: "Search models")` with a per-OS placement: `.automatic` on iOS 26 (the
+bottom on iPhone) and `.navigationBarDrawer(displayMode: .always)` below it, because iOS 18's
+automatic drawer collapses once the list scrolls and the open-time centering scrolls it. The query
+is view-local `@State` — internal only so a snapshot can seed it. A non-blank query switches the
+layout to search mode: no Options card, no Favorites card, every card expanded regardless of the
+collapse pref with a header that is a plain label, not a toggle (`ProviderSection.isCollapsible`),
+favorited models kept in their card with a filled star, and no scroll target. Rows come from `ModelOptions.filteredProviders(matching:)`
 (pure, unit-tested): a provider whose NAME matches keeps all its models, else only the models whose
 name matches, and a provider left with none is dropped. Matching is case- and diacritic-insensitive
 substring (`"dee"` matches `deepseek-…`); an empty or whitespace-only query is the normal layout.
@@ -150,9 +163,10 @@ On open the list scrolls ONCE to `layout.scrollTarget`, anchored `.center`, from
 `.task` behind a `@State hasCentered` guard — never again after the user scrolls, collapses a card
 or pops back from the effort page. The target chain: the current model's Favorites row → its row
 in an expanded card → its collapsed card's header → a lost-credential current provider's header
-(the current provider matches a non-selectable card) → nil (current model not listed). With the
-model-only fallback the first match in display order wins. The derivation is unit-tested; the
-scroll itself is a manual device check.
+(the current provider matches a non-selectable card that doesn't list the current model) → nil.
+With the model-only fallback the chain still applies: the first matching Favorites row, else the
+first matching row in an expanded card (display order), else the first collapsed card that holds
+it. The derivation is unit-tested; the scroll itself is a manual device check.
 
 ### Persistence
 
@@ -160,8 +174,9 @@ Both prefs live in `PreferencesClient`: `hermes.model-picker.collapsed-providers
 `[String]` of provider ids, loaded as a `Set`) and `hermes.model-picker.favorite-models` (JSON
 `[FavoriteModel]` — `{providerID, model}`; undecodable data reads as `[]`). Saving an empty value
 removes the key. They are device-global, not per profile or account, and loaded on the child's
-first `.task` of a presentation. Every logout (`AppFeature` logout + reauth quit,
-`SettingsFeature` clear token) calls `clearModelPickerPrefs()`; a different-user re-auth's
+first `.task` of a presentation. Every logout (`AppFeature`'s retry-screen Log Out and reauth
+Quit, plus `SettingsFeature`'s clear-token logout) calls `clearModelPickerPrefs()`; a
+different-user re-auth's
 `clearIdentityScopedPrefs` deliberately leaves them, like the read-aloud toggle.
 
 ## The scale is always full — the server clamps, the client offers
@@ -204,9 +219,10 @@ that outlives an agent upgrade keeps hiding `max`/`ultra` until that chat is tor
 
 `configSet` used to swallow everything with `_ = try? await …`, leaving a rejected change as a
 lying chip. A failure that survives the heal's single replay now becomes
-`.configSetFailed(key:value:previousValue:error:)` — ONE action serving both `model` and
-`reasoning` (a non-`GatewayError` maps to `.disconnected`, the same fallback the `model.options`
-fetch uses). The reduction is:
+`.configSetFailed(key:value:previousValue:previousProvider:error:)` — ONE action serving both
+`model` and `reasoning` (a non-`GatewayError` maps to `.disconnected`, the same fallback the
+`model.options` fetch uses). `previousProvider` is the sheet's provider rollback target, carried
+by the effect for the `model` key only. The reduction is:
 
 - **Rollback, unconditionally, by key** — `state.model` / `state.reasoningEffort` back to the last
   SERVER-confirmed value, never to a still-unconfirmed pick: `State.pendingConfigRollback` holds it

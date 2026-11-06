@@ -179,8 +179,8 @@ public struct ChatFeature {
     /// Selection stays here — the child forwards row taps as delegate actions. Transient and
     /// never persisted.
     @Presents public var modelPicker: ModelPickerFeature.State?
-    /// The file preview sheet raised by a `hermes-file:` link tap, when open. The first (and
-    /// deliberately `@Presents`) child of this feature: dismissing it must cancel an in-flight
+    /// The file preview sheet raised by a `hermes-file:` link tap, when open. A deliberately
+    /// `@Presents` child of this feature: dismissing it must cancel an in-flight
     /// read or a multi-megabyte Share download, and `.ifLet` auto-cancellation gives exactly
     /// that. Transient and never persisted — `ChatSnapshot` carries no trace of it.
     @Presents public var filePreview: FilePreviewFeature.State?

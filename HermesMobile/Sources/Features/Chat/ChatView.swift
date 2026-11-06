@@ -137,7 +137,7 @@ struct ChatView: View {
         extendedReasoningSupported: store.extendedReasoningSupported
       )
     }
-    // The file preview (file preview in chat): the first `@Presents` child on this feature.
+    // The file preview (file preview in chat): an `@Presents` child on this feature.
     // Swipe-down and `Done` both nil the scoped binding, which TCA delivers as
     // `.filePreview(.dismiss)` — the reducer's temp-file cleanup hook — before `.ifLet`
     // cancels the child's in-flight read or download.

@@ -79,6 +79,10 @@ away from your desk and still keep your agent moving.
 - **See how full the context is.** A color-coded pill in the composer shows
   used/max tokens and percent (mirroring the Hermes TUI thresholds); tap it for a
   breakdown of input/output split, compactions, and estimated cost.
+- **Switch model and reasoning.** Tap the `model · effort` chip to pick from the providers
+  you've configured. Star models to pin them in a Favorites card, collapse providers you
+  rarely use, and search across them all. The sheet opens centered on the current model,
+  and Reasoning sets the effort level (`none` … `ultra`).
 - **Copy what you need.** Copy a whole message, or just a single code block with a
   one-tap button and a green-check confirmation — or grab a session's id from its
   long-press menu (or the chat's ⋯ menu) when you need to cross-reference it with the

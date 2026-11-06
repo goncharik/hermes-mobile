@@ -197,7 +197,8 @@ paths need the id, and on an agent whose row does not exist yet those correctly 
 
 ## Lifecycle: `@Presents` child, dismiss cleanup, temp files
 
-`filePreview` is the **first `@Presents` child on `ChatFeature`**, deliberately: dismissing the
+`filePreview` is an **`@Presents` child on `ChatFeature`** (the original one; the model picker
+joined it in #130), deliberately: dismissing the
 sheet must cancel an in-flight read or a multi-megabyte download, and `.ifLet(\.$filePreview,
 action: \.filePreview)` auto-cancellation gives that — the same `ifLet` cancellation the live-chat
 slot's "nil-out is mandatory" rule relies on. `filePreview` therefore has NO entry in the
