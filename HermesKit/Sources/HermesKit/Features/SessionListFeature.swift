@@ -548,6 +548,10 @@ public struct SessionListFeature {
     /// so it can never start a glow on its own. The poll remains the backstop for not-open
     /// sessions. A no-op for an unknown id (the session isn't in the current list).
     case setSessionRunning(id: Session.ID, running: Bool)
+    /// The open chat archived or deleted this session from its own ⋯ menu and the server
+    /// acknowledged it. Drop the row and its device-local pin/seen entries (both keyed by
+    /// id, profile-agnostic), and restart a fetch in flight so it can't resurrect the row.
+    case sessionRemovedElsewhere(id: Session.ID)
     // MARK: Cron jobs
     /// Result of the `GET /api/cron/jobs` fetch (runs alongside every session load).
     /// Success stores the jobs; a definitive `.notFound` flips `cronJobsSupported` off
@@ -708,6 +712,17 @@ public struct SessionListFeature {
       case .pulledToRefresh:
         // A plain reload — does NOT (re)start the poll loop.
         return load(&state)
+
+      case let .sessionRemovedElsewhere(id):
+        state.sessions.remove(id: id)
+        state.pinnedIDs.removeAll { $0 == id }
+        state.seenCounts[id] = nil
+        // Persist BEFORE the restart: `cancelOrRestartFetch` may reload through `load`,
+        // whose `reloadPrefs` would read the OLD pins/seen back into state (and later pin
+        // or read writes would persist them again). Synchronous, like the rollback rule.
+        preferences.savePinnedIDs(state.pinnedIDs)
+        preferences.saveSeenCounts(state.seenCounts)
+        return cancelOrRestartFetch(&state)
 
       case let .setSessionRunning(id, running):
         // Patch the in-memory row's working flag (drives the glow) the instant the open chat

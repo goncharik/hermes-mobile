@@ -281,6 +281,7 @@ bullets below are the compressed rules.
   round-trip runs in the parent list (a presented sheet's effects die on dismissal).
   A destructive success restarts (not bare-cancels) a pending fetch; a failure after a
   profile switch drops the rollback re-insert. Details: `docs/features/session-list.md`.
+- **Chat ⋯ menu Archive/Delete**: rules in `docs/features/session-list.md`.
 - **Date sections, inbox cards, cron jobs, and branch nesting are display-only** over one
   array fetched as TWO source slices (interactive + cron, never one shared page — cron runs
   starve it): always-on update-date sections via pure `SessionDateBucket` /

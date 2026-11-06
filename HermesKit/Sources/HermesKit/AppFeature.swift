@@ -285,6 +285,9 @@ public struct AppFeature {
     /// that carry no cancel ID. Does not touch the path (a replacement resets it in the
     /// immediately-following `.fillLiveChat`).
     case clearLiveChat
+    /// Internal: outcome of a chat ⋯ menu Archive/Delete the parent ran on the slot's
+    /// behalf (`ChatFeature.Delegate.removeSession`). `failure == nil` = server confirmed.
+    case sessionRemovalFinished(ChatFeature.Action.Delegate.SessionRemoval, failure: RESTError?)
     /// Internal: the finite background window (`BackgroundTaskClient`) expired while still
     /// backgrounded — final flush, then disconnect the socket cleanly
     /// (`.teardownSocketOnly`), keeping the chat state in memory for the #26-preserving
@@ -295,7 +298,7 @@ public struct AppFeature {
 
   /// Ids for the long-running incoming-tap and launch-intent observers and the
   /// background-grace listener.
-  private enum CancelID { case backgroundGrace, launchIntents, pushTaps }
+  private enum CancelID { case backgroundGrace, launchIntents, pushTaps, sessionRemovals }
 
   /// Name of the finite background task requested while a running turn is backgrounded
   /// (shows up in OS background-task diagnostics). Tests re-type the literal on purpose —
@@ -450,7 +453,10 @@ public struct AppFeature {
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(
+          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
+          .cancel(id: CancelID.sessionRemovals)
+        )
 
       case let .scenePhaseChanged(phase):
         // Fan lifecycle out to the live chat slot (if any) and the session list — no
@@ -691,14 +697,11 @@ public struct AppFeature {
         // detached mid-turn), tear the live chat down FIRST — its socket must not keep
         // streaming into a session that's now archived. Any other session → nothing to do
         // (the list's optimistic archive handles itself).
-        guard let chat = state.liveChat, chat.sessionKey == id else { return .none }
         // Deliberate asymmetry: if the archive PATCH later FAILS, the list restores the
         // row (optimistic rollback) but the slot stays torn down — re-opening simply
         // resumes the session fresh. Resurrecting live slot state for a rare failure path
-        // isn't worth replaying the teardown. In regular the torn-down chat WAS the detail
-        // column, so a fresh new chat is seated behind it (`detailRefill`); compact leaves
-        // the slot nil — the user is on the list.
-        return teardownSlot(thenFill: detailRefill(state))
+        // isn't worth replaying the teardown.
+        return closeRemovedSession(&state, id: id, isDelete: false)
 
       case let .home(.delegate(.sessionDeleted(id))):
         // The user permanently deleted a session. ALWAYS wipe its cached snapshot + turn
@@ -708,16 +711,7 @@ public struct AppFeature {
         // re-save the very snapshot this wipe deletes. Same deliberate asymmetry as
         // archive: if the DELETE later fails, the list restores the row but the slot and
         // cache stay cleared — re-opening simply resumes the session fresh.
-        let wipeSnapshot: Effect<Action> = .run { [chatSnapshot] _ in
-          chatSnapshot.deleteSnapshot(id)
-        }
-        guard let chat = state.liveChat, chat.sessionKey == id else {
-          return wipeSnapshot
-        }
-        // Same regular-width refill as archive: the detail column must not go blank.
-        return .concatenate(
-          teardownSlot(thenFill: detailRefill(state), flushSnapshot: false), wipeSnapshot
-        )
+        return closeRemovedSession(&state, id: id, isDelete: true)
 
       case let .home(.delegate(.sessionDeleteSucceeded(id))):
         // The server CONFIRMED the delete — only now drop the session's pending-approval
@@ -726,8 +720,7 @@ public struct AppFeature {
         // DELETE restores the row, but its still-pending approval would badge nowhere —
         // nothing short of a fresh approval push repopulates the entry. Unlike the
         // wipe/teardown asymmetry above, the badge waits for confirmation.
-        state.pendingApprovalSessionIDs.remove(id)
-        return setBadge(state)
+        return clearDeletedSessionBadge(&state, id: id)
 
       case .home(.delegate(.disconnect)):
         // Token cleared in Settings → tear down and return to onboarding. Nil-ing the slot
@@ -747,7 +740,10 @@ public struct AppFeature {
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(
+          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
+          .cancel(id: CancelID.sessionRemovals)
+        )
 
       case .liveChat(.delegate(.sessionExpired)):
         // The live (gated) session died — attached or detached, the slot is the one chat.
@@ -795,7 +791,9 @@ public struct AppFeature {
         state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
-        let identityCleanup: Effect<Action> = .merge(releaseSlot, setBadge(state))
+        let identityCleanup: Effect<Action> = .merge(
+          releaseSlot, setBadge(state), .cancel(id: CancelID.sessionRemovals)
+        )
         // The stash was just cleared, so there is nothing to replay — but in regular the new
         // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
         // ACTION, never a direct fill: this reduction must END with the slot nil so `ifLet`
@@ -827,7 +825,10 @@ public struct AppFeature {
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
         state.pendingApprovalSessionIDs = []
-        return .merge(releaseSlot, setBadge(state), serverSideLogout(connection: connection))
+        return .merge(
+          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
+          .cancel(id: CancelID.sessionRemovals)
+        )
 
       case let .liveChat(.delegate(.branchCreated(creation))):
         // A branch `session.create` resolved (#34). The new session lives ONLY in server
@@ -907,6 +908,77 @@ public struct AppFeature {
         else { return listUpdate }
         return .concatenate(listUpdate, teardownSlot())
 
+      case let .liveChat(.delegate(.removeSession(removal))):
+        // The open chat's ⋯ menu Archive/Delete was CONFIRMED. The round-trip runs HERE,
+        // not in the slot: navigating away or picking another chat clears `liveChat`, and
+        // `.ifLet` would cancel a slot effect — a server-applied removal would then never
+        // get its row/pin/seen/snapshot/badge cleanup (same reason the archived sheet's
+        // DELETE runs in its parent list).
+        return .run { [rest] send in
+          do {
+            switch removal.kind {
+            case .archive:
+              try await rest.archive(removal.connection, removal.id, true, removal.profileName)
+            case .delete:
+              try await rest.deleteSession(removal.connection, removal.id, removal.profileName)
+            }
+            await send(.sessionRemovalFinished(removal, failure: nil))
+          } catch {
+            await send(.sessionRemovalFinished(removal, failure: asRESTError(error)))
+          }
+        }
+        // Cancelled by every logout / user switch: a reply landing after sign-in to another
+        // account or server must not touch the new list (`sessionRemovalFinished` also drops
+        // a reply whose server isn't the current one, should one slip through).
+        .cancellable(id: CancelID.sessionRemovals)
+
+      case let .sessionRemovalFinished(removal, .none):
+        // Server-CONFIRMED: the list-removal contract through the SAME helpers the list's own
+        // archive/delete use (`closeRemovedSession`, `clearDeletedSessionBadge`), so the two
+        // paths can't drift. The slot is torn down synchronously FIRST — before any awaited
+        // effect (`setBadge` awaits the notification center), so a chat opened during that
+        // gap can never be the one torn down. Then the list drops the row and pin/seen.
+        guard isCurrentServer(removal.connection, state) else { return .none }
+        let id = removal.id
+        let isDelete = removal.kind == .delete
+        let close = closeRemovedSession(&state, id: id, isDelete: isDelete)
+        let listUpdate: Effect<Action> = state.home == nil
+          ? .none : .send(.home(.sessionRemovedElsewhere(id: id)))
+        guard isDelete else { return .concatenate(close, listUpdate) }
+        // Delete is already confirmed here, so the badge entry drops at once.
+        return .merge(
+          .concatenate(close, listUpdate),
+          clearDeletedSessionBadge(&state, id: id)
+        )
+
+      case let .sessionRemovalFinished(removal, .some(error)):
+        // The server kept the session. A missing-endpoint DELETE verdict is server-wide:
+        // the list's Delete hides (the `onChange` below mirrors it onto the slot). The
+        // failure goes back to the chat that asked while the slot still holds it (banner,
+        // items re-enabled); with that chat gone it lands on the list instead, as the
+        // archived sheet's orphaned delete failure does.
+        // A reply for another server (a logout raced the cancellation) is dropped: its banner
+        // and its 404/405 verdict belong to a list that no longer exists.
+        guard isCurrentServer(removal.connection, state) else { return .none }
+        let isDelete = removal.kind == .delete
+        let verdict = isDelete && error.isMissingEndpointVerdict
+        if verdict {
+          state.home?.deleteSupported = false
+        }
+        // Routed on the chat's own in-flight id, not `sessionKey`: a #17 heal may have
+        // recreated the session meanwhile, and the chat that asked must still get its items
+        // back.
+        if let chat = state.liveChat, chat.removingSessionID == removal.id {
+          return .send(.liveChat(isDelete
+            ? .deleteFailed(id: removal.id, error: error)
+            : .archiveFailed(id: removal.id, error: error)))
+        }
+        if !verdict {
+          state.home?.loadError = isDelete
+            ? "Couldn’t delete the session." : "Couldn’t archive the session."
+        }
+        return .none
+
       case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
         return .none
       }
@@ -956,6 +1028,18 @@ public struct AppFeature {
     .onChange(of: \.offersQuickActions) { _, offers in
       Reduce { _, _ in
         quickActions.setItems(offers ? LaunchIntent.quickActions : [])
+        return .none
+      }
+    }
+    // The chat ⋯ menu's Delete follows the list's delete capability (one server-wide flag):
+    // a 404/405 verdict from the list, the archived sheet mirrored onto it, or the chat's
+    // own delete (`sessionRemovalFinished`), hides the open chat's Delete too. Seats pick the
+    // flag up in `seatLiveChat`.
+    .onChange(of: \.home?.deleteSupported) { _, supported in
+      Reduce { state, _ in
+        if let supported, state.liveChat != nil {
+          state.liveChat?.deleteSupported = supported
+        }
         return .none
       }
     }
@@ -1322,6 +1406,44 @@ public struct AppFeature {
     seatLiveChat(seat, into: &state)
   }
 
+  /// The session `id` is gone from the server (archived or deleted — from the list or from the
+  /// chat's own ⋯ menu): the ONE place both paths close it. Delete always wipes the cached
+  /// snapshot + turn anchor (a deleted session must never repaint from the cache). If the
+  /// slot holds the session (by key, or as the chat whose removal is in flight — a #17 heal
+  /// may have re-keyed it) it is torn down; Delete skips the flush, which would re-save the
+  /// snapshot being wiped. In compact a marker on screen is popped too, or the stack would
+  /// show an empty destination under a Back button; in regular the torn-down chat WAS the
+  /// detail column, so a fresh new chat is seated behind it (`detailRefill`).
+  private func closeRemovedSession(
+    _ state: inout State, id: String, isDelete: Bool
+  ) -> Effect<Action> {
+    let wipeSnapshot: Effect<Action> = isDelete
+      ? .run { [chatSnapshot] _ in chatSnapshot.deleteSnapshot(id) } : .none
+    guard let chat = state.liveChat,
+      chat.sessionKey == id || chat.removingSessionID == id
+    else { return wipeSnapshot }
+    if state.layout == .compact {
+      state.path.removeAll()
+    }
+    return .concatenate(
+      teardownSlot(thenFill: detailRefill(state), flushSnapshot: !isDelete), wipeSnapshot
+    )
+  }
+
+  /// A delete of `id` is server-CONFIRMED: drop its pending-approval badge entry and update
+  /// the badge. Shared by the list's `sessionDeleteSucceeded` and the chat menu's delete.
+  private func clearDeletedSessionBadge(_ state: inout State, id: String) -> Effect<Action> {
+    state.pendingApprovalSessionIDs.remove(id)
+    return setBadge(state)
+  }
+
+  /// Whether a chat-menu removal's reply belongs to the server the app is signed in to now.
+  /// The removal effect is cancelled on logout; this guard covers a reply already queued.
+  private func isCurrentServer(_ connection: ServerConnection, _ state: State) -> Bool {
+    guard let home = state.home else { return false }
+    return Self.isSameServer(connection.baseURL, home.connection.baseURL)
+  }
+
   /// The regular-width detail seat for the current list — a fresh new chat under its
   /// connection and selected profile — or `nil` in compact, where the stack shows the list
   /// and an empty slot is exactly right. The ONE rule behind every seat: the landing fill,
@@ -1354,6 +1476,8 @@ public struct AppFeature {
   /// non-nil→non-nil replacement must go through the `.fillLiveChat` ACTION instead, which
   /// wraps this and adds the regular-width dial.
   private func seatLiveChat(_ chat: ChatFeature.State, into state: inout State) {
+    var chat = chat
+    chat.deleteSupported = state.home?.deleteSupported ?? true
     state.liveChat = chat
     state.path.removeAll()
     if state.layout == .compact {
