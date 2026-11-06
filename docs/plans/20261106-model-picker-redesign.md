@@ -232,16 +232,21 @@
 - Create: `HermesKit/Sources/HermesKit/Models/ModelPickerLayout.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ModelPickerLayoutTests.swift`
 
-- [ ] implement sections (options / favorites / provider sections with collapse +
+- [x] implement sections (options / favorites / provider sections with collapse +
       `currentModelName`), row ids, and `scrollTarget` per Technical Details
-- [ ] implement search mode (no options/favorites, all expanded, `filteredProviders`)
-- [ ] write tests: section order; options hidden for `reasoning: false`; favorites order,
+- [x] implement search mode (no options/favorites, all expanded, `filteredProviders`)
+- [x] write tests: section order; options hidden for `reasoning: false`; favorites order,
       stale favorites skipped, removal from provider card, provider caption only when >1 provider
-- [ ] write tests: collapsed provider keeps header + `currentModelName`; unconfigured /
+- [x] write tests: collapsed provider keeps header + `currentModelName`; unconfigured /
       lost-credential provider section; search mode; stale collapsed ids ignored
-- [ ] write tests: scroll target favorite → expanded row → collapsed header → nil (searching /
+- [x] write tests: scroll target favorite → expanded row → collapsed header → nil (searching /
       current absent)
-- [ ] run `make test` — must pass before next task
+- [x] run `make test` — must pass before next task
+- ➕ decided: a configured provider whose every model is favorited drops its card (desktop
+      `groupModels` parity); `ProviderSection` gained `modelCount` (rows are empty when
+      collapsed) and `isSelectable`; a lost-credential current provider's header is the
+      `scrollTarget` when no row is current; `Section` is `Identifiable` (`options`,
+      `favorites`, `header::<id>`).
 
 ### Task 4: Extract ModelPickerFeature and present it from ChatFeature
 
