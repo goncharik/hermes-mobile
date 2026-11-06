@@ -10,3 +10,19 @@ public enum LaunchIntent: Equatable, Sendable {
   /// Open a fresh chat and start the mic as soon as it opens (one-shot, only from idle).
   case newChatWithDictation
 }
+
+extension LaunchIntent {
+  /// `UIApplicationShortcutItemType` of the Home Screen quick actions. These must match the
+  /// static `UIApplicationShortcutItems` in `Project.swift`, which can't import this package.
+  public static let newChatShortcutType = "me.honcharenko.HermesMobile.new-chat"
+  public static let dictateShortcutType = "me.honcharenko.HermesMobile.dictate"
+
+  /// The intent a tapped Home Screen quick action requests; `nil` for an unknown type.
+  public init?(shortcutItemType: String) {
+    switch shortcutItemType {
+    case Self.newChatShortcutType: self = .newChat
+    case Self.dictateShortcutType: self = .newChatWithDictation
+    default: return nil
+    }
+  }
+}

@@ -18,6 +18,18 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     return true
   }
 
+  /// Attach `QuickActionSceneDelegate` so Home Screen quick actions (#93) reach the app —
+  /// UIKit hands them to the scene delegate only. SwiftUI keeps managing the window.
+  func application(
+    _: UIApplication,
+    configurationForConnecting connectingSceneSession: UISceneSession,
+    options _: UIScene.ConnectionOptions
+  ) -> UISceneConfiguration {
+    let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+    configuration.delegateClass = QuickActionSceneDelegate.self
+    return configuration
+  }
+
   // MARK: - Remote-notification registration
 
   func application(

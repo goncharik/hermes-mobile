@@ -31,6 +31,19 @@ struct LaunchIntentClientTests {
     }
   }
 
+  // MARK: Quick-action mapping
+
+  /// The literals are pinned on purpose: `Project.swift` repeats them in
+  /// `UIApplicationShortcutItems`, so renaming one here must fail a test.
+  @Test func quickActionTypesMapToIntents() {
+    #expect(LaunchIntent(shortcutItemType: "me.honcharenko.HermesMobile.new-chat") == .newChat)
+    #expect(
+      LaunchIntent(shortcutItemType: "me.honcharenko.HermesMobile.dictate") == .newChatWithDictation
+    )
+    #expect(LaunchIntent(shortcutItemType: "me.honcharenko.HermesMobile.unknown") == nil)
+    #expect(LaunchIntent(shortcutItemType: "") == nil)
+  }
+
   // MARK: Client double
 
   @Test func testValueYieldsAFinishedStream() async {

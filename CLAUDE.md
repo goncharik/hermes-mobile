@@ -329,7 +329,9 @@ bullets below are the compressed rules.
   navigation; matches a detached slot (compact only) → push marker + `.reattached`;
   different session → replace slot + SET the path (single new marker in compact, empty in
   regular; never stack). Cold-launch taps replay through this same path.
-- **App Intents (#93) only route**: `LaunchIntentBridge` → `launchIntentReceived` → the
+- **App Intents and quick actions (#93) only route** (quick actions = static
+  `UIApplicationShortcutItems` via `QuickActionSceneDelegate`; App Shortcuts never reach the
+  long-press menu): `LaunchIntentBridge` → `launchIntentReceived` → the
   "New session" `reduceCreateSession` (busy slot silently replaced). Pre-home intents stash
   last-wins with `pendingPushTap`, replay in `landOnHome` (dictation only on the launch
   auto-connect landing), clear on logout; dictation is a one-shot consumed at the slot's first

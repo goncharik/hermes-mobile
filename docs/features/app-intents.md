@@ -6,7 +6,8 @@ mirrors); this doc is the full contract. Design history: `docs/plans/completed/`
 
 Two App Intents open the app on a fresh chat under the selected profile, from Shortcuts, Siri
 and Spotlight, and from the Action button (iPhone 15 Pro and later) once the user assigns one
-there. The app is a thin client here too:
+there. The same two entry points are Home Screen quick actions (below). The app is a thin
+client here too:
 both intents are `openAppWhenRun = true` and only ROUTE. No agent logic runs in the intent.
 
 ## Intents and phrases
@@ -132,10 +133,19 @@ backoff reconnect and toggle the user's own recording off):
 `DemoMode` sets `launchIntents.incoming` to a never-emitting stream: an intent fired during a
 screenshot capture still opens the app, but never swaps the curated chat for a new one.
 
-## No static Quick Actions, no scene delegate
+## Home Screen quick actions
 
-The app is scene-based (SwiftUI `App`). Static `UIApplicationShortcutItems` would need a scene
-delegate (`application(_:configurationForConnecting:)` → `windowScene(_:performActionFor:)`,
-plus `connectionOptions.shortcutItem` for a cold launch). App Shortcuts may already appear in
-the Home Screen icon's long-press menu on iOS 17+; static items become a follow-up only if a
-device check shows they don't.
+App Shortcuts never appear in the Home Screen icon's long-press menu (checked on device), so
+the same two entry points are also static `UIApplicationShortcutItems` in `Project.swift`:
+"New Chat" (`plus.message`) and "Dictate" (`mic.badge.plus`). Their types must match
+`LaunchIntent.newChatShortcutType` / `.dictateShortcutType`, and
+`LaunchIntent(shortcutItemType:)` maps them. A unit test pins the literals, because the
+manifest can't import HermesKit.
+
+The app is scene-based (SwiftUI `App`), so UIKit delivers a quick-action tap to the scene
+delegate only. `PushAppDelegate.application(_:configurationForConnecting:options:)` attaches
+`QuickActionSceneDelegate` (`HermesMobile/Sources/Intents/`); SwiftUI still owns the window.
+It reads `connectionOptions.shortcutItem` on a cold launch and handles
+`windowScene(_:performActionFor:)` while the app runs. Both hand the mapped intent to
+`LaunchIntentBridge.shared.received(_:)`, so everything above (buffering, stash, replay,
+dictation) applies unchanged.

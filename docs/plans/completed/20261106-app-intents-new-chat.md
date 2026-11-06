@@ -100,6 +100,9 @@
    `UIApplicationShortcutItems` would need a scene delegate (the PR #95 review's bug 1).
    App Shortcuts may cover the long-press menu on iOS 17+. That gets verified on device (see
    Post-Completion), and static items become a follow-up only if they don't.
+   ➕ Device check on build 82: App Shortcuts do NOT appear in the long-press menu. Added in the
+   same PR: static `UIApplicationShortcutItems` + `QuickActionSceneDelegate`
+   (`docs/features/app-intents.md` → "Home Screen quick actions").
 5. **Phrases**: only explicit ones. "New \(.applicationName) chat" / "Start a chat in
    \(.applicationName)" and "Dictate to \(.applicationName)". There is no
    "Open \(.applicationName)" mapping to a new chat. Both intents use one `categoryName`
