@@ -62,12 +62,9 @@ struct ConnectionView: View {
             .textContentType(.username)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-          SecureField("Password", text: $store.password)
-            .textContentType(.password)
+          RevealableSecureField("Password", text: $store.password, textContentType: .password)
         case .token:
-          SecureField("Session token", text: $store.token)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
+          RevealableSecureField("Session token", text: $store.token)
           tokenDisclaimer
         case .oauth:
           oauthProviderButtons

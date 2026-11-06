@@ -25,14 +25,11 @@ struct ReauthView: View {
               .textContentType(.username)
               .textInputAutocapitalization(.never)
               .autocorrectionDisabled()
-            SecureField("Password", text: $store.password)
-              .textContentType(.password)
+            RevealableSecureField("Password", text: $store.password, textContentType: .password)
               .submitLabel(.go)
               .onSubmit { if store.canSubmit { store.send(.signInTapped) } }
           case .token:
-            SecureField("Session token", text: $store.token)
-              .textInputAutocapitalization(.never)
-              .autocorrectionDisabled()
+            RevealableSecureField("Session token", text: $store.token)
               .submitLabel(.go)
               .onSubmit { if store.canSubmit { store.send(.signInTapped) } }
           case .oauth:
