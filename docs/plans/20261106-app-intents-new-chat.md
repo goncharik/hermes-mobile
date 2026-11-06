@@ -224,17 +224,21 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - Create: `HermesMobile/Sources/Intents/LaunchIntents.swift`
 - Create: `HermesMobile/Sources/Intents/HermesAppShortcuts.swift`
 
-- [ ] add `StartNewSessionIntent` and `StartNewSessionWithDictationIntent`:
+- [x] add `StartNewSessionIntent` and `StartNewSessionWithDictationIntent`:
   - `openAppWhenRun = true`
   - one `categoryName` ("Chats")
   - `perform()` only calls `LaunchIntentBridge.shared.received(_)`
-- [ ] add the `HermesAppShortcuts: AppShortcutsProvider` with explicit phrases only (see
+- [x] add the `HermesAppShortcuts: AppShortcutsProvider` with explicit phrases only (see
       Decisions §5), `shortTitle` and an SF Symbol per shortcut
-- [ ] check `DemoMode.swift`: an intent in demo mode must not crash (either the demo store
+- [x] check `DemoMode.swift`: an intent in demo mode must not crash (either the demo store
       ignores the stream, or routing works against the demo home)
-- [ ] `tuist generate`, then build the app target for the simulator (`xcodebuild … build`)
-- [ ] run `make test` and `make snapshot`; both must stay green (no new tests, since this task
+      (the demo store ignores the stream: `launchIntents.incoming` is a never-emitting stream,
+      so a capture's curated chat is never swapped)
+- [x] `tuist generate`, then build the app target for the simulator (`xcodebuild … build`)
+- [x] run `make test` and `make snapshot`; both must stay green (no new tests, since this task
       only declares intents)
+      (⚠️ 3 attachment snapshots failed identically on a clean HEAD worktree: pre-existing
+      runtime drift at equal render size, re-recorded in their own commit; suite is 331/331)
 
 ### Task 5: Verify acceptance criteria
 - [ ] both intents route to a fresh chat under the selected profile, in compact and regular

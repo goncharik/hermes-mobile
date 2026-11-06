@@ -78,6 +78,9 @@ enum DemoMode {
     deps.sessionListCalendar = calendar
     // Persisted UI prefs, pre-seeded so `reloadPrefs` keeps our curated pins/unread state.
     deps.preferences = demoPreferences
+    // An App Intent (#93) fired during a capture must not swap the curated chat for a new
+    // one: the demo store never observes the intent stream (the app still just opens).
+    deps.launchIntents.incoming = { AsyncStream { _ in } }
   }
 
   private static var demoPreferences: PreferencesClient {
