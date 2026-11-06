@@ -260,8 +260,8 @@ struct WidgetLaunchRoutingTests {
 
   // MARK: New chat with camera / photos
 
-  /// The camera and photos intents run the "New session" path (their one-shot action lands in
-  /// a later task): compact seats a fresh chat under a single new marker, no dictation.
+  /// The camera and photos intents run the "New session" path: compact seats a fresh chat
+  /// under a single new marker, carrying the one-shot action for its first `.task`.
   @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
   func cameraAndPhotosIntentsSeatANewChat(intent: LaunchIntent) async {
     let store = TestStore(
@@ -271,6 +271,113 @@ struct WidgetLaunchRoutingTests {
     }
 
     await store.send(.launchIntentReceived(intent)) {
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingLaunchAction = intent.launchAction
+      $0.liveChat = chat
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Over a reusable seat — already started, so no first `.task` will run — the camera /
+  /// photos intent resets the draft and sends `startLaunchAction` straight to the slot, which
+  /// opens that picker once (no teardown, no redial).
+  @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
+  func cameraAndPhotosIntentsOverReusableSeatOpenThePicker(intent: LaunchIntent) async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
+    seat.liveSessionID = "live-new"
+    seat.status = .ready
+    seat.hasStarted = true
+    let opened = LockIsolated<[String]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.attachmentPicker.capturePhoto = { @Sendable in
+        opened.withValue { $0.append("camera") }
+        return PickedBatch()
+      }
+      $0.attachmentPicker.pickPhotos = { @Sendable in
+        opened.withValue { $0.append("photos") }
+        return PickedBatch()
+      }
+    }
+
+    await store.send(.launchIntentReceived(intent)) {
+      $0.liveChat?.composerText = ""
+    }
+    await store.receive(\.liveChat.startLaunchAction, intent.launchAction!)
+    await store.finish()
+    #expect(opened.value == [intent == .newChatWithCamera ? "camera" : "photos"])
+    #expect(store.state.liveChat?.liveSessionID == "live-new", "the live session survives")
+    #expect(store.state.slotGeneration == 0, "the seat is reused, not refilled")
+  }
+
+  /// Behind the re-auth modal the camera / photos intent still seats the chat, but never with
+  /// a picker the user can't see: the action is dropped.
+  @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
+  func cameraAndPhotosIntentsBehindReauthDropTheAction(intent: LaunchIntent) async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        reauth: ReauthFeature.State(serverURL: URL(string: "http://mac.tailnet:9119")!, method: .token)
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(intent)) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Cold launch: a camera / photos intent stashed before the list exists keeps its action on
+  /// the launch auto-connect landing — the one landing that replays it.
+  @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
+  func preHomeCameraAndPhotosIntentsKeepTheActionOnAutoConnect(intent: LaunchIntent) async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(intent)) {
+      $0.pendingLaunchIntent = intent
+    }
+    await store.send(.autoConnectSucceeded(connection)) {
+      $0.autoConnecting = false
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingLaunchAction = intent.launchAction
+      $0.liveChat = chat
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// A manual login (onboarding fallback) can land minutes or hours after the tap, so a
+  /// stashed camera / photos intent replays as a plain new chat — no picker pops up unasked.
+  @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
+  func preHomeCameraAndPhotosIntentsDropTheActionOnManualLogin(intent: LaunchIntent) async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(intent)) {
+      $0.pendingLaunchIntent = intent
+    }
+    await store.send(.autoConnectFailed(connection, .unauthorized)) {
+      $0.autoConnecting = false
+      $0.onboarding = ConnectionFeature.State(
+        serverURL: self.connection.baseURL.absoluteString,
+        token: self.connection.auth.token ?? ""
+      )
+    }
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }

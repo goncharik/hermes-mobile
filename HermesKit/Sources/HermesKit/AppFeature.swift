@@ -1047,14 +1047,11 @@ public struct AppFeature {
   /// "New session": the list's button (`.home(.delegate(.createSession))`) and an App Intent
   /// (`.launchIntentReceived`, #93) both land here, so the two can never drift. No list → no-op.
   /// `launchAction` is the intent's one-shot request (`LaunchIntent.launchAction`), `nil` for a
-  /// plain new chat. Dictation is a one-shot `pendingDictation` on the chat, consumed at its
-  /// first `.task` — or `.startDictation` on the reused-seat path, whose slot has already
-  /// started. Task 4 generalizes that one-shot to camera / photos; until then those two seat a
-  /// plain new chat.
+  /// plain new chat. It is a one-shot `pendingLaunchAction` on the chat, consumed at its first
+  /// `.task` — or `.startLaunchAction` on the reused-seat path, whose slot has already started.
   private func reduceCreateSession(
     _ state: inout State, composerText: String?, launchAction: LaunchAction?
   ) -> Effect<Action> {
-    let startsDictation = launchAction == .dictation
     guard let home = state.home else { return .none }
     // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
     // — regular width keeps one such seat in the detail column at all times): tearing it
@@ -1070,12 +1067,12 @@ public struct AppFeature {
       if state.isChatDetached {
         state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
       }
-      return startsDictation ? .send(.liveChat(.startDictation)) : .none
+      return launchAction.map { .send(.liveChat(.startLaunchAction($0))) } ?? .none
     }
     // New chats are created under the currently-selected profile. `composerText` (push "Ask
     // agent to install") seeds the composer draft but is NOT auto-sent.
     var chat = newChat(for: home, composerText: composerText ?? "")
-    chat.pendingDictation = startsDictation
+    chat.pendingLaunchAction = launchAction
     guard state.liveChat != nil else {
       seatLiveChat(chat, into: &state)
       return .none

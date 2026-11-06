@@ -3523,7 +3523,7 @@ struct AppFeatureTests {
   }
 
   /// Behind the re-auth modal the dictation intent still seats the chat (it resumes with the
-  /// re-auth), but without the mic: no `pendingDictation` the user couldn't see recording.
+  /// re-auth), but without the mic: no `pendingLaunchAction` the user couldn't see recording.
   @Test func dictationLaunchIntentBehindReauthSeatsChatWithoutMic() async {
     let store = TestStore(
       initialState: AppFeature.State(
@@ -3571,12 +3571,12 @@ struct AppFeatureTests {
     }
     await store.receive(\.fillLiveChat) {
       var fresh = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      fresh.pendingDictation = true
+      fresh.pendingLaunchAction = .dictation
       $0.liveChat = fresh
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
-      $0.liveChat?.pendingDictation = false
+      $0.liveChat?.pendingLaunchAction = nil
       $0.liveChat?.recording = .requestingPermission
     }
     await store.receive(\.liveChat.recordingPermission) {
@@ -3587,9 +3587,9 @@ struct AppFeatureTests {
     await store.send(.liveChat(.teardown))
   }
 
-  /// The dictation intent seats the fresh chat carrying the one-shot `pendingDictation`; the
+  /// The dictation intent seats the fresh chat carrying the one-shot `pendingLaunchAction`; the
   /// chat consumes it at its first `.task` (no recording starts from the router itself).
-  @Test func dictationLaunchIntentSeatsChatWithPendingDictation() async {
+  @Test func dictationLaunchIntentSeatsChatWithPendingLaunchAction() async {
     let store = TestStore(
       initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
     ) {
@@ -3598,7 +3598,7 @@ struct AppFeatureTests {
 
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      chat.pendingDictation = true
+      chat.pendingLaunchAction = .dictation
       $0.liveChat = chat
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }
@@ -3606,7 +3606,7 @@ struct AppFeatureTests {
 
   /// Over a reusable seat — already started, so no first `.task` will run — the dictation
   /// intent takes the button's shortcut (draft reset, no teardown, no redial) and sends
-  /// `startDictation` straight to the slot.
+  /// `startLaunchAction(.dictation)` straight to the slot.
   @Test func dictationLaunchIntentOverReusableSeatStartsDictation() async {
     var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
     seat.liveSessionID = "live-new"
@@ -3626,7 +3626,7 @@ struct AppFeatureTests {
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       $0.liveChat?.composerText = ""
     }
-    await store.receive(\.liveChat.startDictation) {
+    await store.receive(\.liveChat.startLaunchAction, .dictation) {
       $0.liveChat?.recording = .requestingPermission
     }
     await store.receive(\.liveChat.recordingPermission) {
@@ -3653,7 +3653,7 @@ struct AppFeatureTests {
       $0.home = SessionListFeature.State(connection: self.connection)
       $0.pendingLaunchIntent = nil
       var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      chat.pendingDictation = true
+      chat.pendingLaunchAction = .dictation
       $0.liveChat = chat
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }

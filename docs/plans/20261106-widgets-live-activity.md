@@ -355,11 +355,11 @@ guard.
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: the existing dictation tests (`grep -rl pendingDictation HermesKit/Tests`)
 
-- [ ] replace `pendingDictation: Bool` with `pendingLaunchAction: LaunchAction?`; `consumePendingDictation` → `consumePendingLaunchAction`: always clears; `.dictation` → existing `startVoiceRecording` only from `recording == .idle`; `.camera` → the `.attachCameraTapped` effect; `.photos` → the `.attachPhotosTapped` effect (share the effect builders, don't `.send` the tap actions)
-- [ ] replace `.startDictation` with `.startLaunchAction(LaunchAction)` for the reused-seat path in `reduceCreateSession`
-- [ ] keep the #93 rules: only the launch auto-connect landing replays the action (other landings replay a plain new chat); behind `reauth` the action is dropped
-- [ ] update and rename the existing dictation tests; add tests for camera and photos: consumed once at first `.task`, not re-fired on re-appearance, the reused-seat path, dropped on a manual-login landing, dropped behind re-auth
-- [ ] run tests - must pass before task 5
+- [x] replace `pendingDictation: Bool` with `pendingLaunchAction: LaunchAction?`; `consumePendingDictation` → `consumePendingLaunchAction`: always clears; `.dictation` → existing `startVoiceRecording` only from `recording == .idle`; `.camera` → the `.attachCameraTapped` effect; `.photos` → the `.attachPhotosTapped` effect (share the effect builders, don't `.send` the tap actions) (➕ one `runLaunchAction` shared by the consume and `.startLaunchAction`; `pickPhotos()` / `capturePhoto()` effect builders shared with the composer buttons)
+- [x] replace `.startDictation` with `.startLaunchAction(LaunchAction)` for the reused-seat path in `reduceCreateSession`
+- [x] keep the #93 rules: only the launch auto-connect landing replays the action (other landings replay a plain new chat); behind `reauth` the action is dropped (unchanged routing from Task 3; now covered for camera / photos too)
+- [x] update and rename the existing dictation tests; add tests for camera and photos: consumed once at first `.task`, not re-fired on re-appearance, the reused-seat path, dropped on a manual-login landing, dropped behind re-auth (➕ cancelled picker stages nothing, auto-connect landing keeps the action)
+- [x] run tests - must pass before task 5
 
 ### Task 5: Scaffold the `HermesWidgets` extension target with the quick-actions widget, accessory and controls
 

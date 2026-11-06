@@ -755,12 +755,13 @@ public struct ChatFeature {
     /// gap drops streamed events). Once started, later appearances are routed by
     /// `AppFeature` through `.reattached`, which guards the live socket.
     var hasStarted: Bool
-    /// One-shot "start the mic as soon as this chat opens" request from the dictation App
-    /// Intent (#93). Consumed — cleared whatever happens — at the slot's first `.task`, so it
-    /// can never fire later (after a reconnect, or once the user has started typing). Starts
-    /// recording only from `.idle`.
+    /// One-shot "do this as soon as this chat opens" request from an App Intent (#93) or a
+    /// widget / control deep link (#138): start the mic, open the camera, or open the photo
+    /// picker. Consumed — cleared whatever happens — at the slot's first `.task`, so it can
+    /// never fire later (after a reconnect, or once the user has started typing). Dictation
+    /// starts recording only from `.idle`.
     /// Per-slot, unpersisted.
-    var pendingDictation: Bool
+    var pendingLaunchAction: LaunchAction?
     /// Set when the gated session died (`.authExpired`): reconnect backoff is paused and the
     /// trailing `.gatewayClosed` (the finished stream) is ignored until re-auth resumes us.
     var awaitingReauth: Bool
@@ -870,7 +871,7 @@ public struct ChatFeature {
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
       self.hasStarted = false
-      self.pendingDictation = false
+      self.pendingLaunchAction = nil
       self.awaitingReauth = false
       self.hydrateRetriedAfterTimeout = false
       self.hasHydrated = false
@@ -1262,10 +1263,11 @@ public struct ChatFeature {
     case copiedIDToastExpired
     // Voice input (#7)
     case voiceButtonTapped
-    /// Start the mic now if idle — on an already-started slot, which no first `.task` will
-    /// reach (sent by `AppFeature` when the dictation App Intent reuses the new-chat seat, #93).
+    /// Run a launch action (dictation, camera, photos) now — on an already-started slot, which
+    /// no first `.task` will reach (sent by `AppFeature` when an App Intent or a widget deep
+    /// link reuses the new-chat seat, #93 / #138). Dictation starts the mic only if idle.
     /// Never sent by the view.
-    case startDictation
+    case startLaunchAction(LaunchAction)
     case recordingPermission(Bool)
     case recordingStarted
     case recordingLevel(Float)
@@ -1560,9 +1562,10 @@ public struct ChatFeature {
         // when on, so the replies already painted (instant-paint snapshot) are never read.
         state.autoSpeakReplies = preferences.loadAutoSpeakReplies()
         if state.autoSpeakReplies { arm(&state) }
-        // The dictation App Intent's one-shot (#93) is consumed HERE, at first start — never
-        // on a later `.ready`. Recording is REST-transcribed, so it needn't wait for the socket.
-        return .merge(connect(state.connection), consumePendingDictation(&state))
+        // The launch action's one-shot (#93 / #138) is consumed HERE, at first start — never
+        // on a later `.ready`. Recording is REST-transcribed and attachments upload at send
+        // time, so none of them needs to wait for the socket.
+        return .merge(connect(state.connection), consumePendingLaunchAction(&state))
 
       case .viewDisappeared:
         // View-only cleanup: the screen left, but the slot (socket, streaming fold,
@@ -2299,8 +2302,8 @@ public struct ChatFeature {
           return .none
         }
 
-      case .startDictation:
-        return state.recording == .idle ? startVoiceRecording(&state) : .none
+      case let .startLaunchAction(action):
+        return runLaunchAction(action, &state)
 
       case let .recordingPermission(granted):
         guard granted else {
@@ -2470,14 +2473,10 @@ public struct ChatFeature {
       // MARK: Attachments (#8)
 
       case .attachPhotosTapped:
-        return .run { [attachmentPicker, uuid] send in
-          await stagePicked(await attachmentPicker.pickPhotos(), uuid: uuid, send: send)
-        }
+        return pickPhotos()
 
       case .attachCameraTapped:
-        return .run { [attachmentPicker, uuid] send in
-          await stagePicked(await attachmentPicker.capturePhoto(), uuid: uuid, send: send)
-        }
+        return capturePhoto()
 
       case .attachFilesTapped:
         return .run { [attachmentPicker, uuid] send in
@@ -3927,7 +3926,7 @@ public struct ChatFeature {
   }
 
   /// The mic button's idle → recording leg, shared by `.voiceButtonTapped` and the dictation
-  /// App Intent (`consumePendingDictation`, #93) so the barge-in order can never drift.
+  /// launch action (`runLaunchAction`, #93) so the barge-in order can never drift.
   private func startVoiceRecording(_ state: inout State) -> Effect<Action> {
     state.recording = .requestingPermission
     // Voice barge-in (#74): silence the clip and stamp the latch. The `tts.stop()`
@@ -3944,13 +3943,41 @@ public struct ChatFeature {
     )
   }
 
-  /// Consume the dictation App Intent's one-shot (#93): always clear the flag, and start the
-  /// mic only from `.idle` — never toggle a recording (or a pending permission / transcription)
-  /// the user already has going. A denial lands on `.recordingPermission`'s existing banner.
-  private func consumePendingDictation(_ state: inout State) -> Effect<Action> {
-    guard state.pendingDictation else { return .none }
-    state.pendingDictation = false
-    return state.recording == .idle ? startVoiceRecording(&state) : .none
+  /// Consume the launch one-shot (#93 / #138): always clear it, then run it once.
+  private func consumePendingLaunchAction(_ state: inout State) -> Effect<Action> {
+    guard let action = state.pendingLaunchAction else { return .none }
+    state.pendingLaunchAction = nil
+    return runLaunchAction(action, &state)
+  }
+
+  /// One launch action, shared by the first-`.task` consume and the reused-seat
+  /// `.startLaunchAction`. Dictation starts the mic only from `.idle` — never toggling a
+  /// recording (or a pending permission / transcription) the user already has going; a denial
+  /// lands on `.recordingPermission`'s existing banner. Camera and photos run the composer
+  /// buttons' own picker effects, so a cancel is the same silent empty batch.
+  private func runLaunchAction(_ action: LaunchAction, _ state: inout State) -> Effect<Action> {
+    switch action {
+    case .dictation:
+      return state.recording == .idle ? startVoiceRecording(&state) : .none
+    case .camera:
+      return capturePhoto()
+    case .photos:
+      return pickPhotos()
+    }
+  }
+
+  /// The photo-library picker, shared by the composer button and the photos launch action.
+  private func pickPhotos() -> Effect<Action> {
+    .run { [attachmentPicker, uuid] send in
+      await stagePicked(await attachmentPicker.pickPhotos(), uuid: uuid, send: send)
+    }
+  }
+
+  /// The camera capture, shared by the composer button and the camera launch action.
+  private func capturePhoto() -> Effect<Action> {
+    .run { [attachmentPicker, uuid] send in
+      await stagePicked(await attachmentPicker.capturePhoto(), uuid: uuid, send: send)
+    }
   }
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI
