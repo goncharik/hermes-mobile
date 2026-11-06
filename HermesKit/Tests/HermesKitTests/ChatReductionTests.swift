@@ -2491,10 +2491,17 @@ struct ChatReductionTests {
   func pendingPickerActionCancelledStagesNothing(action: LaunchAction) async {
     var initial = ChatFeature.State(connection: conn)
     initial.pendingLaunchAction = action
+    let opened = LockIsolated<[String]>([])
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.uuid = .incrementing
-      $0.attachmentPicker.capturePhoto = { @Sendable in PickedBatch() } // a cancel
-      $0.attachmentPicker.pickPhotos = { @Sendable in PickedBatch() }
+      $0.attachmentPicker.capturePhoto = { @Sendable in // a cancel
+        opened.withValue { $0.append("camera") }
+        return PickedBatch()
+      }
+      $0.attachmentPicker.pickPhotos = { @Sendable in
+        opened.withValue { $0.append("photos") }
+        return PickedBatch()
+      }
       $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
     }
 
@@ -2503,6 +2510,9 @@ struct ChatReductionTests {
       $0.hasStarted = true
       $0.pendingLaunchAction = nil
     }
+    // The picker really ran (and was cancelled) before the store settles: nothing staged.
+    await waitUntil { !opened.value.isEmpty }
+    #expect(opened.value == [action == .camera ? "camera" : "photos"])
     await store.send(.teardown)
   }
 
