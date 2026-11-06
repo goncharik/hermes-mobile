@@ -698,6 +698,33 @@ struct WidgetSurfacesTests {
     #expect(store.state.liveActivityShowsTitles == false)
   }
 
+  /// Every landing ends whatever activity is already on screen: none can be this landing's (a
+  /// start needs the list's first fetch), so it is a previous process's leftover — killed in
+  /// the background or crashed — that nothing would update or end, and it would otherwise sit
+  /// "Outdated" next to the new one.
+  @Test func everyLandingEndsAPreviousProcessActivity() async {
+    for action in [
+      AppFeature.Action.autoConnectSucceeded(connection),
+      .connectionFailed(.delegate(.connected(connection))),
+      .onboarding(.delegate(.connected(connection))),
+    ] {
+      let label = "\(action)"
+      let activity = ActivityRecorder()
+      let store = makeStore(
+        AppFeature.State(
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline)
+        ),
+        activity: activity
+      )
+      store.exhaustivity = .off(showSkippedAssertions: false)
+
+      await store.send(action)
+      await store.finish()
+      #expect(store.state.home != nil, "\(label) didn't land")
+      #expect(activity.calls.value == [.endAll], "\(label)")
+    }
+  }
+
   // MARK: The file-backed client
 
   @Test func fileBackedClientWritesAndClearsTheMirrorAtomically() throws {

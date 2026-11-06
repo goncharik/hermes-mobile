@@ -1724,10 +1724,27 @@ public struct AppFeature {
   /// can come minutes or hours later, so those replay it as a plain new chat. A stashed
   /// `.openSession` replays through the push-tap routing instead, under the same cross-server
   /// guard as a tap (its own `pendingLaunchIntentServerURL`).
+  ///
+  /// The Live Activity (#138): the toggles are seeded from the device prefs, and any activity
+  /// already on screen is ended. None can be this landing's — a start needs the list's first
+  /// fetch, which comes after — so it is a previous process's (killed in the background, or
+  /// crashed) that nothing would ever update or end: it would sit "Outdated" next to the new
+  /// one the fetch starts. The sweep ends the activities listed when it runs, and the start
+  /// waits on that network fetch.
   private func landOnHome(_ state: inout State, replaysLaunchAction: Bool) -> Effect<Action> {
     // The Live Activity prefs (#138): device-local, reset to on by a logout.
     state.liveActivityEnabled = preferences.loadLiveActivityEnabled()
     state.liveActivityShowsTitles = preferences.loadLiveActivityShowsTitles()
+    let sweep: Effect<Action> = state.liveActivity == nil
+      ? .run { [liveActivity] _ in await liveActivity.endAll() }
+      : .none
+    return .merge(sweep, replayLandingStash(&state, replaysLaunchAction: replaysLaunchAction))
+  }
+
+  /// `landOnHome`'s replay half: the stashed push tap or launch intent, else the detail seat.
+  private func replayLandingStash(
+    _ state: inout State, replaysLaunchAction: Bool
+  ) -> Effect<Action> {
     let intent = state.pendingLaunchIntent
     let intentOrigin = state.pendingLaunchIntentServerURL
     let tap = state.pendingPushTap

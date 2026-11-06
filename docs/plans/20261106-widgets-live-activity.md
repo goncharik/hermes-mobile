@@ -462,11 +462,11 @@ guard.
 - [x] run tests - must pass before task 11
 
 ### Task 11: Verify acceptance criteria
-- [ ] verify all Overview surfaces exist and route correctly (deep-link table covered by tests)
-- [ ] verify the thin-client rule: `HermesWidgets` links only `HermesWidgetKit` and has no network or Keychain code (`grep` the target)
-- [ ] verify the #93 behaviour is unchanged (existing intent / quick-action / push-routing tests pass untouched apart from the `pendingDictation` rename)
-- [ ] run the full suite: `script -q /dev/null swift test --package-path HermesKit`
-- [ ] run `make snapshot` (all green) and `make build`
+- [x] verify all Overview surfaces exist and route correctly (deep-link table covered by tests) (➕ gap fixed: a Live Activity left by a previous process — killed in the background or crashed — was never ended and sat "Outdated" next to the new one; every landing now ends any activity already on screen, `everyLandingEndsAPreviousProcessActivity`)
+- [x] verify the thin-client rule: `HermesWidgets` links only `HermesWidgetKit` and has no network or Keychain code (`grep` the target) (➕ the built `.appex` links only system frameworks — ActivityKit, AppIntents, Foundation, SwiftUI, UIKit, WidgetKit — with no TCA / GRDB / HermesKit / `URLSession` / `SecItem` symbols)
+- [x] verify the #93 behaviour is unchanged (existing intent / quick-action / push-routing tests pass untouched apart from the `pendingDictation` rename) (➕ `LaunchIntentClientTests` untouched; the other existing suites changed only by the rename plus additive assertions for the new state — `statusSessions`, `ImmediateClock` for the mirror debounce, Live Activity pref resets)
+- [x] run the full suite: `script -q /dev/null swift test --package-path HermesKit`
+- [x] run `make snapshot` (all green) and `make build` (⚠️ "all green" apart from the 3 pre-existing attachment snapshots — `testChatView_sentImageAttachment`, `testComposer_attachmentChips`, `testComposer_attachmentUploadingAndFailed` — that fail identically on the base `e821f66`: simulator-runtime drift of the baselines re-recorded in `83dd80b`, untouched by this branch)
 
 ### Task 12: [Final] Update documentation
 - [ ] create `docs/features/widgets.md` (surfaces, URL table, `HermesWidgetKit` packaging rule, projection and edge, staleness, Live Activity lifecycle and toggles, the accepted residuals: foreground crash and the foreground-only start)
