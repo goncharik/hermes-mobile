@@ -258,22 +258,28 @@
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift` (compile-only wiring; the sheet
   redesign is Task 5)
 
-- [ ] create `ModelPickerFeature` (state, actions, delegate, fetch with `explicit_only: true`,
+- [x] create `ModelPickerFeature` (state, actions, delegate, fetch with `explicit_only: true`,
       prefs load, toggles + persistence, dismiss) per Technical Details
-- [ ] replace `State.ModelPicker` with `@Presents var modelPicker: ModelPickerFeature.State?`
+- [x] replace `State.ModelPicker` with `@Presents var modelPicker: ModelPickerFeature.State?`
       + `.ifLet`; route delegate `modelSelected`/`reasoningSelected` into the existing logic
       (behaviour unchanged); keep `configSetFailed`/`clearConfigError` writing
       `modelPicker?.applyError`; remove `.modelPickerDismissed`/`.modelOptionsResponse`
-- [ ] minimally adapt `ChatView` + `ModelPickerSheet` call site to the scoped store so the app
+- [x] minimally adapt `ChatView` + `ModelPickerSheet` call site to the scoped store so the app
       target builds
-- [ ] write `ModelPickerFeatureTests`: `.task` sends `explicit_only: true` + `session_id` and
+- [x] write `ModelPickerFeatureTests`: `.task` sends `explicit_only: true` + `session_id` and
       loads prefs; success / malformed / `GatewayError` / non-gateway error; header toggle
       collapses + expands + persists; star toggle adds (appends) / removes + persists; row tap
       and effort tap emit delegates; done dismisses
-- [ ] migrate `ChatInteractionTests` model-picker tests to the child/delegate path, keeping every
+- [x] migrate `ChatInteractionTests` model-picker tests to the child/delegate path, keeping every
       existing assertion (optimistic write, `--provider` wire value, bare id, rollback, latch,
       `applyError` mirror, busy guard)
-- [ ] run `make test` — must pass before next task
+- [x] run `make test` — must pass before next task
+- ➕ the sheet's `options.currentProvider` follows an optimistic model pick
+      (`State.applyOptimisticModelPick`), is restored by a rejected pick (`.configSetFailed`
+      model key) and confirmed by a `session.info` carrying the model — otherwise a
+      cross-provider pick would check no row under the `(provider, model)` match.
+      `ModelPickerSheet` now takes the scoped store (rendering unchanged; the four baselines
+      still pass), and `SelfHealTests` picks go through the presented child too.
 
 ### Task 5: Redesign ModelPickerSheet (cards, collapse, stars, Options → effort list, centering)
 

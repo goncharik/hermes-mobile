@@ -188,8 +188,8 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   // MARK: ModelPickerSheet
 
   func testModelPickerSheet() {
-    let picker = ChatFeature.State.ModelPicker(
-      isLoading: false,
+    let picker = ModelPickerFeature.State(
+      sessionID: "s", isLoading: false,
       options: ModelOptions(
         providers: [
           .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
@@ -202,11 +202,10 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       )
     )
     let view = ModelPickerSheet(
-      picker: picker,
+      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
       currentModel: "gpt-5", // reasoning-capable → effort options drop down under it, "high" selected
       currentEffort: "high",
-      isBusy: false,
-      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
+      isBusy: false
     )
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -216,8 +215,8 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// the list ends at `xhigh`, with `max`/`ultra` absent. Same fixture as
   /// `testModelPickerSheet`, so the two baselines differ by exactly those two rows.
   func testModelPickerSheet_latchedHidesExtendedEfforts() {
-    let picker = ChatFeature.State.ModelPicker(
-      isLoading: false,
+    let picker = ModelPickerFeature.State(
+      sessionID: "s", isLoading: false,
       options: ModelOptions(
         providers: [
           .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
@@ -229,12 +228,11 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       )
     )
     let view = ModelPickerSheet(
-      picker: picker,
+      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
       currentModel: "gpt-5",
       currentEffort: "high",
       isBusy: false,
-      extendedReasoningSupported: false,
-      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
+      extendedReasoningSupported: false
     )
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -244,8 +242,8 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// selection stays visible in the rows below it. Same fixture as `testModelPickerSheet`, so
   /// the two baselines differ by exactly that row.
   func testModelPickerSheet_applyError() {
-    let picker = ChatFeature.State.ModelPicker(
-      isLoading: false,
+    let picker = ModelPickerFeature.State(
+      sessionID: "s", isLoading: false,
       options: ModelOptions(
         providers: [
           .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
@@ -258,18 +256,17 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       applyError: "Couldn’t change model: cannot switch mid-turn"
     )
     let view = ModelPickerSheet(
-      picker: picker,
+      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
       currentModel: "gpt-5",
       currentEffort: "high",
-      isBusy: false,
-      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
+      isBusy: false
     )
     assertSnapshot(of: view, as: deviceImage())
   }
 
   func testModelPickerSheet_nonReasoningModelHidesEffort() {
-    let picker = ChatFeature.State.ModelPicker(
-      isLoading: false,
+    let picker = ModelPickerFeature.State(
+      sessionID: "s", isLoading: false,
       options: ModelOptions(
         providers: [
           .init(name: "Anthropic", slug: "anthropic",
@@ -283,11 +280,10 @@ final class ComposerSnapshotTests: SnapshotTestCase {
       )
     )
     let view = ModelPickerSheet(
-      picker: picker,
+      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
       currentModel: "claude-haiku-4-5", // no reasoning → effort section hidden
       currentEffort: nil,
-      isBusy: false,
-      onSelectModel: { _, _ in }, onSelectEffort: { _ in }, onDone: {}
+      isBusy: false
     )
     assertSnapshot(of: view, as: deviceImage())
   }

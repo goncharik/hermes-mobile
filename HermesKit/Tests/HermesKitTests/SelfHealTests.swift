@@ -42,9 +42,16 @@ struct SelfHealTests {
 
   // MARK: runtime config self-heal
 
+  /// `healableState()` with the model picker up — the only source of a config pick.
+  private func healablePickerState() -> ChatFeature.State {
+    var state = healableState()
+    state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live", isLoading: false)
+    return state
+  }
+
   @Test func reasoningSelectionSelfHealsOnSessionNotFoundThenSucceeds() async {
     let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
-    let store = TestStore(initialState: healableState()) { ChatFeature() } withDependencies: {
+    let store = TestStore(initialState: healablePickerState()) { ChatFeature() } withDependencies: {
       $0.hermesGateway.send = { @Sendable method, params in
         let sid = params["session_id"]?.stringValue
         calls.withValue { $0.append((method, sid)) }
@@ -61,7 +68,7 @@ struct SelfHealTests {
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
 
-    await store.send(.reasoningSelected("xhigh")) {
+    await store.send(.pickReasoning("xhigh")) {
       $0.reasoningEffort = "xhigh"
     }
     await store.receive(\.liveSessionIDRefreshed) {
@@ -78,7 +85,7 @@ struct SelfHealTests {
   /// one `.configSetFailed` surfaces (rollback + banner) and no third `config.set` goes out.
   @Test func reasoningSelectionSurfacesFailureWhenReplayAlsoFails() async {
     let calls = LockIsolated<[String]>([])
-    var initial = healableState()
+    var initial = healablePickerState()
     initial.reasoningEffort = "medium"
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.hermesGateway.send = { @Sendable method, _ in
@@ -92,7 +99,7 @@ struct SelfHealTests {
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
 
-    await store.send(.reasoningSelected("xhigh")) {
+    await store.send(.pickReasoning("xhigh")) {
       $0.reasoningEffort = "xhigh"
     }
     await store.receive(\.liveSessionIDRefreshed)
@@ -935,8 +942,8 @@ struct SelfHealTests {
     var action: ChatFeature.Action {
       switch self {
       case .rename: .confirmRename
-      case .model: .modelSelected(model: "claude-sonnet-4-6", provider: nil)
-      case .reasoning: .reasoningSelected("high")
+      case .model: .pickModel(model: "claude-sonnet-4-6", provider: nil)
+      case .reasoning: .pickReasoning("high")
       case .submit, .slashExec, .compress: .composerSubmitted
       }
     }
@@ -946,7 +953,9 @@ struct SelfHealTests {
       switch self {
       case .submit: state.composerText = "follow-up"
       case .rename: state.renameDraft = "New title"
-      case .model, .reasoning: break
+      case .model, .reasoning:
+        // Picks arrive only through the presented picker sheet.
+        state.modelPicker = ModelPickerFeature.State(sessionID: "stale-live", isLoading: false)
       case .slashExec, .compress:
         state.commandCatalog = CommandCatalog(
           commands: [SlashCommand(name: "/status", description: "Show session status")],

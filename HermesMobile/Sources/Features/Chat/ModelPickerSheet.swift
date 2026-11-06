@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import HermesKit
 import SwiftUI
 
@@ -11,17 +12,17 @@ import SwiftUI
 /// the per-slot latch: once an older gateway has rejected an extended level,
 /// `extendedReasoningSupported` goes false and `max`/`ultra` drop out of the list. The
 /// filter itself lives in `ModelOptions.offeredEfforts(extendedSupported:)`.
+///
+/// Driven by the presented `ModelPickerFeature` store (it loads `model.options` on `.task`);
+/// the chat-owned display inputs (current model + effort, busy, the latch) are parameters.
 struct ModelPickerSheet: View {
-  let picker: ChatFeature.State.ModelPicker
+  let store: StoreOf<ModelPickerFeature>
   let currentModel: String?
   let currentEffort: String?
   let isBusy: Bool
   /// `ChatFeature.State.extendedReasoningSupported`: false hides `max`/`ultra` after this
   /// slot's agent rejected one. Defaulted so the snapshot call sites stay unchanged.
   var extendedReasoningSupported: Bool = true
-  let onSelectModel: (String, String?) -> Void
-  let onSelectEffort: (String) -> Void
-  let onDone: () -> Void
 
   @State private var searchText = ""
 
@@ -29,21 +30,21 @@ struct ModelPickerSheet: View {
   /// search-filtered result (`ModelOptions.filteredProviders(matching:)`). Filtering keeps
   /// provider sections intact, so identical model names across providers stay unambiguous.
   private var visibleProviders: [ModelOptions.Provider] {
-    (picker.options?.filteredProviders(matching: searchText)) ?? []
+    (store.options?.filteredProviders(matching: searchText)) ?? []
   }
 
   var body: some View {
     NavigationStack {
       Group {
-        if picker.isLoading {
+        if store.isLoading {
           ProgressView("Loading models…").frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = picker.error {
+        } else if let error = store.error {
           ContentUnavailableView("Couldn’t load models", systemImage: "exclamationmark.triangle",
                                  description: Text(error))
         } else {
           List {
             // An apply failure keeps the list usable — the rolled-back row is right below.
-            if let applyError = picker.applyError {
+            if let applyError = store.applyError {
               Section {
                 Label(applyError, systemImage: "exclamationmark.triangle")
                   .font(.footnote).foregroundStyle(.red)
@@ -81,23 +82,24 @@ struct ModelPickerSheet: View {
       )
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
-          Button("Done", action: onDone)
+          Button("Done") { store.send(.doneButtonTapped) }
         }
       }
     }
+    .task { store.send(.task) }
   }
 
   @ViewBuilder
   private func configuredModels(_ provider: ModelOptions.Provider) -> some View {
     ForEach(provider.models, id: \.self) { model in
       selectableRow(model, selected: model == currentModel) {
-        onSelectModel(model, provider.selectionSlug)
+        store.send(.modelRowTapped(model: model, providerSlug: provider.selectionSlug))
       }
       // Reasoning effort drops down under the selected, reasoning-capable model.
-      if model == currentModel, picker.options?.supportsReasoning(model) ?? true {
+      if model == currentModel, store.options?.supportsReasoning(model) ?? true {
         ForEach(ModelOptions.offeredEfforts(extendedSupported: extendedReasoningSupported),
                 id: \.self) { effort in
-          effortRow(effort, selected: effort == currentEffort) { onSelectEffort(effort) }
+          effortRow(effort, selected: effort == currentEffort) { store.send(.effortRowTapped(effort)) }
         }
       }
     }
