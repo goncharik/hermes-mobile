@@ -252,10 +252,10 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - [x] run the full suite: `make test` and `make snapshot`
 
 ### Task 6: [Final] Update documentation
-- [ ] create `docs/features/app-intents.md`: intents, phrases, bridge/stash/replay, the
+- [x] create `docs/features/app-intents.md`: intents, phrases, bridge/stash/replay, the
       dictation one-shot rule, the busy-slot policy, why there are no static Quick Actions
-- [ ] add a short CLAUDE.md bullet (rule + pointer, ≤5 lines) and a README feature-list line
-- [ ] move this plan to `docs/plans/completed/`
+- [x] add a short CLAUDE.md bullet (rule + pointer, ≤5 lines) and a README feature-list line
+- [x] move this plan to docs/plans/completed/ (deferred to orchestrator after review)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems*

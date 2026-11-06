@@ -158,6 +158,11 @@ a `testValue`/`.inMemory()` variant):
   (Foundation-only: `NSLock` + `AsyncStream`, with `onTermination`-pruned subscriber lists so
   a cancelled observer can't strand a dead continuation and defeat the tap buffer) live
   outside the guard so they are unit-tested on macOS.
+- **`LaunchIntentClient`** — App Intent launch requests (#93): an `incoming()` stream of
+  `LaunchIntent` values fed by the process-wide, Foundation-only `LaunchIntentBridge` (the app
+  target's intents call `received(_:)`; same consume-once, last-wins launch-race buffer as
+  `PushBridge`, so the `liveValue` needs no UIKit guard). `AppFeature` observes it next to the
+  push-tap observer. Contract: `docs/features/app-intents.md`.
 - **`BackgroundTaskClient`** — a finite background-execution window (~30s) wrapping
   `UIApplication.beginBackgroundTask`/`endBackgroundTask`: `begin(name) → AsyncStream<Void>`
   yields exactly once if iOS expires the window early (then finishes; a normal end finishes
