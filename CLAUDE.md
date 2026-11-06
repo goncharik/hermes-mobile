@@ -244,7 +244,9 @@ bullets below are the compressed rules.
   optimistic then reconciled by `session.info`. Offer the FULL reasoning ladder always (the
   server clamps per provider and publishes no per-model list); a failure rolls back BOTH keys
   + banners, and only the 4002 `unknown reasoning value` verdict latches the per-slot,
-  unpersisted `extendedReasoningSupported`. Details: `docs/features/model-picker.md`.
+  unpersisted `extendedReasoningSupported`. The sheet (#130) is the `@Presents`
+  `ModelPickerFeature` (load + favorites/collapse prefs; picks go to the parent by delegate)
+  over the pure `ModelPickerLayout`. Details: `docs/features/model-picker.md`.
 - **Read replies aloud (#74)**: the toggle is a device-local pref, never `voice.auto_tts`.
   Synthesis is `POST /api/audio/speak` only; `TTSClient` is a dumb player and the state
   machine is per-slot in `ChatFeature`. A completed-FINAL-reply anchor (armed, re-based on every
@@ -261,7 +263,8 @@ bullets below are the compressed rules.
   anchor only; server wins on hydrate, persistence debounced (flushed on
   `.background`), wiped on logout; behind the client boundary (no reactive `@FetchAll`).
 - **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts,
-  pins, swipe default, read-aloud toggle, profile) → `PreferencesClient`. Clients over
+  pins, swipe default, read-aloud toggle, profile, model-picker favorites/collapsed
+  providers) → `PreferencesClient`. Clients over
   `@Shared` for test isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
 - **Pins are device-local; archive, rename, and delete are server-side**, optimistic
   with rollback (list → REST `PATCH`/`DELETE`; chat rename → `session.title`).

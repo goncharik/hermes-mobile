@@ -338,13 +338,13 @@
       338/338, `make build` clean (pre-existing warnings only).
 
 ### Task 8: [Final] Update documentation
-- [ ] rewrite the affected parts of `docs/features/model-picker.md`: fetch (`explicit_only`,
+- [x] rewrite the affected parts of `docs/features/model-picker.md`: fetch (`explicit_only`,
       lost-credential row), Options card + pushed effort list (replaces inline rows), Favorites,
       collapse, centering, `ModelPickerFeature`/`ModelPickerLayout` ownership, prefs + logout
-- [ ] update the `CLAUDE.md` model-picker bullet (one-line rule + pointer; keep it 5–8 lines),
+- [x] update the `CLAUDE.md` model-picker bullet (one-line rule + pointer; keep it 5–8 lines),
       and the `CLAUDE.md` "Persistence" prefs list if it enumerates prefs
-- [ ] update `README.md` if it describes the picker
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `README.md` if it describes the picker (it doesn't — no change)
+- [x] move this plan to `docs/plans/completed/` (done by the orchestrator after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only*
