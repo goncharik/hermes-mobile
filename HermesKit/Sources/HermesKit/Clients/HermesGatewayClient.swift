@@ -104,6 +104,16 @@ public enum GatewayError: Error, Equatable, Sendable {
     return false
   }
 
+  /// True for the gateway's 4010 `agent does not support steer`: the method exists but this
+  /// session's agent has no `steer()`. Matched on the stable text like `isUnknownMethod`
+  /// (`InboundFrame` keeps only the message). Flips the per-slot `steerSupported` off.
+  public var isSteerUnsupported: Bool {
+    if case let .server(message) = self {
+      return message.lowercased().hasPrefix("agent does not support steer")
+    }
+    return false
+  }
+
   /// True when the socket dropped (no transport) — distinct from a server-side protocol
   /// error. A dropped socket is already surfaced by the reducer's `.reconnecting` status, so
   /// callers can avoid raising a redundant "Connection lost." banner that would linger past

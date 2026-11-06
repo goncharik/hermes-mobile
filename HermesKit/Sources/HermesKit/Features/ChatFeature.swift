@@ -272,6 +272,14 @@ public struct ChatFeature {
     /// `isQueueParked`, and the interrupted turn's terminal `.error` skips re-parking.
     /// Cleared by the drain that consumes it and by a manual Stop (stop intent wins).
     var sendNowArmed: Bool
+    /// The queued entry whose `session.steer` is in flight (desktop `steerQueuedNow`). The
+    /// entry stays in `queuedPrompts` (its place and its text are safe whatever the answer)
+    /// and the whole drain waits on it: a turn end racing the RPC must not fire the entry
+    /// behind it first. Cleared by `.queuedPromptSteerResult`.
+    public internal(set) var steeringEntryID: UUID?
+    /// Capability gate for Steer now: flips off on `-32601` (no `session.steer`) and on 4010
+    /// (`agent does not support steer`). Per slot, unpersisted.
+    public var steerSupported: Bool
 
     // MARK: Read replies aloud (#74)
 
@@ -446,6 +454,22 @@ public struct ChatFeature {
     /// queued work must not be torn down at turn end (the drain fires the next turn
     /// into it), and an idle pop must not destroy a parked queue.
     public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
+
+    /// Whether Steer now is offered for a steerable queued entry (`SteerEligibility`): a real
+    /// turn is running (`isSending`, but not a slash exec — `slash.exec` never marks the
+    /// session running, so the server would only answer `rejected`), no card stands (the
+    /// #97 card queue gates it like queuing and the drain), and no other steer is in flight.
+    /// The panel and the reducer both read this.
+    public var canSteerQueued: Bool {
+      steerSupported
+        && isSending && !slashExecInFlight
+        && steeringEntryID == nil
+        && liveSessionID != nil
+        && status == .ready
+        && pendingInteraction == nil
+        && !isBranching
+        && !isReplayReadPending
+    }
 
     /// No prompt has been sent yet — but the composer may hold a draft. This chat was
     /// created as a NEW session (`resumesStoredSession` false, no branch attach), nothing is
@@ -739,6 +763,9 @@ public struct ChatFeature {
     /// streamed text only as one run-together string, so a running hydrate (#26) preserves
     /// these rows and seeds the streaming row with the text after them.
     var liveCommentaryRowIDs: Set<ChatRow.ID>
+    /// The user bubbles of steers accepted into the running turn — same lifecycle as
+    /// `liveCommentaryRowIDs`, so a running hydrate keeps them where they arrived.
+    var liveCorrectionRowIDs: Set<ChatRow.ID>
     /// The wire identity of one sealed `message.interim` segment.
     struct SealedSegment: Hashable, Sendable {
       var turnID: String
@@ -862,6 +889,7 @@ public struct ChatFeature {
       self.toolRowIDs = [:]
       self.liveReasoningRowIDs = []
       self.liveCommentaryRowIDs = []
+      self.liveCorrectionRowIDs = []
       self.sealedSegments = []
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
@@ -911,6 +939,8 @@ public struct ChatFeature {
       self.drainingEntry = nil
       self.drainingRowID = nil
       self.sendNowArmed = false
+      self.steeringEntryID = nil
+      self.steerSupported = true
       self.autoSpeakReplies = false
       self.ttsSupported = true
       self.ttsPlayback = .idle
@@ -1185,6 +1215,12 @@ public struct ChatFeature {
     /// entries); mid-turn → interrupt-then-send (desktop semantics — stop the current
     /// turn, the entry fires as the next one). Un-parks the queue.
     case queuedPromptSendNow(id: UUID)
+    /// Steer now (desktop `steerQueuedNow`): deliver this entry into the RUNNING turn via
+    /// `session.steer`, without interrupting it. Offered while `canSteerQueued` and the entry
+    /// is `SteerEligibility.isSteerable`; the reducer re-checks both.
+    case queuedPromptSteer(id: UUID)
+    /// The `session.steer` outcome for the in-flight `steeringEntryID`.
+    case queuedPromptSteerResult(id: UUID, outcome: SteerOutcome)
     /// Deterministic drain re-check, sent by the Send-now effect after its
     /// `session.interrupt` resolves — covers a turn whose terminal event never arrives
     /// (already over, or lost on a reconnecting socket). Safe to send any time; every
@@ -1880,6 +1916,9 @@ public struct ChatFeature {
         )
 
       case let .queuedPromptDeleted(id):
+        // The entry being steered is out of the user's hands until the server answers: its
+        // text may already be in the turn, and an accept needs it for the echo row.
+        guard id != state.steeringEntryID else { return .none }
         state.queuedPrompts.removeAll { $0.id == id }
         return .none
 
@@ -1888,7 +1927,8 @@ public struct ChatFeature {
         // EMPTY composer (no text, no staged attachments), so an edit can never clobber a
         // draft mid-typing. The panel disables the item on the same condition; this guard
         // is the authoritative one.
-        guard state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard id != state.steeringEntryID,
+              state.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               state.attachments.isEmpty,
               let index = state.queuedPrompts.firstIndex(where: { $0.id == id })
         else { return .none }
@@ -1898,7 +1938,7 @@ public struct ChatFeature {
         return .none
 
       case let .queuedPromptSendNow(id):
-        guard let index = state.queuedPrompts.firstIndex(where: { $0.id == id }) else { return .none }
+        guard id != state.steeringEntryID, let index = state.queuedPrompts.firstIndex(where: { $0.id == id }) else { return .none }
         // Promote to the head (the drain always fires the head) and un-park: an explicit
         // Send-now is the queue's resume signal after a Stop/error park.
         let entry = state.queuedPrompts.remove(at: index)
@@ -1930,6 +1970,59 @@ public struct ChatFeature {
         )
 
       case .maybeDrainQueue:
+        return drainQueueIfReady(into: &state)
+
+      case let .queuedPromptSteer(id):
+        // The entry stays queued while the RPC runs (`steeringEntryID` holds the drain), so a
+        // refusal or a failure leaves it exactly where it was.
+        guard state.canSteerQueued, let sessionID = state.liveSessionID,
+              let entry = state.queuedPrompts.first(where: { $0.id == id }),
+              SteerEligibility.isSteerable(entry)
+        else { return .none }
+        state.steeringEntryID = id
+        // Steering is a keep-it-moving intent, like Send-now: it lifts an earlier park. A Stop
+        // while the RPC runs parks again, and the result leaves that park alone. It does not
+        // barge in on read-aloud (#74): it is not a `prompt.submit`, and the queued entry
+        // already silenced any clip when it was typed.
+        state.isQueueParked = false
+        let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Resume-only heal target: none for an attached or seeded branch (#34), whose stored
+        // id has no row to resume.
+        let storedSessionID = state.branchSeed == nil ? state.healTarget.storedSessionID : nil
+        let profile = state.profileName
+        return .run { [gateway] send in
+          let outcome = await steerQueuedEntry(
+            text: text, sessionID: sessionID, storedSessionID: storedSessionID,
+            profile: profile, gateway: gateway, send: send
+          )
+          await send(.queuedPromptSteerResult(id: id, outcome: outcome))
+        }
+
+      case let .queuedPromptSteerResult(id, outcome):
+        guard state.steeringEntryID == id else { return .none }
+        state.steeringEntryID = nil
+        switch outcome {
+        case .accepted:
+          // The live turn owns the text now: it leaves the queue and shows as the user's
+          // bubble where it arrived (desktop `sealAcceptedCorrection`).
+          // The queue was unparked when the steer went out; a Stop since then parked it
+          // again on purpose, so it stays parked (stop intent wins, as with Send-now).
+          if let index = state.queuedPrompts.firstIndex(where: { $0.id == id }) {
+            let entry = state.queuedPrompts.remove(at: index)
+            appendAcceptedSteer(entry.text, into: &state)
+          }
+        case .undelivered:
+          // `rejected` (the session went idle first), `voice_stopped`, an unknown status, or
+          // a stale id with nothing to resume: the entry stays put and drains as the next
+          // prompt — the gateway's documented `rejected` contract.
+          break
+        case .unsupported:
+          state.steerSupported = false
+        case let .failed(error):
+          if !error.isDisconnected { state.errorBanner = "Couldn't steer: \(error.message)" }
+        }
+        // The drain waited on the steer. Every precondition is re-checked there (a running
+        // turn, a park, a #98 replay read), so this is safe after any outcome.
         return drainQueueIfReady(into: &state)
 
       case let .respondToApproval(token, approve, all):
@@ -3318,6 +3411,41 @@ public struct ChatFeature {
     return String(rest)
   }
 
+  /// The normalized user texts the history already holds for the running turn: those after
+  /// its persisted prompt (`inflightUser`), where the agent writes a steer's own
+  /// `display_kind: "steer"` row (after the newest tool result). With the prompt not found,
+  /// only the trailing user run (desktop `latestUserRun`), so an older identical message
+  /// can't hide a fresh steer.
+  private static func persistedSteerTexts(
+    in history: IdentifiedArrayOf<ChatRow>, inflightUser: String?
+  ) -> [String] {
+    let prompt = inflightUser.map(normalizedText)
+    var texts: [String] = []
+    var trailingRun: [String]?
+    for row in history.reversed() {
+      guard case let .message(role, text, _) = row.kind else { continue }
+      if role != .user {
+        if trailingRun == nil { trailingRun = texts }
+        continue
+      }
+      let key = normalizedText(text)
+      if key == prompt { return texts }
+      texts.append(key)
+    }
+    return trailingRun ?? texts
+  }
+
+  /// The `inflight.corrections` with no bubble yet: minus the `taken` texts (held bubbles and
+  /// persisted steer rows), one-for-one (desktop `persistedInLatestRun`).
+  private static func unheldCorrections(_ corrections: [String], taken: [String]) -> [String] {
+    var taken = taken
+    return corrections.filter { text in
+      guard let index = taken.firstIndex(of: normalizedText(text)) else { return true }
+      taken.remove(at: index)
+      return false
+    }
+  }
+
   /// The assistant `.message` texts of the CURRENT turn (rows after the last user row).
   private static func turnAssistantTexts(in transcript: IdentifiedArrayOf<ChatRow>) -> [String] {
     var texts: [String] = []
@@ -4370,7 +4498,7 @@ public struct ChatFeature {
     // so subsequent `tool.*` / `reasoning.delta` events reconcile in place. A COMPLETED turn
     // (`running == false`) keeps the strict server-wins behavior: no preserved live rows leak
     // into a finished transcript.
-    let preserved = running ? capturePreservedLiveRows(state) : PreservedLiveRows()
+    var preserved = running ? capturePreservedLiveRows(state) : PreservedLiveRows()
     let openReasoningID = state.reasoningRowID
 
     // Rebuild the transcript wholesale from the authoritative history (server wins).
@@ -4387,6 +4515,17 @@ public struct ChatFeature {
     // so the next `message.delta` mutates it in place under the same id.
     var seededStreamingRow: ChatRow?
     var seedSlot = 0
+    // Accepted steers: a held bubble the history now carries (its `display_kind: "steer"`
+    // row) is dropped, and `inflight.corrections` with no bubble either way get one below.
+    let persistedSteers = Self.persistedSteerTexts(in: state.transcript, inflightUser: response.inflight?.user)
+    var unmatchedPersisted = persistedSteers
+    preserved.dropCorrections(persistedIn: &unmatchedPersisted)
+    var unheldCorrections: [String] = []
+    if let inflight = response.inflight {
+      unheldCorrections = Self.unheldCorrections(
+        inflight.corrections, taken: preserved.correctionTexts.map(Self.normalizedText) + persistedSteers
+      )
+    }
     if let inflight = response.inflight {
       // A turn Hermes started itself (#124: a process completion, a resumed turn) carries its
       // notice's model-facing text in `user`: seed the notice's status line, or nothing for a
@@ -4431,8 +4570,17 @@ public struct ChatFeature {
       // next delta opens it there lazily), while an older agent's unsegmented text keeps its
       // place right after the prompt.
       let sealedTexts = preserved.sealedTexts
-      let assistant = Self.textAfterSealedSegments(inflight.assistant ?? "", sealed: sealedTexts)
-      let followsSeal = !sealedTexts.isEmpty
+      var assistant = Self.textAfterSealedSegments(inflight.assistant ?? "", sealed: sealedTexts)
+      // A cold hydrate (no live rows held) places each steer where it arrived, sealing the
+      // output streamed before it (desktop's `correction_offsets` split); the rest seeds.
+      if preserved.rows.isEmpty, unheldCorrections == inflight.corrections,
+         let offsets = inflight.correctionOffsets {
+        assistant = appendCorrectionSplit(
+          assistant, corrections: inflight.corrections, offsets: offsets, into: &state
+        )
+        unheldCorrections = []
+      }
+      let followsSeal = !sealedTexts.isEmpty || !preserved.correctionTexts.isEmpty
       seedSlot = preserved.streamingSlot ?? (followsSeal ? preserved.rows.count : 0)
       if inflight.streaming == true || !assistant.isEmpty,
          !(followsSeal && assistant.isEmpty && preserved.streamingSlot == nil) {
@@ -4457,6 +4605,11 @@ public struct ChatFeature {
       preserved.rows, seed: seededStreamingRow, slot: seedSlot, openReasoningID: openReasoningID,
       into: &state
     )
+    // Steers made elsewhere (another client, or before a relaunch) with no arrival offsets to
+    // place them by follow the live output, desktop's fallback order.
+    for text in unheldCorrections {
+      appendCorrectionRow(text, deterministic: true, into: &state)
+    }
 
     // Reconcile the live turn elapsed timer from the client-persisted turn-start anchor
     // against the authoritative `running` flag. `running` decides *whether* the timer runs;
@@ -4525,12 +4678,40 @@ public struct ChatFeature {
       case reasoning
       /// A sealed interim segment (`liveCommentaryRowIDs`).
       case commentary
+      /// An accepted steer's user bubble (`liveCorrectionRowIDs`).
+      case correction
     }
 
     var rows: [(tracking: Tracking, row: ChatRow)] = []
     /// Where the client's streaming row sat among `rows` (how many precede it), so the
     /// re-seeded streaming row goes back there.
     var streamingSlot: Int?
+
+    /// Drop the held steer bubbles the history now carries (consuming each match once),
+    /// keeping `streamingSlot` on the same row.
+    mutating func dropCorrections(persistedIn persisted: inout [String]) {
+      var kept: [(tracking: Tracking, row: ChatRow)] = []
+      var slot = streamingSlot
+      for (index, entry) in rows.enumerated() {
+        if case .correction = entry.tracking, case let .message(_, text, _) = entry.row.kind,
+           let match = persisted.firstIndex(of: ChatFeature.normalizedText(text)) {
+          persisted.remove(at: match)
+          if let current = slot, index < streamingSlot ?? 0 { slot = current - 1 }
+          continue
+        }
+        kept.append(entry)
+      }
+      rows = kept
+      streamingSlot = slot
+    }
+
+    /// The accepted steers' texts, in order.
+    var correctionTexts: [String] {
+      rows.compactMap { tracking, row in
+        guard case .correction = tracking, case let .message(_, text, _) = row.kind else { return nil }
+        return text
+      }
+    }
 
     /// The sealed commentary texts, in order.
     var sealedTexts: [String] {
@@ -4554,6 +4735,8 @@ public struct ChatFeature {
         preserved.rows.append((.reasoning, row))
       } else if state.liveCommentaryRowIDs.contains(row.id) {
         preserved.rows.append((.commentary, row))
+      } else if state.liveCorrectionRowIDs.contains(row.id) {
+        preserved.rows.append((.correction, row))
       }
     }
     return preserved
@@ -4587,6 +4770,8 @@ public struct ChatFeature {
         if row.id == openReasoningID { state.reasoningRowID = row.id }
       case .commentary:
         state.liveCommentaryRowIDs.insert(row.id)
+      case .correction:
+        state.liveCorrectionRowIDs.insert(row.id)
       }
     }
     if let seed { state.transcript.append(seed) }
@@ -4736,6 +4921,7 @@ public struct ChatFeature {
     state.toolRowIDs = [:]
     state.liveReasoningRowIDs = []
     state.liveCommentaryRowIDs = []
+    state.liveCorrectionRowIDs = []
   }
 
   /// The authoritative "not running" verdict: no live turn, no timer, no label/status.
@@ -5092,8 +5278,11 @@ public struct ChatFeature {
     // be running. The hydrate that follows every fold is the only trustworthy idle edge.
     // While the read itself is pending, a `prompt.submit` would attach the socket mid-read.
     guard !state.isFoldingReplay, !state.isReplayReadPending else { return .none }
+    // A steer in flight holds the whole queue: firing the entry behind it first would reorder
+    // the queue, and a `rejected` steer must still drain ahead of it.
     guard !state.queuedPrompts.isEmpty,
           state.drainingEntry == nil,
+          state.steeringEntryID == nil,
           !state.isSending, !state.slashExecInFlight,
           state.pendingInteraction == nil,
           !state.isBranching,
@@ -5137,6 +5326,73 @@ public struct ChatFeature {
       state.transcript.remove(id: rowID)
     }
     state.drainingRowID = nil
+  }
+
+  /// An accepted steer (desktop `sealAcceptedCorrection`): the live output already on screen
+  /// is sealed above the correction (a non-empty streaming row completes and becomes live
+  /// commentary, so later deltas open a new row below and a running hydrate keeps it), then
+  /// the user's bubble is echoed. A reply the seal turns into a counted final reply is
+  /// consumed: sealed commentary is never read aloud (#74).
+  private func appendAcceptedSteer(_ text: String, into state: inout State) {
+    let repliesBefore = state.completedReplyCount
+    if let id = state.streamingRowID, case let .message(role, streamed, _) = state.transcript[id: id]?.kind {
+      if streamed.trimmedNonEmpty == nil {
+        state.transcript.remove(id: id)
+      } else {
+        state.transcript[id: id]?.kind = .message(role: role, text: streamed, isComplete: true)
+        state.liveCommentaryRowIDs.insert(id)
+      }
+    }
+    state.streamingRowID = nil
+    closeReasoningBurst(into: &state)
+    let rowID = uuid()
+    let wasAtBottomWindow = state.windowStart >= State.bottomWindowStart(count: state.transcript.count)
+    state.transcript.append(ChatRow(
+      id: rowID, kind: .message(role: .user, text: text, isComplete: true), timestamp: now
+    ))
+    state.liveCorrectionRowIDs.insert(rowID)
+    maintainWindowAfterStreaming(wasAtBottomWindow: wasAtBottomWindow, into: &state)
+    consumeRepliesFinishedSince(repliesBefore, into: &state)
+  }
+
+  /// An accepted steer's user bubble, tracked so a running hydrate keeps it. A hydrate's rows
+  /// take the position-derived id (stable across repeated hydrates).
+  private func appendCorrectionRow(_ text: String, deterministic: Bool, into state: inout State) {
+    let kind = ChatRow.Kind.message(role: .user, text: text, isComplete: true)
+    var id = deterministic
+      ? ChatRow.deterministicID(
+        sequenceIndex: state.transcript.count, role: kind.role, kindDiscriminator: kind.discriminator
+      )
+      : uuid()
+    if state.transcript[id: id] != nil { id = uuid() }
+    state.transcript.append(ChatRow(id: id, kind: kind, timestamp: deterministic ? nil : now))
+    state.liveCorrectionRowIDs.insert(id)
+  }
+
+  /// Splits the in-flight `assistant` at each correction's offset (clamped, monotonic): the
+  /// output before it becomes sealed commentary, then the correction bubble. Returns the tail.
+  private func appendCorrectionSplit(
+    _ assistant: String, corrections: [String], offsets: [Int], into state: inout State
+  ) -> String {
+    // Offsets are Python `len` (code points), so slice on Unicode scalars.
+    let scalars = Array(assistant.unicodeScalars)
+    var cursor = 0
+    for (text, offset) in zip(corrections, offsets) {
+      let boundary = min(max(offset, cursor), scalars.count)
+      let segment = String(String.UnicodeScalarView(scalars[cursor..<boundary]))
+      if segment.trimmedNonEmpty != nil {
+        let kind = ChatRow.Kind.message(role: .assistant, text: segment, isComplete: true)
+        var id = ChatRow.deterministicID(
+          sequenceIndex: state.transcript.count, role: kind.role, kindDiscriminator: kind.discriminator
+        )
+        if state.transcript[id: id] != nil { id = uuid() }
+        state.transcript.append(ChatRow(id: id, kind: kind))
+        state.liveCommentaryRowIDs.insert(id)
+      }
+      cursor = boundary
+      appendCorrectionRow(text, deterministic: true, into: &state)
+    }
+    return String(String(String.UnicodeScalarView(scalars[cursor...])).drop(while: \.isWhitespace))
   }
 
   /// The drained entry's submit demonstrably reached the server (`message.start`, a turn
@@ -5307,6 +5563,48 @@ public struct ChatFeature {
 
 private func backoffDelay(attempt: Int) -> Duration {
   .seconds(min(30.0, pow(2.0, Double(max(0, attempt - 1)))))
+}
+
+/// The `session.steer` round-trip for Steer now. Its #17 heal is RESUME-ONLY: a stale live id
+/// re-resumes the stored session (no seed, never a create) and replays once. With no
+/// stored id (a new chat, an attached branch) there is no turn to reach, so the steer is
+/// undelivered and the entry stays queued — never a `session.create` that would rebind the
+/// chat away from the turn being corrected.
+private func steerQueuedEntry(
+  text: String, sessionID: String, storedSessionID: String?, profile: String?,
+  gateway: HermesGatewayClient, send: Send<ChatFeature.Action>
+) async -> SteerOutcome {
+  func steer(_ targetID: String) async throws -> JSONValue {
+    try await gateway.send(
+      "session.steer", .object(["session_id": .string(targetID), "text": .string(text)])
+    )
+  }
+  do {
+    do {
+      return SteerOutcome(result: try await steer(sessionID))
+    } catch let error as GatewayError where error.isSessionNotFound {
+      guard let storedSessionID else { return .undelivered }
+      var fields: [String: JSONValue] = ["session_id": .string(storedSessionID)]
+      if let profile { fields["profile"] = .string(profile) }
+      let resumed: JSONValue
+      do {
+        resumed = try await gateway.send("session.resume", .object(fields))
+      } catch let error as GatewayError where error.isSessionNotFound {
+        return .undelivered // no stored row either: nothing running to steer
+      }
+      guard let response = resumed.decoded(ActivateResponse.self), !response.sessionID.isEmpty else {
+        return .failed(.server("Malformed session.resume result"))
+      }
+      await send(.liveSessionIDRefreshed(
+        liveSessionID: response.sessionID, storedSessionID: response.storedSessionID
+      ))
+      return SteerOutcome(result: try await steer(response.sessionID))
+    }
+  } catch let error as GatewayError {
+    return SteerOutcome(error: error)
+  } catch {
+    return .failed(.disconnected)
+  }
 }
 
 /// Self-heal an outbound RPC that failed with "session not found" (#17): obtain a FRESH live
