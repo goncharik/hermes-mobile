@@ -42,12 +42,14 @@ public struct SessionCardContent: Equatable, Sendable {
 }
 
 extension Session {
-  /// The card header's workspace label: the folder basename of `cwd`, else "No workspace".
-  /// Mirrors desktop `baseName(path) || path` (root "/" has no basename, so the path itself
-  /// is shown).
-  public var workspaceLabel: String {
+  /// The card header's workspace label: `workspaceName`, else "No workspace".
+  public var workspaceLabel: String { workspaceName ?? "No workspace" }
+
+  /// The folder basename of `cwd`, or `nil` when `cwd` is missing or blank. Mirrors desktop
+  /// `baseName(path) || path` (root "/" has no basename, so the path itself is shown).
+  public var workspaceName: String? {
     guard let path = cwd?.trimmingCharacters(in: .whitespaces), !path.isEmpty else {
-      return "No workspace"
+      return nil
     }
     let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
     if let base = trimmed.split(separator: "/").last, !base.isEmpty {

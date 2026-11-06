@@ -28,8 +28,8 @@ public struct AgentStatusProjection: Equatable, Sendable {
     rows.first.flatMap { Self.isActive($0) ? $0 : nil }
   }
 
-  /// Builds the projection, or `nil` ("unknown") while there is no unfiltered list yet — a
-  /// cached guess must never start anything, so the surfaces hold until the first fetch.
+  /// Builds the projection from a known unfiltered list (an empty one included). "Unknown" —
+  /// no unfiltered list yet — is decided before this, by `AppFeature.State.agentStatusInputs`.
   ///
   /// - Parameters:
   ///   - sessions: the list's unfiltered rows (`SessionListFeature.State.statusSessions`).
@@ -43,14 +43,14 @@ public struct AgentStatusProjection: Equatable, Sendable {
   ///   - showsTitles: the "Show session titles" pref.
   ///   - profile: the list's wire profile, stamped on every row for the `openSession` link.
   public static func make(
-    sessions: [Session]?,
+    sessions: [Session],
     needsInput: Set<String>,
     slotRunning: (id: String, running: Bool)?,
     slotSession: Session? = nil,
     showsTitles: Bool,
     profile: String?
-  ) -> AgentStatusProjection? {
-    guard var sessions else { return nil }
+  ) -> AgentStatusProjection {
+    var sessions = sessions
     if let slotSession, let slotRunning, slotSession.id == slotRunning.id,
       slotRunning.running || needsInput.contains(slotSession.id),
       !sessions.contains(where: { $0.id == slotSession.id }) {
@@ -72,8 +72,7 @@ public struct AgentStatusProjection: Equatable, Sendable {
         return (offset: offset, row: WidgetSessionRow(
           id: session.id,
           title: session.displayName,
-          workspace: session.cwd?.trimmingCharacters(in: .whitespaces).isEmpty == false
-            ? session.workspaceLabel : nil,
+          workspace: session.workspaceName,
           status: status,
           updatedAt: session.updatedAt,
           profile: profile

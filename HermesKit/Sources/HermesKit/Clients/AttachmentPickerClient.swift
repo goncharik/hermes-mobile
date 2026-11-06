@@ -94,15 +94,20 @@ public extension DependencyValues {
     return top
   }
 
-  /// Waits (up to ~2 s) for the top view controller to finish a transition. A picker raised by
-  /// a widget's launch action runs at the chat's first `.task` — during the push, or right
-  /// after the launch dismissed a sheet — when UIKit would refuse the presentation.
+  /// How long `settlePresentation` waits for a transition at most, and how often it checks.
+  private let settleTimeout: Duration = .seconds(2)
+  private let settleInterval: Duration = .milliseconds(50)
+
+  /// Waits (up to `settleTimeout`) for the top view controller to finish a transition. A
+  /// picker raised by a widget's launch action runs at the chat's first `.task` — during the
+  /// push, or right after the launch dismissed a sheet — when UIKit would refuse the
+  /// presentation.
   @MainActor
   private func settlePresentation() async {
-    for _ in 0..<40 {
+    for _ in 0..<Int(settleTimeout / settleInterval) {
       guard let top = topViewController() else { return }
       if top.transitionCoordinator == nil, !top.isBeingPresented, !top.isBeingDismissed { return }
-      try? await Task.sleep(for: .milliseconds(50))
+      try? await Task.sleep(for: settleInterval)
     }
   }
 

@@ -26,7 +26,7 @@ struct SessionsTimelineProvider: TimelineProvider {
 
   func getTimeline(in context: Context, completion: @escaping (Timeline<SessionsEntry>) -> Void) {
     let snapshot = Self.readMirror()
-    let entries = WidgetStaleness.timelineDates(for: snapshot, now: .now)
+    let entries = WidgetStaleness.timelineDates(for: snapshot, at: .now)
       .map { SessionsEntry(date: $0, snapshot: snapshot) }
     completion(Timeline(entries: entries, policy: .never))
   }

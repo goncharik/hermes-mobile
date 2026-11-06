@@ -18,7 +18,7 @@ struct AgentStatusProjectionTests {
   }
 
   private func make(
-    _ sessions: [Session]?,
+    _ sessions: [Session],
     needsInput: Set<String> = [],
     slotRunning: (id: String, running: Bool)? = nil,
     slotSession: Session? = nil,
@@ -31,9 +31,9 @@ struct AgentStatusProjectionTests {
     )
   }
 
-  @Test func nilBeforeTheFirstFetch() {
-    #expect(make(nil) == nil)
-    // An empty unfiltered list is known — not "unknown".
+  @Test func emptyListIsKnown() {
+    // An empty unfiltered list is known — not "unknown" (that is `agentStatusInputs`' call,
+    // `AppAgentStatusTests.nilWithoutHomeOrBeforeTheFirstUnfilteredFetch`).
     expectNoDifference(
       make([]),
       AgentStatusProjection(rows: [], activeCount: 0, showsTitles: true)

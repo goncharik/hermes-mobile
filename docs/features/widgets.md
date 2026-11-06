@@ -143,7 +143,7 @@ no timestamps, so its edge fires only on a real change. Built by
   a projection change: the Live Activity drops the title, the Home Screen widgets don't.
 
 **One `.onChange(of: \.agentStatus)`** in `AppFeature`, evaluated after every child reducer
-(same pattern as `offersQuickActions`), drives both surfaces: `syncSurfaces` (the mirror) and
+(same pattern as `offersQuickActions`), drives both surfaces: `syncMirror` and
 `syncLiveActivity` (the activity). A `nil` projection HOLDS: write nothing, never end. Only a
 logout clears. Never add a writer in `SessionListFeature` or `ChatFeature`.
 
@@ -154,7 +154,7 @@ source: a `WidgetSessionSnapshot` JSON file (`AppGroup.snapshotFileURL()`,
 `widget-sessions.json`) in the App Group container.
 
 - **Writes**: debounced 1 s on `continuousClock` (`surfacesSyncDebounce`), last-wins under
-  `CancelID.surfacesSync`, so a list fetch landing next to a slot's running flip is one write.
+  `CancelID.mirrorSync`, so a list fetch landing next to a slot's running flip is one write.
   Each write reloads the sessions widget's timelines (`AppGroup.sessionsWidgetKind`). The file
   is written `.atomic`, so the widget never reads a torn file. A failed write is only
   debug-logged: the mirror is a non-authoritative cache the next change rewrites.

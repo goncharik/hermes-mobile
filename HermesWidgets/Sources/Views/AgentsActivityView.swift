@@ -111,6 +111,8 @@ struct AgentsActivityCompactTrailing: View {
 }
 
 extension AgentActivityContent.DisplayStatus {
+  /// The one status colour table (the session list's status dots), for the activity and the
+  /// sessions widget's row glyphs alike.
   var color: Color {
     switch self {
     case .working: .blue

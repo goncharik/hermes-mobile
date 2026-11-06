@@ -112,7 +112,7 @@ public struct AppFeature {
     var liveActivityRequests = 0
     /// The running Live Activity's ActivityKit id (`nil` while none is up or its start is
     /// still in flight).
-    public var liveActivityID: String? { liveActivity?.id }
+    var liveActivityID: String? { liveActivity?.id }
     /// Until when the widget mirror may vouch for working / needs-input while backgrounded:
     /// stamped by the `.background` edge (`now` + the running slot's ~30 s grace + a margin)
     /// and reused by every write until `.active` clears it, so a change during the grace can't
@@ -281,7 +281,7 @@ public struct AppFeature {
     var showsTitles: Bool
     var profile: String?
 
-    var projection: AgentStatusProjection? {
+    var projection: AgentStatusProjection {
       AgentStatusProjection.make(
         sessions: Array(sessions),
         needsInput: needsInput,
@@ -403,10 +403,10 @@ public struct AppFeature {
   }
 
   /// Ids for the long-running incoming-tap and launch-intent observers, the
-  /// background-grace listener, the chat menu's session removals, the widget-surfaces sync
-  /// and the Live Activity's debounced update / end (both debounced, last-wins).
+  /// background-grace listener, the chat menu's session removals, the widget-mirror write and
+  /// the Live Activity's debounced update / end (both debounced, last-wins).
   private enum CancelID {
-    case backgroundGrace, launchIntents, pushTaps, sessionRemovals, surfacesSync
+    case backgroundGrace, launchIntents, pushTaps, sessionRemovals, mirrorSync
     case liveActivitySync
   }
 
@@ -627,9 +627,10 @@ public struct AppFeature {
             if let id = state.liveActivity?.id, !liveActivity.isActive(id) {
               state.liveActivity = nil
             }
+            let status = state.agentStatus
             surfaces = .merge(
-              syncSurfaces(state, debounced: false),
-              syncLiveActivity(&state, .restamp)
+              syncMirror(status, state, debounced: false),
+              syncLiveActivity(status, &state, .restamp)
             )
           }
           return .merge(
@@ -657,15 +658,15 @@ public struct AppFeature {
           // observe: the grace window of a running slot plus a margin. Written NOW, not
           // debounced — an idle app may be suspended within seconds.
           var surfaces: Effect<Action> = .none
-          if state.agentStatus != nil {
+          if let status = state.agentStatus {
             var freshFor = Self.backgroundFreshnessMargin
             if state.liveChat?.isRunning == true { freshFor += Self.backgroundGraceFreshness }
             state.backgroundFreshUntil = date.now.addingTimeInterval(freshFor)
             // The Live Activity goes "Outdated" at the same instant (`staleDate`); no start
             // from here — `Activity.request` is foreground-only.
             surfaces = .merge(
-              syncSurfaces(state, debounced: false),
-              syncLiveActivity(&state, .restamp)
+              syncMirror(status, state, debounced: false),
+              syncLiveActivity(status, &state, .restamp)
             )
           }
           guard let chat = state.liveChat else { return surfaces }
@@ -1129,7 +1130,7 @@ public struct AppFeature {
         return .none
 
       case .liveActivitySyncDue:
-        return syncLiveActivity(&state, .immediate)
+        return syncLiveActivity(state.agentStatus, &state, .immediate)
 
       case let .liveActivityStarted(id, request):
         // Adopt the id only for the seat this request took. No seat (the toggle went off or
@@ -1142,8 +1143,9 @@ public struct AppFeature {
         // Catch up with whatever changed while the request was in flight (changes skip a seat
         // without an id). A background edge, or the projection going unknown, during the
         // request moved the stale date too.
-        let restamp = state.isSceneBackgrounded || state.agentStatus == nil
-        return syncLiveActivity(&state, restamp ? .restamp : .immediate)
+        let status = state.agentStatus
+        let restamp = state.isSceneBackgrounded || status == nil
+        return syncLiveActivity(status, &state, restamp ? .restamp : .immediate)
 
       case let .liveActivityStartFailed(request):
         // Free the seat so the next change may try again; the failure is only debug-logged.
@@ -1236,15 +1238,15 @@ public struct AppFeature {
             writeMirror(
               rows: previous.rows, freshUntil: unknownFreshUntil(state), debounced: false
             ),
-            syncLiveActivity(&state, .restamp)
+            syncLiveActivity(nil, &state, .restamp)
           )
         }
         guard status != previous else { return .none }
         // Back from unknown, the activity's stale date was shortened: restamp it even when
         // its content didn't change.
         return .merge(
-          syncSurfaces(state, debounced: true),
-          syncLiveActivity(&state, previous == nil ? .restamp : .debounced)
+          syncMirror(status, state, debounced: true),
+          syncLiveActivity(status, &state, previous == nil ? .restamp : .debounced)
         )
       }
     }
@@ -1278,10 +1280,11 @@ public struct AppFeature {
         .run { [liveActivity] _ in await liveActivity.endAll() }
       )
     }
-    return syncLiveActivity(&state, .immediate)
+    return syncLiveActivity(state.agentStatus, &state, .immediate)
   }
 
-  /// Drives the aggregate Live Activity from `state.agentStatus` (#138). `nil` (unknown) holds
+  /// Drives the aggregate Live Activity from `status`, the caller's `state.agentStatus` (#138),
+  /// so a caller that already built the projection doesn't build it again. `nil` (unknown) holds
   /// the content; only a `restamp` acts on it, shortening the stale date (`unknownFreshUntil`).
   /// - No activity and agents active → start one, only while the pref is on, the scene is in
   ///   the foreground and iOS allows activities; the seat is taken at once (id pending, a fresh
@@ -1295,8 +1298,10 @@ public struct AppFeature {
   ///   after `liveActivityDismissal`.
   /// The edge debounces the update / end (`LiveActivitySync.debounced`); the stale date is
   /// `freshUntil`, the same promise as the widget mirror.
-  private func syncLiveActivity(_ state: inout State, _ mode: LiveActivitySync) -> Effect<Action> {
-    guard let status = state.agentStatus else {
+  private func syncLiveActivity(
+    _ status: AgentStatusProjection?, _ state: inout State, _ mode: LiveActivitySync
+  ) -> Effect<Action> {
+    guard let status else {
       guard mode == .restamp, let seat = state.liveActivity, let id = seat.id else {
         return .none
       }
@@ -1357,20 +1362,23 @@ public struct AppFeature {
     )
   }
 
-  /// Writes `state.agentStatus` into the widget mirror and reloads the sessions widget, stamped
-  /// with how long the app can vouch for it: `backgroundFreshUntil` while backgrounded (a
-  /// change during the grace window must not extend the promise; `now` + the margin when the
-  /// background edge had nothing to stamp), else `now` + `foregroundFreshness`. Last-wins under
-  /// `CancelID.surfacesSync`: `debounced` waits `surfacesSyncDebounce` first, so a burst
+  /// Writes `status` (the caller's `state.agentStatus`) into the widget mirror and reloads the
+  /// sessions widget, stamped with how long the app can vouch for it: `backgroundFreshUntil`
+  /// while backgrounded (a change during the grace window must not extend the promise; `now` +
+  /// the margin when the background edge had nothing to stamp), else `now` +
+  /// `foregroundFreshness`. Last-wins under
+  /// `CancelID.mirrorSync`: `debounced` waits `surfacesSyncDebounce` first, so a burst
   /// coalesces into one write; the scene edges write at once and supersede a pending one. A
   /// `nil` projection writes nothing. A failed write is only logged — the mirror is a
   /// non-authoritative cache the next change rewrites.
-  private func syncSurfaces(_ state: State, debounced: Bool) -> Effect<Action> {
-    guard let status = state.agentStatus else { return .none }
+  private func syncMirror(
+    _ status: AgentStatusProjection?, _ state: State, debounced: Bool
+  ) -> Effect<Action> {
+    guard let status else { return .none }
     return writeMirror(rows: status.rows, freshUntil: freshUntil(state), debounced: debounced)
   }
 
-  /// `syncSurfaces`' write, for explicit rows and promise (the unknown edge re-sends the last
+  /// `syncMirror`'s write, for explicit rows and promise (the unknown edge re-sends the last
   /// known rows with a short one).
   private func writeMirror(
     rows: [WidgetSessionRow], freshUntil: Date, debounced: Bool
@@ -1385,7 +1393,7 @@ public struct AppFeature {
       }
       widgetMirror.reloadTimelines()
     }
-    .cancellable(id: CancelID.surfacesSync, cancelInFlight: true)
+    .cancellable(id: CancelID.mirrorSync, cancelInFlight: true)
   }
 
   /// The logout half of the surfaces: replace the mirror with the signed-out snapshot and
@@ -1403,7 +1411,7 @@ public struct AppFeature {
         }
         widgetMirror.reloadTimelines()
       }
-      .cancellable(id: CancelID.surfacesSync, cancelInFlight: true),
+      .cancellable(id: CancelID.mirrorSync, cancelInFlight: true),
       .cancel(id: CancelID.liveActivitySync),
       .run { [liveActivity] _ in await liveActivity.endAll() }
     )
@@ -1720,7 +1728,7 @@ public struct AppFeature {
   /// patches (glow, unread) that match by session id: a chat opened before the profiles
   /// probe answered carries `nil` while the list moved on to the literal `"default"` (#114).
   /// The reseat paths compare WIRE values instead — a `nil` seat must be re-created scoped.
-  static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
+  private static func isSameProfile(_ lhs: String?, _ rhs: String?) -> Bool {
     (lhs ?? SessionListFeature.State.defaultProfileName)
       == (rhs ?? SessionListFeature.State.defaultProfileName)
   }
@@ -2154,16 +2162,5 @@ public struct AppFeature {
         bearerTokens.clear(claim: claim)
       }
     )
-  }
-}
-
-extension ChatFeature.State {
-  /// The text of the first user message in the transcript — a new chat's stand-in title (the
-  /// list's preview) until the server names it.
-  var firstUserMessageText: String? {
-    for row in transcript {
-      if case let .message(.user, text, _) = row.kind { return text }
-    }
-    return nil
   }
 }

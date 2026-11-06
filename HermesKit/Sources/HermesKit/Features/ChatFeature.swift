@@ -402,6 +402,14 @@ public struct ChatFeature {
       return false
     }
 
+    /// The text of the first user message in the transcript — a new chat's stand-in title (the
+    /// list's preview) until the server names it.
+    var firstUserMessageText: String? {
+      guard case let .message(.user, text, _) = transcript.first(where: Self.isUserMessage)?.kind
+      else { return nil }
+      return text
+    }
+
     /// The turn `rowID` belongs to: how many user message rows precede it. Survives a
     /// hydrate's rebuild, which renames rows and may split one live assistant row in several.
     func turnOrdinal(of rowID: ChatRow.ID) -> Int? {

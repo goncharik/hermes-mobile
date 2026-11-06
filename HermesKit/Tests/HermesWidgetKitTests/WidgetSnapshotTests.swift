@@ -92,22 +92,26 @@ struct WidgetSnapshotTests {
   }
 
   @Test(arguments: [
-    (SessionStatus.needsInput, WidgetStaleness.RowGlyph.needsInput, WidgetStaleness.RowGlyph.outdated),
+    (
+      SessionStatus.needsInput,
+      AgentActivityContent.DisplayStatus?.some(.needsInput),
+      AgentActivityContent.DisplayStatus?.some(.outdated)
+    ),
     (.working, .working, .outdated),
-    (.unread, .none, .none),
-    (.idle, .none, .none),
+    (.unread, nil, nil),
+    (.idle, nil, nil),
   ])
   func rowGlyphMapping(
     status: SessionStatus,
-    fresh: WidgetStaleness.RowGlyph,
-    stale: WidgetStaleness.RowGlyph
+    fresh: AgentActivityContent.DisplayStatus?,
+    stale: AgentActivityContent.DisplayStatus?
   ) {
     let row = Self.row("a", status)
     let before = Self.freshUntil.addingTimeInterval(-60)
-    #expect(WidgetStaleness.displayStatus(row, snapshot: Self.snapshot, at: before) == fresh)
-    #expect(WidgetStaleness.displayStatus(row, snapshot: Self.snapshot, at: Self.freshUntil) == stale)
+    #expect(WidgetStaleness.glyph(for: row, snapshot: Self.snapshot, at: before) == fresh)
+    #expect(WidgetStaleness.glyph(for: row, snapshot: Self.snapshot, at: Self.freshUntil) == stale)
     #expect(
-      WidgetStaleness.displayStatus(row, snapshot: Self.snapshot, at: Self.freshUntil + 60) == stale
+      WidgetStaleness.glyph(for: row, snapshot: Self.snapshot, at: Self.freshUntil + 60) == stale
     )
   }
 
@@ -115,17 +119,17 @@ struct WidgetSnapshotTests {
 
   @Test func timelineSchedulesOutdatedEntryWhileFresh() {
     let now = Self.freshUntil.addingTimeInterval(-30)
-    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, now: now) == [now, Self.freshUntil])
+    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, at: now) == [now, Self.freshUntil])
   }
 
   @Test func timelineHasOneEntryOnceOutdated() {
     #expect(
-      WidgetStaleness.timelineDates(for: Self.snapshot, now: Self.freshUntil) == [Self.freshUntil]
+      WidgetStaleness.timelineDates(for: Self.snapshot, at: Self.freshUntil) == [Self.freshUntil]
     )
     let later = Self.freshUntil.addingTimeInterval(60)
-    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, now: later) == [later])
+    #expect(WidgetStaleness.timelineDates(for: Self.snapshot, at: later) == [later])
     let signedOut = Date(timeIntervalSinceReferenceDate: 1)
-    #expect(WidgetStaleness.timelineDates(for: .signedOut, now: signedOut) == [signedOut])
+    #expect(WidgetStaleness.timelineDates(for: .signedOut, at: signedOut) == [signedOut])
   }
 
   // MARK: Reading the mirror

@@ -82,9 +82,13 @@ enum DemoMode {
     // one: the demo store never observes the intent stream (the app still just opens).
     deps.launchIntents.incoming = { AsyncStream { _ in } }
     // The seeded rows must not overwrite the real widget mirror, nor start a Live Activity
-    // (already "Outdated" under the pinned date) in a capture.
-    deps.widgetMirror = .testValue
-    deps.liveActivity = .testValue
+    // (already "Outdated" under the pinned date) in a capture. Activities still read as
+    // allowed, so Settings shows its normal footer, not the "turned off in iOS Settings" one
+    // (a start then fails quietly).
+    deps.widgetMirror = .noop
+    var liveActivity = LiveActivityClient.noop
+    liveActivity.areActivitiesEnabled = { true }
+    deps.liveActivity = liveActivity
   }
 
   private static var demoPreferences: PreferencesClient {

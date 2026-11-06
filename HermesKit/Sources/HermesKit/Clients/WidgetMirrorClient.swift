@@ -25,13 +25,16 @@ public struct WidgetMirrorUnavailable: Error, Equatable, Sendable {
 }
 
 extension WidgetMirrorClient: DependencyKey {
-  /// No-op double (the project convention for fire-and-forget surface clients, like
+  /// Writes nothing: the off-device live value and demo mode's.
+  public static var noop: WidgetMirrorClient {
+    WidgetMirrorClient(write: { _ in }, clear: {}, reloadTimelines: {})
+  }
+
+  /// `noop` (the project convention for fire-and-forget surface clients, like
   /// `QuickActionsClient`): every logout and every list fetch reaches this client, so an
   /// unimplemented default would fail every test that crosses one. Override with a recorder to
   /// assert the writes.
-  public static var testValue: WidgetMirrorClient {
-    WidgetMirrorClient(write: { _ in }, clear: {}, reloadTimelines: {})
-  }
+  public static var testValue: WidgetMirrorClient { .noop }
 
   /// The mirror as a JSON file at `fileURL` (`nil` → every write throws
   /// `WidgetMirrorUnavailable`). Atomic writes, so the widget never reads a torn file. The
@@ -73,7 +76,7 @@ public extension DependencyValues {
   }
 #else
   extension WidgetMirrorClient {
-    /// No widgets off-device (macOS `swift test`): the no-op double.
-    public static var liveValue: WidgetMirrorClient { testValue }
+    /// No widgets off-device (macOS `swift test`).
+    public static var liveValue: WidgetMirrorClient { .noop }
   }
 #endif

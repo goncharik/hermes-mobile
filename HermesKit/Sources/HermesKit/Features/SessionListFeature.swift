@@ -1367,14 +1367,12 @@ public struct SessionListFeature {
       // MARK: Profiles
 
       case let .profilesResponse(.success(result)):
-        let scopeBefore = state.scopedProfileName
         state.profilesSupported = true
         state.profiles = Self.dedupedProfiles(result)
         // If the persisted selection no longer exists on the server, re-home to default.
         if state.profiles[id: state.selectedProfileName] == nil {
           state.selectedProfileName = Self.State.defaultProfileName
         }
-        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         // Persisted on EVERY successful probe, "default" included: a persisted selection is
         // what `AppFeature.makeHomeState` reads as "this agent has the profiles API", so the
         // next launch scopes chats opened before its own probe answers (#114).
@@ -1386,10 +1384,8 @@ public struct SessionListFeature {
         // Only the 404 verdict withdraws the persisted capability (a transient failure
         // keeps it for the next launch).
         if error == .notFound { preferences.clearSelectedProfileID() }
-        let scopeBefore = state.scopedProfileName
         state.profilesSupported = false
         state.profiles = []
-        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         return load(&state)
 
       case let .profilesRefreshed(result):
@@ -1400,9 +1396,7 @@ public struct SessionListFeature {
       case let .selectProfile(name):
         // No-op when already selected (avoids a redundant refetch / UI reset).
         guard name != state.selectedProfileName else { return .none }
-        let scopeBefore = state.scopedProfileName
         state.selectedProfileName = name
-        resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
         // Reset the list UI on switch (search doesn't carry across profiles).
         state.searchQuery = ""
         // Cron jobs are profile-scoped too: drop the old profile's jobs + peek so the
@@ -1508,9 +1502,7 @@ public struct SessionListFeature {
         state.profiles[id: name] = nil
         // If the deleted profile was active, re-home to default and refetch its sessions.
         if state.selectedProfileName == name {
-          let scopeBefore = state.scopedProfileName
           state.selectedProfileName = Self.State.defaultProfileName
-          resetStatusSessionsIfScopeChanged(&state, from: scopeBefore)
           state.searchQuery = ""
           state.cronJobs = []
           state.expandedCronJobID = nil
@@ -1570,6 +1562,22 @@ public struct SessionListFeature {
       AddProfileFeature()
     }
     .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
+    // A profile switch (a selection, a deleted active profile re-homing to default, the probe
+    // re-homing or withdrawing the scope) makes the old unfiltered rows another profile's:
+    // drop them so the widgets hold ("unknown") until the scoped refetch lands, instead of
+    // projecting the previous profile's sessions. A rename (and its rollback) keeps the same
+    // sessions under a new name, so it keeps them.
+    .onChange(of: \.scopedProfileName) { _, _ in
+      Reduce { state, action in
+        switch action {
+        case .renameProfileButtonTapped, .renameProfileFailed:
+          break
+        default:
+          state.statusSessions = nil
+        }
+        return .none
+      }
+    }
   }
 
   /// Refresh "now" + the section calendar, clear errors, and reload the non-secret persisted
@@ -1621,16 +1629,6 @@ public struct SessionListFeature {
   /// is the backstop). A JUST-CLEARED search is covered by the `isLoading` arm: clearing
   /// the query reloads through `load` (see the `searchQuery` binding), which raises the
   /// flag — the debounced search effect is the only fetch that raises neither.
-  /// A profile switch (a selection, a deleted active profile re-homing to default, the probe
-  /// re-homing or withdrawing the scope) makes the old unfiltered rows another profile's:
-  /// drop them so the widgets hold ("unknown") until the scoped refetch lands, instead of
-  /// projecting the previous profile's sessions. A rename keeps the same sessions, so it
-  /// doesn't go through here.
-  private func resetStatusSessionsIfScopeChanged(_ state: inout State, from scopeBefore: String?) {
-    guard state.scopedProfileName != scopeBefore else { return }
-    state.statusSessions = nil
-  }
-
   private func cancelOrRestartFetch(_ state: inout State) -> Effect<Action> {
     guard state.isLoading || state.isSearching else { return .cancel(id: CancelID.fetch) }
     return load(&state)

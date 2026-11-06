@@ -41,7 +41,8 @@ public struct AgentActivityContent: Codable, Hashable, Sendable {
 // MARK: - Presentation (the Live Activity's wording, kept pure so it is unit-tested)
 
 extension AgentActivityContent {
-  /// The trailing status label the activity shows.
+  /// The trailing status the activity shows — and a sessions widget row
+  /// (`WidgetStaleness.glyph(for:snapshot:at:)`), which never reads `.done`.
   public enum DisplayStatus: Equatable, Sendable {
     case working
     case needsInput

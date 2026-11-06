@@ -64,7 +64,7 @@ struct SessionsWidgetView: View {
         Link(destination: WidgetDeepLink.url(for: .openSession(id: row.id, profile: row.profile))) {
           SessionsWidgetRowView(
             row: row,
-            glyph: WidgetStaleness.displayStatus(row, snapshot: snapshot, at: date),
+            status: WidgetStaleness.glyph(for: row, snapshot: snapshot, at: date),
             relativeTime: relativeTime
           )
         }

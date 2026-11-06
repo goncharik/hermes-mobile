@@ -32,16 +32,16 @@ public struct LiveActivityClient: Sendable {
   public var isActive: @Sendable (_ id: String) -> Bool = { _ in false }
 }
 
-/// Thrown by the test double's `start`: no Live Activities off-device.
+/// Thrown by the no-op client's `start`: no Live Activities off-device.
 public struct LiveActivitiesUnavailable: Error, Equatable, Sendable {
   public init() {}
 }
 
 extension LiveActivityClient: DependencyKey {
-  /// No-op double (like `WidgetMirrorClient`): iOS reports activities as disabled, so the
-  /// reducer never starts one, and every logout's `endAll` is harmless. Override
-  /// `areActivitiesEnabled` and `start` with a recorder to drive the lifecycle.
-  public static var testValue: LiveActivityClient {
+  /// Shows nothing: activities report as disabled and a start throws, so the reducer never
+  /// starts one, and every logout's `endAll` is harmless. The off-device live value, demo
+  /// mode's, and the test double.
+  public static var noop: LiveActivityClient {
     LiveActivityClient(
       areActivitiesEnabled: { false },
       start: { _, _ in throw LiveActivitiesUnavailable() },
@@ -51,6 +51,10 @@ extension LiveActivityClient: DependencyKey {
       isActive: { _ in false }
     )
   }
+
+  /// `noop` (like `WidgetMirrorClient`). Override `areActivitiesEnabled` and `start` with a
+  /// recorder to drive the lifecycle.
+  public static var testValue: LiveActivityClient { .noop }
 }
 
 public extension DependencyValues {
@@ -102,7 +106,7 @@ public extension DependencyValues {
   }
 #else
   extension LiveActivityClient {
-    /// No Live Activities off-device (macOS `swift test`): the no-op double.
-    public static var liveValue: LiveActivityClient { testValue }
+    /// No Live Activities off-device (macOS `swift test`).
+    public static var liveValue: LiveActivityClient { .noop }
   }
 #endif

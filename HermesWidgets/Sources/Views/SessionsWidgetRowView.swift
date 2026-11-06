@@ -33,7 +33,8 @@ enum WidgetRelativeTime {
 /// snapshot tests can render it; the caller wraps it in the row's `Link`.
 struct SessionsWidgetRowView: View {
   let row: WidgetSessionRow
-  let glyph: WidgetStaleness.RowGlyph
+  /// `nil` for an idle or unread row (no glyph).
+  let status: AgentActivityContent.DisplayStatus?
   let relativeTime: WidgetRelativeTime
 
   var body: some View {
@@ -48,7 +49,9 @@ struct SessionsWidgetRowView: View {
         meta
       }
       Spacer(minLength: 0)
-      SessionsWidgetStatusGlyph(glyph: glyph)
+      if let status {
+        SessionsWidgetStatusGlyph(status: status)
+      }
     }
     .accessibilityElement(children: .combine)
   }
@@ -79,28 +82,27 @@ struct SessionsWidgetRowView: View {
   }
 }
 
-/// A row's trailing status: a static spinner-style glyph in blue while working, a yellow
-/// question mark when the turn needs input, a secondary clock once the app can no longer
-/// vouch for either, nothing for an idle row. Colours match the session list's status dots.
+/// A row's trailing status: a static spinner-style glyph while working, a question mark when
+/// the turn needs input, a clock once the app can no longer vouch for either. Label and colour
+/// are the Live Activity's (`DisplayStatus.label` / `.color`).
 struct SessionsWidgetStatusGlyph: View {
-  let glyph: WidgetStaleness.RowGlyph
+  let status: AgentActivityContent.DisplayStatus
 
   var body: some View {
-    if let symbol {
-      Image(systemName: symbol.name)
-        .font(.body.weight(.medium))
-        .foregroundStyle(symbol.color)
-        .widgetAccentable()
-        .accessibilityLabel(symbol.label)
-    }
+    Image(systemName: symbol)
+      .font(.body.weight(.medium))
+      .foregroundStyle(status.color)
+      .widgetAccentable()
+      .accessibilityLabel(status.label)
   }
 
-  private var symbol: (name: String, color: Color, label: String)? {
-    switch glyph {
-    case .working: ("progress.indicator", .blue, "Working")
-    case .needsInput: ("questionmark.circle", .yellow, "Needs input")
-    case .outdated: ("clock", .secondary, "Outdated")
-    case .none: nil
+  private var symbol: String {
+    switch status {
+    case .working: "progress.indicator"
+    case .needsInput: "questionmark.circle"
+    case .outdated: "clock"
+    // Rows never read "Done"; the compact Dynamic Island's checkmark, for totality.
+    case .done: "checkmark"
     }
   }
 }
