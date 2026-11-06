@@ -186,6 +186,11 @@ public struct AppFeature {
       if connectionFailed != nil { return .connectionFailed }
       return .onboarding
     }
+
+    /// Whether the Home Screen quick actions (#93) are offered: whenever a stored session is
+    /// presumed good (the launch probe, the retry screen, home), never on onboarding. A probe
+    /// that ends in a credentials verdict lands on onboarding and hides them again.
+    var offersQuickActions: Bool { rootScreen != .onboarding }
   }
 
   /// The root branches of the app shell, in the order `State.rootScreen` resolves them.
@@ -302,6 +307,7 @@ public struct AppFeature {
   @Dependency(\.hermesREST) var rest
   @Dependency(\.push) var push
   @Dependency(\.launchIntents) var launchIntents
+  @Dependency(\.quickActions) var quickActions
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
@@ -940,6 +946,16 @@ public struct AppFeature {
     // `home` also trips it, but the seat `landOnHome` just filled already matches → no-op.
     .onChange(of: \.profileReseatSignal) { _, _ in
       Reduce { state, _ in reduceProfileReseat(&state) }
+    }
+    // Home Screen quick actions only while signed in (#93): every sign-in lands on a
+    // non-onboarding root and every logout or credentials verdict lands on onboarding, so this
+    // one edge covers all of them. iOS persists the items, so a fresh process starting on
+    // onboarding (initial value, no edge) got there through a logout that already cleared them.
+    .onChange(of: \.offersQuickActions) { _, offers in
+      Reduce { _, _ in
+        quickActions.setItems(offers ? LaunchIntent.quickActions : [])
+        return .none
+      }
     }
   }
 

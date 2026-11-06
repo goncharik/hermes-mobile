@@ -136,11 +136,19 @@ screenshot capture still opens the app, but never swaps the curated chat for a n
 ## Home Screen quick actions
 
 App Shortcuts never appear in the Home Screen icon's long-press menu (checked on device), so
-the same two entry points are also static `UIApplicationShortcutItems` in `Project.swift`:
-"New Chat" (`plus.message`) and "Dictate" (`mic.badge.plus`). Their types must match
-`LaunchIntent.newChatShortcutType` / `.dictateShortcutType`, and
-`LaunchIntent(shortcutItemType:)` maps them. A unit test pins the literals, because the
-manifest can't import HermesKit.
+the same two entry points are also quick actions: "New Chat" (`plus.message`) and "Dictate"
+(`mic.badge.plus`).
+
+**Shown only while signed in.** They are dynamic `UIApplication.shortcutItems`, not static
+Info.plist entries (those can't be hidden). `QuickActionsClient.setItems` sets them, and
+`AppFeature` drives it from one `.onChange(of: \.offersQuickActions)` edge:
+`rootScreen != .onboarding`, so the launch probe, the retry screen and home offer them, and
+every logout path and a credentials verdict hide them. iOS persists the items across
+launches, so they stay on the icon while the app is killed. The cost: a fresh install shows
+none until the first sign-in. `LaunchIntent` owns the type, title and symbol of each action
+(`quickActions`, `shortcutItemType`, `init?(shortcutItemType:)`), so the literals live in one
+place. Like `IdleTimerClient`, the client call is synchronous so the main-queue hops keep
+reduction order.
 
 The app is scene-based (SwiftUI `App`), so UIKit delivers a quick-action tap to the scene
 delegate only. `PushAppDelegate.application(_:configurationForConnecting:options:)` attaches

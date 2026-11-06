@@ -3832,6 +3832,86 @@ struct AppFeatureTests {
     }
   }
 
+  // MARK: Quick actions only while signed in (#93)
+
+  /// The launch probe offers the quick actions as soon as it starts (a stored session exists)
+  /// and the successful landing doesn't set them again.
+  @Test func autoConnectOffersQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.autoConnectSucceeded)
+    #expect(calls.value == [LaunchIntent.quickActions])
+  }
+
+  /// A credentials verdict on the launch probe lands on onboarding and hides them again.
+  @Test func autoConnectCredentialsVerdictHidesQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.autoConnectFailed)
+    #expect(calls.value == [LaunchIntent.quickActions, []])
+  }
+
+  /// The retry screen keeps them (the stored session is presumed fine); its Log Out hides
+  /// them, and the next manual login offers them again.
+  @Test func retryScreenLogoutHidesQuickActionsAndLoginRestoresThem() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline)
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.keychain.deleteSession = { @Sendable in }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.connectionFailed(.delegate(.logoutConfirmed)))
+    #expect(calls.value == [[]])
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    #expect(calls.value == [[], LaunchIntent.quickActions])
+  }
+
+  /// Settings → Sign out hides them.
+  @Test func settingsDisconnectHidesQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.disconnect)))
+    #expect(calls.value == [[]])
+  }
+
   /// The settings disconnect and reauth quit clear it too (defensive — with `home` present the
   /// stash is structurally nil).
   @Test func disconnectAndQuitClearLaunchIntentStash() async {

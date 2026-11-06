@@ -103,6 +103,8 @@
    ➕ Device check on build 82: App Shortcuts do NOT appear in the long-press menu. Added in the
    same PR: static `UIApplicationShortcutItems` + `QuickActionSceneDelegate`
    (`docs/features/app-intents.md` → "Home Screen quick actions").
+   ➕ After build 83 the static items became dynamic (`QuickActionsClient`), so they show only
+   while signed in.
 5. **Phrases**: only explicit ones. "New \(.applicationName) chat" / "Start a chat in
    \(.applicationName)" and "Dictate to \(.applicationName)". There is no
    "Open \(.applicationName)" mapping to a new chat. Both intents use one `categoryName`

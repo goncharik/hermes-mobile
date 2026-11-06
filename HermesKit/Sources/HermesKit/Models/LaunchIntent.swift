@@ -12,10 +12,13 @@ public enum LaunchIntent: Equatable, Sendable {
 }
 
 extension LaunchIntent {
-  /// `UIApplicationShortcutItemType` of the Home Screen quick actions. These must match the
-  /// static `UIApplicationShortcutItems` in `Project.swift`, which can't import this package.
+  /// `UIApplicationShortcutItemType` of the Home Screen quick actions. They are dynamic items
+  /// set by `QuickActionsClient` (shown only while signed in), never static Info.plist entries.
   public static let newChatShortcutType = "me.honcharenko.HermesMobile.new-chat"
   public static let dictateShortcutType = "me.honcharenko.HermesMobile.dictate"
+
+  /// The Home Screen quick actions, in menu order.
+  public static let quickActions: [LaunchIntent] = [.newChat, .newChatWithDictation]
 
   /// The intent a tapped Home Screen quick action requests; `nil` for an unknown type.
   public init?(shortcutItemType: String) {
@@ -23,6 +26,30 @@ extension LaunchIntent {
     case Self.newChatShortcutType: self = .newChat
     case Self.dictateShortcutType: self = .newChatWithDictation
     default: return nil
+    }
+  }
+
+  /// The quick action's `UIApplicationShortcutItemType`.
+  public var shortcutItemType: String {
+    switch self {
+    case .newChat: Self.newChatShortcutType
+    case .newChatWithDictation: Self.dictateShortcutType
+    }
+  }
+
+  /// The quick action's title, matching the App Shortcut short titles.
+  public var shortcutTitle: String {
+    switch self {
+    case .newChat: "New Chat"
+    case .newChatWithDictation: "Dictate"
+    }
+  }
+
+  /// The quick action's SF Symbol, matching the App Shortcut symbols.
+  public var shortcutSymbolName: String {
+    switch self {
+    case .newChat: "plus.message"
+    case .newChatWithDictation: "mic.badge.plus"
     }
   }
 }

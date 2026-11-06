@@ -44,6 +44,16 @@ struct LaunchIntentClientTests {
     #expect(LaunchIntent(shortcutItemType: "") == nil)
   }
 
+  /// Every quick action round-trips through its type, and the menu order is pinned.
+  @Test func quickActionsRoundTripThroughTheirType() {
+    #expect(LaunchIntent.quickActions == [.newChat, .newChatWithDictation])
+    for intent in LaunchIntent.quickActions {
+      #expect(LaunchIntent(shortcutItemType: intent.shortcutItemType) == intent)
+    }
+    #expect(LaunchIntent.newChat.shortcutTitle == "New Chat")
+    #expect(LaunchIntent.newChatWithDictation.shortcutTitle == "Dictate")
+  }
+
   // MARK: Client double
 
   @Test func testValueYieldsAFinishedStream() async {

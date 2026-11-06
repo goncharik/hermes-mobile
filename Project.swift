@@ -68,21 +68,8 @@ let project = Project(
         // Wake the app to process incoming remote notifications while backgrounded —
         // the gateway socket drops in the background, so pushes are how the agent reaches us.
         "UIBackgroundModes": ["remote-notification"],
-        // Home Screen long-press quick actions (#93). App Shortcuts never appear in that menu,
-        // so they are declared here; `QuickActionSceneDelegate` routes a tap into
-        // `LaunchIntentBridge`. Types must match `LaunchIntent.*ShortcutType` in HermesKit.
-        "UIApplicationShortcutItems": [
-          [
-            "UIApplicationShortcutItemType": "me.honcharenko.HermesMobile.new-chat",
-            "UIApplicationShortcutItemTitle": "New Chat",
-            "UIApplicationShortcutItemIconSymbolName": "plus.message",
-          ],
-          [
-            "UIApplicationShortcutItemType": "me.honcharenko.HermesMobile.dictate",
-            "UIApplicationShortcutItemTitle": "Dictate",
-            "UIApplicationShortcutItemIconSymbolName": "mic.badge.plus",
-          ],
-        ],
+        // No static `UIApplicationShortcutItems`: the Home Screen quick actions (#93) are
+        // dynamic, set by `QuickActionsClient` only while signed in.
       ]),
       sources: ["HermesMobile/Sources/**"],
       resources: ["HermesMobile/Resources/**"],
