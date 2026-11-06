@@ -70,6 +70,14 @@ let project = Project(
         "UIBackgroundModes": ["remote-notification"],
         // No static `UIApplicationShortcutItems`: the Home Screen quick actions (#93) are
         // dynamic, set by `QuickActionsClient` only while signed in.
+        // Widget / Control Center / Live Activity taps (#138) open `hermesmobile://` URLs,
+        // mapped by `WidgetDeepLink` (the scheme constant lives there).
+        "CFBundleURLTypes": [
+          [
+            "CFBundleURLName": "me.honcharenko.HermesMobile.widgets",
+            "CFBundleURLSchemes": ["hermesmobile"],
+          ],
+        ],
       ]),
       sources: ["HermesMobile/Sources/**"],
       resources: ["HermesMobile/Resources/**"],

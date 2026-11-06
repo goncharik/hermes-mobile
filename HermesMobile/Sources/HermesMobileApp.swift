@@ -20,6 +20,12 @@ struct HermesMobileApp: App {
   var body: some Scene {
     WindowGroup {
       AppView(store: HermesMobileApp.store)
+        // Widget, Control Center and Live Activity taps arrive as `hermesmobile://` URLs.
+        // They only route: the mapped intent goes through the same cold-launch buffer as an
+        // App Intent (#93). Anything `WidgetDeepLink` doesn't recognise is ignored.
+        .onOpenURL { url in
+          LaunchIntentBridge.shared.received(url: url)
+        }
     }
   }
 }

@@ -97,4 +97,15 @@ public final class LaunchIntentBridge: @unchecked Sendable {
       if !delivered { pendingIntent = intent }
     }
   }
+
+  /// Called by the app's `.onOpenURL` with a widget / control / Live Activity tap (#138): a
+  /// `hermesmobile://` URL `WidgetDeepLink` maps to an intent goes through `received(_:)`,
+  /// so it shares the cold-launch buffer and the reducer's stash; anything else is ignored
+  /// (returns `false`, nothing buffered).
+  @discardableResult
+  public func received(url: URL) -> Bool {
+    guard let intent = WidgetDeepLink.intent(from: url) else { return false }
+    received(intent)
+    return true
+  }
 }

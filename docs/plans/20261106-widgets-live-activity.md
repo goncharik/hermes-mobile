@@ -340,13 +340,13 @@ guard.
 - Modify: `Project.swift` (`CFBundleURLTypes` with the `hermesmobile` scheme)
 - Create: `HermesKit/Tests/HermesKitTests/WidgetLaunchRoutingTests.swift`
 
-- [ ] extract the session-opening body of `reducePushTapped` (in-place / detached / replace, never stack) into one helper shared by push taps and `.openSession`; push taps keep their badge and approval-hint bookkeeping around it; no behaviour change for push taps (existing push-routing tests stay green unchanged)
-- [ ] handle `.openSession(id:profile:)` in `launchIntentReceived`: with `home` set → `dismissPresentations()` + the shared helper (no approval hint); with `home == nil` → stash with `pendingLaunchIntentServerURL`; `landOnHome` drops a stashed `openSession` whose server differs (same guard as push taps); every logout site clears the new field
-- [ ] route `.newChatWithCamera` / `.newChatWithPhotos` to `reduceCreateSession` (the action itself lands in Task 4; here pass it through the new `launchAction:` parameter that replaces `startsDictation:`)
-- [ ] register the URL scheme in `Project.swift`, add `.onOpenURL` in the app that maps through `WidgetDeepLink.intent(from:)` to `LaunchIntentBridge.shared.received(_:)`
-- [ ] write `TestStore` tests: `openSession` in place (slot already on screen), a detached compact slot, a different session replacing the slot (compact and regular), the stash before home and its replay, a cross-server stash dropped, last-wins vs a push tap, cleared on logout
-- [ ] write tests: an unknown deep link is ignored (`intent(from:)` nil means no action)
-- [ ] run tests and `make build` - must pass before task 4
+- [x] extract the session-opening body of `reducePushTapped` (in-place / detached / replace, never stack) into one helper shared by push taps and `.openSession`; push taps keep their badge and approval-hint bookkeeping around it; no behaviour change for push taps (existing push-routing tests stay green unchanged) (➕ `reduceOpenSessionRouting` + the list delegate's body extracted into `reduceOpenSession(session:profileName:)` so a cross-profile row can resume under its own profile)
+- [x] handle `.openSession(id:profile:)` in `launchIntentReceived`: with `home` set → `dismissPresentations()` + the shared helper (no approval hint); with `home == nil` → stash with `pendingLaunchIntentServerURL`; `landOnHome` drops a stashed `openSession` whose server differs (same guard as push taps); every logout site clears the new field
+- [x] route `.newChatWithCamera` / `.newChatWithPhotos` to `reduceCreateSession` (the action itself lands in Task 4; here pass it through the new `launchAction:` parameter that replaces `startsDictation:`) (➕ `landOnHome(replaysDictation:)` renamed `replaysLaunchAction:`)
+- [x] register the URL scheme in `Project.swift`, add `.onOpenURL` in the app that maps through `WidgetDeepLink.intent(from:)` to `LaunchIntentBridge.shared.received(_:)` (➕ the mapping lives in `LaunchIntentBridge.received(url:)` so it is unit-tested; the app calls that)
+- [x] write `TestStore` tests: `openSession` in place (slot already on screen), a detached compact slot, a different session replacing the slot (compact and regular), the stash before home and its replay, a cross-server stash dropped, last-wins vs a push tap, cleared on logout (➕ cross-profile open, profiles-API-less agent, presentations dismissed, camera / photos seat a new chat, regular foreign drop seats the detail)
+- [x] write tests: an unknown deep link is ignored (`intent(from:)` nil means no action)
+- [x] run tests and `make build` - must pass before task 4
 
 ### Task 4: Generalize `pendingDictation` into a one-shot `pendingLaunchAction`
 
