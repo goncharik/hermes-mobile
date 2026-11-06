@@ -168,6 +168,11 @@ With the model-only fallback the chain still applies: the first matching Favorit
 first matching row in an expanded card (display order), else the first collapsed card that holds
 it. The derivation is unit-tested; the scroll itself is a manual device check.
 
+**Known limitation:** the two header targets don't scroll on device — a header id is only the
+`Section`'s `ForEach` id, which `List`'s `scrollTo` doesn't reach, so a current model inside a
+collapsed card (or a lost-credential header) opens the sheet at the top. Row targets work. Tracked
+in `docs/backlog/model-picker-collapsed-card-centering.md`.
+
 ### Persistence
 
 Both prefs live in `PreferencesClient`: `hermes.model-picker.collapsed-providers` (a sorted
