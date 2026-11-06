@@ -2355,6 +2355,113 @@ struct ChatReductionTests {
     }
   }
 
+  // MARK: Dictation App Intent one-shot (#93)
+
+  /// A slot carrying the dictation intent's `pendingDictation`, over a socket that never
+  /// yields (the connect effect is cancelled by `.teardown` at the end of each test).
+  /// `dialed` records that the first start still connected alongside the dictation.
+  private func dictationStore(
+    recording: ChatFeature.State.RecordingState = .idle,
+    permission: Bool = true
+  ) -> (store: TestStore<ChatFeature.State, ChatFeature.Action>, dialed: LockIsolated<Bool>) {
+    var initial = ChatFeature.State(connection: conn)
+    initial.pendingDictation = true
+    initial.recording = recording
+    let dialed = LockIsolated(false)
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = TestClock() // unadvanced → recording timer never ticks here
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in permission }
+      $0.hermesGateway.connect = { @Sendable _, _ in
+        dialed.setValue(true)
+        return AsyncStream { _ in }
+      }
+    }
+    return (store, dialed)
+  }
+
+  @Test func firstTaskWithPendingDictationStartsRecording() async {
+    let (store, dialed) = dictationStore()
+
+    // Consumed at first start, alongside the connect — not on a later `.ready`.
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission)
+    #expect(dialed.value, "the dictation never replaces the first-start connect")
+    await store.receive(\.recordingStarted) { $0.recording = .recording }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2] }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2, 0.6] }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2, 0.6, 0.4] }
+
+    // A re-appearance (the `hasStarted` guard) never re-fires the dictation.
+    await store.send(.viewDisappeared) {
+      $0.isOnScreen = false
+      $0.recording = .idle
+      $0.waveformLevels = []
+    }
+    await store.send(.task) { $0.isOnScreen = true }
+
+    await store.send(.teardown)
+  }
+
+  @Test func pendingDictationPermissionDeniedShowsMicBanner() async {
+    let (store, dialed) = dictationStore(permission: false)
+
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    #expect(dialed.value)
+
+    await store.send(.teardown)
+  }
+
+  @Test func pendingDictationNeverTogglesAnActiveRecording() async {
+    let (store, _) = dictationStore(recording: .recording)
+
+    // The flag is cleared, but recording is NOT toggled off (no transcription hand-off).
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+    }
+
+    await store.send(.teardown) { $0.recording = .idle }
+  }
+
+  @Test func startDictationOnStartedSlotStartsOnlyFromIdle() async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.hasStarted = true
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in false }
+    }
+
+    await store.send(.startDictation) {
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+
+    // A recording the user already has going is never toggled.
+    initial.recording = .recording
+    let busy = TestStore(initialState: initial) { ChatFeature() }
+    await busy.send(.startDictation)
+  }
+
   // MARK: Attachments (#8)
 
   private func imageAttachment(_ n: Int) -> ComposerAttachment {

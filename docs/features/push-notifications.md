@@ -71,7 +71,9 @@ A launch-from-push tap is dropped at two independent points unless both are cove
   continuations are pruned via `onTermination`, so a cancelled observer can't strand a dead
   entry that defeats the `isEmpty` buffer gate).
 - A tap arriving before `state.home` exists is stashed in `AppFeature.State.pendingPushTap`
-  (single stash, last-wins; process-lifetime, cleared on logout, badge bookkeeping unchanged)
+  (single stash, last-wins — also across the App Intent stash, #93
+  `docs/features/app-intents.md`; process-lifetime, cleared on logout, badge bookkeeping
+  unchanged)
   and re-sent as `.pushTapped` when `home` is created (`.autoConnectSucceeded` AND the
   manual-login `.onboarding(.delegate(.connected))`) — always replay through the one #32 routing
   path (slot dedup, approval-hint arming, placeholder `Session(id:)` + `session.resume`), never

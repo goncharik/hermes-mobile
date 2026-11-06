@@ -126,6 +126,10 @@ away from your desk and still keep your agent moving.
   key can safely live), and the app deep-links you straight to the session. Privacy by
   design: only a generic title/body and the `session_id` ever transit the gateway — the
   real message content is fetched in-app over your private network, never through Apple.
+- **Start a chat without opening the app first.** "New Hermes chat" and "Dictate to Hermes"
+  work from Shortcuts, Siri, Spotlight and the app icon's long-press menu with no setup, and
+  can be assigned to the Action button (iPhone 15 Pro and later): the app opens on a fresh
+  chat under your selected profile, and the dictation shortcut starts the mic as soon as the chat appears.
 - **Make it yours.** Pick the home-screen icon from eight designs in Settings: the gold and
   blueprint originals plus six Hermes variants. Settings also gathers everything else in
   one place: the server you're connected to and how you signed in, notifications, a

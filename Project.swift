@@ -68,6 +68,8 @@ let project = Project(
         // Wake the app to process incoming remote notifications while backgrounded —
         // the gateway socket drops in the background, so pushes are how the agent reaches us.
         "UIBackgroundModes": ["remote-notification"],
+        // No static `UIApplicationShortcutItems`: the Home Screen quick actions (#93) are
+        // dynamic, set by `QuickActionsClient` only while signed in.
       ]),
       sources: ["HermesMobile/Sources/**"],
       resources: ["HermesMobile/Resources/**"],
@@ -90,7 +92,7 @@ let project = Project(
           "DEVELOPMENT_TEAM": .string(developmentTeam),
           "CODE_SIGN_STYLE": "Automatic",
           "MARKETING_VERSION": "1.0",
-          "CURRENT_PROJECT_VERSION": "81",
+          "CURRENT_PROJECT_VERSION": "83",
           // App Store release default — the orange "AppIcon". ONLY App Store submission
           // builds keep it. Debug builds override to the blue "AppIconDev" below, and ALL
           // TestFlight archives (internal AND external — they share one build) override it

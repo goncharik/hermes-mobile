@@ -3462,6 +3462,582 @@ struct AppFeatureTests {
     #expect(push.badgeCount == 0)
   }
 
+  // MARK: App Intent routing (#93)
+
+  /// With the list present, an intent runs the "New session" path: compact seats the fresh
+  /// chat under a single new (nil-key) marker.
+  @Test func launchIntentInCompactSeatsNewChatUnderSingleMarker() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Unlike the button, an intent can arrive over a list sheet: every list presentation is
+  /// dismissed so the new chat isn't seated (and dictating) out of sight.
+  @Test func launchIntentDismissesListPresentations() async {
+    var home = SessionListFeature.State(connection: connection)
+    home.settings = SettingsFeature.State(connection: connection)
+    home.showPushSetupSheet = true
+    home.renamingID = "s1"
+    home.renameDraft = "draft"
+    let store = TestStore(initialState: AppFeature.State(home: home)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.home?.settings = nil
+      $0.home?.showPushSetupSheet = false
+      $0.home?.renamingID = nil
+      $0.home?.renameDraft = ""
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Behind the re-auth modal the dictation intent still seats the chat (it resumes with the
+  /// re-auth), but without the mic: no `pendingDictation` the user couldn't see recording.
+  @Test func dictationLaunchIntentBehindReauthSeatsChatWithoutMic() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        reauth: ReauthFeature.State(serverURL: URL(string: "http://mac.tailnet:9119")!, method: .token)
+      )
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Regular width over a busy (running turn) slot: the dictation intent replaces it through
+  /// the teardown chain, and the flag survives to `.fillLiveChat`, whose reducer-sent
+  /// `.liveChat(.task)` — not a view appearing — consumes it and starts the mic.
+  @Test func dictationLaunchIntentOverBusyRegularSlotStartsAtTheFillDial() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    chat.isSending = true
+    chat.hasStarted = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: chat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in false }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.launchIntentReceived(.newChatWithDictation))
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat) {
+      $0.liveChat = nil
+    }
+    await store.receive(\.fillLiveChat) {
+      var fresh = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      fresh.pendingDictation = true
+      $0.liveChat = fresh
+      $0.slotGeneration = 1
+    }
+    await store.receive(\.liveChat.task) {
+      $0.liveChat?.pendingDictation = false
+      $0.liveChat?.recording = .requestingPermission
+    }
+    await store.receive(\.liveChat.recordingPermission) {
+      $0.liveChat?.recording = .idle
+      $0.liveChat?.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    #expect(store.state.path.isEmpty)
+    await store.send(.liveChat(.teardown))
+  }
+
+  /// The dictation intent seats the fresh chat carrying the one-shot `pendingDictation`; the
+  /// chat consumes it at its first `.task` (no recording starts from the router itself).
+  @Test func dictationLaunchIntentSeatsChatWithPendingDictation() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingDictation = true
+      $0.liveChat = chat
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Over a reusable seat — already started, so no first `.task` will run — the dictation
+  /// intent takes the button's shortcut (draft reset, no teardown, no redial) and sends
+  /// `startDictation` straight to the slot.
+  @Test func dictationLaunchIntentOverReusableSeatStartsDictation() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
+    seat.liveSessionID = "live-new"
+    seat.status = .ready
+    seat.hasStarted = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in false }
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.liveChat?.composerText = ""
+    }
+    await store.receive(\.liveChat.startDictation) {
+      $0.liveChat?.recording = .requestingPermission
+    }
+    await store.receive(\.liveChat.recordingPermission) {
+      $0.liveChat?.recording = .idle
+      $0.liveChat?.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    #expect(store.state.liveChat?.liveSessionID == "live-new", "the live session survives")
+    #expect(store.state.slotGeneration == 0, "the seat is reused, not refilled")
+  }
+
+  /// Cold launch: an intent before the list exists is STASHED (never dropped), then replayed
+  /// through the "New session" path the moment `.autoConnectSucceeded` builds the list — the
+  /// one landing that keeps the dictation.
+  @Test func preHomeLaunchIntentStashedThenReplayedOnAutoConnect() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.pendingLaunchIntent = .newChatWithDictation
+    }
+    await store.send(.autoConnectSucceeded(connection)) {
+      $0.autoConnecting = false
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingDictation = true
+      $0.liveChat = chat
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Regular landing with a stashed intent: the replay seats the ONE detail chat — the landing
+  /// does not fill a seat of its own first (exhaustive: a second fill would bump
+  /// `slotGeneration` twice).
+  @Test func preHomeLaunchIntentInRegularSeatsTheDetailOnce() async {
+    let store = TestStore(initialState: AppFeature.State(layout: .regular)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.pendingLaunchIntent = .newChat
+    }
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.slotGeneration = 1
+    }
+    #expect(store.state.path.isEmpty)
+  }
+
+  /// A cold launch whose auto-connect ends on the RETRY screen holds the stashed intent until
+  /// the retry lands the list — possibly hours later, on a foreground re-probe — and replays
+  /// it there as a plain new chat: the mic never starts without a fresh request.
+  @Test func preHomeLaunchIntentHeldThroughRetryScreenThenReplayedWithoutDictation() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.pendingLaunchIntent = .newChatWithDictation
+    }
+    await store.send(.autoConnectFailed(connection, .offline)) {
+      $0.autoConnecting = false
+      $0.connectionFailed = ConnectionFailedFeature.State(
+        connection: self.connection, reason: .offline
+      )
+    }
+    await store.send(.connectionFailed(.delegate(.connected(connection)))) {
+      $0.connectionFailed = nil
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// A cold launch whose auto-connect ends on ONBOARDING (credentials verdict) holds the
+  /// stashed intent until the manual login lands the list, then replays it there — without
+  /// the dictation, like the retry screen.
+  @Test func preHomeLaunchIntentHeldThroughOnboardingFallbackThenReplayedWithoutDictation() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.pendingLaunchIntent = .newChatWithDictation
+    }
+    await store.send(.autoConnectFailed(connection, .unauthorized)) {
+      $0.autoConnecting = false
+      $0.onboarding = ConnectionFeature.State(
+        serverURL: self.connection.baseURL.absoluteString,
+        token: self.connection.auth.token ?? ""
+      )
+    }
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// End-to-end launch race: the intent performs BEFORE the reducer's `.task` subscribes. The
+  /// real bridge buffers it, the `.task` observer drains it, the pre-home stash holds it, and
+  /// the login replays it.
+  @Test func launchIntentBufferedInBridgeReplaysThroughTaskObserver() async {
+    let bridge = LaunchIntentBridge()
+    bridge.received(.newChat) // before ANY subscriber exists
+
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      // No stored creds → `.task` only starts the observers (no auto-connect).
+      $0.keychain.loadSession = { @Sendable _ in nil }
+      $0.preferences.loadServerURL = { nil }
+      $0.launchIntents.incoming = { bridge.stream() }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.launchIntentReceived) {
+      $0.pendingLaunchIntent = .newChat
+    }
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    #expect(store.state.liveChat?.isUnpromptedNewChat == true)
+    #expect(store.state.path.count == 1)
+    // The intent observer is a long-running effect on the bridge stream — drop it at teardown.
+    await store.skipInFlightEffects()
+  }
+
+  /// The main use case — the Action button on a cold start with a saved login: the observer
+  /// is merged into the auto-connect `.task` path too, so the buffered intent is stashed while
+  /// the probe runs and replayed by `.autoConnectSucceeded`.
+  @Test func coldLaunchIntentWithStoredLoginReplaysOnAutoConnect() async {
+    let bridge = LaunchIntentBridge()
+    bridge.received(.newChat)
+    // Hold the probe until the intent is stashed, so the order is deterministic.
+    let (probeGate, openProbe) = AsyncStream<Void>.makeStream()
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+        for await _ in probeGate {}
+        return []
+      }
+      $0.launchIntents.incoming = { bridge.stream() }
+    }
+
+    await store.send(.task) {
+      $0.didRunLaunchProbe = true
+      $0.autoConnecting = true
+    }
+    await store.receive(\.launchIntentReceived) {
+      $0.pendingLaunchIntent = .newChat
+    }
+    openProbe.finish()
+    // Non-exhaustive only for the stack element id, which can't match inside a received
+    // action's expectation; the path is checked below.
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.receive(\.autoConnectSucceeded) {
+      $0.autoConnecting = false
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+    }
+    #expect(store.state.path.count == 1)
+    #expect(store.state.path.last?.sessionKey == nil)
+    await store.skipInFlightEffects()
+  }
+
+  /// A warm intent arriving through the live bridge routes immediately (no stash).
+  @Test func warmLaunchIntentThroughObserverRoutesImmediately() async {
+    let bridge = LaunchIntentBridge()
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in nil }
+      $0.preferences.loadServerURL = { nil }
+      $0.launchIntents.incoming = { bridge.stream() }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    bridge.received(.newChat)
+    await store.receive(\.launchIntentReceived)
+    #expect(store.state.pendingLaunchIntent == nil)
+    #expect(store.state.liveChat?.isUnpromptedNewChat == true)
+    await store.skipInFlightEffects()
+  }
+
+  /// The intent stash dies with the identity like the tap stash: a retry-screen logout (the
+  /// realistic pre-home case) clears it, so a later login replays nothing.
+  @Test func logoutClearsLaunchIntentStash() async {
+    let store = TestStore(
+      initialState: AppFeature.State(
+        connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline)
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.keychain.deleteSession = { @Sendable in }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.pendingLaunchIntent = .newChatWithDictation
+    }
+    await store.send(.connectionFailed(.delegate(.logoutConfirmed)))
+    #expect(store.state.pendingLaunchIntent == nil)
+    await store.finish()
+
+    // Exhaustive login: a stray replay would fail the send.
+    store.exhaustivity = .on
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+    }
+  }
+
+  // MARK: Quick actions only while signed in (#93)
+
+  /// The launch probe offers the quick actions as soon as it starts (a stored session exists)
+  /// and the successful landing doesn't set them again.
+  @Test func autoConnectOffersQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.autoConnectSucceeded)
+    #expect(calls.value == [LaunchIntent.quickActions])
+  }
+
+  /// A credentials verdict on the launch probe lands on onboarding and hides them again.
+  @Test func autoConnectCredentialsVerdictHidesQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.autoConnectFailed)
+    #expect(calls.value == [LaunchIntent.quickActions, []])
+  }
+
+  /// The retry screen keeps them (the stored session is presumed fine); its Log Out hides
+  /// them, and the next manual login offers them again.
+  @Test func retryScreenLogoutHidesQuickActionsAndLoginRestoresThem() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(
+        connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline)
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.push = PushClient.inMemory().client
+      $0.keychain.deleteSession = { @Sendable in }
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.connectionFailed(.delegate(.logoutConfirmed)))
+    #expect(calls.value == [[]])
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    #expect(calls.value == [[], LaunchIntent.quickActions])
+  }
+
+  /// Settings → Sign out hides them.
+  @Test func settingsDisconnectHidesQuickActions() async {
+    let calls = LockIsolated<[[LaunchIntent]]>([])
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+      $0.quickActions = .recording(into: calls)
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.disconnect)))
+    #expect(calls.value == [[]])
+  }
+
+  /// The settings disconnect and reauth quit clear it too (defensive — with `home` present the
+  /// stash is structurally nil).
+  @Test func disconnectAndQuitClearLaunchIntentStash() async {
+    var initial = AppFeature.State(home: SessionListFeature.State(connection: connection))
+    initial.pendingLaunchIntent = .newChat
+    let store = TestStore(initialState: initial) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off
+
+    await store.send(.home(.delegate(.disconnect)))
+    #expect(store.state.pendingLaunchIntent == nil)
+
+    var quitting = AppFeature.State(
+      home: SessionListFeature.State(connection: connection),
+      reauth: ReauthFeature.State(serverURL: URL(string: "http://mac.tailnet:9119")!, method: .token)
+    )
+    quitting.pendingLaunchIntent = .newChat
+    let quitStore = TestStore(initialState: quitting) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+    }
+    quitStore.exhaustivity = .off
+    await quitStore.send(.reauth(.presented(.delegate(.quit))))
+    #expect(quitStore.state.pendingLaunchIntent == nil)
+    await store.finish()
+    await quitStore.finish()
+  }
+
+  /// Last-wins across both stashes: an intent, then a push tap, pre-home → only the TAP
+  /// replays (exhaustive through the landing: a stray intent replay would seat a chat there).
+  @Test func preHomeIntentThenPushTapReplaysOnlyTheTap() async {
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.push = PushClient.inMemory().client
+    }
+
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.pendingLaunchIntent = .newChat
+    }
+    await store.send(.pushTapped(PushTap(sessionID: "s-tap"))) {
+      $0.pendingPushTap = PushTap(sessionID: "s-tap")
+      $0.pendingPushTapServerURL = URL(string: "http://mac.tailnet:9119")!
+      $0.pendingLaunchIntent = nil
+    }
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingPushTap = nil
+      $0.pendingPushTapServerURL = nil
+    }
+    // The tap's open is checked below (its stack element id can't match in a receive).
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.receive(\.pushTapped)
+    await store.receive(\.home.delegate.openSession)
+    await store.finish()
+    #expect(store.state.liveChat?.storedSessionID == "s-tap")
+    #expect(store.state.path.count == 1)
+  }
+
+  /// …and a push tap, then an intent → only the INTENT replays; the tap's approval badge
+  /// entry (inserted independently) is untouched.
+  @Test func preHomePushTapThenIntentReplaysOnlyTheIntent() async {
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.push = PushClient.inMemory().client
+    }
+
+    await store.send(.pushTapped(PushTap(sessionID: "s-tap", type: "approval"))) {
+      $0.pendingApprovalSessionIDs = ["s-tap"]
+      $0.pendingPushTap = PushTap(sessionID: "s-tap", type: "approval")
+      $0.pendingPushTapServerURL = URL(string: "http://mac.tailnet:9119")!
+    }
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.pendingLaunchIntent = .newChat
+      $0.pendingPushTap = nil
+    }
+    // Exhaustive: a stray `.pushTapped` replay would fail as an unhandled received action.
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection)
+      $0.pendingLaunchIntent = nil
+      $0.pendingPushTapServerURL = nil
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// The intent superseding an approval tap keeps the tap's origin, so a login to a DIFFERENT
+  /// server still scrubs the foreign approval badge entry (it could never be viewed there).
+  @Test func preHomeApprovalTapThenIntentScrubsForeignBadgeOnLogin() async {
+    let push = PushClient.inMemory()
+    let other = ServerConnection(baseURL: URL(string: "http://other.tailnet:9119")!, token: "tok")
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.push = push.client
+    }
+
+    await store.send(.pushTapped(PushTap(sessionID: "s-tap", type: "approval"))) {
+      $0.pendingApprovalSessionIDs = ["s-tap"]
+      $0.pendingPushTap = PushTap(sessionID: "s-tap", type: "approval")
+      $0.pendingPushTapServerURL = URL(string: "http://mac.tailnet:9119")!
+    }
+    await store.send(.launchIntentReceived(.newChat)) {
+      $0.pendingLaunchIntent = .newChat
+      $0.pendingPushTap = nil
+    }
+    await store.send(.onboarding(.delegate(.connected(other)))) {
+      $0.home = SessionListFeature.State(connection: other)
+      $0.pendingLaunchIntent = nil
+      $0.pendingPushTapServerURL = nil
+      $0.pendingApprovalSessionIDs = []
+      $0.liveChat = ChatFeature.State(connection: other, profileName: nil, composerText: "")
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+    await store.finish()
+    #expect(push.badgeCount == 0)
+  }
+
   // MARK: Launch connection-failed screen (#62)
 
   /// A launch probe that never reached the server (`.unreachable`) must raise the retry

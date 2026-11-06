@@ -14,6 +14,15 @@ extension IdleTimerClient {
   }
 }
 
+extension QuickActionsClient {
+  /// A recording double: every `setItems` list is appended to `calls`, in order.
+  static func recording(into calls: LockIsolated<[[LaunchIntent]]>) -> QuickActionsClient {
+    QuickActionsClient(setItems: { intents in
+      calls.withValue { $0.append(intents) }
+    })
+  }
+}
+
 /// Bounded busy-wait for cross-task spy flags (e.g. a socket stream's `onTermination`
 /// firing on a cancelled effect): yields until `condition()` holds, FAILING the test —
 /// instead of hanging the suite forever — if it never does.

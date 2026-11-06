@@ -240,6 +240,21 @@ public struct SessionListFeature {
       deleteSupported ? defaultSwipeAction : .archive
     }
 
+    /// Dismiss everything the list can present (sheets, the action sheet, the rename alerts) —
+    /// for routing that can arrive while one is up (an App Intent, #93), so the chat it opens
+    /// isn't left behind a sheet.
+    mutating func dismissPresentations() {
+      settings = nil
+      archived = nil
+      addProfile = nil
+      confirmationDialog = nil
+      showPushSetupSheet = false
+      renamingID = nil
+      renameDraft = ""
+      renamingProfileName = nil
+      profileRenameDraft = ""
+    }
+
     /// True while a search query is active — the list shows flat results, not date
     /// sections.
     public var isSearching: Bool {
