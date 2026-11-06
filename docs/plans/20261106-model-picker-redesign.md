@@ -287,17 +287,21 @@
 - Modify: `HermesMobile/Sources/Features/Chat/ModelPickerSheet.swift`
 - Modify: `HermesMobile/Sources/Features/Chat/ChatView.swift`
 
-- [ ] render `ModelPickerLayout` sections: Options card, Favorites card, provider cards with
+- [x] render `ModelPickerLayout` sections: Options card, Favorites card, provider cards with
       collapsible header buttons, model rows with star buttons, disabled warning row for
       unconfigured/lost-credential providers; busy note + inline apply error unchanged
-- [ ] effort list as a pushed page (`navigationDestination(isPresented:)`), offered efforts,
+- [x] effort list as a pushed page (`navigationDestination(isPresented:)`), offered efforts,
       checkmark, tap sends `.effortRowTapped` and pops
-- [ ] once-per-presentation centering with `ScrollViewReader` on `layout.scrollTarget`
-- [ ] Done toolbar button → `.doneButtonTapped`; `.searchable` with default placement;
+- [x] once-per-presentation centering with `ScrollViewReader` on `layout.scrollTarget`
+- [x] Done toolbar button → `.doneButtonTapped`; `.searchable` with default placement;
       `ContentUnavailableView.search` for zero matches
-- [ ] accessibility: header/star labels + hints, reduce-motion-aware chevron animation
-- [ ] `tuist generate` if files were added, build the app target (`make build` or the
+- [x] accessibility: header/star labels + hints, reduce-motion-aware chevron animation
+- [x] `tuist generate` if files were added, build the app target (`make build` or the
       documented xcodebuild command) — must compile cleanly
+- ➕ the pushed effort page is its own `ReasoningEffortList` view (pops via
+      `@Environment(\.dismiss)`) so Task 6 can snapshot it directly; `ChatView` needed no
+      change (the scoped `.sheet(item:)` wiring landed in Task 4). Centering on device is a
+      Post-Completion manual check.
 
 ### Task 6: Snapshot the redesigned sheet
 
