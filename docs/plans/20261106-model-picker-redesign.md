@@ -323,13 +323,19 @@
       colour shift) were re-recorded for simulator drift in their own commit. Suite: 338/338.
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify every Overview requirement against the running code (explicit_only, favorites,
-      collapse persistence, Options card, centering, tap-to-apply unchanged)
-- [ ] verify edge cases: no favorites, all models of a provider favorited, stale favorite,
+- [x] verify every Overview requirement against the running code (explicit_only, favorites,
+      collapse persistence, Options card, centering, tap-to-apply unchanged) — verified by
+      reading `git diff main...HEAD` + tests; on-device centering (skipped - not automatable,
+      listed in Post-Completion; its target derivation is unit-tested)
+- [x] verify edge cases: no favorites, all models of a provider favorited, stale favorite,
       current model missing from the list, lost-credential current provider, older gateway
       without `provider` field
-- [ ] run full suites: `make test` and `make snapshot`
-- [ ] build the app target
+- [x] run full suites: `make test` and `make snapshot`
+- [x] build the app target
+- ➕ gap fixed: "current model missing" was only covered by a `scrollTarget == nil` assertion;
+      added `currentModelMissingListsEverythingWithNothingChecked` (every card + Options still
+      listed, nothing checked, no collapsed-header claim). HermesKit 2476 pass, snapshots
+      338/338, `make build` clean (pre-existing warnings only).
 
 ### Task 8: [Final] Update documentation
 - [ ] rewrite the affected parts of `docs/features/model-picker.md`: fetch (`explicit_only`,

@@ -262,6 +262,25 @@ struct ModelPickerLayoutTests {
     #expect(layout(options(currentProvider: "elsewhere")).scrollTarget == nil)
   }
 
+  /// The chat's model isn't offered by any configured provider (retired, or set outside the
+  /// picker): the sheet still lists every card with nothing checked, and the Options card
+  /// stays (unknown capability → reasoning-capable).
+  @Test func currentModelMissingListsEverythingWithNothingChecked() throws {
+    let result = layout(
+      favorites: [.init(providerID: "anthropic", model: "haiku")],
+      collapsed: ["openrouter"],
+      currentModel: "mystery"
+    )
+    expectNoDifference(
+      result.sections.map(\.id),
+      ["options", "favorites", "header::anthropic", "header::openrouter", "header::openai"]
+    )
+    #expect(favoriteRows(result).map(\.isCurrent) == [false])
+    #expect(try #require(providerSection(result, "anthropic")).rows.map(\.isCurrent) == [false])
+    #expect(try #require(providerSection(result, "openrouter")).currentModelName == nil)
+    #expect(result.scrollTarget == nil)
+  }
+
   @Test func olderGatewayWithoutProviderFallsBackToModelOnlyMatch() throws {
     let result = layout(options(currentProvider: nil))
     // Both providers' "opus" rows read as current; the first in display order is centered.
