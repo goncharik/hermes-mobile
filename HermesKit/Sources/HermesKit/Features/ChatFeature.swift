@@ -757,6 +757,12 @@ public struct ChatFeature {
     /// gap drops streamed events). Once started, later appearances are routed by
     /// `AppFeature` through `.reattached`, which guards the live socket.
     var hasStarted: Bool
+    /// One-shot "start the mic as soon as this chat opens" request from the dictation App
+    /// Intent (#93). Consumed — cleared whatever happens — at the slot's first `.task` or by
+    /// `.startPendingDictation` (the reused-seat path), so it can never fire later (after a
+    /// reconnect, or once the user has started typing). Starts recording only from `.idle`.
+    /// Per-slot, unpersisted.
+    var pendingDictation: Bool
     /// Set when the gated session died (`.authExpired`): reconnect backoff is paused and the
     /// trailing `.gatewayClosed` (the finished stream) is ignored until re-auth resumes us.
     var awaitingReauth: Bool
@@ -866,6 +872,7 @@ public struct ChatFeature {
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
       self.hasStarted = false
+      self.pendingDictation = false
       self.awaitingReauth = false
       self.hydrateRetriedAfterTimeout = false
       self.hasHydrated = false
@@ -1249,6 +1256,9 @@ public struct ChatFeature {
     case copiedIDToastExpired
     // Voice input (#7)
     case voiceButtonTapped
+    /// Consume `pendingDictation` on an already-started slot (sent by `AppFeature` when the
+    /// dictation App Intent reuses the new-chat seat, #93). Never sent by the view.
+    case startPendingDictation
     case recordingPermission(Bool)
     case recordingStarted
     case recordingLevel(Float)
@@ -1505,7 +1515,10 @@ public struct ChatFeature {
         // when on, so the replies already painted (instant-paint snapshot) are never read.
         state.autoSpeakReplies = preferences.loadAutoSpeakReplies()
         if state.autoSpeakReplies { arm(&state) }
-        return connect(state.connection)
+        // The dictation App Intent's one-shot (#93) is consumed HERE, at first start — never
+        // on a later `.ready`. Recording is REST-transcribed, so it needn't wait for the socket.
+        guard state.pendingDictation else { return connect(state.connection) }
+        return .merge(connect(state.connection), consumePendingDictation(&state))
 
       case .viewDisappeared:
         // View-only cleanup: the screen left, but the slot (socket, streaming fold,
@@ -2223,19 +2236,7 @@ public struct ChatFeature {
       case .voiceButtonTapped:
         switch state.recording {
         case .idle:
-          state.recording = .requestingPermission
-          // Voice barge-in (#74): silence the clip and stamp the latch. The `tts.stop()`
-          // itself runs FIRST inside the permission effect (unconditionally — idempotent): it
-          // deactivates the session with `.notifyOthersOnDeactivation`, which would otherwise
-          // race and kill the recorder's freshly activated `.playAndRecord` session.
-          silenceReadAloud(&state, bargeIn: true)
-          return .merge(
-            .cancel(id: CancelID.ttsPlayback),
-            .run { [audioRecorder, tts] send in
-              await tts.stop()
-              await send(.recordingPermission(audioRecorder.requestPermission()))
-            }
-          )
+          return startVoiceRecording(&state)
         case .recording:
           // Stop and hand the audio off to transcription.
           state.recording = .transcribing
@@ -2251,6 +2252,9 @@ public struct ChatFeature {
         case .requestingPermission, .transcribing:
           return .none
         }
+
+      case .startPendingDictation:
+        return consumePendingDictation(&state)
 
       case let .recordingPermission(granted):
         guard granted else {
@@ -3849,6 +3853,34 @@ public struct ChatFeature {
   /// state, cancel the level/tick effects, and release the mic/session if we leave
   /// mid-recording. Also silences a read-aloud clip (#74) — playback never outlives the
   /// chat leaving the screen.
+  /// The mic button's idle → recording leg, shared by `.voiceButtonTapped` and the dictation
+  /// App Intent (`consumePendingDictation`, #93) so the barge-in order can never drift.
+  private func startVoiceRecording(_ state: inout State) -> Effect<Action> {
+    state.recording = .requestingPermission
+    // Voice barge-in (#74): silence the clip and stamp the latch. The `tts.stop()`
+    // itself runs FIRST inside the permission effect (unconditionally — idempotent): it
+    // deactivates the session with `.notifyOthersOnDeactivation`, which would otherwise
+    // race and kill the recorder's freshly activated `.playAndRecord` session.
+    silenceReadAloud(&state, bargeIn: true)
+    return .merge(
+      .cancel(id: CancelID.ttsPlayback),
+      .run { [audioRecorder, tts] send in
+        await tts.stop()
+        await send(.recordingPermission(audioRecorder.requestPermission()))
+      }
+    )
+  }
+
+  /// Consume the dictation App Intent's one-shot (#93): always clear the flag, and start the
+  /// mic only from `.idle` — never toggle a recording (or a pending permission / transcription)
+  /// the user already has going. A denial lands on `.recordingPermission`'s existing banner.
+  private func consumePendingDictation(_ state: inout State) -> Effect<Action> {
+    let wanted = state.pendingDictation
+    state.pendingDictation = false
+    guard wanted, state.recording == .idle else { return .none }
+    return startVoiceRecording(&state)
+  }
+
   private func releaseVoiceResources(_ state: inout State) -> Effect<Action> {
     let wasRecording = state.recording.isBusy
     state.recording = .idle

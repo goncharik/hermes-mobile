@@ -972,7 +972,9 @@ public struct AppFeature {
 
   /// "New session": the list's button (`.home(.delegate(.createSession))`) and an App Intent
   /// (`.launchIntentReceived`, #93) both land here, so the two can never drift. No list → no-op.
-  /// `startsDictation` is the intent's dictation request (`.newChatWithDictation`).
+  /// `startsDictation` is the intent's dictation request (`.newChatWithDictation`): a one-shot
+  /// `pendingDictation` on the chat, consumed at its first `.task` — or right here on the
+  /// reused-seat path, whose slot has already started.
   private func reduceCreateSession(
     _ state: inout State, composerText: String?, startsDictation: Bool
   ) -> Effect<Action> {
@@ -991,11 +993,14 @@ public struct AppFeature {
       if state.isChatDetached {
         state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
       }
-      return .none
+      guard startsDictation else { return .none }
+      state.liveChat?.pendingDictation = true
+      return .send(.liveChat(.startPendingDictation))
     }
     // New chats are created under the currently-selected profile. `composerText` (push "Ask
     // agent to install") seeds the composer draft but is NOT auto-sent.
-    let chat = newChat(for: home, composerText: composerText ?? "")
+    var chat = newChat(for: home, composerText: composerText ?? "")
+    chat.pendingDictation = startsDictation
     guard state.liveChat != nil else {
       seatLiveChat(chat, into: &state)
       return .none

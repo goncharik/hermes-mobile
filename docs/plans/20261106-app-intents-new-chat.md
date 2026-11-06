@@ -198,22 +198,25 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - Modify: `HermesKit/Tests/HermesKitTests/ChatReductionTests.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift`
 
-- [ ] add `ChatFeature.State.pendingDictation` and the `startPendingDictation` action (clear the
+- [x] add `ChatFeature.State.pendingDictation` and the `startPendingDictation` action (clear the
       flag; `.send(.voiceButtonTapped)` only when `recording == .idle`)
-- [ ] the `.task` first-start branch merges `.send(.startPendingDictation)` with `connect` when
+      (implemented as a shared `startVoiceRecording` helper used by both `voiceButtonTapped`
+      and `consumePendingDictation`, instead of sending an action to share logic)
+- [x] the `.task` first-start branch merges `.send(.startPendingDictation)` with `connect` when
       the flag is set. It is not sent on re-appearance (the `hasStarted` guard)
-- [ ] `reduceCreateSession(startsDictation: true)`:
+      (calls `consumePendingDictation` directly rather than sending the action)
+- [x] `reduceCreateSession(startsDictation: true)`:
   - sets the flag on the new chat
   - on the reused-seat branch, sets it and sends `.liveChat(.startPendingDictation)`
-- [ ] write ChatFeature tests:
+- [x] write ChatFeature tests:
   - `.task` with the flag → `requestingPermission` → granted → recording starts
   - denied → the existing mic banner and `recording == .idle`
   - flag set while `recording != .idle` → the flag is cleared and recording is NOT toggled
   - a second `.task` doesn't re-fire
-- [ ] write AppFeature tests:
+- [x] write AppFeature tests:
   - `.newChatWithDictation` seats a chat with `pendingDictation == true`
   - over a reusable seat it sends `startPendingDictation`
-- [ ] run tests, which must pass before Task 4
+- [x] run tests, which must pass before Task 4
 
 ### Task 4: Declare the App Intents and App Shortcuts in the app target
 

@@ -2355,6 +2355,104 @@ struct ChatReductionTests {
     }
   }
 
+  // MARK: Dictation App Intent one-shot (#93)
+
+  /// A slot carrying the dictation intent's `pendingDictation`, over a socket that never
+  /// yields (the connect effect is cancelled by `.teardown` at the end of each test).
+  private func dictationStore(
+    recording: ChatFeature.State.RecordingState = .idle,
+    permission: Bool = true
+  ) -> TestStore<ChatFeature.State, ChatFeature.Action> {
+    var initial = ChatFeature.State(connection: conn)
+    initial.pendingDictation = true
+    initial.recording = recording
+    return TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = TestClock() // unadvanced → recording timer never ticks here
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in permission }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+  }
+
+  @Test func firstTaskWithPendingDictationStartsRecording() async {
+    let store = dictationStore()
+
+    // Consumed at first start, alongside the connect — not on a later `.ready`.
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission)
+    await store.receive(\.recordingStarted) { $0.recording = .recording }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2] }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2, 0.6] }
+    await store.receive(\.recordingLevel) { $0.waveformLevels = [0.2, 0.6, 0.4] }
+
+    // A re-appearance (the `hasStarted` guard) never re-fires the dictation.
+    await store.send(.viewDisappeared) {
+      $0.isOnScreen = false
+      $0.recording = .idle
+      $0.waveformLevels = []
+    }
+    await store.send(.task) { $0.isOnScreen = true }
+
+    await store.send(.teardown)
+  }
+
+  @Test func pendingDictationPermissionDeniedShowsMicBanner() async {
+    let store = dictationStore(permission: false)
+
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+
+    await store.send(.teardown)
+  }
+
+  @Test func pendingDictationNeverTogglesAnActiveRecording() async {
+    let store = dictationStore(recording: .recording)
+
+    // The flag is cleared, but recording is NOT toggled off (no transcription hand-off).
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingDictation = false
+    }
+
+    await store.send(.teardown) { $0.recording = .idle }
+  }
+
+  @Test func startPendingDictationOnStartedSlotConsumesOnce() async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.hasStarted = true
+    initial.pendingDictation = true
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.continuousClock = TestClock()
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in false }
+    }
+
+    await store.send(.startPendingDictation) {
+      $0.pendingDictation = false
+      $0.recording = .requestingPermission
+    }
+    await store.receive(\.recordingPermission) {
+      $0.recording = .idle
+      $0.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    // Already consumed: a stray second request is a no-op.
+    await store.send(.startPendingDictation)
+  }
+
   // MARK: Attachments (#8)
 
   private func imageAttachment(_ n: Int) -> ComposerAttachment {

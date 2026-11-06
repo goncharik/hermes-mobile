@@ -3571,6 +3571,55 @@ struct AppFeatureTests {
     #expect(store.state.slotGeneration == 0, "no fresh detail view")
   }
 
+  /// The dictation intent seats the fresh chat carrying the one-shot `pendingDictation`; the
+  /// chat consumes it at its first `.task` (no recording starts from the router itself).
+  @Test func dictationLaunchIntentSeatsChatWithPendingDictation() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      chat.pendingDictation = true
+      $0.liveChat = chat
+      $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+  }
+
+  /// Over a reusable seat — already started, so no first `.task` will consume the flag — the
+  /// dictation intent sets it and sends `startPendingDictation` straight to the slot.
+  @Test func dictationLaunchIntentOverReusableSeatStartsPendingDictation() async {
+    var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    seat.liveSessionID = "live-new"
+    seat.status = .ready
+    seat.hasStarted = true
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection), liveChat: seat, layout: .regular
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.audioRecorder = .testValue
+      $0.audioRecorder.requestPermission = { @Sendable in false }
+    }
+
+    await store.send(.launchIntentReceived(.newChatWithDictation)) {
+      $0.liveChat?.pendingDictation = true
+    }
+    await store.receive(\.liveChat.startPendingDictation) {
+      $0.liveChat?.pendingDictation = false
+      $0.liveChat?.recording = .requestingPermission
+    }
+    await store.receive(\.liveChat.recordingPermission) {
+      $0.liveChat?.recording = .idle
+      $0.liveChat?.errorBanner = "Microphone access is off. Enable it in Settings to use voice input."
+    }
+    #expect(store.state.slotGeneration == 0, "the seat is reused, not refilled")
+  }
+
   /// Cold launch: an intent before the list exists is STASHED (never dropped), then replayed
   /// through the "New session" path the moment `.autoConnectSucceeded` builds the list.
   @Test func preHomeLaunchIntentStashedThenReplayedOnAutoConnect() async {
