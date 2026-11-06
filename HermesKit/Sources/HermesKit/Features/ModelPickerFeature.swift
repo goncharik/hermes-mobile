@@ -113,7 +113,7 @@ public struct ModelPickerFeature {
     }
   }
 
-  enum CancelID: Hashable {
+  private enum CancelID: Hashable {
     case load
   }
 

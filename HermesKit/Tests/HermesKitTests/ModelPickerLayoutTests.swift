@@ -75,6 +75,7 @@ struct ModelPickerLayoutTests {
     #expect(section.isCollapsed == false)
     #expect(section.currentModelName == nil)
     #expect(section.isSelectable)
+    #expect(section.rows.map(\.isSelectable) == [true, true])
     // The same model id under OpenRouter is NOT current — the payload's provider is anthropic.
     let openRouterSection = try #require(providerSection(result, "openrouter"))
     #expect(openRouterSection.rows.first(where: { $0.model == "opus" })?.isCurrent == false)
@@ -208,7 +209,7 @@ struct ModelPickerLayoutTests {
     #expect(!section.isSelectable)
     expectNoDifference(section.rows, [
       .init(id: "anthropic::opus", model: "opus", providerID: "anthropic", providerSlug: "anthropic",
-            providerName: "Anthropic", isFavorite: false, isCurrent: true),
+            providerName: "Anthropic", isFavorite: false, isCurrent: true, isSelectable: false),
     ])
     #expect(section.modelCount == 1)
     #expect(result.sections.map(\.id).last == "header::anthropic")
@@ -274,7 +275,8 @@ struct ModelPickerLayoutTests {
   }
 
   @Test func whitespaceQueryIsNotSearching() {
-    let result = layout(favorites: [.init(providerID: "anthropic", model: "haiku")], query: "   ")
+    let result = layout(favorites: [.init(providerID: "anthropic", model: "haiku")], query: " \n ")
+    #expect(!result.isSearching)
     #expect(result.sections.map(\.id).prefix(2) == ["options", "favorites"])
     #expect(providerSection(result, "anthropic")?.isCollapsible == true)
   }
@@ -282,6 +284,7 @@ struct ModelPickerLayoutTests {
   @Test func searchWithNoMatchesYieldsNothing() {
     let result = layout(favorites: [.init(providerID: "anthropic", model: "haiku")], query: "zzz")
     #expect(result.sections.isEmpty)
+    #expect(result.isSearching) // the sheet's no-matches overlay
     #expect(result.scrollTarget == nil)
   }
 

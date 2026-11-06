@@ -32,9 +32,8 @@ public struct ModelOptions: Equatable, Sendable, Decodable {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     providers = (try? c.decode([Provider].self, forKey: .providers)) ?? []
     currentModel = try c.decodeIfPresent(String.self, forKey: .currentModel)
-    let provider = ((try? c.decodeIfPresent(String.self, forKey: .currentProvider)) ?? nil)?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    currentProvider = (provider?.isEmpty ?? true) ? nil : provider
+    currentProvider = ((try? c.decodeIfPresent(String.self, forKey: .currentProvider)) ?? nil)?
+      .trimmedNonEmpty
   }
 
   /// Whether `model` listed under `provider` is the current selection. With a

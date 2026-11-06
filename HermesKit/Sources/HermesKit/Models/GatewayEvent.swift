@@ -352,7 +352,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     model = try c.decodeIfPresent(String.self, forKey: .model)
-    provider = (try? c.decodeIfPresent(String.self, forKey: .provider)) ?? nil
+    provider = ((try? c.decodeIfPresent(String.self, forKey: .provider)) ?? nil)?.trimmedNonEmpty
     reasoningEffort = try c.decodeIfPresent(String.self, forKey: .reasoningEffort)
     running = try c.decodeIfPresent(Bool.self, forKey: .running)
     version = try c.decodeIfPresent(String.self, forKey: .version)

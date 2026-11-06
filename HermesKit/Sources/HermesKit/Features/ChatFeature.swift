@@ -5235,7 +5235,7 @@ public struct ChatFeature {
   private func confirmConfigKeys(_ info: SessionInfo, into state: inout State) {
     if info.model?.nonEmpty != nil {
       state.pendingConfigRollback.removeValue(forKey: "model")
-      state.modelPicker?.confirmModelPick(provider: info.provider?.nonEmpty)
+      state.modelPicker?.confirmModelPick(provider: info.provider)
     }
     if info.reasoningEffort?.nonEmpty != nil {
       state.pendingConfigRollback.removeValue(forKey: "reasoning")

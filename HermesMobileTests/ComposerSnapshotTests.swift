@@ -192,7 +192,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// unconfigured Anthropic card rendered as a disabled lock row with its configure hint.
   func testModelPickerSheet() {
     let view = modelPickerSheet(ModelPickerFeature.State(
-      sessionID: "s",options: singleProviderOptions
+      sessionID: "s", options: singleProviderOptions
     ))
     assertSnapshot(of: view, as: deviceImage())
   }
@@ -203,7 +203,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// the two baselines differ by exactly that row.
   func testModelPickerSheet_applyError() {
     let view = modelPickerSheet(ModelPickerFeature.State(
-      sessionID: "s",options: singleProviderOptions,
+      sessionID: "s", options: singleProviderOptions,
       applyError: "Couldn’t change model: cannot switch mid-turn"
     ))
     assertSnapshot(of: view, as: deviceImage())
@@ -235,7 +235,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// and disable, while the stars stay live (favorites are display-only).
   func testModelPickerSheet_busy() {
     let view = modelPickerSheet(
-      ModelPickerFeature.State(sessionID: "s",options: singleProviderOptions),
+      ModelPickerFeature.State(sessionID: "s", options: singleProviderOptions),
       isBusy: true
     )
     assertSnapshot(of: view, as: deviceImage())
@@ -264,7 +264,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// sideways chevron; OpenRouter collapses to name + count; OpenAI stays expanded.
   func testModelPickerSheet_collapsedProviderShowsCurrent() {
     let view = modelPickerSheet(ModelPickerFeature.State(
-      sessionID: "s",options: multiProviderOptions,
+      sessionID: "s", options: multiProviderOptions,
       collapsedProviders: ["anthropic", "openrouter"]
     ))
     assertSnapshot(of: view, as: deviceImage())
@@ -275,20 +275,14 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// stays in its provider card with a filled star. Anthropic has no match and drops out.
   func testModelPickerSheet_searchActive() {
     let picker = ModelPickerFeature.State(
-      sessionID: "s",options: multiProviderOptions,
+      sessionID: "s", options: multiProviderOptions,
       collapsedProviders: ["openrouter"],
       favorites: [
         FavoriteModel(providerID: "openai", model: "gpt-5"),
         FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8"),
       ]
     )
-    let view = ModelPickerSheet(
-      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
-      currentModel: "claude-opus-4-8",
-      currentEffort: "high",
-      isBusy: false,
-      searchText: "gpt"
-    )
+    let view = modelPickerSheet(picker, searchText: "gpt")
     assertSnapshot(of: view, as: deviceImage())
   }
 
@@ -348,7 +342,7 @@ final class ComposerSnapshotTests: SnapshotTestCase {
 
   private func favoritesSheet() -> some View {
     modelPickerSheet(ModelPickerFeature.State(
-      sessionID: "s",options: multiProviderOptions,
+      sessionID: "s", options: multiProviderOptions,
       favorites: [
         FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8"),
         FavoriteModel(providerID: "openrouter", model: "google/gemini-3-pro"),
@@ -363,13 +357,15 @@ final class ComposerSnapshotTests: SnapshotTestCase {
     _ picker: ModelPickerFeature.State,
     currentModel: String? = nil,
     currentEffort: String? = "high",
-    isBusy: Bool = false
+    isBusy: Bool = false,
+    searchText: String = ""
   ) -> some View {
     ModelPickerSheet(
       store: Store(initialState: picker) { EmptyReducer() },
       currentModel: currentModel ?? picker.options?.currentModel,
       currentEffort: currentEffort,
-      isBusy: isBusy
+      isBusy: isBusy,
+      searchText: searchText
     )
   }
 

@@ -29,6 +29,8 @@ public struct ModelPickerLayout: Equatable, Sendable {
   /// row in an expanded card, else its collapsed card's header (or a lost-credential current
   /// provider's header). Nil while searching or when the current model isn't listed.
   public var scrollTarget: String?
+  /// The query is non-blank — the sheet's no-matches overlay keys on this with empty `sections`.
+  public var isSearching: Bool
 
   public enum Section: Equatable, Sendable, Identifiable {
     case options
@@ -88,12 +90,14 @@ public struct ModelPickerLayout: Equatable, Sendable {
     public var isCurrent: Bool
     /// Favorites rows only: name the provider under the model when favorites span providers.
     public var showsProviderCaption: Bool
+    /// False for a non-configured card's row (the lost-credential saved model): disabled, no star.
+    public var isSelectable: Bool
 
     public var favorite: FavoriteModel { FavoriteModel(providerID: providerID, model: model) }
 
-    public init(
+    init(
       id: String, model: String, providerID: String, providerSlug: String?, providerName: String,
-      isFavorite: Bool, isCurrent: Bool, showsProviderCaption: Bool = false
+      isFavorite: Bool, isCurrent: Bool, showsProviderCaption: Bool = false, isSelectable: Bool = true
     ) {
       self.id = id
       self.model = model
@@ -103,6 +107,7 @@ public struct ModelPickerLayout: Equatable, Sendable {
       self.isFavorite = isFavorite
       self.isCurrent = isCurrent
       self.showsProviderCaption = showsProviderCaption
+      self.isSelectable = isSelectable
     }
   }
 
@@ -135,7 +140,8 @@ public struct ModelPickerLayout: Equatable, Sendable {
         providerSlug: provider.selectionSlug,
         providerName: provider.name,
         isFavorite: isFavorite,
-        isCurrent: options.isCurrent(model: model, in: provider, currentModel: currentModel)
+        isCurrent: options.isCurrent(model: model, in: provider, currentModel: currentModel),
+        isSelectable: provider.isConfigured
       )
     }
 
@@ -181,6 +187,7 @@ public struct ModelPickerLayout: Equatable, Sendable {
     sections += providerSections.map(Section.provider)
 
     self.sections = sections
+    self.isSearching = isSearching
     self.scrollTarget = isSearching ? nil : Self.scrollTarget(
       favoriteRows: favoriteRows, providerSections: providerSections,
       currentProvider: options.currentProvider

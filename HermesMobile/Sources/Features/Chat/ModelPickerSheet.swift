@@ -106,7 +106,7 @@ struct ModelPickerSheet: View {
       }
       .listStyle(.insetGrouped)
       .overlay {
-        if layout.sections.isEmpty && !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+        if layout.sections.isEmpty && layout.isSearching {
           ContentUnavailableView.search(text: searchText)
         }
       }
@@ -157,7 +157,7 @@ struct ModelPickerSheet: View {
           .font(.footnote)
           .foregroundStyle(.secondary)
       }
-      ForEach(section.rows) { modelRow($0, isSelectable: section.isSelectable) }
+      ForEach(section.rows) { modelRow($0) }
     } header: {
       providerHeader(section)
     }
@@ -226,15 +226,15 @@ struct ModelPickerSheet: View {
   /// A model row (tap applies; disabled while busy) with its own star button (always
   /// enabled — favorites are display-only). Both buttons are `.plain` so a `List` row keeps
   /// two separate tap targets instead of firing both. A non-configured card's row
-  /// (`isSelectable == false`: the lost-credential saved model) is disabled and has no star.
-  private func modelRow(_ row: ModelPickerLayout.Row, isSelectable: Bool = true) -> some View {
+  /// (`row.isSelectable == false`: the lost-credential saved model) is disabled and has no star.
+  private func modelRow(_ row: ModelPickerLayout.Row) -> some View {
     HStack(spacing: 12) {
       Button {
         store.send(.modelRowTapped(model: row.model, providerSlug: row.providerSlug))
       } label: {
         HStack {
           VStack(alignment: .leading, spacing: 2) {
-            Text(row.model).foregroundStyle(isBusy || !isSelectable ? .secondary : .primary)
+            Text(row.model).foregroundStyle(isBusy || !row.isSelectable ? .secondary : .primary)
             if row.showsProviderCaption {
               Text(row.providerName).font(.caption).foregroundStyle(.secondary)
             }
@@ -247,10 +247,10 @@ struct ModelPickerSheet: View {
         .contentShape(.rect)
       }
       .buttonStyle(.plain)
-      .disabled(isBusy || !isSelectable)
+      .disabled(isBusy || !row.isSelectable)
       .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
 
-      if isSelectable {
+      if row.isSelectable {
         Button {
           store.send(.starButtonTapped(row.favorite), animation: reduceMotion ? nil : .snappy)
         } label: {
