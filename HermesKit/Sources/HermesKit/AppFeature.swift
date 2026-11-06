@@ -556,6 +556,8 @@ public struct AppFeature {
         // chat is what the user sees. Behind the re-auth modal the chat still seats (it resumes
         // with the re-auth), but never with a hot mic the user can't see.
         state.home?.dismissPresentations()
+        // Task 3: `.newChatWithCamera` / `.newChatWithPhotos` / `.openSession` route here like
+        // `.newChat` until the widget routing lands.
         return reduceCreateSession(
           &state,
           composerText: nil,
@@ -1366,6 +1368,7 @@ public struct AppFeature {
       badge = setBadge(state)
     }
     if let intent {
+      // Task 3: the widget-only intents replay like `.newChat` until their routing lands.
       return .merge(
         badge,
         reduceCreateSession(

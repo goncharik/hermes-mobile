@@ -324,13 +324,13 @@ guard.
 - Create: `HermesKit/Tests/HermesWidgetKitTests/WidgetDeepLinkTests.swift`
 - Create: `HermesKit/Tests/HermesWidgetKitTests/WidgetSnapshotTests.swift`
 
-- [ ] add `LaunchAction`, the new `LaunchIntent` cases (`newChatWithCamera`, `newChatWithPhotos`, `openSession(id:profile:)`) and a `launchAction` accessor (`.newChatWithDictation` → `.dictation`, …); keep `quickActions` = `[.newChat, .newChatWithDictation]`
-- [ ] implement `WidgetDeepLink.url(for:)` / `intent(from:)` per Technical Details (percent-encode the id and profile; reject other schemes, hosts, an empty id and unknown `with=` values)
-- [ ] implement `WidgetSessionSnapshot` (versioned, `decodeLeniently` returns nil on corrupt data or a newer version), `WidgetStaleness`, `AgentActivityContent`, `AppGroup`
-- [ ] fix the exhaustive `switch`es over `LaunchIntent` in HermesKit / the app so they compile (the new cases route in Task 3; until then they map like `.newChat` with a `// Task 3` note)
-- [ ] write tests: deep-link round-trip for every case, unknown and malformed URLs → nil, a profile with spaces / `default`
-- [ ] write tests: snapshot encode/decode, corrupt bytes → nil, `version` > current → nil, staleness boundaries (`freshUntil` exactly, before, after) and the row-glyph mapping
-- [ ] run tests - must pass before task 3
+- [x] add `LaunchAction`, the new `LaunchIntent` cases (`newChatWithCamera`, `newChatWithPhotos`, `openSession(id:profile:)`) and a `launchAction` accessor (`.newChatWithDictation` → `.dictation`, …); keep `quickActions` = `[.newChat, .newChatWithDictation]` (➕ the widget-only cases get distinct `shortcutItemType` literals that `init(shortcutItemType:)` rejects, plus titles / symbols for the controls)
+- [x] implement `WidgetDeepLink.url(for:)` / `intent(from:)` per Technical Details (percent-encode the id and profile; reject other schemes, hosts, an empty id and unknown `with=` values)
+- [x] implement `WidgetSessionSnapshot` (versioned, `decodeLeniently` returns nil on corrupt data or a newer version), `WidgetStaleness`, `AgentActivityContent`, `AppGroup` (➕ `WidgetSessionSnapshot.signedOut`, `maxRows` cap in `init`, `AppGroup.snapshotFileURL()` shared by the app mirror and the provider)
+- [x] fix the exhaustive `switch`es over `LaunchIntent` in HermesKit / the app so they compile (the new cases route in Task 3; until then they map like `.newChat` with a `// Task 3` note) (➕ no exhaustive switch outside `LaunchIntent` existed: `AppFeature` compares `== .newChatWithDictation`, so only the two `// Task 3` notes were added)
+- [x] write tests: deep-link round-trip for every case, unknown and malformed URLs → nil, a profile with spaces / `default`
+- [x] write tests: snapshot encode/decode, corrupt bytes → nil, `version` > current → nil, staleness boundaries (`freshUntil` exactly, before, after) and the row-glyph mapping
+- [x] run tests - must pass before task 3
 
 ### Task 3: Route deep links and `openSession` through `AppFeature`
 
