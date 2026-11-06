@@ -2,13 +2,15 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
-/// Delivers App Intent launch requests (#93) to the reducer. The intents in the app target
-/// call `LaunchIntentBridge.shared.received(_:)`; `AppFeature.task` observes `incoming()` next
-/// to the push-tap observer and routes each request.
+/// Delivers launch requests to the reducer: App Intents and Home Screen quick actions (#93)
+/// call `LaunchIntentBridge.shared.received(_:)`; widget, control and Live Activity deep links
+/// (#138) arrive through `received(url:)`. `AppFeature.task` observes `incoming()` next to the
+/// push-tap observer and routes each request.
 @DependencyClient
 public struct LaunchIntentClient: Sendable {
-  /// A stream of launch requests raised by App Intents. A request that arrived before anyone
-  /// subscribed (a cold launch from an intent) is delivered to the first subscriber, once.
+  /// A stream of launch requests (App Intents, quick actions, deep links). A request that
+  /// arrived before anyone subscribed (a cold launch from an intent) is delivered to the first
+  /// subscriber, once.
   public var incoming: @Sendable () -> AsyncStream<LaunchIntent> = { AsyncStream { $0.finish() } }
 }
 

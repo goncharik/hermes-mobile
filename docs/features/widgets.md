@@ -18,7 +18,7 @@ All six live in one `WidgetBundle` (`HermesWidgets/Sources/HermesWidgetsBundle.s
 | Surface | Families | Tap |
 |---|---|---|
 | `QuickActionsWidget` ("Hermes") | `systemSmall`: "Ask" pill + Camera + Mic; `systemMedium`: "Ask Hermes" pill + Camera + Photos + Mic | small: `Button(intent: OpenHermesURLIntent)`; medium: `Link` per button |
-| `SessionsWidget` ("Sessions") | `systemMedium`: the headline row; `systemLarge`: up to 5 rows | `Link` per row; no `widgetURL` (a tap elsewhere opens the app as is) |
+| `SessionsWidget` ("Sessions") | `systemMedium`: the top row (needs input, else working, else most recent); `systemLarge`: up to 5 rows | `Link` per row; no `widgetURL` (a tap elsewhere opens the app as is) |
 | `NewChatAccessoryWidget` ("New Chat") | `accessoryCircular`: the Hermes glyph | `widgetURL` new chat |
 | `NewChatControl` / `DictateControl` | Control Center, Lock Screen, Action button | `ControlWidgetButton(action: OpenHermesURLIntent)` |
 | `AgentsLiveActivity` | Lock Screen + Dynamic Island | `widgetURL` to the headline session (none without a headline) |
@@ -107,8 +107,10 @@ sees one module.
   `WidgetDeepLink` doesn't recognise opens a plain new chat.
 - **`.openSession` follows push-tap routing (#32)** through the shared
   `reduceOpenSessionRouting`: on screen → in place; a detached compact slot → re-attach;
-  otherwise replace the slot, never stack. It dismisses list presentations first and never
-  arms the #30 approval hint. A row from another profile than the list's (profiles API present)
+  otherwise replace the slot, never stack. It dismisses list presentations first and adds no
+  approval bookkeeping of its own: like a list open, a session already badged gets the #30
+  hint on re-attach / replace; in place it only clears the badge entry. A row from another
+  profile than the list's (profiles API present)
   opens directly under the row's profile without changing the list's selection; a `nil`
   profile or an agent without the profiles API routes exactly like a push tap.
 - **Its stash remembers the server.** Before `home` exists, `.openSession` records
@@ -121,7 +123,8 @@ sees one module.
 
 `AppFeature.State.agentStatus: AgentStatusProjection?` is computed, pure and `Equatable`, with
 no timestamps, so its edge fires only on a real change. Built by
-`AgentStatusProjection.make(sessions:needsInput:slotRunning:showsTitles:profile:)`:
+`AgentStatusProjection.make(sessions:needsInput:slotRunning:slotSession:showsTitles:profile:)`
+from `State.agentStatusInputs` (the raw inputs plus the list's connection):
 
 - **Source = `SessionListFeature.State.statusSessions`**, the list's UNFILTERED rows: `nil`
   until the first unfiltered fetch of the process succeeds, replaced on every unfiltered
@@ -134,7 +137,12 @@ no timestamps, so its edge fires only on a real change. Built by
 - **Rules**: interactive sessions only (cron excluded); status from `needsInputSessionIDs` and
   the working flag, never `.unread` (the widgets paint no unread state, and a read flip must
   not churn the mirror). The live slot's running flag overrides its row's polled `isActive`,
-  but only when the slot is in the list's profile (`isSameProfile`).
+  but only when the slot is in the list's profile (`isSameProfile`). A running or needs-input
+  slot the list doesn't carry yet (a new chat's first turn) gets its own row (`slotSession`),
+  titled by its first prompt.
+- **Text is clamped**: every row's title and workspace keeps its first line, cut to
+  `maxTextScalars` (120) Unicode scalars with an ellipsis, so an untitled session named by a
+  pasted multi-KB prompt can't push the activity content past ActivityKit's ~4 KB limit.
 - **Order**: needs input, then working, then `updatedAt` newest first, server order breaking
   ties. `rows` is capped at `WidgetSessionSnapshot.maxRows` (5); `activeCount` counts every
   needs-input or working row of the whole list; `headline` = the first active row.
@@ -142,10 +150,16 @@ no timestamps, so its edge fires only on a real change. Built by
   while "Show session titles" is on. `showsTitles` is part of the projection, so flipping it is
   a projection change: the Live Activity drops the title, the Home Screen widgets don't.
 
-**One `.onChange(of: \.agentStatus)`** in `AppFeature`, evaluated after every child reducer
-(same pattern as `offersQuickActions`), drives both surfaces: `syncMirror` and
-`syncLiveActivity` (the activity). A `nil` projection HOLDS: write nothing, never end. Only a
-logout clears. Never add a writer in `SessionListFeature` or `ChatFeature`.
+**One `.onChange(of: \.agentStatusInputs)`** in `AppFeature`, evaluated after every child
+reducer (same pattern as `offersQuickActions`), is the only path that derives content: it
+builds the projection only when an input moved and drives `syncMirror` and `syncLiveActivity`.
+A `nil` projection HOLDS: no new content, never end. When it goes `nil` under the SAME list
+connection (a profile switch reset the rows), the mirror is re-written with the last rows and
+the activity restamped, both with `min(freshUntil, now + 10 s)`; coming back from `nil`
+restamps the activity even when its content didn't change. Under a new connection (a
+different-user re-auth, surfaces already cleared) nothing is written. The other paths only
+restamp (the scene edges) or end / clear (the toggle off, the landing sweep, logout). Never add
+a writer in `SessionListFeature` or `ChatFeature`.
 
 ## The App Group mirror
 
@@ -167,8 +181,8 @@ source: a `WidgetSessionSnapshot` JSON file (`AppGroup.snapshotFileURL()`,
   so a write still waiting out its debounce can't land after it.
 - `liveValue` is the file-backed client over the App Group container plus
   `WidgetCenter.shared.reloadTimelines(ofKind:)`, iOS-guarded. `fileBacked(at:reloadTimelines:)`
-  holds the file logic, so macOS tests cover it. `testValue` is a no-op (every logout and list
-  fetch reaches it).
+  holds the file logic, so macOS tests cover it. `testValue`, the off-iOS `liveValue` and demo
+  mode use `.noop` (every logout and list fetch reaches it).
 
 ## Staleness: `freshUntil`
 
@@ -180,8 +194,12 @@ The app vouches for what it wrote until `freshUntil`; past it nothing observes t
   seconds): `now + (running slot ? 30 s : 0) + 10 s`. The stamp is kept in
   `State.backgroundFreshUntil` and reused by every edge write until `.active`, so a change
   during the grace window can't extend the promise.
-- **`.active`**: clears the stamp and rewrites at once with `now + 8 h`, so the scheduled
-  "Outdated" doesn't fire under a live app.
+- **`.active` after a real background**: clears the stamp and rewrites at once with
+  `now + 8 h`, so the scheduled "Outdated" doesn't fire under a live app. A brief `.active`
+  (Control Center, the notification shade) never left the foreground freshness and writes
+  nothing.
+- **Unknown under the same list**: `min(freshUntil, now + 10 s)` (`unknownFreshUntil`, see the
+  edge above).
 - **The widget**: `WidgetStaleness.timelineDates` = an entry for now plus an "outdated" entry
   at `freshUntil` while that is ahead; policy `.never` (the app reloads after every write).
   Exactly at `freshUntil` is already outdated. Past it, working / needs-input glyphs become the
@@ -191,33 +209,43 @@ The app vouches for what it wrote until `freshUntil`; past it nothing observes t
 
 ## Live Activity lifecycle
 
-`LiveActivityClient` (`areActivitiesEnabled`, `start`, `update`, `end`, `endAll`): the live
-value wraps ActivityKit under `#if os(iOS) && canImport(ActivityKit)` and requests with
-`pushType: nil`. `testValue` is a no-op that reports activities disabled. `AppFeature` decides
-everything in `syncLiveActivity`, so every transition is a `TestStore` assertion.
+`LiveActivityClient` (`areActivitiesEnabled`, `start`, `update`, `end`, `endAll`, `isActive`):
+the live value wraps ActivityKit under `#if os(iOS) && canImport(ActivityKit)` and requests
+with `pushType: nil`. `testValue` and the off-iOS `liveValue` are `.noop`, which reports
+activities disabled; demo mode uses `.noop` reporting them allowed (the start throws and is
+only logged). `AppFeature` decides everything in `syncLiveActivity`, so every transition is a
+`TestStore` assertion.
 
-- **`State.liveActivity: LiveActivitySeat?`** holds the id (nil while the start is in flight)
-  and the last content sent; `liveActivityID` is computed from it.
+- **`State.liveActivity: LiveActivitySeat?`** holds the id (nil while the start is in flight),
+  the last content sent and the start's request token; `liveActivityID` is computed from it.
 - **Start**: agents active, no seat, the pref on, the scene NOT backgrounded and iOS allowing
-  activities. The seat is taken at once, so a second change can't start a second activity.
-  The start is NOT debounced: `Activity.request` is foreground-only and the user may
-  background within the second. `liveActivityStarted(id)` adopts the id and catches up with
-  anything that changed meanwhile. A start failure is only debug-logged
-  (`liveActivityStartFailed` frees the seat for the next change), never a banner.
+  activities. The seat is taken at once with a fresh token (`State.liveActivityRequests`), so a
+  second change can't start a second activity. The start first runs `endAll`, so a previous
+  activity's lingering "Done" never stacks. It is NOT debounced: `Activity.request` is
+  foreground-only and the user may background within the second.
+  `liveActivityStarted(id:request:)` adopts the id only for the seat with that token and
+  catches up with anything that changed meanwhile (a restamp when backgrounded or unknown by
+  then). A start failure is only debug-logged (`liveActivityStartFailed(request:)` frees that
+  seat for the next change), never a banner.
 - **Update**: debounced 1 s via `.liveActivitySyncDue` under `CancelID.liveActivitySync`, so a
   turn ending right before the next queued turn starts updates the activity instead of ending
   and restarting it. Unchanged content is not re-sent.
 - **End**: nothing active → end with the last headline as `.done` content
   (`activeCount = 0`), dismissed after 5 min (`liveActivityDismissal`).
 - **Scene edges restamp** the stale date at once (`.background` with `backgroundFreshUntil`,
-  `.active` with `+8 h`); `.active` also starts a missed activity when agents are active and
-  none is up. The background edge never starts one.
+  `.active` after a real background with `+8 h`). That `.active` first drops a seat whose
+  activity iOS no longer shows (`isActive`: swiped away or timed out), then starts a missed one
+  when agents are active and none is up. The background edge never starts one; a brief
+  `.active` does nothing.
+- **Unknown**: a projection going unknown under the same list restamps the activity's content
+  with the short stale date (see the edge above); coming back restamps it.
 - **Orphans end at once**: a start that lands with no seat (toggle off or logout mid-request)
-  or with an already-adopted seat (a fast off→on) ends that activity immediately.
-- **Every landing sweeps**: `landOnHome` ends every activity on screen when there is no seat.
-  None can be this landing's (a start needs the first fetch, which comes after), so it belongs
-  to a previous process, killed in the background or crashed, that nothing would ever update
-  or end. A still-active agent restarts it after the first fetch.
+  or for a seat another request took (a fast off→on — the token doesn't match) ends that
+  activity immediately.
+- **Every landing sweeps**: `landOnHome` ends every activity on screen. None can be this
+  landing's (a start needs the first fetch, which comes after), so it belongs to a previous
+  process, killed in the background or crashed, that nothing would ever update or end. A
+  still-active agent restarts it after the first fetch.
 - **Logout** (the four `clearSurfaces` sites) ends every activity and drops the seat.
 
 ## Settings toggles
@@ -228,9 +256,8 @@ Activity is on). Rows, footer and seeding: `docs/features/settings.md`.
 
 - **Off** → `endAll`, drop the seat, cancel a pending update. **On** → sync at once (starts
   if agents are active). Show-titles goes through the projection edge.
-- Settings persists and delegates; the list forwards; `AppFeature` handles the delegate and
-  its own direct actions through one `setLiveActivityEnabled`. `landOnHome` seeds both from
-  prefs on every landing.
+- Settings persists and delegates; the list forwards; `AppFeature` handles the delegate
+  through `setLiveActivityEnabled`. `landOnHome` seeds both from prefs on every landing.
 - **Titles off OMITS the title** from the activity content (the workspace takes its place),
   not `.privacySensitive()` redaction. The Home Screen widgets are unaffected.
 - `clearLiveActivityPrefs()` resets both at the Settings sign-out and both `AppFeature` full
@@ -245,12 +272,20 @@ Activity is on). Rows, footer and seeding: `docs/features/settings.md`.
   up to 8 h and the widgets keep the last working / needs-input glyphs until the app runs
   again. The activity, stamped with the same 8 h, keeps its last status until the next landing
   sweeps it (or iOS's own Live Activity time limit ends it).
-- **Desktop-started turns while the app is foregrounded** show up at the list's next fetch or
-  poll, not instantly.
+- **Other sessions' states follow the list's fetches.** A turn started or finished elsewhere
+  (the desktop, another device) shows up at the list's next fetch or poll, not instantly. In
+  compact the poll is stopped while a chat is pushed, so other sessions' rows can stay
+  "Working" / "Needs input" in the projection until the user pops back to the list; once the
+  app is backgrounded the surfaces read "Outdated" anyway.
+- **Any app can open a `hermesmobile://` URL**, including the dictation, camera, photos and
+  session links. Bounded: the app comes to the foreground, the mic indicator shows while
+  dictating, and nothing is sent without the user.
 - **Not verified on a device yet**: `OpenURLIntent` opening the app from the small widget and
   the controls on iOS 18 (fallback if not: one `widgetURL` new chat for the small widget and
   `openAppWhenRun` intents compiled into both targets for the controls); `.onOpenURL` cold and
-  warm; the tinted and clear rendering modes (`widgetRenderingMode` can't be injected into a
+  warm; a widget Camera / Photos tap while a sheet is up or being dismissed (the picker waits
+  up to 2 s for the presentation to settle; one UIKit refuses finishes as an empty batch);
+  the tinted and clear rendering modes (`widgetRenderingMode` can't be injected into a
   snapshot).
 
 ## Tests

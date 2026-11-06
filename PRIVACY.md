@@ -49,13 +49,21 @@ developer.
 - **Keychain:** your sign-in credentials.
 - **App preferences:** the server address, pinned sessions, which sessions you have read,
   your default swipe action, the selected agent profile, the "read replies aloud" setting,
-  your notification device token, and when to show the notifications prompt again.
+  the "Live Activity" and "Show session titles" settings, your notification device token, and
+  when to show the notifications prompt again.
+- **Widget data:** a file shared with the app's widgets (`widget-sessions.json`) holding up
+  to 5 session titles, their workspace folder names, whether each is working or waiting on
+  you, and when each was last updated. Only the widgets read it.
+- **Live Activity:** while agents are running, the Lock Screen and the Dynamic Island show
+  how many are active and the title of the session that needs you or is working. Turn off
+  "Show session titles" to show its workspace folder instead, or "Live Activity" to hide it.
 - **Chat cache:** a local database with recent messages from up to 50 sessions, so chats
   appear instantly when you open them. Your agent remains the source of truth, and the
   cache is refreshed from it.
 
-Signing out (Settings → Sign out) deletes your credentials and the chat cache and resets the
-preferences that belong to that server. The app icon you choose is remembered by iOS itself.
+Signing out (Settings → Sign out) deletes your credentials and the chat cache, resets the
+preferences that belong to that server, replaces the widget data with a signed-out state and
+ends the Live Activity. The app icon you choose is remembered by iOS itself.
 
 ## Push notifications
 

@@ -347,10 +347,11 @@ bullets below are the compressed rules.
 - **Widgets, controls and the Live Activity (#138) are thin**: the `HermesWidgets` extension
   links ONLY the Foundation-only `HermesWidgetKit` (no network, no Keychain); every tap is a
   `hermesmobile://` URL → `LaunchIntentBridge.received(url:)` (`.openSession` = push-tap
-  routing, server-guarded stash). Both surfaces sync from ONE `.onChange(of: \.agentStatus)`
-  (nil = hold, never end; no other writers): the App Group mirror and the aggregate activity
-  (foreground-only start), both stamped `freshUntil` (8 h foreground, ≤ 40 s backgrounded →
-  "Outdated"). Details: `docs/features/widgets.md`.
+  routing, server-guarded stash). Content derives ONLY from the `agentStatus` edge
+  (`.onChange(of: \.agentStatusInputs)`; nil = hold, never end); scene edges only restamp,
+  toggle-off / landing sweep / logout only end or clear. Both the App Group mirror and the
+  aggregate activity (foreground-only start) are stamped `freshUntil` (8 h foreground, ≤ 40 s
+  backgrounded → "Outdated"). Details: `docs/features/widgets.md`.
 
 ## Multi-profile
 

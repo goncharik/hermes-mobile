@@ -83,8 +83,8 @@ public struct AppFeature {
     /// An App Intent launch request (#93) that arrived before the session list existed — the
     /// cold-launch Action button / Siri / Shortcuts case, where `home` only appears once the
     /// auto-connect probe (or a manual login) finishes. Same shape as `pendingPushTap`: single
-    /// stash, last-wins, replayed in `landOnHome` (dictation only on the launch auto-connect
-    /// landing), process-lifetime only, cleared on every logout path. Last-wins ACROSS both
+    /// stash, last-wins, replayed in `landOnHome` (the launch action — dictation / camera /
+    /// photos — only on the launch auto-connect landing), process-lifetime only, cleared on every logout path. Last-wins ACROSS both
     /// stashes too: stashing an intent clears the tap stash and vice versa, so the landing
     /// replays only the most recent request. A new chat belongs to no session, so it is valid
     /// on whatever server the user signs into; an `.openSession` (a widget / Live Activity tap)

@@ -1,5 +1,9 @@
 # Widgets, Control Center controls and a running-agents Live Activity (#138)
 
+> **As built**: the code deviates from this design in places; the ➕ / ⚠️ notes on each task
+> record the deviations, and `docs/features/widgets.md` is the normative contract (it includes
+> the review-phase fixes). Where this plan and that doc disagree, the doc wins.
+
 ## Overview
 - Home Screen, Lock Screen and Control Center surfaces for Hermes, plus one aggregate Live
   Activity that shows running agents on the Lock Screen and in the Dynamic Island (T3 Code style).
@@ -111,12 +115,14 @@
   - Widgets use `Link` / `widgetURL`.
   - The small widget and the controls use an AppIntent in the extension that returns
     `.result(opensIntent: OpenURLIntent(url))`.
-  - The app has one `.onOpenURL` → `WidgetDeepLink.parse` → `LaunchIntentBridge.shared.received`.
+  - The app has one `.onOpenURL` → `LaunchIntentBridge.shared.received(url:)`, which maps
+    through `WidgetDeepLink.intent(from:)` and ignores `nil`.
   - All #93 machinery (cold-launch buffer, stash, last-wins, logout clear) applies unchanged.
 - **New `LaunchIntent` cases**:
   - `.newChatWithCamera` and `.newChatWithPhotos`: new chat plus a one-shot action.
-  - `.openSession(id:profile:)`: follows #32 push-tap routing, does not arm the approval hint,
-    and its stash remembers the server URL.
+  - `.openSession(id:profile:)`: follows #32 push-tap routing, adds no approval bookkeeping of
+    its own (as built: a badged session gets the #30 hint on re-attach / replace, like a list
+    open), and its stash remembers the server URL.
 - **`ChatFeature.pendingDictation: Bool` → `pendingLaunchAction: LaunchAction?`**
   (`.dictation` / `.camera` / `.photos`), with one `consumePendingLaunchAction`. The reused-seat
   path sends `.startLaunchAction(_)`. The #93 rules carry over:
@@ -126,9 +132,11 @@
 - **One derived projection, one edge**:
   - `AppFeature.State.agentStatus: AgentStatusProjection?` is pure and `Equatable`, with no
     timestamps.
-  - One `.onChange(of: \.agentStatus)` drives a debounced effect that writes the App Group mirror,
-    reloads widget timelines, and syncs the Live Activity (start / update / end).
-  - `nil` means "unknown": hold, write nothing, never end.
+  - One edge drives the debounced App Group mirror write (+ timeline reload) and the Live
+    Activity sync (start / update / end). As built: `.onChange(of: \.agentStatusInputs)` calling
+    `syncMirror` and `syncLiveActivity`; the activity start is immediate, update / end debounced.
+  - `nil` means "unknown": hold, never end (as built: unknown under the same list re-writes the
+    last rows with a short promise — `docs/features/widgets.md`).
 - **Staleness = `freshUntil`**:
   - Foreground writes `now + 8h`.
   - The background edge writes `now + (grace task ? 30 s : 0) + 10 s`.
@@ -177,8 +185,9 @@ public struct WidgetSessionSnapshot: Codable, Equatable, Sendable {
 public enum WidgetStaleness {
   public static func isOutdated(_ snapshot: WidgetSessionSnapshot, at now: Date) -> Bool
   /// What a row's trailing glyph shows: working/needsInput become `.outdated` past freshUntil.
-  public static func displayStatus(_ row: WidgetSessionRow, snapshot: WidgetSessionSnapshot,
-                                   at now: Date) -> RowGlyph   // .working .needsInput .outdated .none
+  /// As built: `glyph(for:snapshot:at:) -> AgentActivityContent.DisplayStatus?` (nil = none).
+  public static func glyph(for row: WidgetSessionRow, snapshot: WidgetSessionSnapshot,
+                           at now: Date) -> AgentActivityContent.DisplayStatus?
 }
 
 public struct AgentActivityContent: Codable, Hashable, Sendable {   // ActivityKit ContentState
@@ -200,8 +209,10 @@ guard.
 
 ### HermesKit additions
 - `AgentStatusProjection: Equatable` (pure, `Models/AgentStatusProjection.swift`):
-  - `make(sessions: [Session]?, needsInput: Set<String>, slotRunning: (id: String, running: Bool)?, showsTitles: Bool, profile: String?)`
-    → `AgentStatusProjection?`; returns `nil` when `sessions == nil`.
+  - As built: `make(sessions: [Session], needsInput: Set<String>, slotRunning: (id: String, running: Bool)?, slotSession: Session?, showsTitles: Bool, profile: String?)`
+    → `AgentStatusProjection` (non-optional; "unknown" is decided by
+    `AppFeature.State.agentStatusInputs`). `slotSession` gives an unlisted running /
+    needs-input slot (a new chat) its own row; titles and workspaces are clamped.
   - Rules: interactive only (`!isCron`). `status` per row from
     `SessionStatus(needsInput:isWorking:isUnread:)`. The slot's live running flag overrides the
     row's `isActive`.
@@ -221,39 +232,41 @@ guard.
   - `liveValue` writes atomically to `FileManager.containerURL(forSecurityApplicationGroupIdentifier:)`
     and calls `WidgetCenter.shared.reloadTimelines(ofKind:)` (`#if canImport(WidgetKit)` + iOS
     guard; non-iOS `liveValue = testValue`).
-  - `testValue` unimplemented-by-default via the macro.
+  - As built: `testValue` (and the non-iOS `liveValue`) is `.noop`.
 - `LiveActivityClient` (`@DependencyClient`):
   - `areActivitiesEnabled() -> Bool`
   - `start(AgentActivityContent, staleDate: Date) async throws -> String`
   - `update(id: String, AgentActivityContent, staleDate: Date) async`
   - `end(id: String, final: AgentActivityContent?, dismissAfter: Date?) async`
   - `endAll() async`
+  - As built, also `isActive(id: String) -> Bool` (`.active` drops a seat iOS no longer shows).
   - The live value lives in HermesKit under `#if os(iOS) && canImport(ActivityKit)` (it uses
-    HermesWidgetKit's `HermesActivityAttributes`); non-iOS `liveValue = testValue`, like the
-    other iOS-only clients.
+    HermesWidgetKit's `HermesActivityAttributes`); non-iOS `liveValue` and `testValue` are
+    `.noop`.
 - `PreferencesClient`: `liveActivityEnabled` (default true) and `liveActivityShowsTitles`
   (default true), with load/save and inclusion in the logout clear.
 - `AppFeature` additions:
   - `State.agentStatus` (computed): `nil` when `home == nil` or `home.statusSessions == nil`.
-  - `State.liveActivityID: String?`, `State.liveActivityEnabled`, `State.liveActivityShowsTitles`
-    (seeded from prefs in `makeHomeState` / landing).
-  - `.onChange(of: \.agentStatus)` → `.send(.agentStatusChanged)` → `syncSurfaces(&state, freshUntil:)`:
-    a `.run` with `cancellable(id: CancelID.surfacesSync, cancelInFlight: true)` that sleeps 1 s on
-    `continuousClock`, then writes the mirror and reloads timelines.
+  - As built: `State.liveActivity: LiveActivitySeat?` (id, last content, start request token;
+    `liveActivityID` computed), `State.liveActivityEnabled`, `State.liveActivityShowsTitles`
+    (seeded from prefs in `landOnHome`).
+  - As built: `.onChange(of: \.agentStatusInputs)` calls `syncMirror` (a `.run` under
+    `CancelID.mirrorSync`, `cancelInFlight`, sleeping 1 s on `continuousClock` before the write
+    + reload) and `syncLiveActivity` directly — no `.agentStatusChanged` action.
   - The activity decision happens in the reducer so the state change is testable:
-    - count > 0 and `liveActivityID == nil`, enabled, not backgrounded → `start`, then
-      `.liveActivityStarted(id)`;
-    - count > 0 and an id exists → `update`;
+    - count > 0, no seat, enabled, not backgrounded → take the seat (fresh token), `endAll`,
+      `start`, then `.liveActivityStarted(id:request:)`;
+    - count > 0 and an id exists → `update` (debounced 1 s);
     - count == 0 and an id exists → `end` with final `.done` content, `dismissAfter = now + 5 min`,
-      and `liveActivityID = nil`;
-    - start failure → `debugLog` only (`.liveActivityStartFailed`), no banner.
+      and the seat dropped;
+    - start failure → `debugLog` only (`.liveActivityStartFailed(request:)`), no banner.
   - The background edge (`.background` case) additionally re-sends the sync with
     `freshUntil = now + (chat?.isRunning == true ? 30 : 0) + 10` and updates the activity's
-    `staleDate`. `.foreground` re-sends with `now + 8h`.
-  - Live Activity toggle off → `endAll` + `liveActivityID = nil`. Show-titles toggle changes the
+    `staleDate`. `.active` after a real background re-sends with `now + 8h`.
+  - Live Activity toggle off → `endAll` + seat dropped. Show-titles toggle changes the
     projection, so the activity updates through the edge.
   - Every logout site that clears `pendingPushTap` also: `liveActivity.endAll()`,
-    `widgetMirror.clear()` + reload, `liveActivityID = nil`. The prefs reset comes from the
+    `widgetMirror.clear()` + reload, seat dropped. The prefs reset comes from the
     existing clear-all.
 
 ### Routing
@@ -473,7 +486,7 @@ guard.
 - [x] update `docs/features/app-intents.md` (new `LaunchIntent` cases, the URL path, `pendingLaunchAction`), `docs/features/settings.md` (the new rows), `docs/development.md` (App Group, extension bundle id, profiles for both ids in the export recipe) (➕ `docs/architecture.md` client list gets `WidgetMirrorClient` / `LiveActivityClient` and `received(url:)`; `docs/development.md` gets a "Targets and the App Group" section and the real snapshot state: 358 tests, the 3 pre-existing attachment drift failures)
 - [x] add one short `CLAUDE.md` bullet under Push notifications / App Intents pointing at `docs/features/widgets.md` (keep CLAUDE.md about 200 lines) (➕ the #93 bullet now says `pendingLaunchAction`, the Layout list names `HermesWidgets/`, the snapshot line states 358 with the 3 known failures; ⚠️ CLAUDE.md was already ~400 lines before this task — the whole-file compression stays a separate task)
 - [x] update README feature list if it enumerates surfaces
-- [x] move this plan to `docs/plans/completed/` (done by orchestrator after reviews)
+- [ ] move this plan to `docs/plans/completed/` (done by orchestrator after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
@@ -496,6 +509,9 @@ guard.
   - Ends with "Done" when the turn finishes in the foreground.
   - The toggles behave as specified.
 - The tinted and clear Home Screen modes.
+- A widget Camera / Photos tap while a sheet is up or being dismissed: the picker appears
+  over it, or the request finishes as an empty batch (never a hung composer).
 
 **Distribution**:
-- Internal TestFlight build (bump `CURRENT_PROJECT_VERSION`).
+- Internal TestFlight build (bump `CURRENT_PROJECT_VERSION`), archived with
+  `HERMES_APP_ICON=AppIconDev` (`docs/development.md`).

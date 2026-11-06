@@ -106,10 +106,7 @@ a smaller payload:
 With `home` set, `.openSession(id:profile:)` dismisses list presentations, then runs
 `reduceOpenSessionRouting`, the body a push tap also runs, so the #32 rules can't drift: on
 screen → in place; a detached compact slot → re-attach; otherwise replace the slot, never
-stack. It never arms the #30 approval hint (push taps keep their badge and hint bookkeeping
-around the shared body). A row from another profile than the list's, on an agent with the
-profiles API, resumes under the row's profile without changing the list's selection; a `nil`
-profile routes exactly like a push tap. Details: `docs/features/widgets.md`.
+stack. Approval bookkeeping and the cross-profile rule: `docs/features/widgets.md`.
 
 ## Routing: the exact "New session" path
 
