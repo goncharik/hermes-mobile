@@ -187,6 +187,23 @@ public struct ChatFeature {
     /// Draft text for the rename alert. `nil` = alert closed; non-nil = alert open
     /// with the in-progress title (Task 4).
     public var renameDraft: String?
+    /// The ⋯ menu's Archive/Delete confirmation — the session list's destructive-actions
+    /// idiom (`ConfirmationDialogState`, presented as a bottom action sheet).
+    @Presents public var confirmationDialog: ConfirmationDialogState<Action.Dialog>?
+    /// Mirror of the session list's `deleteSupported` (server-wide capability): seeded and
+    /// kept in sync by `AppFeature`; a 404/405 from this chat's own delete flips it off here
+    /// and `AppFeature` flips the list's flag (`sessionRemovalFinished`). Default `true`,
+    /// like the list.
+    public var deleteSupported: Bool = true
+    /// The session id an Archive/Delete from the ⋯ menu is in flight for (the PARENT runs the
+    /// REST call — see `Delegate.removeSession`). Kept as the id, not a flag, so the parent
+    /// can route the reply to this chat even if the #17 heal recreated the session meanwhile
+    /// (`sessionKey` no longer matches). Cleared when the parent re-injects a failure; on
+    /// success the parent tears the slot down.
+    public var removingSessionID: String?
+    /// Both ⋯ menu items disable while a removal is in flight, so a second confirmation
+    /// can't double-fire.
+    public var isRemovingSession: Bool { removingSessionID != nil }
     /// Token of the copy target most recently tapped — a code block (#9) or a whole
     /// message row (`ChatFeature.rowCopyToken(_:)`, #34) — for the transient "copied"
     /// checkmark. Cleared by a clock-driven effect; the latest copy owns the feedback.
@@ -1058,6 +1075,14 @@ public struct ChatFeature {
     /// Rename is only meaningful once we have a live session id (otherwise `confirmRename`
     /// silently no-ops) — drives whether the toolbar Rename control is enabled.
     public var canRename: Bool { liveSessionID != nil }
+    /// Whether the ⋯ menu may offer Archive/Delete: the chat addresses a session the server
+    /// has a ROW for. A new chat before its first prompt (no stored id, or a minted key with
+    /// no row yet — `awaitsFirstPersist`) and an unpersisted branch (#34) have nothing to
+    /// archive or delete.
+    public var canArchiveOrDelete: Bool {
+      storedSessionID != nil && !awaitsFirstPersist && attachLiveSessionID == nil
+        && branchSeed == nil
+    }
 
     /// Rows for the slash-command autocomplete panel (#36), derived PURELY from
     /// `composerText` + the cached catalog on every keystroke — no stored suggestion
@@ -1293,6 +1318,14 @@ public struct ChatFeature {
     case confirmRename
     case renameFailed(previousTitle: String?)
     case cancelRename
+    // Archive / Delete from the ⋯ menu: confirm → the PARENT runs the REST call under the
+    // chat's OWN profile (`Delegate.removeSession`) and tears the slot down only on the
+    // server's acknowledgement; a failure comes back here while the slot still holds it.
+    case archiveButtonTapped
+    case deleteButtonTapped
+    case confirmationDialog(PresentationAction<Dialog>)
+    case archiveFailed(id: String, error: RESTError)
+    case deleteFailed(id: String, error: RESTError)
     // Attachments (#8)
     case attachPhotosTapped
     case attachCameraTapped
@@ -1363,6 +1396,12 @@ public struct ChatFeature {
     /// rows are carried across the wholesale replace by the reducer.
     case slashHistoryRefreshed(ActivateResponse)
 
+    /// The ⋯ menu's destructive confirmations.
+    public enum Dialog: Equatable, Sendable {
+      case confirmArchive
+      case confirmDelete
+    }
+
     /// Signals the parent (`AppFeature`) routes: the dead-session signal that raises the
     /// re-auth modal (reconnect backoff is paused for it), and the authoritative
     /// working-state change that drives the session-list glow.
@@ -1387,6 +1426,30 @@ public struct ChatFeature {
       /// chat's `branchSeed`, so a server-side reap of the never-prompted branch can be
       /// healed by replaying the seeded create.
       case branchCreated(BranchCreation)
+      /// The user CONFIRMED Archive/Delete from this chat's ⋯ menu. The PARENT runs the REST
+      /// round-trip in its own effect — a slot effect is cancelled when the user navigates
+      /// away or picks another chat (`.ifLet`), which would drop a server-applied removal's
+      /// cleanup — and on success applies the list contract (row/pin/seen drop, teardown;
+      /// for Delete the snapshot wipe and badge entry too).
+      case removeSession(SessionRemoval)
+
+      /// The `removeSession` payload: everything the parent needs to run the call after the
+      /// slot is gone — the session, the chat's connection and its OWN profile (never the
+      /// list's: the slot survives a sidebar profile switch).
+      public struct SessionRemoval: Equatable, Sendable {
+        public enum Kind: Equatable, Sendable { case archive, delete }
+        public var kind: Kind
+        public var id: String
+        public var connection: ServerConnection
+        public var profileName: String?
+
+        public init(kind: Kind, id: String, connection: ServerConnection, profileName: String?) {
+          self.kind = kind
+          self.id = id
+          self.connection = connection
+          self.profileName = profileName
+        }
+      }
 
       /// The `branchCreated` payload: the create response's handle plus the client-held
       /// seed that can rebuild the branch wholesale after an orphan reap.
@@ -2782,6 +2845,76 @@ public struct ChatFeature {
       case .cancelRename:
         state.renameDraft = nil
         return .none
+
+      // MARK: Archive / Delete (⋯ menu)
+
+      case .archiveButtonTapped:
+        guard state.canArchiveOrDelete, !state.isRemovingSession else { return .none }
+        state.confirmationDialog = ConfirmationDialogState {
+          TextState("Archive session?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmArchive) { TextState("Archive") }
+          ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+          TextState("This hides the session from the list. You can restore it from the server.")
+        }
+        return .none
+
+      case .deleteButtonTapped:
+        guard state.deleteSupported, state.canArchiveOrDelete, !state.isRemovingSession
+        else { return .none }
+        state.confirmationDialog = ConfirmationDialogState {
+          TextState("Delete session?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmDelete) { TextState("Delete") }
+          ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+          TextState("This permanently deletes the session and its history.")
+        }
+        return .none
+
+      case .confirmationDialog(.presented(.confirmArchive)):
+        // Re-checked: the session state can change while the dialog is up.
+        guard state.canArchiveOrDelete, !state.isRemovingSession,
+          let id = state.storedSessionID
+        else { return .none }
+        state.removingSessionID = id
+        state.errorBanner = nil
+        // The chat's OWN profile, not the list's: the slot survives a sidebar profile
+        // switch, and the list's scope would mutate another profile's `state.db`.
+        return .send(.delegate(.removeSession(.init(
+          kind: .archive, id: id, connection: state.connection, profileName: state.profileName
+        ))))
+
+      case .confirmationDialog(.presented(.confirmDelete)):
+        guard state.deleteSupported, state.canArchiveOrDelete, !state.isRemovingSession,
+          let id = state.storedSessionID
+        else { return .none }
+        state.removingSessionID = id
+        state.errorBanner = nil
+        return .send(.delegate(.removeSession(.init(
+          kind: .delete, id: id, connection: state.connection, profileName: state.profileName
+        ))))
+
+      case .confirmationDialog:
+        return .none
+
+      case .archiveFailed:
+        // The chat stays open; the user can retry. Same copy as the list.
+        state.removingSessionID = nil
+        state.errorBanner = "Couldn’t archive the session."
+        return .none
+
+      case let .deleteFailed(_, error):
+        state.removingSessionID = nil
+        // Missing-endpoint verdict: flip the capability off SILENTLY (no banner), as the
+        // list's own delete does. The parent has already flipped the list's flag.
+        if error.isMissingEndpointVerdict {
+          state.deleteSupported = false
+          return .none
+        }
+        state.errorBanner = "Couldn’t delete the session."
+        return .none
       }
     }
     // Keep-awake (#74): report every `wantsScreenAwake` edge to the system idle timer, in
@@ -2799,6 +2932,7 @@ public struct ChatFeature {
     .ifLet(\.$filePreview, action: \.filePreview) {
       FilePreviewFeature()
     }
+    .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
   }
 
   // MARK: - Event fold

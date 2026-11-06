@@ -2,8 +2,8 @@ import ComposableArchitecture
 import HermesKit
 import SwiftUI
 
-/// The chat screen's nav-bar ellipsis menu (Rename / Copy ID), split out of `ChatView` so
-/// it observes ONLY the two fields it renders (#82).
+/// The chat screen's nav-bar ellipsis menu (Rename / Copy ID / Archive / Delete), split out
+/// of `ChatView` so it observes ONLY the few fields it renders (#82).
 ///
 /// `ChatView.body` re-evaluates on every streaming change — each `message.delta`, tool
 /// start/complete, status update, and thinking tick — because it reads `visibleRows`,
@@ -14,7 +14,8 @@ import SwiftUI
 ///
 /// As a child view holding the store — a reference, which SwiftUI diffs by identity, so the
 /// parent's re-render alone does not re-run this body — Observation re-evaluates it only
-/// when `canRename` / `sessionKey` change, i.e. at session creation and never mid-turn.
+/// when `canRename` / `sessionKey` / the Archive-Delete gates change — at session creation,
+/// first persist, or a destructive action, never on a streaming delta.
 ///
 /// Deliberately takes the STORE rather than `canRename:` / `onRename:` parameters: closure
 /// fields are not comparable, so SwiftUI would have to re-run the body on every parent
@@ -32,6 +33,21 @@ struct ChatMenuButton: View {
       // exists at all (a brand-new chat that hasn't been created yet).
       Button("Copy ID", systemImage: "doc.on.doc") { store.send(.copySessionIDTapped) }
         .disabled(store.sessionKey == nil)
+      // Archive / Delete mirror the session list's context menu: hidden for a chat with no
+      // saved session yet (nothing to archive), Delete also behind the list's capability.
+      if store.canArchiveOrDelete {
+        Divider()
+        Button("Archive", systemImage: "archivebox", role: .destructive) {
+          store.send(.archiveButtonTapped)
+        }
+        .disabled(store.isRemovingSession)
+        if store.deleteSupported {
+          Button("Delete", systemImage: "trash", role: .destructive) {
+            store.send(.deleteButtonTapped)
+          }
+          .disabled(store.isRemovingSession)
+        }
+      }
     } label: {
       Image(systemName: "ellipsis.circle")
     }
