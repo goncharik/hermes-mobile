@@ -12,5 +12,6 @@ struct HermesWidgetsBundle: WidgetBundle {
     NewChatAccessoryWidget()
     NewChatControl()
     DictateControl()
+    AgentsLiveActivity()
   }
 }

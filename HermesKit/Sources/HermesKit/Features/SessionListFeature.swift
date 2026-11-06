@@ -635,6 +635,11 @@ public struct SessionListFeature {
       /// still pending on the server and nothing short of a fresh push would repopulate
       /// the entry.
       case sessionDeleteSucceeded(id: Session.ID)
+      /// The Settings "Live Activity" toggle changed (Settings persisted it) — forwarded so
+      /// `AppFeature`, which owns the activity, ends or starts it (#138).
+      case liveActivityToggled(Bool)
+      /// The Settings "Show session titles" toggle changed (Settings persisted it).
+      case liveActivityShowsTitlesToggled(Bool)
     }
   }
 
@@ -1262,6 +1267,8 @@ public struct SessionListFeature {
           pushAvailable: state.pushAvailable,
           defaultSwipeAction: state.defaultSwipeAction,
           deleteSupported: state.deleteSupported,
+          liveActivityEnabled: preferences.loadLiveActivityEnabled(),
+          liveActivityShowsTitles: preferences.loadLiveActivityShowsTitles(),
           profileName: state.scopedProfileName
         )
         return .none
@@ -1533,6 +1540,12 @@ public struct SessionListFeature {
         // rows are right the moment the sheet dismisses.
         state.defaultSwipeAction = action
         return .none
+
+      case let .settings(.presented(.delegate(.liveActivityToggled(enabled)))):
+        return .send(.delegate(.liveActivityToggled(enabled)))
+
+      case let .settings(.presented(.delegate(.liveActivityShowsTitlesToggled(shows)))):
+        return .send(.delegate(.liveActivityShowsTitlesToggled(shows)))
 
       case .settings(.presented(.delegate(.installPushPlugin))):
         // The Settings push guide's "Ask agent" → dismiss Settings (Settings already requested

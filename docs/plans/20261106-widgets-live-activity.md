@@ -454,12 +454,12 @@ guard.
 - Modify: `HermesKit/Tests/HermesKitTests/SettingsFeatureTests.swift` (or the existing settings test file)
 - Modify: `HermesMobileTests/WidgetSnapshotTests.swift`, the Settings snapshot tests
 
-- [ ] lock-screen view (T3 layout): "Hermes" + "N active agent(s)" header; headline title (truncated) or the workspace when the title is omitted; secondary workspace; trailing status label (Working blue / Needs input yellow / Done green / Outdated secondary when `isStale`); `widgetURL` opens the headline session
-- [ ] Dynamic Island: compact leading glyph, compact trailing count (or `?` when needs input), minimal glyph, expanded = the lock-screen layout
-- [ ] Settings: "Live Activity" toggle + nested "Show session titles" (hidden when off) in the Notifications group; footer copy per the brief; when iOS has activities disabled the footer says so; toggles persist via `PreferencesClient` and notify `AppFeature` (endAll on off, projection update on show-titles)
-- [ ] `tuist generate --no-open && make build`
-- [ ] write `TestStore` tests for the Settings toggles (persist, delegate) and snapshot tests for the activity view (working, needs input, done, outdated, title omitted; expanded) and the Settings rows (on, off, disabled-by-iOS footer); `make snapshot` twice
-- [ ] run tests - must pass before task 11
+- [x] lock-screen view (T3 layout): "Hermes" + "N active agent(s)" header; headline title (truncated) or the workspace when the title is omitted; secondary workspace; trailing status label (Working blue / Needs input yellow / Done green / Outdated secondary when `isStale`); `widgetURL` opens the headline session (➕ the wording — `displayStatus(isStale:)`, `countLabel` ("No active agents" for Done), `headlineText` / `secondaryText`, `tapIntent` — lives in HermesWidgetKit on `AgentActivityContent` and is unit-tested; no headline id → no `widgetURL`)
+- [x] Dynamic Island: compact leading glyph, compact trailing count (or `?` when needs input), minimal glyph, expanded = the lock-screen layout (➕ trailing shows a green checkmark when Done and a secondary count when stale; expanded = `AgentsActivityView(style: .expanded)` in the bottom region)
+- [x] Settings: "Live Activity" toggle + nested "Show session titles" (hidden when off) in the Notifications group; footer copy per the brief; when iOS has activities disabled the footer says so; toggles persist via `PreferencesClient` and notify `AppFeature` (endAll on off, projection update on show-titles) (➕ a second, headerless Section right under Notifications so it has its own footer and shows whether or not push is available; seeded from prefs by the list's `settingsButtonTapped`; `areActivitiesEnabled` read on `.task`; Settings delegate → list delegate → `AppFeature`, which shares one `setLiveActivityEnabled` with the direct action)
+- [x] `tuist generate --no-open && make build`
+- [x] write `TestStore` tests for the Settings toggles (persist, delegate) and snapshot tests for the activity view (working, needs input, done, outdated, title omitted; expanded) and the Settings rows (on, off, disabled-by-iOS footer); `make snapshot` twice (➕ list seeding / forwarding tests, an `AppFeature` test for the delegate path, a compact-trailing snapshot, `AgentActivityPresentationTests`; 12 existing Settings Form baselines re-recorded for the new rows)
+- [x] run tests - must pass before task 11
 
 ### Task 11: Verify acceptance criteria
 - [ ] verify all Overview surfaces exist and route correctly (deep-link table covered by tests)

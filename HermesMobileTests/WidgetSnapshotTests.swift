@@ -161,6 +161,95 @@ final class WidgetSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage(appearance: .light))
   }
 
+  // MARK: Live Activity
+
+  /// The Lock Screen banner's width on the snapshot device (the screen less the system's
+  /// margins); its height is the view's own.
+  private let activityWidth: CGFloat = 358
+
+  private func activityContent(
+    _ count: Int,
+    title: String? = "Model picker provider visibility",
+    status: AgentActivityContent.Status = .working
+  ) -> AgentActivityContent {
+    AgentActivityContent(
+      activeCount: count,
+      headlineTitle: title,
+      headlineWorkspace: "hermes-mobile",
+      headlineSessionID: "s1",
+      headlineProfile: "default",
+      status: status
+    )
+  }
+
+  /// A stand-in for the Lock Screen's activity platter: the system background, rounded.
+  private func lockScreenActivity(_ content: AgentActivityContent, isStale: Bool = false) -> some View {
+    AgentsActivityView(content: content, isStale: isStale)
+      .frame(width: activityWidth)
+      .background(.background)
+      .clipShape(.rect(cornerRadius: 22, style: .continuous))
+  }
+
+  /// One agent working; the long title truncates, the workspace keeps its room (T3 layout).
+  func testLiveActivity_working_dark() {
+    assertSnapshot(of: lockScreenActivity(activityContent(1)), as: componentImage())
+  }
+
+  func testLiveActivity_working_light() {
+    assertSnapshot(
+      of: lockScreenActivity(activityContent(1)), as: componentImage(appearance: .light)
+    )
+  }
+
+  func testLiveActivity_needsInput() {
+    let content = activityContent(2, title: "Review the release notes", status: .needsInput)
+    assertSnapshot(of: lockScreenActivity(content), as: componentImage())
+  }
+
+  /// The final content left on screen after the last agent finishes.
+  func testLiveActivity_done() {
+    let content = activityContent(0, title: "Review the release notes", status: .done)
+    assertSnapshot(of: lockScreenActivity(content), as: componentImage())
+  }
+
+  /// Past the stale date (the app stopped observing): "Outdated" instead of a guess.
+  func testLiveActivity_outdated() {
+    assertSnapshot(of: lockScreenActivity(activityContent(3), isStale: true), as: componentImage())
+  }
+
+  /// "Show session titles" off: the workspace takes the title's place.
+  func testLiveActivity_titleOmitted() {
+    assertSnapshot(of: lockScreenActivity(activityContent(1, title: nil)), as: componentImage())
+  }
+
+  /// The expanded Dynamic Island's bottom region: the same layout on the island's black,
+  /// inside its margins.
+  func testLiveActivity_expanded() {
+    let view = AgentsActivityView(
+      content: activityContent(2, status: .needsInput), isStale: false, style: .expanded
+    )
+    .padding(.horizontal, 20)
+    .padding(.vertical, 16)
+    .frame(width: 371)
+    .background(Color.black)
+    .clipShape(.rect(cornerRadius: 44, style: .continuous))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  /// The compact Dynamic Island's trailing side: the count while working, "?" while the
+  /// headline needs input, a checkmark once done, a secondary count once stale.
+  func testLiveActivity_compactTrailing() {
+    let view = HStack(spacing: 16) {
+      AgentsActivityCompactTrailing(content: activityContent(2), isStale: false)
+      AgentsActivityCompactTrailing(content: activityContent(2, status: .needsInput), isStale: false)
+      AgentsActivityCompactTrailing(content: activityContent(0, status: .done), isStale: false)
+      AgentsActivityCompactTrailing(content: activityContent(2), isStale: true)
+    }
+    .padding(12)
+    .background(Color.black)
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   // MARK: Lock Screen accessory
 
   /// Over a dark wallpaper stand-in: the accessory backdrop is a translucent system material.

@@ -1073,20 +1073,12 @@ public struct AppFeature {
         }
         return .none
 
-      case let .liveActivityToggled(enabled):
-        state.liveActivityEnabled = enabled
-        guard enabled else {
-          // Off: end every activity of the app at once (an in-flight start is ended when it
-          // lands — `liveActivityStarted` finds no seat) and drop a pending update.
-          state.liveActivity = nil
-          return .merge(
-            .cancel(id: CancelID.liveActivitySync),
-            .run { [liveActivity] _ in await liveActivity.endAll() }
-          )
-        }
-        return syncLiveActivity(&state, .immediate)
+      case let .liveActivityToggled(enabled),
+        let .home(.delegate(.liveActivityToggled(enabled))):
+        return setLiveActivityEnabled(enabled, &state)
 
-      case let .liveActivityShowsTitlesToggled(shows):
+      case let .liveActivityShowsTitlesToggled(shows),
+        let .home(.delegate(.liveActivityShowsTitlesToggled(shows))):
         // Part of `agentStatus`: the edge below updates the activity with or without the title.
         state.liveActivityShowsTitles = shows
         return .none
@@ -1200,6 +1192,21 @@ public struct AppFeature {
     return state.isSceneBackgrounded
       ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
       : now.addingTimeInterval(Self.foregroundFreshness)
+  }
+
+  /// The "Live Activity" pref changed (Settings persisted it). Off ends every activity of the
+  /// app at once (an in-flight start is ended when it lands — `liveActivityStarted` finds no
+  /// seat) and drops a pending update; on starts one at once when agents are active.
+  private func setLiveActivityEnabled(_ enabled: Bool, _ state: inout State) -> Effect<Action> {
+    state.liveActivityEnabled = enabled
+    guard enabled else {
+      state.liveActivity = nil
+      return .merge(
+        .cancel(id: CancelID.liveActivitySync),
+        .run { [liveActivity] _ in await liveActivity.endAll() }
+      )
+    }
+    return syncLiveActivity(&state, .immediate)
   }
 
   /// Drives the aggregate Live Activity from `state.agentStatus` (#138). `nil` (unknown) holds.

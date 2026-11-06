@@ -59,6 +59,16 @@ public struct SettingsFeature {
     /// session list's capability flag). When false the swipe-action picker is hidden —
     /// Delete isn't offered anywhere, so the choice would be meaningless.
     public var deleteSupported: Bool
+    /// The "Live Activity" toggle (#138), seeded from `PreferencesClient` when presenting;
+    /// flipping it persists at once and tells `AppFeature` (off ends the activity).
+    public var liveActivityEnabled: Bool
+    /// The nested "Show session titles" toggle (shown only while `liveActivityEnabled`);
+    /// off omits the headline title from the activity content.
+    public var liveActivityShowsTitles: Bool
+    /// Whether iOS lets the app show Live Activities (the per-app switch in iOS Settings),
+    /// read on appearance. `false` turns the Live Activity footer into an "off in iOS
+    /// Settings" note; the toggle stays usable (the pref is kept for when iOS allows them).
+    public var liveActivitiesAllowedBySystem: Bool
 
     /// The outcome of a "send test notification" attempt, surfaced in the view/snapshots.
     public enum TestPushStatus: Equatable, Sendable {
@@ -90,6 +100,9 @@ public struct SettingsFeature {
       pluginUpdate: PluginUpdateStatus = .idle,
       defaultSwipeAction: SessionSwipeAction = .default,
       deleteSupported: Bool = true,
+      liveActivityEnabled: Bool = true,
+      liveActivityShowsTitles: Bool = true,
+      liveActivitiesAllowedBySystem: Bool = true,
       profileName: String? = nil,
       agentVersion: String? = nil,
       bundleInfo: BundleInfo? = nil,
@@ -114,6 +127,9 @@ public struct SettingsFeature {
       self.pluginUpdate = pluginUpdate
       self.defaultSwipeAction = defaultSwipeAction
       self.deleteSupported = deleteSupported
+      self.liveActivityEnabled = liveActivityEnabled
+      self.liveActivityShowsTitles = liveActivityShowsTitles
+      self.liveActivitiesAllowedBySystem = liveActivitiesAllowedBySystem
     }
 
     /// The installed plugin is behind `PushSetup.minimumPluginVersion` AND the agent can pull
@@ -220,6 +236,10 @@ public struct SettingsFeature {
     case pluginUpdateResult(PluginUpdateOutcome)
     /// User picked a different default swipe action for session rows.
     case defaultSwipeActionChanged(SessionSwipeAction)
+    /// User flipped the "Live Activity" toggle (#138).
+    case liveActivityToggled(Bool)
+    /// User flipped the nested "Show session titles" toggle (#138).
+    case liveActivityShowsTitlesToggled(Bool)
     case delegate(Delegate)
 
     /// Result of the in-app plugin update, flattened to an `Equatable` shape (the failure
@@ -244,12 +264,19 @@ public struct SettingsFeature {
       /// The default swipe action changed — the session list mirrors it immediately so the
       /// rows are right the moment the sheet dismisses.
       case defaultSwipeActionChanged(SessionSwipeAction)
+      /// The Live Activity toggle changed (already persisted) — `AppFeature` ends the
+      /// activity on off and starts one on on when agents are active.
+      case liveActivityToggled(Bool)
+      /// The show-titles toggle changed (already persisted) — `AppFeature` updates the
+      /// activity through its `agentStatus` edge.
+      case liveActivityShowsTitlesToggled(Bool)
     }
   }
 
   @Dependency(\.appIcon) var appIcon
   @Dependency(\.bundleInfo) var bundleInfo
   @Dependency(\.keychain) var keychain
+  @Dependency(\.liveActivity) var liveActivity
   @Dependency(\.preferences) var preferences
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
@@ -269,6 +296,7 @@ public struct SettingsFeature {
         // Synchronous facts: bundle/device info and the bundle-derived icon catalog.
         state.bundleInfo = bundleInfo.info()
         state.appIconCatalog = appIcon.catalog()
+        state.liveActivitiesAllowedBySystem = liveActivity.areActivitiesEnabled()
         return .merge(
           // The Agent row: informational only, so a failed probe deliberately maps to `nil`
           // (row hidden, no banner) rather than surfacing an error — debug log only.
@@ -397,6 +425,16 @@ public struct SettingsFeature {
         preferences.saveDefaultSessionSwipeAction(action)
         // Bubble up so the session list reflects the new default immediately on dismissal.
         return .send(.delegate(.defaultSwipeActionChanged(action)))
+
+      case let .liveActivityToggled(enabled):
+        state.liveActivityEnabled = enabled
+        preferences.saveLiveActivityEnabled(enabled)
+        return .send(.delegate(.liveActivityToggled(enabled)))
+
+      case let .liveActivityShowsTitlesToggled(shows):
+        state.liveActivityShowsTitles = shows
+        preferences.saveLiveActivityShowsTitles(shows)
+        return .send(.delegate(.liveActivityShowsTitlesToggled(shows)))
 
       case .askAgentToInstallTapped:
         // Dismiss Settings and bubble up — `AppFeature` opens a new chat with the install

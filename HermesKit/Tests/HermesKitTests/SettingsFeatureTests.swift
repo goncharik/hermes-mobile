@@ -829,4 +829,78 @@ struct SettingsFeatureTests {
     await store.receive(\.delegate.defaultSwipeActionChanged)
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive)
   }
+
+  // MARK: Live Activity (#138)
+
+  /// The "Live Activity" toggle persists at once and tells the parent (`AppFeature` ends or
+  /// starts the activity), both ways.
+  @Test func liveActivityTogglePersistsAndBubbles() async {
+    let preferences = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.liveActivityToggled(false)) {
+      $0.liveActivityEnabled = false
+    }
+    await store.receive(\.delegate.liveActivityToggled, false)
+    #expect(preferences.loadLiveActivityEnabled() == false)
+
+    await store.send(.liveActivityToggled(true)) {
+      $0.liveActivityEnabled = true
+    }
+    await store.receive(\.delegate.liveActivityToggled, true)
+    #expect(preferences.loadLiveActivityEnabled())
+  }
+
+  /// "Show session titles" persists at once and tells the parent (the activity drops or
+  /// regains its headline title through `AppFeature`'s edge); the main toggle is untouched.
+  @Test func showSessionTitlesTogglePersistsAndBubbles() async {
+    let preferences = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
+      SettingsFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.liveActivityShowsTitlesToggled(false)) {
+      $0.liveActivityShowsTitles = false
+    }
+    await store.receive(\.delegate.liveActivityShowsTitlesToggled, false)
+    #expect(preferences.loadLiveActivityShowsTitles() == false)
+    #expect(preferences.loadLiveActivityEnabled())
+
+    await store.send(.liveActivityShowsTitlesToggled(true)) {
+      $0.liveActivityShowsTitles = true
+    }
+    await store.receive(\.delegate.liveActivityShowsTitlesToggled, true)
+    #expect(preferences.loadLiveActivityShowsTitles())
+  }
+
+  /// `.task` reads whether iOS allows Live Activities (the footer's "turned off in iOS
+  /// Settings" note), synchronously like the bundle facts.
+  @Test func taskReadsWhetherIOSAllowsLiveActivities() async {
+    for allowed in [false, true] {
+      let store = TestStore(
+        initialState: SettingsFeature.State(
+          connection: connection, liveActivitiesAllowedBySystem: !allowed
+        )
+      ) {
+        SettingsFeature()
+      } withDependencies: {
+        $0.liveActivity.areActivitiesEnabled = { allowed }
+        $0.hermesREST.status = { @Sendable _ in ServerStatus() }
+        $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
+        $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
+      }
+      store.exhaustivity = .off(showSkippedAssertions: false)
+
+      await store.send(.task) {
+        $0.liveActivitiesAllowedBySystem = allowed
+      }
+      await store.send(.doneTapped)
+    }
+  }
 }

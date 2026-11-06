@@ -599,6 +599,28 @@ struct WidgetSurfacesTests {
     ])
   }
 
+  /// The Settings toggles reach `AppFeature` through the session list's delegate and take the
+  /// same path as the direct actions: off ends the activity, show-titles off drops the title
+  /// through the edge (the activity is already gone here, so nothing more is sent).
+  @Test func theSettingsTogglesArriveThroughTheListDelegate() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let clock = TestClock()
+    let store = makeStore(state, activity: activity, clock: clock)
+
+    await store.send(.home(.delegate(.liveActivityShowsTitlesToggled(false)))) {
+      $0.liveActivityShowsTitles = false
+    }
+    await store.send(.home(.delegate(.liveActivityToggled(false)))) {
+      $0.liveActivityEnabled = false
+      $0.liveActivity = nil
+    }
+    await clock.advance(by: .seconds(1)) // the mirror's debounced write; the update was dropped
+    await store.finish()
+    #expect(activity.calls.value == [.endAll])
+  }
+
   /// "Show session titles" off omits the headline title from the activity (through the edge).
   @Test func showTitlesOffRemovesTheTitle() async {
     let activity = ActivityRecorder()

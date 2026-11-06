@@ -2070,6 +2070,45 @@ struct SessionListFeatureTests {
     }
   }
 
+  /// Settings opens on the persisted Live Activity toggles (#138).
+  @Test func settingsPresentationSeedsTheLiveActivityToggles() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveLiveActivityEnabled(true)
+    preferences.saveLiveActivityShowsTitles(false)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(
+        connection: self.connection, liveActivityEnabled: true, liveActivityShowsTitles: false
+      )
+    }
+
+    preferences.saveLiveActivityEnabled(false)
+    await store.send(.settings(.dismiss)) { $0.settings = nil }
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(
+        connection: self.connection, liveActivityEnabled: false, liveActivityShowsTitles: false
+      )
+    }
+  }
+
+  /// The Live Activity toggles are `AppFeature`'s to act on: the list forwards both delegates
+  /// unchanged and keeps no state of its own.
+  @Test func settingsLiveActivityDelegatesAreForwarded() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: initial) { SessionListFeature() }
+
+    await store.send(.settings(.presented(.delegate(.liveActivityToggled(false)))))
+    await store.receive(\.delegate.liveActivityToggled, false)
+    await store.send(.settings(.presented(.delegate(.liveActivityShowsTitlesToggled(false)))))
+    await store.receive(\.delegate.liveActivityShowsTitlesToggled, false)
+  }
+
   // MARK: Push registration (Task C4)
 
   @Test func requestAuthorizationRegistersWhenAuthorized() async {
