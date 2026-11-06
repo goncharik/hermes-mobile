@@ -191,16 +191,21 @@
 - Modify: `HermesKit/Tests/HermesKitTests/` (the existing `ModelOptions` test file — locate with
   grep; create `ModelOptionsTests.swift` if none)
 
-- [ ] confirm against upstream `hermes_cli/inventory.py` (`git -C ../hermes-agent show
+- [x] confirm against upstream `hermes_cli/inventory.py` (`git -C ../hermes-agent show
       upstream/main:hermes_cli/inventory.py`) what the payload's top-level `provider` holds (slug
       vs name) and note it in the doc comment
-- [ ] add `currentProvider: String?` decoded leniently from `provider`; extend `init`
-- [ ] add the current-row predicate (provider+model when `currentProvider` present, model-only
+- [x] add `currentProvider: String?` decoded leniently from `provider`; extend `init`
+- [x] add the current-row predicate (provider+model when `currentProvider` present, model-only
       fallback otherwise)
-- [ ] write tests: decode with/without `provider`, malformed `provider` ignored
-- [ ] write tests: same model id under two providers → only the matching provider's row is
+- [x] write tests: decode with/without `provider`, malformed `provider` ignored
+- [x] write tests: same model id under two providers → only the matching provider's row is
       current; absent `currentProvider` → model-only fallback
-- [ ] run `make test` — must pass before next task
+- [x] run `make test` — must pass before next task
+- ➕ `provider` is a provider ID (= row `slug`) EXCEPT for custom providers (`custom:<key>` vs bare
+      slug), so `Provider` now decodes `aliases` and matches via `Provider.matches(providerID:)`
+      (slug / name / alias — desktop `catalogProviderMatches`). Predicate shipped as
+      `ModelOptions.isCurrent(model:in:currentModel:)`; a `currentProvider` matching no row marks
+      nothing current (no model-only fallback, desktop parity).
 
 ### Task 2: Persist collapsed providers and favorite models in PreferencesClient
 

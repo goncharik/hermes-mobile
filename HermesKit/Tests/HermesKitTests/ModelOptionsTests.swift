@@ -141,4 +141,108 @@ struct ModelOptionsTests {
     let result = searchableOptions.filteredProviders(matching: "a")
     #expect(result.map(\.name) == ["Anthropic", "DeepSeek", "OpenAI"])
   }
+
+  @Test func filteringKeepsAliases() {
+    let options = ModelOptions(providers: [
+      .init(name: "Local", slug: "local", models: ["qwen"], authenticated: true, aliases: ["custom:local"]),
+    ])
+    #expect(options.filteredProviders(matching: "qwen").first?.aliases == ["custom:local"])
+  }
+
+  // MARK: currentProvider decode
+
+  private func decode(_ json: String) throws -> ModelOptions {
+    try JSONDecoder().decode(ModelOptions.self, from: Data(json.utf8))
+  }
+
+  @Test func decodesTopLevelProviderAsCurrentProvider() throws {
+    let options = try decode(#"{"model": "gpt-5.6", "provider": "openrouter", "providers": []}"#)
+    #expect(options.currentModel == "gpt-5.6")
+    #expect(options.currentProvider == "openrouter")
+  }
+
+  @Test func missingProviderDecodesAsNil() throws {
+    let options = try decode(#"{"model": "gpt-5.6", "providers": []}"#)
+    #expect(options.currentModel == "gpt-5.6")
+    #expect(options.currentProvider == nil)
+  }
+
+  @Test func malformedOrBlankProviderIsIgnored() throws {
+    for raw in [#"42"#, #"{"slug": "x"}"#, #"null"#, #""""#, #""   ""#] {
+      let options = try decode(#"{"model": "m", "provider": \#(raw), "providers": [{"name": "A", "slug": "a", "models": ["m"], "authenticated": true}]}"#)
+      #expect(options.currentProvider == nil, "provider: \(raw)")
+      // The rest of the payload still decodes.
+      #expect(options.currentModel == "m")
+      #expect(options.providers.map(\.slug) == ["a"])
+    }
+  }
+
+  @Test func decodesProviderAliasesLeniently() throws {
+    let options = try decode(#"""
+    {"providers": [
+      {"name": "My Box", "slug": "mybox", "models": ["m"], "authenticated": true, "aliases": ["custom:mybox", "mybox"]},
+      {"name": "Bad", "slug": "bad", "models": ["m"], "authenticated": true, "aliases": "nope"},
+      {"name": "None", "slug": "none", "models": ["m"], "authenticated": true}
+    ]}
+    """#)
+    #expect(options.providers.map(\.aliases) == [["custom:mybox", "mybox"], [], []])
+  }
+
+  // MARK: isCurrent(model:in:currentModel:)
+
+  private let sharedModelOptions = ModelOptions(
+    providers: [
+      .init(name: "OpenAI", slug: "openai", models: ["gpt-5.6"], authenticated: true),
+      .init(name: "OpenRouter", slug: "openrouter", models: ["gpt-5.6", "deepseek-v4"], authenticated: true),
+    ],
+    currentModel: "gpt-5.6",
+    currentProvider: "openrouter"
+  )
+
+  @Test func sameModelUnderTwoProvidersOnlyTheMatchingProviderIsCurrent() {
+    let openAI = sharedModelOptions.providers[0]
+    let openRouter = sharedModelOptions.providers[1]
+    #expect(sharedModelOptions.isCurrent(model: "gpt-5.6", in: openRouter, currentModel: "gpt-5.6"))
+    #expect(!sharedModelOptions.isCurrent(model: "gpt-5.6", in: openAI, currentModel: "gpt-5.6"))
+    #expect(!sharedModelOptions.isCurrent(model: "deepseek-v4", in: openRouter, currentModel: "gpt-5.6"))
+  }
+
+  @Test func absentCurrentProviderFallsBackToModelOnly() {
+    var options = sharedModelOptions
+    options.currentProvider = nil
+    #expect(options.isCurrent(model: "gpt-5.6", in: options.providers[0], currentModel: "gpt-5.6"))
+    #expect(options.isCurrent(model: "gpt-5.6", in: options.providers[1], currentModel: "gpt-5.6"))
+    #expect(!options.isCurrent(model: "deepseek-v4", in: options.providers[1], currentModel: "gpt-5.6"))
+  }
+
+  @Test func nilCurrentModelMatchesNothing() {
+    #expect(!sharedModelOptions.isCurrent(model: "gpt-5.6", in: sharedModelOptions.providers[1], currentModel: nil))
+  }
+
+  @Test func currentModelParameterWinsOverPayloadModel() {
+    // The chat's optimistic pick is the display truth, not the payload's `model`.
+    let openRouter = sharedModelOptions.providers[1]
+    #expect(sharedModelOptions.isCurrent(model: "deepseek-v4", in: openRouter, currentModel: "deepseek-v4"))
+    #expect(!sharedModelOptions.isCurrent(model: "gpt-5.6", in: openRouter, currentModel: "deepseek-v4"))
+  }
+
+  @Test func currentProviderMatchesSlugNameOrAlias() {
+    let custom = ModelOptions.Provider(
+      name: "My Box", slug: "mybox", models: ["qwen"], authenticated: true, aliases: ["custom:mybox"]
+    )
+    #expect(custom.matches(providerID: "mybox"))
+    #expect(custom.matches(providerID: "My Box"))
+    #expect(custom.matches(providerID: "custom:mybox"))
+    #expect(!custom.matches(providerID: "openrouter"))
+    #expect(!custom.matches(providerID: ""))
+    let options = ModelOptions(providers: [custom], currentModel: "qwen", currentProvider: "custom:mybox")
+    #expect(options.isCurrent(model: "qwen", in: custom, currentModel: "qwen"))
+  }
+
+  @Test func currentProviderMatchingNoRowMarksNothingCurrent() {
+    // Desktop parity: a provider-bound match never falls back to model-only.
+    var options = sharedModelOptions
+    options.currentProvider = "anthropic"
+    #expect(options.providers.allSatisfy { !options.isCurrent(model: "gpt-5.6", in: $0, currentModel: "gpt-5.6") })
+  }
 }
