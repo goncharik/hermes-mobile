@@ -60,7 +60,7 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
   calendar via `SessionListFeature.State(calendar:)` (UTC, `en_US`, Monday-first), or the
   date-section headers would follow the simulator's time zone and week start;
   `deviceImage(height:)` renders a list taller than one screen. The suite passes clean
-  (313 of 313) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
+  (331 of 331) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
   changes a view re-records that view's baselines itself. If a future runtime drifts
   again, judge by render size first (a size mismatch is a real regression; equal size with
   a small pixel residual is drift), and land the re-record as its own commit.
@@ -170,7 +170,7 @@ The provisioning profile must be installed locally first
 
 ### App icon per build (TestFlight vs App Store)
 
-Two icons distinguish builds on-device: the orange **`AppIcon`** ONLY for **App Store
+Two icons distinguish builds on-device: the Gold **`AppIcon`** ONLY for **App Store
 release** builds, and the blue blueprint **`AppIconDev`** for everything else — dev
 builds and **ALL TestFlight builds, internal and external alike** (a TestFlight build
 is one build; internal and external groups share it). Debug builds use `AppIconDev`
@@ -184,4 +184,44 @@ to the archive command above:
 
 (A custom Xcode configuration would break Tuist's SwiftPM integration, so the icon is
 switched via this build setting rather than a separate config.) Omit the override only
-when archiving an App Store release submission to get the orange icon.
+when archiving an App Store release submission to get the Gold icon.
+
+#### Alternate icons (Settings → App Icon)
+
+Users can switch between eight icons in Settings (`docs/features/settings.md`). The base
+settings in `Project.swift` list **every** set as an alternate, the primary included:
+
+```
+ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIcon AppIconDev AppIconHermesNeo
+  AppIconHermesNeoDark AppIconHermesNeoBlueprint AppIconHermesClassic
+  AppIconHermesClassicDark AppIconHermesClassicBlueprint
+ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES
+```
+
+The primary differs per build (above), so listing every set lets any build reach any icon
+without a per-configuration list. actool still omits the primary from the built
+`CFBundleAlternateIcons` (a Debug `Info.plist` lists five alternates, with `AppIconDev` as
+`CFBundlePrimaryIcon`), and `AppIconCatalog.parse` filters the primary out regardless:
+choosing it is `setAlternateIconName(nil)`. The command-line primary override above needs no
+change.
+
+**Adding a seventh icon:**
+
+1. Add `Assets.xcassets/<SetName>.appiconset` with a 1024×1024 PNG without alpha
+   (`sips -Z 1024`; check `hasAlpha: no` with `sips -g hasAlpha`) and the `Contents.json`
+   copied from `AppIcon.appiconset`. For light-background art, copy
+   `AppIconHermesNeo.appiconset`'s `Contents.json` instead and add its dark and tinted files
+   (see the icon notes in `docs/features/settings.md`).
+2. Add a plain image set `AppIconPreview-<SetName>.imageset` with a 240 px preview
+   (`sips -Z 240`, at least the 76 pt tile at 3x), single scale: the picker cannot load an
+   `.appiconset` with `Image(_:)`.
+3. Add an `AppIconOption` row to `AppIconOption.all` in HermesKit (display order = table
+   order; the preview name is derived).
+4. Append the set name to `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES` in `Project.swift`
+   (`tableNamesMatchProjectAlternateIconNames` reads it from there), then update the literals
+   in `AppIconCatalogTests`: the labels in `tableIsSixIconsInDisplayOrder`, the option count in
+   `testValueIsInMemoryWithFullCatalog`, and the five-alternate fixture in
+   `actoolOutputWithoutPrimaryAlternate`.
+5. Add the row to the icon table in `docs/features/settings.md`, then delete the
+   `AppIconPickerSnapshotTests` baselines and run `make snapshot` twice (never
+   `make snapshot-record`).

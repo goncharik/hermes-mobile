@@ -138,10 +138,9 @@ struct SessionListView: View {
     } message: {
       Text(ProfileName.hint)
     }
+    // No `NavigationStack` wrapper: `SettingsView` owns its stack (the `SettingsPath` pushes).
     .sheet(item: $store.scope(state: \.settings, action: \.settings)) { settingsStore in
-      NavigationStack {
-        SettingsView(store: settingsStore)
-      }
+      SettingsView(store: settingsStore)
     }
     .sheet(item: $store.scope(state: \.archived, action: \.archived)) { archivedStore in
       NavigationStack {

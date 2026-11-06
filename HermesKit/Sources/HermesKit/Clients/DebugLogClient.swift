@@ -2,16 +2,19 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
-/// An app-wide, capped ring buffer of decoded gateway events for the Settings debug
-/// log (Task 12). `ChatFeature`'s connect loop appends every event; `SettingsFeature`
-/// reads a snapshot and subscribes to live updates. Kept as a dependency (not feature
-/// state) so the high-frequency appends never touch `ChatFeature.State` or its tests.
+/// An app-wide, capped ring buffer of decoded gateway events for Settings → Diagnostics.
+/// `ChatFeature`'s connect loop appends every event; `DiagnosticsFeature` subscribes to live
+/// updates. Kept as a dependency (not feature state) so the high-frequency appends never
+/// touch `ChatFeature.State` or its tests.
 @DependencyClient
 public struct DebugLogClient: Sendable {
   public var append: @Sendable (_ event: GatewayEvent) -> Void
   /// A free-text client note (not a wire event), e.g. a swallowed `session.events.since`
   /// failure (#98). Shares the ring buffer, ids, and summary digest with `append`.
   public var note: @Sendable (_ type: String, _ summary: String) -> Void
+  /// Empties the buffer (sign out: the events belong to the old server); live subscribers
+  /// get the empty snapshot.
+  public var clear: @Sendable () -> Void
   public var snapshot: @Sendable () -> [GatewayLogEntry] = { [] }
   /// A live feed: yields the current snapshot immediately, then a new snapshot on each
   /// append. Finishes when the buffer is torn down.
@@ -23,7 +26,9 @@ extension DebugLogClient: DependencyKey {
   /// Tests get a no-op by default so `ChatFeature`'s connect loop stays inert; override
   /// per-test to capture or feed entries.
   public static var testValue: DebugLogClient {
-    DebugLogClient(append: { _ in }, note: { _, _ in }, snapshot: { [] }, stream: { .finished })
+    DebugLogClient(
+      append: { _ in }, note: { _, _ in }, clear: {}, snapshot: { [] }, stream: { .finished }
+    )
   }
 
   /// A self-contained in-memory buffer (used live and overridable in tests).
@@ -32,6 +37,7 @@ extension DebugLogClient: DependencyKey {
     return DebugLogClient(
       append: { buffer.append(type: $0.debugType, summary: $0.debugSummary) },
       note: { buffer.append(type: $0, summary: GatewayEvent.truncate($1)) },
+      clear: { buffer.clear() },
       snapshot: { buffer.snapshot() },
       stream: { buffer.stream() }
     )
@@ -65,6 +71,13 @@ private final class Buffer: @unchecked Sendable {
       return snapshot
     }
     _ = broadcast
+  }
+
+  func clear() {
+    lock.withLock {
+      entries.removeAll()
+      for continuation in continuations.values { continuation.yield([]) }
+    }
   }
 
   func snapshot() -> [GatewayLogEntry] { lock.withLock { entries } }

@@ -289,7 +289,7 @@ spinner.
 
 **The default swipe action is a device-local pref**: `SessionSwipeAction` (`archive` |
 `delete`, `.archive` default) persisted via `PreferencesClient`, reset in **all three logout
-recipes** (Settings clear-token, retry-screen logout, reauth quit). Views must read the
+recipes** (Settings → Sign out, retry-screen logout, reauth quit). Views must read the
 computed **`effectiveSwipeAction`**, which clamps back to `.archive` while
 `!deleteSupported` — the stored pref survives the clamp, so it re-activates if a capable agent
 returns. Settings exposes a "Default swipe action" `Picker`, rendered only when

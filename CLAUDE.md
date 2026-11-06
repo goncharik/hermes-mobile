@@ -35,8 +35,8 @@ bullets below are the compressed rules.
   exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
   the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
-  swallow them with `try?` (the logout hops, below, and the #98 replay read — debug log
-  only — are the carved-out exceptions).
+  swallow them with `try?` (the logout hops, below, and the debug-log-only #98 replay read
+  and Settings `/api/status` probe are the carved-out exceptions).
 - **Commit messages**: capitalized verb, no conventional-commit prefixes, concise.
 
 ## Gateway & session lifecycle
@@ -296,8 +296,8 @@ bullets below are the compressed rules.
 ## UI idioms
 
 - **Auto-poll**: cancellable `continuousClock` sleep-loop started on `.task`, cancelled
-  by an explicit `.onDisappear` action (not bare `.task` cancellation); paused while
-  searching; `TestClock`-drivable.
+  by an explicit `.onDisappear` action (not bare `.task` cancellation; on a pushed stack
+  screen the stack's own cancellation replaces it); paused while searching; `TestClock`-drivable.
 - **Destructive actions** use TCA `ConfirmationDialogState` (`@Presents`) so
   confirm/cancel is state-driven and unit-testable — but present it via
   `.bottomActionSheet`, never `.confirmationDialog`: iOS 26 renders the system
@@ -307,6 +307,12 @@ bullets below are the compressed rules.
   duplicated per feature. Attach the overlay where nothing can swallow it (before a
   bottom `.safeAreaInset`; on the transcript, not the outer `VStack`); announce every
   copy to VoiceOver off the token.
+- **Settings is ONE `Form` (six groups) + a `SettingsPath` stack** owned by `SettingsView`
+  (the sheet adds no `NavigationStack`); rows push by reducer append, never `NavigationLink`.
+  App icons: every set is an alternate in `Project.swift` (primary included — it differs
+  per build); `AppIconCatalog.parse` filters the primary, which is always `set(nil)`; iOS
+  persists the choice, logout never touches it. `DiagnosticsReport` takes no `AuthSession`
+  (no-secrets invariant). Gates, icon table, links: `docs/features/settings.md`.
 
 ## Push notifications
 
@@ -355,13 +361,15 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (313/313), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (331/331), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.
 
 ## Gotchas
 
+- **A `.task` on a `NavigationStack`'s ROOT view re-fires on every pop back to it** — put
+  once-per-presentation work (probes) on the `NavigationStack` itself (see `SettingsView`).
 - **Tuist only forwards `TUIST_`-prefixed env vars** to the manifest; run scripts
   translate friendly names. For direct `tuist generate`, use `TUIST_DEVELOPMENT_TEAM` /
   `TUIST_SERVER_URL`.

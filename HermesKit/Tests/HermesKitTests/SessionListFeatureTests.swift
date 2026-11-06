@@ -1996,6 +1996,48 @@ struct SessionListFeatureTests {
     }
   }
 
+  /// With the profiles API, Settings gets the literal wire profile (`scopedProfileName`) for
+  /// its Profile row; without it the row is hidden (`nil`).
+  @Test func settingsPresentationThreadsScopedProfileName() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.profilesSupported = true
+    initial.selectedProfileName = "work"
+    let store = TestStore(initialState: initial) { SessionListFeature() }
+
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(connection: self.connection, profileName: "work")
+    }
+
+    // Profiles unsupported → no Profile row, whatever the stored selection says.
+    var unsupported = SessionListFeature.State(connection: connection)
+    unsupported.profilesSupported = false
+    unsupported.selectedProfileName = "work"
+    let unsupportedStore = TestStore(initialState: unsupported) { SessionListFeature() }
+
+    await unsupportedStore.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(connection: self.connection)
+    }
+    #expect(unsupportedStore.state.settings?.profileName == nil)
+  }
+
+  /// A gated session reaches Settings through `connection` — the Auth row and token-field
+  /// gate read it there.
+  @Test func settingsPresentationCarriesTheAuthSession() async {
+    let cookieConnection = ServerConnection(
+      baseURL: connection.baseURL,
+      auth: .cookie(CookieSession(cookies: [], username: "alice", provider: "basic"))
+    )
+    let store = TestStore(
+      initialState: SessionListFeature.State(connection: cookieConnection)
+    ) { SessionListFeature() }
+
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(connection: cookieConnection)
+    }
+    #expect(store.state.settings?.authLabel == "Password · alice")
+    #expect(store.state.settings?.showsTokenField == false)
+  }
+
   @Test func settingsSwipeActionDelegateUpdatesTheList() async {
     var initial = SessionListFeature.State(connection: connection)
     initial.settings = SettingsFeature.State(connection: connection)

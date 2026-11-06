@@ -418,6 +418,42 @@ struct AppFeatureTests {
     }
   }
 
+  /// The two `AppFeature`-owned logouts empty the diagnostics event log like Settings' sign
+  /// out does; a same-user re-auth stays on the server and keeps it.
+  @Test func logoutPathsClearTheGatewayEventLog() async {
+    for (action, clears) in [
+      (AppFeature.Action.connectionFailed(.delegate(.logoutConfirmed)), true),
+      (.reauth(.presented(.delegate(.quit))), true),
+      (.reauth(.presented(.delegate(.reauthenticated(
+        connection: connection, sameUser: true
+      )))), false),
+    ] {
+      let debugLog = DebugLogClient.ringBuffer()
+      debugLog.note("session.resume", "old server")
+      let store = TestStore(
+        initialState: AppFeature.State(
+          home: SessionListFeature.State(connection: connection),
+          connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+          reauth: ReauthFeature.State(
+            serverURL: connection.baseURL, method: .password,
+            provider: "basic", previousUsername: "alice"
+          )
+        )
+      ) {
+        AppFeature()
+      } withDependencies: {
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+        $0.debugLog = debugLog
+      }
+      store.exhaustivity = .off
+
+      await store.send(action)
+      await store.finish()
+      #expect(debugLog.snapshot().isEmpty == clears, "\(action)")
+    }
+  }
+
   /// Turn-end-while-detached with entries queued (#66): the slot's own reducer drained the
   /// head in the same reduction that emitted `runningChanged(false)`, so the parent keeps
   /// the slot (the drained turn streams into it). Once the queue is empty and THAT turn

@@ -268,4 +268,43 @@ struct AuthSessionTests {
     #expect(status.authProviders == nil)
     #expect(status.version == "1.2.3")
   }
+
+  // MARK: Settings label / isToken
+
+  @Test func tokenSettingsLabel() {
+    let session = AuthSession.token("secret-token")
+    #expect(session.settingsLabel == "Token")
+    #expect(session.isToken)
+  }
+
+  @Test func cookieSettingsLabelShowsUsername() {
+    let session = AuthSession.cookie(
+      CookieSession(
+        cookies: [SerializedCookie(name: "hermes_session_at", value: "v", domain: "d", path: "/")],
+        username: "alice",
+        provider: "basic"
+      )
+    )
+    #expect(session.settingsLabel == "Password · alice")
+    #expect(!session.isToken)
+  }
+
+  @Test func bearerSettingsLabelShowsProviderAndUser() {
+    let session = AuthSession.bearer(
+      BearerSession(
+        accessToken: "at", refreshToken: "rt", expiresAt: 1, provider: "nous", userID: "user-42"
+      )
+    )
+    #expect(session.settingsLabel == "nous · user-42")
+    #expect(!session.isToken)
+  }
+
+  @Test func settingsLabelDropsSeparatorForEmptyIdentity() {
+    let cookie = AuthSession.cookie(CookieSession(cookies: [], username: "  ", provider: "basic"))
+    #expect(cookie.settingsLabel == "Password")
+    let bearer = AuthSession.bearer(
+      BearerSession(accessToken: "at", refreshToken: "rt", expiresAt: 1, provider: "", userID: "")
+    )
+    #expect(bearer.settingsLabel == "OAuth")
+  }
 }

@@ -7,160 +7,177 @@ import XCTest
 @testable import HermesMobile
 
 final class SettingsSnapshotTests: SnapshotTestCase {
+  /// The six-group Form runs well past one phone screen; every Form fixture renders at this
+  /// height so the whole sheet — Sign out included — is in frame and the groups below the fold
+  /// (Feedback, About) are proven too, not just the Server block.
+  private let formHeight: CGFloat = 1_800
+
+  /// A fully loaded token-regime sheet: the post-`.task` facts (bundle info, icon catalog,
+  /// agent version) are SEEDED, because the fixtures swallow `.task` (see `ignoring`).
+  private func loadedState(
+    auth: AuthSession? = nil,
+    profileName: String? = nil,
+    pushAvailable: Bool = true,
+    notificationsEnabled: Bool = false,
+    testPushStatus: SettingsFeature.State.TestPushStatus = .idle,
+    pushPlugin: PushPluginInfo? = nil,
+    pluginUpdate: SettingsFeature.State.PluginUpdateStatus = .idle,
+    deleteSupported: Bool = true
+  ) -> SettingsFeature.State {
+    SettingsFeature.State(
+      connection: auth.map { ServerConnection(baseURL: connection.baseURL, auth: $0) } ?? connection,
+      pushAvailable: pushAvailable,
+      notificationsEnabled: notificationsEnabled,
+      testPushStatus: testPushStatus,
+      pushPlugin: pushPlugin,
+      pluginUpdate: pluginUpdate,
+      deleteSupported: deleteSupported,
+      profileName: profileName,
+      agentVersion: "0.12.0",
+      bundleInfo: .test,
+      appIconCatalog: .testCatalog,
+      selectedAppIcon: nil
+    )
+  }
+
+  private func settingsView(_ state: SettingsFeature.State) -> some View {
+    SettingsView(
+      store: Store(initialState: state) { SettingsFeature().ignoring(\.task) }
+    )
+  }
+
+  private let cookieAuth = AuthSession.cookie(
+    CookieSession(cookies: [], username: "alice", provider: "basic")
+  )
+  private let bearerAuth = AuthSession.bearer(
+    BearerSession(
+      accessToken: "at", refreshToken: "rt", expiresAt: 1, provider: "nous", userID: "user-42"
+    )
+  )
+
+  // MARK: Auth regimes (#137)
+
+  /// Token regime: Auth row reads "Token" and the re-paste field + Save button are present.
   func testSettingsView() {
-    var initial = SettingsFeature.State(connection: connection)
-    initial.log = [
-      GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
-      GatewayLogEntry(id: 1, type: "message.delta", summary: "Here's the gist"),
-    ]
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue // inert stream for a deterministic render
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertSnapshot(of: settingsView(loadedState()), as: deviceImage(height: formHeight))
+  }
+
+  func testSettingsView_light() {
+    assertSnapshot(
+      of: settingsView(loadedState()),
+      as: deviceImage(appearance: .light, height: formHeight)
+    )
+  }
+
+  /// Password (cookie) regime: "Password · alice", and NO token field — a gated session has
+  /// no token to re-paste.
+  func testSettingsView_cookie() {
+    assertSnapshot(of: settingsView(loadedState(auth: cookieAuth)), as: deviceImage())
+  }
+
+  func testSettingsView_cookie_light() {
+    assertSnapshot(
+      of: settingsView(loadedState(auth: cookieAuth)),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
+  /// OAuth (bearer) regime: "nous · user-42", no token field.
+  func testSettingsView_bearer() {
+    assertSnapshot(of: settingsView(loadedState(auth: bearerAuth)), as: deviceImage())
+  }
+
+  func testSettingsView_bearer_light() {
+    assertSnapshot(
+      of: settingsView(loadedState(auth: bearerAuth)),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
+  /// An agent with the profiles API: the Profile row appears between Auth and Agent.
+  func testSettingsView_profile() {
+    assertSnapshot(of: settingsView(loadedState(profileName: "work")), as: deviceImage())
+  }
+
+  func testSettingsView_profile_light() {
+    assertSnapshot(
+      of: settingsView(loadedState(profileName: "work")),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
+  /// Nothing loaded yet (the first frame before `.task` lands, or a failed status probe):
+  /// the Agent row and the About version row are hidden, and the App Icon row has no value.
+  func testSettingsView_unloaded() {
+    let state = SettingsFeature.State(connection: connection)
+    assertSnapshot(of: settingsView(state), as: deviceImage())
   }
 
   /// Older agent without `DELETE /api/sessions/{id}` — the "Default swipe action" picker
-  /// section must be hidden entirely (Archive is the only destructive action, so the
-  /// choice would be meaningless). The default-state snapshot above shows it.
+  /// must be hidden entirely (Archive is the only destructive action, so the choice would be
+  /// meaningless). `testSettingsView` shows it.
   func testSettingsView_deleteUnsupported() {
-    var initial = SettingsFeature.State(connection: connection)
-    initial.deleteSupported = false
-    initial.log = [
-      GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
-      GatewayLogEntry(id: 1, type: "message.delta", summary: "Here's the gist"),
-    ]
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue // inert stream for a deterministic render
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertSnapshot(
+      of: settingsView(loadedState(deleteSupported: false)),
+      as: deviceImage()
+    )
   }
 
+  // MARK: Notifications
+
   /// Notifications enabled: toggle on, push available, no test sent yet.
-  ///
-  /// The three Notifications-focused fixtures hide the (unrelated) "Session list" swipe
-  /// section: it sits above Notifications, and with it present the rows these snapshots
-  /// exist to prove — the test-sent label especially — fall below the device fold.
   func testSettingsNotificationsEnabled() {
-    var initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: true,
-      notificationsEnabled: true
+    assertSnapshot(
+      of: settingsView(loadedState(notificationsEnabled: true)),
+      as: deviceImage(height: formHeight)
     )
-    initial.deleteSupported = false
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: true, status: .authorized).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
   }
 
   /// Push not available on this server (plugin missing) → "not available" note, no controls.
   func testSettingsNotificationsUnavailable() {
-    var initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: false
+    assertSnapshot(
+      of: settingsView(loadedState(pushAvailable: false)),
+      as: deviceImage(height: formHeight)
     )
-    initial.deleteSupported = false
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
   }
 
   /// Test notification just sent → confirmation label.
   func testSettingsNotificationsTestSent() {
-    var initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: true,
-      notificationsEnabled: true,
-      testPushStatus: .sent
+    assertSnapshot(
+      of: settingsView(loadedState(notificationsEnabled: true, testPushStatus: .sent)),
+      as: deviceImage(height: formHeight)
     )
-    initial.deleteSupported = false
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: true, status: .authorized).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
   }
 
   /// An outdated, git-updatable plugin → the update row with the one-tap button.
   func testSettingsPluginUpdateAvailable() {
-    let initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: true,
+    let state = loadedState(
       notificationsEnabled: true,
       pushPlugin: PushPluginInfo(status: .ready, version: "0.1.0", canUpdateGit: true)
     )
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: true, status: .authorized).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
   }
 
   /// After a successful pull — the RESTART notice, which is the whole point of that state.
   func testSettingsPluginUpdatedNeedsRestart() {
-    let initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: true,
+    let state = loadedState(
       notificationsEnabled: true,
       pushPlugin: PushPluginInfo(status: .ready, version: "0.1.0", canUpdateGit: true),
       pluginUpdate: .updated
     )
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: true, status: .authorized).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
   }
 
   /// Outdated but not a git checkout → no button, pointer to the guide instead.
   func testSettingsPluginUpdateNeedsManualSteps() {
-    let initial = SettingsFeature.State(
-      connection: connection,
-      pushAvailable: true,
+    let state = loadedState(
       notificationsEnabled: true,
       pushPlugin: PushPluginInfo(status: .ready, version: "0.1.0", canUpdateGit: false)
     )
-    let view = NavigationStack {
-      SettingsView(
-        store: Store(initialState: initial) { SettingsFeature().ignoring(\.task) } withDependencies: {
-          $0.debugLog = .testValue
-          $0.push = PushClient.inMemory(granted: true, status: .authorized).client
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
   }
+
+  // MARK: Push guide
 
   /// The "how push works" info sheet, plugin NOT installed — install action + Later snooze.
   func testPushSetupGuideView() {
@@ -175,15 +192,18 @@ final class SettingsSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: deviceImage())
   }
 
-  func testConnectionDebugView() {
-    let view = NavigationStack {
-      ConnectionDebugView(entries: [
-        GatewayLogEntry(id: 0, type: "gateway.ready", summary: ""),
-        GatewayLogEntry(id: 1, type: "tool.start", summary: "read_file"),
-        GatewayLogEntry(id: 2, type: "message.delta", summary: "WebSocket JSON-RPC at /api/ws"),
-        GatewayLogEntry(id: 3, type: "status.update", summary: "[lifecycle] thinking…"),
-      ])
-    }
-    assertSnapshot(of: view, as: deviceImage())
+  // MARK: Acknowledgements
+
+  /// Settings → Acknowledgements: every runtime package with its license and an external-link
+  /// arrow. (The gateway log moved under Diagnostics — `DiagnosticsSnapshotTests`.)
+  func testAcknowledgementsView() {
+    assertSnapshot(of: NavigationStack { AcknowledgementsView() }, as: deviceImage())
+  }
+
+  func testAcknowledgementsView_light() {
+    assertSnapshot(
+      of: NavigationStack { AcknowledgementsView() },
+      as: deviceImage(appearance: .light)
+    )
   }
 }

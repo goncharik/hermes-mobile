@@ -53,6 +53,19 @@ struct DebugLogClientTests {
     #expect(next?.last?.summary == "boom")
   }
 
+  @Test func clearEmptiesTheBufferAndBroadcastsTheEmptySnapshot() async {
+    let log = DebugLogClient.ringBuffer()
+    log.append(.ready)
+    var iterator = log.stream().makeAsyncIterator()
+    _ = await iterator.next() // primed
+
+    log.clear()
+    #expect(log.snapshot().isEmpty)
+    #expect(await iterator.next() == [])
+    log.append(.ready)
+    #expect(log.snapshot().count == 1)
+  }
+
   @Test func multilineSummaryIsCollapsedAndTruncated() {
     let log = DebugLogClient.ringBuffer()
     log.append(.messageComplete(text: "line one\nline two", usage: nil))

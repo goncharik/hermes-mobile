@@ -26,6 +26,33 @@ public enum AuthSession: Equatable, Sendable, Codable {
     case .cookie, .bearer: nil
     }
   }
+
+  /// `true` for the token regime — the only one whose credential the user can re-paste in
+  /// Settings (`SettingsFeature.State.showsTokenField`).
+  public var isToken: Bool {
+    if case .token = self { return true }
+    return false
+  }
+
+  /// The Settings "Auth" row value: `"Token"`, `"Password · <username>"`, or
+  /// `"<provider> · <user id>"`. Identity only — never a secret. The bearer provider is the
+  /// wire name (e.g. `nous`): the server owns display names and Settings probes nothing,
+  /// matching `ReauthFeature.State.providerLabel`'s fallback. An empty identity drops the
+  /// `· …` suffix rather than rendering a dangling separator.
+  public var settingsLabel: String {
+    switch self {
+    case .token:
+      return "Token"
+    case let .cookie(session):
+      return Self.join("Password", session.username)
+    case let .bearer(session):
+      return Self.join(session.provider.trimmedNonEmpty ?? "OAuth", session.userID)
+    }
+  }
+
+  private static func join(_ head: String, _ identity: String) -> String {
+    identity.trimmedNonEmpty.map { "\(head) · \($0)" } ?? head
+  }
 }
 
 /// The token set returned by the gateway's native OAuth (PKCE) flow
