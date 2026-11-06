@@ -248,7 +248,11 @@ bullets below are the compressed rules.
 - **Mid-turn prompt queuing is client-side (#66)** — never submit against a running
   turn. Everything funnels through `submitDraft` + `drainQueueIfReady`; Stop and turn
   `.error` park the queue; a failed drain re-parks at head (never silently lost, never
-  shown twice); queue is in-memory only. Details: `docs/features/prompt-queue.md`.
+  shown twice); queue is in-memory only. Carve-out: Steer now sends a queued entry with
+  `session.steer` (never `prompt.submit`); it stays queued under `steeringEntryID`, which
+  holds the drain, and leaves only on `status == "queued"` (or a hydrate proving a lost accept
+  delivered it). Details:
+  `docs/features/prompt-queue.md`.
 - **The `model · effort` chip is the only picker (#81)** — `config.set` inside the #17 heal,
   optimistic then reconciled by `session.info`. Offer the FULL reasoning ladder always (the
   server clamps per provider and publishes no per-model list); a failure rolls back BOTH keys

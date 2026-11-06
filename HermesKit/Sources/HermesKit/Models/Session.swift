@@ -145,17 +145,26 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
   /// model-facing text, so the seed must not paint it as the user's bubble.
   public var displayKind: String?
   public var displayMetadata: JSONValue?
+  /// Steers accepted into this turn (`corrections`), in arrival order, trimmed, blanks dropped.
+  /// Their own user bubbles, never written over `user` (gateway `_record_inflight_correction`).
+  public var corrections: [String]
+  /// Per correction, how much of `assistant` (in Unicode scalars, Python `len`) had streamed
+  /// when it arrived (`correction_offsets`): where its bubble sits. `nil` unless every
+  /// correction has a usable offset (desktop `correctionOffsetsUsable`).
+  public var correctionOffsets: [Int]?
 
   enum CodingKeys: String, CodingKey {
-    case user, assistant, streaming
+    case user, assistant, streaming, corrections
     case startedAt = "started_at"
     case displayKind = "display_kind"
     case displayMetadata = "display_metadata"
+    case correctionOffsets = "correction_offsets"
   }
 
   public init(
     user: String? = nil, assistant: String? = nil, streaming: Bool? = nil, startedAt: Date? = nil,
-    displayKind: String? = nil, displayMetadata: JSONValue? = nil
+    displayKind: String? = nil, displayMetadata: JSONValue? = nil,
+    corrections: [String] = [], correctionOffsets: [Int]? = nil
   ) {
     self.user = user
     self.assistant = assistant
@@ -163,6 +172,8 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
     self.startedAt = startedAt
     self.displayKind = displayKind
     self.displayMetadata = displayMetadata
+    self.corrections = corrections
+    self.correctionOffsets = correctionOffsets
   }
 
   public init(from decoder: Decoder) throws {
@@ -174,6 +185,19 @@ public struct SessionInflight: Equatable, Sendable, Decodable {
     self.startedAt = seconds.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
     self.displayKind = (try? c.decodeIfPresent(String.self, forKey: .displayKind))?.trimmedNonEmpty
     self.displayMetadata = decodeDisplayMetadata(c, forKey: .displayMetadata)
+    // Lenient: a malformed list reads as none, never failing the whole hydrate.
+    let rawCorrections = (try? c.decodeIfPresent([JSONValue].self, forKey: .corrections)) ?? nil
+    let rawOffsets = (try? c.decodeIfPresent([JSONValue].self, forKey: .correctionOffsets)) ?? nil
+    var corrections: [String] = []
+    var offsets: [Int?] = []
+    for (index, raw) in (rawCorrections ?? []).enumerated() {
+      guard let text = raw.stringValue?.trimmedNonEmpty else { continue }
+      corrections.append(text)
+      offsets.append(rawOffsets.flatMap { index < $0.count ? $0[index].intValue : nil }.flatMap { $0 >= 0 ? $0 : nil })
+    }
+    self.corrections = corrections
+    let usable = offsets.compactMap { $0 }
+    self.correctionOffsets = !corrections.isEmpty && usable.count == corrections.count ? usable : nil
   }
 }
 

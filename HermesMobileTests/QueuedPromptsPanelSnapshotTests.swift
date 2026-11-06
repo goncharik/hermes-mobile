@@ -12,12 +12,14 @@ import XCTest
 /// tested in `ChatQueueTests`.
 final class QueuedPromptsPanelSnapshotTests: SnapshotTestCase {
   private func panel(
-    entries: [QueuedPrompt], isParked: Bool = false, composerHasDraft: Bool = false
+    entries: [QueuedPrompt], isParked: Bool = false, composerHasDraft: Bool = false,
+    steeringID: UUID? = nil
   ) -> some View {
     QueuedPromptsPanel(
       entries: entries,
       isParked: isParked,
       composerHasDraft: composerHasDraft,
+      steeringID: steeringID,
       onSendNow: { _ in }, onEdit: { _ in }, onDelete: { _ in }
     )
     .frame(width: device.size?.width ?? 390)
@@ -65,5 +67,15 @@ final class QueuedPromptsPanelSnapshotTests: SnapshotTestCase {
       QueuedPrompt(id: id($0), text: "Queued thought number \($0)")
     }
     assertSnapshot(of: panel(entries: entries), as: componentImage())
+  }
+
+  func testQueuedPanel_steeringRowShowsProgress() {
+    // Steer now in flight (up to the 30 s RPC timeout): the row swaps its clock for a spinner
+    // and says "Steering…" while the row behind it stays queued.
+    let entries = [
+      QueuedPrompt(id: id(1), text: "Use tabs, not spaces"),
+      QueuedPrompt(id: id(2), text: "Then run the tests"),
+    ]
+    assertSnapshot(of: panel(entries: entries, steeringID: id(1)), as: componentImage())
   }
 }
