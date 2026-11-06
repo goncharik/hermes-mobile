@@ -162,7 +162,13 @@ a `testValue`/`.inMemory()` variant):
   `LaunchIntent` values fed by the process-wide, Foundation-only `LaunchIntentBridge` (the app
   target's intents call `received(_:)`; same consume-once, last-wins launch-race buffer as
   `PushBridge`, so the `liveValue` needs no UIKit guard). `AppFeature` observes it next to the
-  push-tap observer. Contract: `docs/features/app-intents.md`.
+  push-tap observer. Contract: `docs/features/app-intents.md`. `received(url:)` maps the
+  widgets' `hermesmobile://` deep links (#138) into the same stream.
+- **`WidgetMirrorClient`** / **`LiveActivityClient`** (#138) — the App Group mirror the widget
+  extension reads (`write` / `clear` / `reloadTimelines`) and the aggregate ActivityKit Live
+  Activity (`start` / `update` / `end` / `endAll`), both driven from `AppFeature`'s single
+  `agentStatus` edge. Live values iOS-guarded; test values are no-ops. Contract:
+  `docs/features/widgets.md`.
 - **`BackgroundTaskClient`** — a finite background-execution window (~30s) wrapping
   `UIApplication.beginBackgroundTask`/`endBackgroundTask`: `begin(name) → AsyncStream<Void>`
   yields exactly once if iOS expires the window early (then finishes; a normal end finishes

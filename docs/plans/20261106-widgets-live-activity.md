@@ -469,11 +469,11 @@ guard.
 - [x] run `make snapshot` (all green) and `make build` (⚠️ "all green" apart from the 3 pre-existing attachment snapshots — `testChatView_sentImageAttachment`, `testComposer_attachmentChips`, `testComposer_attachmentUploadingAndFailed` — that fail identically on the base `e821f66`: simulator-runtime drift of the baselines re-recorded in `83dd80b`, untouched by this branch)
 
 ### Task 12: [Final] Update documentation
-- [ ] create `docs/features/widgets.md` (surfaces, URL table, `HermesWidgetKit` packaging rule, projection and edge, staleness, Live Activity lifecycle and toggles, the accepted residuals: foreground crash and the foreground-only start)
-- [ ] update `docs/features/app-intents.md` (new `LaunchIntent` cases, the URL path, `pendingLaunchAction`), `docs/features/settings.md` (the new rows), `docs/development.md` (App Group, extension bundle id, profiles for both ids in the export recipe)
-- [ ] add one short `CLAUDE.md` bullet under Push notifications / App Intents pointing at `docs/features/widgets.md` (keep CLAUDE.md about 200 lines)
-- [ ] update README feature list if it enumerates surfaces
-- [ ] move this plan to `docs/plans/completed/`
+- [x] create `docs/features/widgets.md` (surfaces, URL table, `HermesWidgetKit` packaging rule, projection and edge, staleness, Live Activity lifecycle and toggles, the accepted residuals: foreground crash and the foreground-only start)
+- [x] update `docs/features/app-intents.md` (new `LaunchIntent` cases, the URL path, `pendingLaunchAction`), `docs/features/settings.md` (the new rows), `docs/development.md` (App Group, extension bundle id, profiles for both ids in the export recipe) (➕ `docs/architecture.md` client list gets `WidgetMirrorClient` / `LiveActivityClient` and `received(url:)`; `docs/development.md` gets a "Targets and the App Group" section and the real snapshot state: 358 tests, the 3 pre-existing attachment drift failures)
+- [x] add one short `CLAUDE.md` bullet under Push notifications / App Intents pointing at `docs/features/widgets.md` (keep CLAUDE.md about 200 lines) (➕ the #93 bullet now says `pendingLaunchAction`, the Layout list names `HermesWidgets/`, the snapshot line states 358 with the 3 known failures; ⚠️ CLAUDE.md was already ~400 lines before this task — the whole-file compression stays a separate task)
+- [x] update README feature list if it enumerates surfaces
+- [x] move this plan to `docs/plans/completed/` (done by orchestrator after reviews)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
