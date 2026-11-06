@@ -151,17 +151,17 @@ observer) → `AppFeature.launchIntentReceived(intent)`:
 - Create: `HermesKit/Sources/HermesKit/Clients/LaunchIntentClient.swift` (client + bridge)
 - Create: `HermesKit/Tests/HermesKitTests/LaunchIntentClientTests.swift`
 
-- [ ] add the `LaunchIntent` enum (`newChat`, `newChatWithDictation`)
-- [ ] add `LaunchIntentBridge` with `shared`, internal `init()` for tests, `received(_:)` and
+- [x] add the `LaunchIntent` enum (`newChat`, `newChatWithDictation`)
+- [x] add `LaunchIntentBridge` with `shared`, internal `init()` for tests, `received(_:)` and
       `stream()`. It has a consume-once buffer for the launch race, live fan-out, and pruning on
       termination, mirroring `PushBridge`'s tap half
-- [ ] add the `LaunchIntentClient` `@DependencyClient` with `liveValue` over the bridge, a finished
+- [x] add the `LaunchIntentClient` `@DependencyClient` with `liveValue` over the bridge, a finished
       `testValue`, and a live-yield test double
-- [ ] write tests:
+- [x] write tests:
   - an intent received before any subscriber is delivered to the first subscriber only
   - a live subscriber receives it and nothing is buffered
   - an intent sent after a subscriber terminated is buffered again
-- [ ] run tests, which must pass before Task 2
+- [x] run tests, which must pass before Task 2
 
 ### Task 2: Route intents in `AppFeature` (stash, replay, new chat)
 
