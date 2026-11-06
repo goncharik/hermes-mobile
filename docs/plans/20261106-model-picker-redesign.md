@@ -309,13 +309,18 @@
 - Modify: `HermesMobileTests/ComposerSnapshotTests.swift`
 - Modify: `HermesMobileTests/__Snapshots__/ComposerSnapshotTests/` (baselines)
 
-- [ ] update the four existing `ModelPickerSheet` snapshots to the new API (store built from
+- [x] update the four existing `ModelPickerSheet` snapshots to the new API (store built from
       `ModelPickerFeature.State`, no `.task` side effects — use a reducer-less/no-op store or
       `withDependencies` test values) and re-record them
-- [ ] add: expanded with Favorites (multi-provider captions), collapsed provider showing the
+- [x] add: expanded with Favorites (multi-provider captions), collapsed provider showing the
       current model, busy, effort sub-list page, search active; light + dark where the file's
       convention does so
-- [ ] `make snapshot` twice for new tests; final run clean (all suites, not only new ones)
+- [x] `make snapshot` twice for new tests; final run clean (all suites, not only new ones)
+- ➕ the latch snapshot moved to the effort page (`testReasoningEffortList_latchedHidesExtendedEfforts`
+      — the sheet no longer lists efforts inline); `ModelPickerSheet.searchText` became an
+      internal `@State` so a snapshot seeds the search through the memberwise init. The 3
+      image-attachment baselines (also failing on `origin/main`, equal render size, solid-fill
+      colour shift) were re-recorded for simulator drift in their own commit. Suite: 338/338.
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify every Overview requirement against the running code (explicit_only, favorites,

@@ -185,55 +185,15 @@ final class ComposerSnapshotTests: SnapshotTestCase {
     .frame(width: device.size?.width ?? 390)
   }
 
-  // MARK: ModelPickerSheet
+  // MARK: ModelPickerSheet (#81, redesigned for #130)
 
+  /// The base shape: an Options card (`Reasoning › high` — the current model reasons), the
+  /// OpenAI card with the current row checked and an empty star on every row, and an
+  /// unconfigured Anthropic card rendered as a disabled lock row with its configure hint.
   func testModelPickerSheet() {
-    let picker = ModelPickerFeature.State(
-      sessionID: "s", isLoading: false,
-      options: ModelOptions(
-        providers: [
-          .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
-                capabilities: ["gpt-5": .init(reasoning: true), "gpt-5-mini": .init(reasoning: true)]),
-          // Unconfigured — appears disabled below, with a configure hint.
-          .init(name: "Anthropic", slug: "anthropic", models: [], authenticated: false,
-                warning: "paste ANTHROPIC_API_KEY to activate"),
-        ],
-        currentModel: "gpt-5"
-      )
-    )
-    let view = ModelPickerSheet(
-      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
-      currentModel: "gpt-5", // reasoning-capable → effort options drop down under it, "high" selected
-      currentEffort: "high",
-      isBusy: false
-    )
-    assertSnapshot(of: view, as: deviceImage())
-  }
-
-  /// The per-slot latch (#81): once this slot's agent has answered 4002 "unknown reasoning
-  /// value", `extendedReasoningSupported` is false and the two extended levels drop out —
-  /// the list ends at `xhigh`, with `max`/`ultra` absent. Same fixture as
-  /// `testModelPickerSheet`, so the two baselines differ by exactly those two rows.
-  func testModelPickerSheet_latchedHidesExtendedEfforts() {
-    let picker = ModelPickerFeature.State(
-      sessionID: "s", isLoading: false,
-      options: ModelOptions(
-        providers: [
-          .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
-                capabilities: ["gpt-5": .init(reasoning: true), "gpt-5-mini": .init(reasoning: true)]),
-          .init(name: "Anthropic", slug: "anthropic", models: [], authenticated: false,
-                warning: "paste ANTHROPIC_API_KEY to activate"),
-        ],
-        currentModel: "gpt-5"
-      )
-    )
-    let view = ModelPickerSheet(
-      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
-      currentModel: "gpt-5",
-      currentEffort: "high",
-      isBusy: false,
-      extendedReasoningSupported: false
-    )
+    let view = modelPickerSheet(ModelPickerFeature.State(
+      sessionID: "s", isLoading: false, options: singleProviderOptions
+    ))
     assertSnapshot(of: view, as: deviceImage())
   }
 
@@ -242,28 +202,15 @@ final class ComposerSnapshotTests: SnapshotTestCase {
   /// selection stays visible in the rows below it. Same fixture as `testModelPickerSheet`, so
   /// the two baselines differ by exactly that row.
   func testModelPickerSheet_applyError() {
-    let picker = ModelPickerFeature.State(
-      sessionID: "s", isLoading: false,
-      options: ModelOptions(
-        providers: [
-          .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
-                capabilities: ["gpt-5": .init(reasoning: true), "gpt-5-mini": .init(reasoning: true)]),
-          .init(name: "Anthropic", slug: "anthropic", models: [], authenticated: false,
-                warning: "paste ANTHROPIC_API_KEY to activate"),
-        ],
-        currentModel: "gpt-5"
-      ),
+    let view = modelPickerSheet(ModelPickerFeature.State(
+      sessionID: "s", isLoading: false, options: singleProviderOptions,
       applyError: "Couldn’t change model: cannot switch mid-turn"
-    )
-    let view = ModelPickerSheet(
-      store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
-      currentModel: "gpt-5",
-      currentEffort: "high",
-      isBusy: false
-    )
+    ))
     assertSnapshot(of: view, as: deviceImage())
   }
 
+  /// A current model without reasoning has no Options card at all — the list opens on the
+  /// provider card.
   func testModelPickerSheet_nonReasoningModelHidesEffort() {
     let picker = ModelPickerFeature.State(
       sessionID: "s", isLoading: false,
@@ -276,15 +223,167 @@ final class ComposerSnapshotTests: SnapshotTestCase {
                   "claude-haiku-4-5": .init(reasoning: false),
                 ]),
         ],
-        currentModel: "claude-haiku-4-5"
+        currentModel: "claude-haiku-4-5",
+        currentProvider: "anthropic"
       )
+    )
+    let view = modelPickerSheet(picker, currentModel: "claude-haiku-4-5", currentEffort: nil)
+    assertSnapshot(of: view, as: deviceImage())
+  }
+
+  /// Mid-turn: the busy note sits above the list, the model rows and the `Reasoning` row dim
+  /// and disable, while the stars stay live (favorites are display-only).
+  func testModelPickerSheet_busy() {
+    let view = modelPickerSheet(
+      ModelPickerFeature.State(sessionID: "s", isLoading: false, options: singleProviderOptions),
+      isBusy: true
+    )
+    assertSnapshot(of: view, as: deviceImage())
+  }
+
+  /// Starred models from three providers pin to a Favorites card under Options, in star
+  /// order, each captioned with its provider (they span more than one); the current model is
+  /// favorited, so its checkmark lives in Favorites and the Anthropic card no longer lists it.
+  /// Every favorited model is gone from its provider card. Taller than one phone screen, so
+  /// the last (OpenRouter) card renders clear of the bottom search field.
+  func testModelPickerSheet_favorites() {
+    assertSnapshot(of: favoritesSheet(), as: deviceImage(height: favoritesSheetHeight))
+  }
+
+  /// Light rendering of the Favorites shape: the yellow filled star and the accent checkmark
+  /// over a light grouped background are the contrast under test.
+  func testModelPickerSheet_favorites_light() {
+    assertSnapshot(
+      of: favoritesSheet(),
+      as: deviceImage(appearance: .light, height: favoritesSheetHeight)
+    )
+  }
+
+  /// Collapsed cards (persisted per device): Anthropic collapses to its header, which carries
+  /// the model count, the CURRENT model's name and its checkmark (it lives inside), and a
+  /// sideways chevron; OpenRouter collapses to name + count; OpenAI stays expanded.
+  func testModelPickerSheet_collapsedProviderShowsCurrent() {
+    let view = modelPickerSheet(ModelPickerFeature.State(
+      sessionID: "s", isLoading: false, options: multiProviderOptions,
+      collapsedProviders: ["anthropic", "openrouter"]
+    ))
+    assertSnapshot(of: view, as: deviceImage())
+  }
+
+  /// An active search (`gpt`): no Options or Favorites card, every matching provider card
+  /// expanded (OpenRouter is collapsed in prefs but search overrides it), and a favorited match
+  /// stays in its provider card with a filled star. Anthropic has no match and drops out.
+  func testModelPickerSheet_searchActive() {
+    let picker = ModelPickerFeature.State(
+      sessionID: "s", isLoading: false, options: multiProviderOptions,
+      collapsedProviders: ["openrouter"],
+      favorites: [
+        FavoriteModel(providerID: "openai", model: "gpt-5"),
+        FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8"),
+      ]
     )
     let view = ModelPickerSheet(
       store: Store(initialState: picker) { EmptyReducer() }, // no `.task` load in a snapshot
-      currentModel: "claude-haiku-4-5", // no reasoning → effort section hidden
-      currentEffort: nil,
-      isBusy: false
+      currentModel: "claude-opus-4-8",
+      currentEffort: "high",
+      isBusy: false,
+      searchText: "gpt"
     )
     assertSnapshot(of: view, as: deviceImage())
+  }
+
+  // MARK: ReasoningEffortList (the Options card's pushed page)
+
+  /// The FULL upstream ladder (`none … xhigh, max, ultra`) with the current effort checked.
+  func testReasoningEffortList() {
+    assertSnapshot(of: reasoningEffortList(extendedReasoningSupported: true), as: deviceImage())
+  }
+
+  /// The per-slot latch (#81): once this slot's agent has answered 4002 "unknown reasoning
+  /// value", `extendedReasoningSupported` is false and the two extended levels drop out —
+  /// the list ends at `xhigh`, with `max`/`ultra` absent. Same fixture as
+  /// `testReasoningEffortList`, so the two baselines differ by exactly those two rows.
+  func testReasoningEffortList_latchedHidesExtendedEfforts() {
+    assertSnapshot(of: reasoningEffortList(extendedReasoningSupported: false), as: deviceImage())
+  }
+
+  // MARK: Model picker fixtures
+
+  /// One configured provider plus an unconfigured one (shown disabled, with its hint).
+  private var singleProviderOptions: ModelOptions {
+    ModelOptions(
+      providers: [
+        .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini"], authenticated: true,
+              capabilities: ["gpt-5": .init(reasoning: true), "gpt-5-mini": .init(reasoning: true)]),
+        .init(name: "Anthropic", slug: "anthropic", models: [], authenticated: false,
+              warning: "paste ANTHROPIC_API_KEY to activate"),
+      ],
+      currentModel: "gpt-5",
+      currentProvider: "openai"
+    )
+  }
+
+  /// Three configured providers; the current model is Anthropic's `claude-opus-4-8`.
+  private var multiProviderOptions: ModelOptions {
+    ModelOptions(
+      providers: [
+        .init(name: "OpenAI", slug: "openai", models: ["gpt-5", "gpt-5-mini", "o4-mini"],
+              authenticated: true,
+              capabilities: ["gpt-5": .init(reasoning: true), "gpt-5-mini": .init(reasoning: true)]),
+        .init(name: "Anthropic", slug: "anthropic",
+              models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+              authenticated: true,
+              capabilities: ["claude-opus-4-8": .init(reasoning: true)]),
+        .init(name: "OpenRouter", slug: "openrouter",
+              models: ["openai/gpt-5", "google/gemini-3-pro", "x-ai/grok-4", "deepseek/deepseek-r2"],
+              authenticated: true),
+      ],
+      currentModel: "claude-opus-4-8",
+      currentProvider: "anthropic"
+    )
+  }
+
+  /// Options + Favorites (3) + three provider cards run past the 844 pt phone height.
+  private let favoritesSheetHeight: CGFloat = 1180
+
+  private func favoritesSheet() -> some View {
+    modelPickerSheet(ModelPickerFeature.State(
+      sessionID: "s", isLoading: false, options: multiProviderOptions,
+      favorites: [
+        FavoriteModel(providerID: "anthropic", model: "claude-opus-4-8"),
+        FavoriteModel(providerID: "openrouter", model: "google/gemini-3-pro"),
+        FavoriteModel(providerID: "openai", model: "gpt-5"),
+      ]
+    ))
+  }
+
+  /// The sheet over a reducer-less store — no `.task` load or prefs read in a snapshot. The
+  /// current model follows the fixture's `currentModel` unless overridden.
+  private func modelPickerSheet(
+    _ picker: ModelPickerFeature.State,
+    currentModel: String? = nil,
+    currentEffort: String? = "high",
+    isBusy: Bool = false
+  ) -> some View {
+    ModelPickerSheet(
+      store: Store(initialState: picker) { EmptyReducer() },
+      currentModel: currentModel ?? picker.options?.currentModel,
+      currentEffort: currentEffort,
+      isBusy: isBusy
+    )
+  }
+
+  /// The pushed effort page, inside a stack so its inline `Reasoning` title renders.
+  private func reasoningEffortList(extendedReasoningSupported: Bool) -> some View {
+    NavigationStack {
+      ReasoningEffortList(
+        store: Store(initialState: ModelPickerFeature.State(sessionID: "s", isLoading: false)) {
+          EmptyReducer()
+        },
+        currentEffort: "high",
+        isBusy: false,
+        extendedReasoningSupported: extendedReasoningSupported
+      )
+    }
   }
 }

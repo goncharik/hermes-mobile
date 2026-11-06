@@ -22,8 +22,10 @@ struct ModelPickerSheet: View {
   /// slot's agent rejected one.
   var extendedReasoningSupported: Bool = true
 
+  /// Internal (not private) only so a snapshot can seed the search state through the
+  /// memberwise init; production always opens with an empty query.
+  @State var searchText = ""
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var searchText = ""
   /// The list centers on the current model ONCE per presentation — never again after the
   /// user scrolls, collapses a card, or comes back from the effort page.
   @State private var hasCentered = false
