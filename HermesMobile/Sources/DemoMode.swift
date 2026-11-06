@@ -81,6 +81,10 @@ enum DemoMode {
     // An App Intent (#93) fired during a capture must not swap the curated chat for a new
     // one: the demo store never observes the intent stream (the app still just opens).
     deps.launchIntents.incoming = { AsyncStream { _ in } }
+    // The seeded rows must not overwrite the real widget mirror, nor start a Live Activity
+    // (already "Outdated" under the pinned date) in a capture.
+    deps.widgetMirror = .testValue
+    deps.liveActivity = .testValue
   }
 
   private static var demoPreferences: PreferencesClient {

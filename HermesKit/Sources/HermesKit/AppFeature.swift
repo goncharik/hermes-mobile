@@ -108,6 +108,8 @@ public struct AppFeature {
     /// `nil` while the start request is in flight (`liveActivityStarted` adopts it), so a second
     /// change can never start a second activity.
     var liveActivity: LiveActivitySeat?
+    /// How many start requests this process sent: the next seat's `request` token.
+    var liveActivityRequests = 0
     /// The running Live Activity's ActivityKit id (`nil` while none is up or its start is
     /// still in flight).
     public var liveActivityID: String? { liveActivity?.id }
@@ -115,7 +117,8 @@ public struct AppFeature {
     /// stamped by the `.background` edge (`now` + the running slot's ~30 s grace + a margin)
     /// and reused by every write until `.active` clears it, so a change during the grace can't
     /// extend the promise past what the app can still observe. `nil` in the foreground, and
-    /// when the edge found nothing to mirror (`agentStatus == nil`).
+    /// when the edge found nothing to mirror (`agentStatus == nil` — the unknown edge already
+    /// shortened the surfaces' promise).
     var backgroundFreshUntil: Date?
 
     public init(
@@ -181,26 +184,35 @@ public struct AppFeature {
     }
 
     /// What the widgets and the aggregate Live Activity show (`AgentStatusProjection`), or
-    /// `nil` ("unknown" — hold, write nothing, never end) while signed out or before the
-    /// list's first unfiltered fetch of the process. The live slot's running flag overrides
-    /// its row only when the slot is in the list's profile (the same rule as the row-glow
-    /// patch): another profile's id can't be in these rows.
-    public var agentStatus: AgentStatusProjection? {
+    /// `nil` ("unknown" — hold, never end) while signed out or before the list's first
+    /// unfiltered fetch (of the process, or since a profile switch reset the rows).
+    public var agentStatus: AgentStatusProjection? { agentStatusInputs?.projection }
+
+    /// What `agentStatus` is built from — the cheap key the surfaces edge watches, so the
+    /// projection is only built when an input moved (not on every streaming frame). The live
+    /// slot's running flag overrides its row only when the slot is in the list's profile (the
+    /// same rule as the row-glow patch): another profile's id can't be in these rows. A slot
+    /// the list doesn't carry yet (a new chat) brings its own row, titled by its first prompt.
+    var agentStatusInputs: AgentStatusInputs? {
       guard let home, let sessions = home.statusSessions else { return nil }
-      let slotRunning: (id: String, running: Bool)?
-      if let chat = liveChat, let key = chat.sessionKey,
-        AppFeature.isSameProfile(home.scopedProfileName, chat.profileName) {
-        slotRunning = (key, chat.isRunning)
-      } else {
-        slotRunning = nil
-      }
-      return AgentStatusProjection.make(
-        sessions: Array(sessions),
+      var inputs = AgentStatusInputs(
+        connection: home.connection,
+        sessions: sessions,
         needsInput: needsInputSessionIDs,
-        slotRunning: slotRunning,
         showsTitles: liveActivityShowsTitles,
         profile: home.scopedProfileName
       )
+      if let chat = liveChat, let key = chat.sessionKey,
+        AppFeature.isSameProfile(home.scopedProfileName, chat.profileName) {
+        inputs.slotID = key
+        inputs.slotRunning = chat.isRunning
+        if sessions[id: key] == nil {
+          inputs.slotSession = Session(
+            id: key, title: chat.title, preview: chat.firstUserMessageText
+          )
+        }
+      }
+      return inputs
     }
 
     /// What the regular-width seat reseat (`reduceProfileReseat`) is watching: the list's
@@ -251,6 +263,34 @@ public struct AppFeature {
     /// The content last sent (start or update): the dedupe for the edge's updates and the
     /// headline the final "Done" content keeps.
     var content: AgentActivityContent
+    /// Which start request took this seat (`State.liveActivityRequests`), so a request that
+    /// lands for a seat it didn't take — a fast toggle off→on — is ended, never adopted.
+    var request: Int
+  }
+
+  /// `State.agentStatusInputs`: everything `AgentStatusProjection.make` reads, plus the list's
+  /// connection (an unknown projection under the SAME list is a profile switch; under a new
+  /// one, a different-user re-auth that already cleared the surfaces).
+  struct AgentStatusInputs: Equatable, Sendable {
+    var connection: ServerConnection
+    var sessions: IdentifiedArrayOf<Session>
+    var needsInput: Set<String>
+    var slotID: String?
+    var slotRunning = false
+    var slotSession: Session?
+    var showsTitles: Bool
+    var profile: String?
+
+    var projection: AgentStatusProjection? {
+      AgentStatusProjection.make(
+        sessions: Array(sessions),
+        needsInput: needsInput,
+        slotRunning: slotID.map { ($0, slotRunning) },
+        slotSession: slotSession,
+        showsTitles: showsTitles,
+        profile: profile
+      )
+    }
   }
 
   /// The root branches of the app shell, in the order `State.rootScreen` resolves them.
@@ -354,18 +394,12 @@ public struct AppFeature {
     /// foreground re-hydrate.
     case backgroundGraceExpired
     case reauth(PresentationAction<ReauthFeature.Action>)
-    /// The Settings "Live Activity" toggle changed (Settings persists it). Off ends every
-    /// activity at once; on starts one if agents are active.
-    case liveActivityToggled(Bool)
-    /// The Settings "Show session titles" toggle changed (Settings persists it). Part of
-    /// `agentStatus`, so the edge updates the activity.
-    case liveActivityShowsTitlesToggled(Bool)
     /// Internal: the debounced Live Activity update / end fell due.
     case liveActivitySyncDue
-    /// Internal: ActivityKit accepted the start request.
-    case liveActivityStarted(id: String)
-    /// Internal: ActivityKit refused the start request (already debug-logged; no banner).
-    case liveActivityStartFailed
+    /// Internal: ActivityKit accepted start request `request` (the seat's token).
+    case liveActivityStarted(id: String, request: Int)
+    /// Internal: ActivityKit refused start request `request` (already debug-logged; no banner).
+    case liveActivityStartFailed(request: Int)
   }
 
   /// Ids for the long-running incoming-tap and launch-intent observers, the
@@ -579,14 +613,27 @@ public struct AppFeature {
           // chat via `.foreground` (which reconnects only if the socket died — a socket the
           // grace window kept alive is reused, not redialed) and refresh the list
           // immediately (don't wait for the poll).
+          let wasBackgrounded = state.isSceneBackgrounded
           state.isSceneBackgrounded = false
           state.backgroundFreshUntil = nil
+          // Back from the background, the app observes again: restamp the mirror and the Live
+          // Activity with the foreground freshness so the "Outdated" the background edge
+          // scheduled doesn't fire under a live app, and start the activity if agents are
+          // active without one — including when the one up was swiped away or timed out
+          // meanwhile (its seat is dropped). A brief `.active` (Control Center, the
+          // notification shade) never left the foreground freshness: nothing to restamp.
+          var surfaces: Effect<Action> = .none
+          if wasBackgrounded {
+            if let id = state.liveActivity?.id, !liveActivity.isActive(id) {
+              state.liveActivity = nil
+            }
+            surfaces = .merge(
+              syncSurfaces(state, debounced: false),
+              syncLiveActivity(&state, .restamp)
+            )
+          }
           return .merge(
-            // The app observes again: restamp the mirror and the Live Activity with the
-            // foreground freshness so the "Outdated" the background edge scheduled doesn't
-            // fire under a live app (and start the activity if agents are active without one).
-            syncSurfaces(state, debounced: false),
-            syncLiveActivity(&state, .restamp),
+            surfaces,
             .cancel(id: CancelID.backgroundGrace),
             .run { [backgroundTask] _ in await backgroundTask.end() },
             state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
@@ -1073,12 +1120,10 @@ public struct AppFeature {
         }
         return .none
 
-      case let .liveActivityToggled(enabled),
-        let .home(.delegate(.liveActivityToggled(enabled))):
+      case let .home(.delegate(.liveActivityToggled(enabled))):
         return setLiveActivityEnabled(enabled, &state)
 
-      case let .liveActivityShowsTitlesToggled(shows),
-        let .home(.delegate(.liveActivityShowsTitlesToggled(shows))):
+      case let .home(.delegate(.liveActivityShowsTitlesToggled(shows))):
         // Part of `agentStatus`: the edge below updates the activity with or without the title.
         state.liveActivityShowsTitles = shows
         return .none
@@ -1086,21 +1131,25 @@ public struct AppFeature {
       case .liveActivitySyncDue:
         return syncLiveActivity(&state, .immediate)
 
-      case let .liveActivityStarted(id):
-        // Adopt the id only for the seat whose start this was. No seat (the toggle went off or
-        // the user logged out mid-request) or an already-adopted one (a toggle off→on started a
-        // second request): this activity is an orphan — end it at once.
-        guard let seat = state.liveActivity, seat.id == nil else {
+      case let .liveActivityStarted(id, request):
+        // Adopt the id only for the seat this request took. No seat (the toggle went off or
+        // the user logged out mid-request) or another request's seat (a fast toggle off→on):
+        // this activity is an orphan — end it at once.
+        guard let seat = state.liveActivity, seat.id == nil, seat.request == request else {
           return .run { [liveActivity] _ in await liveActivity.end(id, nil, nil) }
         }
         state.liveActivity?.id = id
         // Catch up with whatever changed while the request was in flight (changes skip a seat
-        // without an id). A background edge during the request moved the stale date too.
-        return syncLiveActivity(&state, state.isSceneBackgrounded ? .restamp : .immediate)
+        // without an id). A background edge, or the projection going unknown, during the
+        // request moved the stale date too.
+        let restamp = state.isSceneBackgrounded || state.agentStatus == nil
+        return syncLiveActivity(&state, restamp ? .restamp : .immediate)
 
-      case .liveActivityStartFailed:
+      case let .liveActivityStartFailed(request):
         // Free the seat so the next change may try again; the failure is only debug-logged.
-        if state.liveActivity?.id == nil { state.liveActivity = nil }
+        if let seat = state.liveActivity, seat.id == nil, seat.request == request {
+          state.liveActivity = nil
+        }
         return .none
 
       case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
@@ -1170,15 +1219,32 @@ public struct AppFeature {
     // The ONE edge the widget surfaces sync from (#138): whatever moved the projection — a
     // list fetch, a slot's running flip, an approval card, the show-titles pref — rewrites the
     // App Group mirror once the burst settles and syncs the Live Activity (start / update / end).
-    // Evaluated after every child reducer, so it reads the reduced state. `nil` is "unknown"
-    // (signed out, or no unfiltered fetch yet): hold — write nothing, never end; a logout clears
-    // the surfaces on its own.
-    .onChange(of: \.agentStatus) { _, status in
+    // Evaluated after every child reducer, so it reads the reduced state. It watches the cheap
+    // inputs and builds the projection only when one moved. `nil` is "unknown" (signed out, or
+    // no unfiltered fetch yet): hold — never end; a logout clears the surfaces on its own. A
+    // projection going unknown under the same list (a profile switch reset its rows) stops
+    // vouching: both surfaces keep their content but go "Outdated" after the margin unless the
+    // refetch lands first — it may fail, or the user may background before it.
+    .onChange(of: \.agentStatusInputs) { old, new in
       Reduce { state, _ in
-        guard status != nil else { return .none }
+        let previous = old?.projection
+        guard let status = new?.projection else {
+          guard let previous, let old, state.home?.connection == old.connection else {
+            return .none
+          }
+          return .merge(
+            writeMirror(
+              rows: previous.rows, freshUntil: unknownFreshUntil(state), debounced: false
+            ),
+            syncLiveActivity(&state, .restamp)
+          )
+        }
+        guard status != previous else { return .none }
+        // Back from unknown, the activity's stale date was shortened: restamp it even when
+        // its content didn't change.
         return .merge(
           syncSurfaces(state, debounced: true),
-          syncLiveActivity(&state, .debounced)
+          syncLiveActivity(&state, previous == nil ? .restamp : .debounced)
         )
       }
     }
@@ -1192,6 +1258,12 @@ public struct AppFeature {
     return state.isSceneBackgrounded
       ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
       : now.addingTimeInterval(Self.foregroundFreshness)
+  }
+
+  /// The promise for content the app can no longer back (the projection went unknown): the
+  /// suspension margin, or the background stamp when that is sooner.
+  private func unknownFreshUntil(_ state: State) -> Date {
+    min(freshUntil(state), date.now.addingTimeInterval(Self.backgroundFreshnessMargin))
   }
 
   /// The "Live Activity" pref changed (Settings persisted it). Off ends every activity of the
@@ -1209,11 +1281,14 @@ public struct AppFeature {
     return syncLiveActivity(&state, .immediate)
   }
 
-  /// Drives the aggregate Live Activity from `state.agentStatus` (#138). `nil` (unknown) holds.
+  /// Drives the aggregate Live Activity from `state.agentStatus` (#138). `nil` (unknown) holds
+  /// the content; only a `restamp` acts on it, shortening the stale date (`unknownFreshUntil`).
   /// - No activity and agents active → start one, only while the pref is on, the scene is in
-  ///   the foreground and iOS allows activities; the seat is taken at once (id pending) so a
-  ///   second change can't start a second one, and `liveActivityStarted` adopts the id. A
-  ///   start failure is only debug-logged.
+  ///   the foreground and iOS allows activities; the seat is taken at once (id pending, a fresh
+  ///   request token) so a second change can't start a second one, and `liveActivityStarted`
+  ///   adopts the id. The start first ends every activity still on screen — the previous one's
+  ///   lingering "Done" — so back-to-back turns never stack. A start failure is only
+  ///   debug-logged.
   /// - An activity and agents active → update it (skipped when the content didn't change,
   ///   unless a scene edge `restamp`s the stale date).
   /// - An activity and nothing active → end it with its last headline as "Done", dismissed
@@ -1221,21 +1296,33 @@ public struct AppFeature {
   /// The edge debounces the update / end (`LiveActivitySync.debounced`); the stale date is
   /// `freshUntil`, the same promise as the widget mirror.
   private func syncLiveActivity(_ state: inout State, _ mode: LiveActivitySync) -> Effect<Action> {
-    guard let status = state.agentStatus else { return .none }
+    guard let status = state.agentStatus else {
+      guard mode == .restamp, let seat = state.liveActivity, let id = seat.id else {
+        return .none
+      }
+      let staleDate = unknownFreshUntil(state)
+      return .merge(
+        .cancel(id: CancelID.liveActivitySync),
+        .run { [liveActivity] _ in await liveActivity.update(id, seat.content, staleDate) }
+      )
+    }
     let content = status.activityContent
     guard let seat = state.liveActivity else {
       guard let content, state.liveActivityEnabled, !state.isSceneBackgrounded,
         liveActivity.areActivitiesEnabled()
       else { return .none }
-      state.liveActivity = LiveActivitySeat(id: nil, content: content)
+      state.liveActivityRequests += 1
+      let request = state.liveActivityRequests
+      state.liveActivity = LiveActivitySeat(id: nil, content: content, request: request)
       let staleDate = freshUntil(state)
       return .run { [liveActivity, debugLog] send in
+        await liveActivity.endAll()
         do {
           let id = try await liveActivity.start(content, staleDate)
-          await send(.liveActivityStarted(id: id))
+          await send(.liveActivityStarted(id: id, request: request))
         } catch {
           debugLog.note("live.activity", "start failed: \(error)")
-          await send(.liveActivityStartFailed)
+          await send(.liveActivityStartFailed(request: request))
         }
       }
     }
@@ -1280,9 +1367,15 @@ public struct AppFeature {
   /// non-authoritative cache the next change rewrites.
   private func syncSurfaces(_ state: State, debounced: Bool) -> Effect<Action> {
     guard let status = state.agentStatus else { return .none }
-    let snapshot = WidgetSessionSnapshot(
-      freshUntil: freshUntil(state), isSignedIn: true, rows: status.rows
-    )
+    return writeMirror(rows: status.rows, freshUntil: freshUntil(state), debounced: debounced)
+  }
+
+  /// `syncSurfaces`' write, for explicit rows and promise (the unknown edge re-sends the last
+  /// known rows with a short one).
+  private func writeMirror(
+    rows: [WidgetSessionRow], freshUntil: Date, debounced: Bool
+  ) -> Effect<Action> {
+    let snapshot = WidgetSessionSnapshot(freshUntil: freshUntil, isSignedIn: true, rows: rows)
     return .run { [widgetMirror, clock, debugLog] _ in
       if debounced { try await clock.sleep(for: Self.surfacesSyncDebounce) }
       do {
@@ -1735,9 +1828,7 @@ public struct AppFeature {
     // The Live Activity prefs (#138): device-local, reset to on by a logout.
     state.liveActivityEnabled = preferences.loadLiveActivityEnabled()
     state.liveActivityShowsTitles = preferences.loadLiveActivityShowsTitles()
-    let sweep: Effect<Action> = state.liveActivity == nil
-      ? .run { [liveActivity] _ in await liveActivity.endAll() }
-      : .none
+    let sweep: Effect<Action> = .run { [liveActivity] _ in await liveActivity.endAll() }
     return .merge(sweep, replayLandingStash(&state, replaysLaunchAction: replaysLaunchAction))
   }
 
@@ -2063,5 +2154,16 @@ public struct AppFeature {
         bearerTokens.clear(claim: claim)
       }
     )
+  }
+}
+
+extension ChatFeature.State {
+  /// The text of the first user message in the transcript — a new chat's stand-in title (the
+  /// list's preview) until the server names it.
+  var firstUserMessageText: String? {
+    for row in transcript {
+      if case let .message(.user, text, _) = row.kind { return text }
+    }
+    return nil
   }
 }

@@ -21,12 +21,13 @@ struct AgentStatusProjectionTests {
     _ sessions: [Session]?,
     needsInput: Set<String> = [],
     slotRunning: (id: String, running: Bool)? = nil,
+    slotSession: Session? = nil,
     showsTitles: Bool = true,
     profile: String? = "work"
   ) -> AgentStatusProjection? {
     AgentStatusProjection.make(
       sessions: sessions, needsInput: needsInput, slotRunning: slotRunning,
-      showsTitles: showsTitles, profile: profile
+      slotSession: slotSession, showsTitles: showsTitles, profile: profile
     )
   }
 
@@ -35,7 +36,7 @@ struct AgentStatusProjectionTests {
     // An empty unfiltered list is known — not "unknown".
     expectNoDifference(
       make([]),
-      AgentStatusProjection(rows: [], activeCount: 0, headline: nil, showsTitles: true)
+      AgentStatusProjection(rows: [], activeCount: 0, showsTitles: true)
     )
   }
 
@@ -155,6 +156,33 @@ struct AgentStatusProjectionTests {
     #expect(stopped?.activeCount == 0)
   }
 
+  /// A new chat the list hasn't fetched since it was created: the slot is its row while it
+  /// runs or needs input, so the first turn counts at once. An idle unlisted slot adds nothing,
+  /// and a listed slot is never duplicated.
+  @Test func anUnlistedActiveSlotGetsARow() {
+    let slot = Session(id: "new", preview: "first prompt")
+    let running = make(
+      [session("old", minutesAgo: 5)], slotRunning: (id: "new", running: true), slotSession: slot
+    )
+    #expect(running?.rows.map(\.id) == ["new", "old"])
+    #expect(running?.headline?.title == "first prompt")
+    #expect(running?.headline?.status == .working)
+    #expect(running?.activeCount == 1)
+
+    let needsInput = make(
+      [], needsInput: ["new"], slotRunning: (id: "new", running: false), slotSession: slot
+    )
+    #expect(needsInput?.headline?.status == .needsInput)
+
+    let idle = make([], slotRunning: (id: "new", running: false), slotSession: slot)
+    #expect(idle?.rows.isEmpty == true)
+
+    let listed = make(
+      [session("new", minutesAgo: 1)], slotRunning: (id: "new", running: true), slotSession: slot
+    )
+    #expect(listed?.rows.map(\.title) == ["Title new"])
+  }
+
   @Test func activityContentCarriesTheHeadline() {
     let projection = make([session("a", minutesAgo: 1, active: true)])
     expectNoDifference(
@@ -239,6 +267,23 @@ struct AppAgentStatusTests {
     // The same id opened under another profile is a different session.
     state.liveChat?.profileName = "personal"
     #expect(state.agentStatus?.rows.first?.status == .idle)
+  }
+
+  /// A new chat's first turn: its session isn't in the list yet (the compact list doesn't poll
+  /// while the chat is pushed), yet it counts and headlines, titled by its first prompt.
+  @Test func aNewChatNotYetListedCountsWhileRunning() {
+    var chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    chat.liveSessionID = "new"
+    chat.transcript = [
+      ChatRow(id: UUID(), kind: .message(role: .user, text: "  fix the build  ", isComplete: true)),
+    ]
+    chat.isSending = true
+    let state = AppFeature.State(
+      home: home(statusSessions: [Session(id: "old")]), liveChat: chat
+    )
+    #expect(state.agentStatus?.activeCount == 1)
+    #expect(state.agentStatus?.headline?.id == "new")
+    #expect(state.agentStatus?.headline?.title == "fix the build")
   }
 
   @Test func showTitlesPrefFeedsTheProjection() {

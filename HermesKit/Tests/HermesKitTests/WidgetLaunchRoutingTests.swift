@@ -162,6 +162,64 @@ struct WidgetLaunchRoutingTests {
     await store.send(.liveChat(.teardown))
   }
 
+  /// A session already badged by an approval push (the usual Live Activity headline): on
+  /// screen, the open only clears its badge entry — no hint, no extra hydrate.
+  @Test func openSessionForBadgedOnScreenSessionClearsTheBadgeOnly() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.liveSessionID = "live1"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: "s1")]),
+        liveChat: chat,
+        pendingApprovalSessionIDs: ["s1"]
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.push = PushClient.inMemory().client
+    }
+
+    // Exhaustive: no `.liveChat(.foreground)` follows.
+    await store.send(.launchIntentReceived(.openSession(id: "s1", profile: nil))) {
+      $0.pendingApprovalSessionIDs = []
+    }
+    await store.finish()
+    #expect(store.state.liveChat?.expectsPendingApproval == false)
+  }
+
+  /// …and off screen it opens like a list tap on a badged row: the replacement chat expects
+  /// the approval it may have missed (#30), and the badge entry clears.
+  @Test func openSessionForBadgedOtherSessionArmsTheHintLikeAListOpen() async {
+    var liveChat = ChatFeature.State(connection: connection, resumeStoredID: "old")
+    liveChat.liveSessionID = "old-live"
+    let store = TestStore(
+      initialState: AppFeature.State(
+        home: SessionListFeature.State(connection: connection, sessions: [Session(id: "new")]),
+        path: StackState([ChatScreen.State(sessionKey: "old")]),
+        liveChat: liveChat,
+        pendingApprovalSessionIDs: ["new"]
+      )
+    ) {
+      AppFeature()
+    } withDependencies: {
+      $0.chatSnapshot = .inMemory()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off
+
+    await store.send(.launchIntentReceived(.openSession(id: "new", profile: nil)))
+    await store.receive(\.home.delegate.openSession)
+    await store.receive(\.liveChat.persistNow)
+    await store.receive(\.liveChat.teardown)
+    await store.receive(\.clearLiveChat)
+    await store.receive(\.fillLiveChat)
+    #expect(store.state.liveChat?.storedSessionID == "new")
+    #expect(store.state.liveChat?.expectsPendingApproval == true)
+    #expect(store.state.pendingApprovalSessionIDs.isEmpty)
+  }
+
   /// The open can arrive over a list sheet: presentations are dismissed first, like the #93
   /// new-chat intents.
   @Test func openSessionDismissesListPresentations() async {
@@ -413,6 +471,29 @@ struct WidgetLaunchRoutingTests {
     #expect(store.state.path.count == 1)
     #expect(store.state.path.last?.sessionKey == "s-w")
     #expect(store.state.pendingApprovalSessionIDs.isEmpty)
+  }
+
+  /// Cold launch from a row of ANOTHER profile than the persisted selection: the landing list
+  /// is seeded with the profiles capability from the prefs, so the replay resumes the session
+  /// under its own profile and leaves the selection alone.
+  @Test func preHomeOpenSessionFromOtherProfileReplaysUnderItsProfile() async {
+    let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.preferences.loadSelectedProfileID = { "default" }
+      $0.push = PushClient.inMemory().client
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.launchIntentReceived(.openSession(id: "s-w", profile: "work")))
+    await store.send(.autoConnectSucceeded(connection))
+    await store.finish()
+    #expect(store.state.home?.profilesSupported == true)
+    #expect(store.state.home?.selectedProfileName == "default")
+    #expect(store.state.liveChat?.storedSessionID == "s-w")
+    #expect(store.state.liveChat?.profileName == "work")
+    #expect(store.state.path.last?.sessionKey == "s-w")
   }
 
   /// The stash survives an onboarding fallback and replays on a manual login to the SAME

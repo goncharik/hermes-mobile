@@ -5,30 +5,27 @@ import Foundation
 /// running flag. The ONE source both surfaces sync from (`AppFeature.State.agentStatus`).
 ///
 /// Carries no timestamps of its own (`freshUntil` and "now" are stamped at write time), so the
-/// `.onChange(of: \.agentStatus)` edge fires only on a real change.
+/// `agentStatus` edge fires only on a real change.
 public struct AgentStatusProjection: Equatable, Sendable {
   /// The top `WidgetSessionSnapshot.maxRows` interactive sessions, in display order:
   /// needs-input, then working, then `updatedAt` newest first.
   public var rows: [WidgetSessionRow]
   /// Interactive sessions that need input or are working — the whole list, not just `rows`.
   public var activeCount: Int
-  /// The session the Live Activity headlines: the first needs-input row, else the first
-  /// working row; `nil` when nothing is active.
-  public var headline: WidgetSessionRow?
   /// The "Show session titles" pref. Kept here (not applied to `rows`) so flipping it is a
   /// projection change: the Live Activity drops the title, the Home Screen widgets don't.
   public var showsTitles: Bool
 
-  public init(
-    rows: [WidgetSessionRow],
-    activeCount: Int,
-    headline: WidgetSessionRow?,
-    showsTitles: Bool
-  ) {
+  public init(rows: [WidgetSessionRow], activeCount: Int, showsTitles: Bool) {
     self.rows = rows
     self.activeCount = activeCount
-    self.headline = headline
     self.showsTitles = showsTitles
+  }
+
+  /// The session the Live Activity headlines: the first row when it is active (rows sort
+  /// needs-input, then working, first); `nil` when nothing is active.
+  public var headline: WidgetSessionRow? {
+    rows.first.flatMap { Self.isActive($0) ? $0 : nil }
   }
 
   /// Builds the projection, or `nil` ("unknown") while there is no unfiltered list yet — a
@@ -40,16 +37,25 @@ public struct AgentStatusProjection: Equatable, Sendable {
   ///   - slotRunning: the live slot's session id and running flag; it overrides that row's
   ///     polled `isActive` (the slot's events are authoritative). `nil` when there is no slot,
   ///     its id hasn't resolved, or it belongs to another profile than the list.
+  ///   - slotSession: the live slot as a row, used only when `sessions` doesn't carry its id
+  ///     yet (a new chat the list hasn't fetched since it was created) and the slot is running
+  ///     or needs input — so the first turn of a new chat counts at once.
   ///   - showsTitles: the "Show session titles" pref.
   ///   - profile: the list's wire profile, stamped on every row for the `openSession` link.
   public static func make(
     sessions: [Session]?,
     needsInput: Set<String>,
     slotRunning: (id: String, running: Bool)?,
+    slotSession: Session? = nil,
     showsTitles: Bool,
     profile: String?
   ) -> AgentStatusProjection? {
-    guard let sessions else { return nil }
+    guard var sessions else { return nil }
+    if let slotSession, let slotRunning, slotSession.id == slotRunning.id,
+      slotRunning.running || needsInput.contains(slotSession.id),
+      !sessions.contains(where: { $0.id == slotSession.id }) {
+      sessions.append(slotSession)
+    }
     let ranked = sessions.enumerated()
       .filter { !$0.element.isCron }
       .map { offset, session in
@@ -82,12 +88,9 @@ public struct AgentStatusProjection: Equatable, Sendable {
         return lhs.offset < rhs.offset  // server order breaks ties: deterministic
       }
       .map(\.row)
-    let isActive: (WidgetSessionRow) -> Bool = { $0.status == .needsInput || $0.status == .working }
     return AgentStatusProjection(
       rows: Array(ranked.prefix(WidgetSessionSnapshot.maxRows)),
       activeCount: ranked.filter(isActive).count,
-      // Sorted needs-input first, so the first active row is the headline.
-      headline: ranked.first.flatMap { isActive($0) ? $0 : nil },
       showsTitles: showsTitles
     )
   }
@@ -105,6 +108,10 @@ public struct AgentStatusProjection: Equatable, Sendable {
       headlineProfile: headline.profile,
       status: headline.status == .needsInput ? .needsInput : .working
     )
+  }
+
+  private static func isActive(_ row: WidgetSessionRow) -> Bool {
+    row.status == .needsInput || row.status == .working
   }
 
   private static func rank(_ status: SessionStatus) -> Int {

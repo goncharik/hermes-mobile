@@ -25,8 +25,11 @@ public struct LiveActivityClient: Sendable {
   public var end: @Sendable (
     _ id: String, _ final: AgentActivityContent?, _ dismissAfter: Date?
   ) async -> Void
-  /// Ends every activity of this app at once (the toggle going off, a logout).
+  /// Ends every activity of this app at once (the toggle going off, a logout, before a start).
   public var endAll: @Sendable () async -> Void
+  /// Whether the activity is still up (active or stale) — `false` once the user swiped it away
+  /// or iOS ended it at its time limit.
+  public var isActive: @Sendable (_ id: String) -> Bool = { _ in false }
 }
 
 /// Thrown by the test double's `start`: no Live Activities off-device.
@@ -44,7 +47,8 @@ extension LiveActivityClient: DependencyKey {
       start: { _, _ in throw LiveActivitiesUnavailable() },
       update: { _, _, _ in },
       end: { _, _, _ in },
-      endAll: {}
+      endAll: {},
+      isActive: { _ in false }
     )
   }
 }
@@ -88,6 +92,10 @@ public extension DependencyValues {
           for activity in Activity<HermesActivityAttributes>.activities {
             await activity.end(nil, dismissalPolicy: .immediate)
           }
+        },
+        isActive: { id in
+          guard let state = activity(id)?.activityState else { return false }
+          return state == .active || state == .stale
         }
       )
     }

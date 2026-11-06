@@ -295,8 +295,10 @@ struct WidgetSurfacesTests {
     )
   }
 
-  private func seat(_ id: String?, _ content: AgentActivityContent) -> AppFeature.LiveActivitySeat {
-    AppFeature.LiveActivitySeat(id: id, content: content)
+  private func seat(
+    _ id: String?, _ content: AgentActivityContent, request: Int = 1
+  ) -> AppFeature.LiveActivitySeat {
+    AppFeature.LiveActivitySeat(id: id, content: content, request: request)
   }
 
   private func makeStore(
@@ -318,7 +320,8 @@ struct WidgetSurfacesTests {
 
   /// The first active agent starts the activity AT ONCE (a start is foreground-only, so it
   /// can't wait out the debounce), stale at the foreground freshness; the seat is taken before
-  /// the request returns and adopts the id when it does.
+  /// the request returns and adopts the id when it does. The start first ends whatever is
+  /// still on screen — the previous turn's lingering "Done" — so turns never stack.
   @Test func theFirstActiveAgentStartsTheActivity() async {
     let activity = ActivityRecorder()
     let clock = TestClock()
@@ -329,6 +332,7 @@ struct WidgetSurfacesTests {
     await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
       $0.home?.sessions[id: "s1"]?.isActive = true
       $0.home?.statusSessions?[id: "s1"]?.isActive = true
+      $0.liveActivityRequests = 1
       $0.liveActivity = self.seat(nil, self.working(["s1"]))
     }
     await store.receive(\.liveActivityStarted) {
@@ -338,7 +342,37 @@ struct WidgetSurfacesTests {
     await clock.advance(by: .seconds(1)) // the mirror's debounced write
     await store.finish()
     #expect(activity.calls.value == [
+      .endAll,
       .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// A new chat's first turn: its session isn't in the list yet, but the running slot brings
+  /// its own row, so the activity starts without waiting for the list to refetch.
+  @Test func aNewChatsFirstTurnStartsTheActivity() async {
+    let activity = ActivityRecorder()
+    var chat = ChatFeature.State(connection: connection, profileName: nil, composerText: "")
+    chat.liveSessionID = "new"
+    chat.isSending = true
+    // The list's first fetch hasn't landed yet: the projection is unknown.
+    let store = makeStore(
+      AppFeature.State(
+        home: SessionListFeature.State(connection: connection),
+        path: StackState([ChatScreen.State(sessionKey: nil)]),
+        liveChat: chat
+      ),
+      activity: activity
+    )
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.sessionsResponse(.success([session("old")]))))
+    await store.receive(\.liveActivityStarted)
+    #expect(store.state.liveActivityID == "activity-1")
+    let content = AgentActivityContent(
+      activeCount: 1, headlineTitle: "new", headlineSessionID: "new", status: .working
+    )
+    #expect(activity.calls.value == [
+      .endAll, .start(content, staleDate: now.addingTimeInterval(Self.foreground)),
     ])
   }
 
@@ -454,12 +488,14 @@ struct WidgetSurfacesTests {
   }
 
   /// iOS refusing the start is only debug-logged (no banner) and frees the seat, so the next
-  /// change may try again.
+  /// change tries again.
   @Test func aStartFailureIsOnlyLoggedAndFreesTheSeat() async {
     let activity = ActivityRecorder(startFails: true)
     let notes = LockIsolated<[String]>([])
     let clock = TestClock()
-    let store = TestStore(initialState: AppFeature.State(home: fetchedHome([session("s1")]))) {
+    let store = TestStore(
+      initialState: AppFeature.State(home: fetchedHome([session("s1"), session("s2")]))
+    ) {
       AppFeature()
     } withDependencies: {
       $0.widgetMirror = MirrorRecorder().client
@@ -472,16 +508,29 @@ struct WidgetSurfacesTests {
     await store.send(.home(.setSessionRunning(id: "s1", running: true))) {
       $0.home?.sessions[id: "s1"]?.isActive = true
       $0.home?.statusSessions?[id: "s1"]?.isActive = true
+      $0.liveActivityRequests = 1
       $0.liveActivity = self.seat(nil, self.working(["s1"]))
+    }
+    await store.receive(\.liveActivityStartFailed) {
+      $0.liveActivity = nil
+    }
+    // The next change starts again.
+    await store.send(.home(.setSessionRunning(id: "s2", running: true))) {
+      $0.home?.sessions[id: "s2"]?.isActive = true
+      $0.home?.statusSessions?[id: "s2"]?.isActive = true
+      $0.liveActivityRequests = 2
+      $0.liveActivity = self.seat(nil, self.working(["s1", "s2"]), request: 2)
     }
     await store.receive(\.liveActivityStartFailed) {
       $0.liveActivity = nil
     }
     await clock.advance(by: .seconds(1))
     await store.finish()
-    #expect(notes.value == ["live.activity"])
+    #expect(notes.value == ["live.activity", "live.activity"])
+    let staleDate = now.addingTimeInterval(Self.foreground)
     #expect(activity.calls.value == [
-      .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+      .endAll, .start(working(["s1"]), staleDate: staleDate),
+      .endAll, .start(working(["s1", "s2"]), staleDate: staleDate),
     ])
   }
 
@@ -497,13 +546,36 @@ struct WidgetSurfacesTests {
       $0.home?.sessions[id: "s2"]?.isActive = true
       $0.home?.statusSessions?[id: "s2"]?.isActive = true
     }
-    await store.send(.liveActivityStarted(id: "a1")) {
+    await store.send(.liveActivityStarted(id: "a1", request: 1)) {
       $0.liveActivity = self.seat("a1", self.working(["s1", "s2"]))
     }
     await clock.advance(by: .seconds(1))
     await store.finish()
     #expect(activity.calls.value == [
       .update("a1", working(["s1", "s2"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// The plan's main scenario: send a prompt and background at once. The background edge can't
+  /// restamp a seat whose start is still in flight, so the landing start does — otherwise the
+  /// activity would vouch "Working" for the foreground freshness.
+  @Test func aStartLandingWhileBackgroundedIsRestamped() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat(nil, working(["s1"]))
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.scenePhaseChanged(.background)) {
+      $0.isSceneBackgrounded = true
+      $0.backgroundFreshUntil = self.now.addingTimeInterval(10)
+    }
+    #expect(activity.calls.value.isEmpty)
+    await store.send(.liveActivityStarted(id: "a1", request: 1)) {
+      $0.liveActivity?.id = "a1"
+    }
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1"]), staleDate: now.addingTimeInterval(10)),
     ])
   }
 
@@ -515,9 +587,28 @@ struct WidgetSurfacesTests {
       AppFeature.State(home: fetchedHome([session("s1", active: true)])), activity: activity
     )
 
-    await store.send(.liveActivityStarted(id: "a9"))
+    await store.send(.liveActivityStarted(id: "a9", request: 1))
     await store.finish()
     #expect(activity.calls.value == [.end("a9", nil, dismissAfter: nil)])
+  }
+
+  /// A fast toggle off→on: the first request's result can land while the second request's seat
+  /// waits. It is matched by request, not arrival order — ended, never adopted — and its
+  /// failure can't free the live request's seat.
+  @Test func aStaleRequestNeverTakesTheWaitingSeat() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivityRequests = 2
+    state.liveActivity = seat(nil, working(["s1"]), request: 2)
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.liveActivityStarted(id: "a-old", request: 1))
+    await store.send(.liveActivityStartFailed(request: 1))
+    await store.send(.liveActivityStarted(id: "a-new", request: 2)) {
+      $0.liveActivity?.id = "a-new"
+    }
+    await store.finish()
+    #expect(activity.calls.value == [.end("a-old", nil, dismissAfter: nil)])
   }
 
   /// The background edge moves the activity's stale date to the mirror's promise, so the
@@ -565,13 +656,173 @@ struct WidgetSurfacesTests {
       await store.skipReceivedActions()
       await store.finish()
       let staleDate = now.addingTimeInterval(Self.foreground)
-      #expect(activity.calls.value == [
+      #expect(activity.calls.value == (
         hasActivity
-          ? .update("a1", working(["s1"]), staleDate: staleDate)
-          : .start(working(["s1"]), staleDate: staleDate),
-      ])
+          ? [.update("a1", working(["s1"]), staleDate: staleDate)]
+          : [.endAll, .start(working(["s1"]), staleDate: staleDate)]
+      ))
       #expect(store.state.liveActivityID == (hasActivity ? "a1" : "activity-1"))
     }
+  }
+
+  /// An activity the user swiped away (or iOS ended at its time limit) while backgrounded is
+  /// gone: foregrounding drops its seat and starts a fresh one, instead of updating a dead id
+  /// for the rest of the run.
+  @Test func foregroundReplacesAnActivityThatIsGone() async {
+    let sessions = [session("s1", active: true)]
+    let activity = ActivityRecorder(gone: ["a1"])
+    var state = AppFeature.State(home: fetchedHome(sessions))
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(10)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = MirrorRecorder().client
+      $0.liveActivity = activity.client
+      $0.continuousClock = TestClock()
+      $0.date = .constant(now)
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in sessions }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.scenePhaseChanged(.active))
+    await store.skipReceivedActions()
+    await store.finish()
+    #expect(activity.calls.value == [
+      .endAll, .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+    #expect(store.state.liveActivityID == "activity-1")
+  }
+
+  /// A brief `.active` that never left the foreground (Control Center, the notification shade)
+  /// has nothing to restamp: no mirror write, no activity update.
+  @Test func aBriefActiveRestampsNothing() async {
+    let sessions = [session("s1", active: true)]
+    let mirror = MirrorRecorder()
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome(sessions))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = mirror.client
+      $0.liveActivity = activity.client
+      $0.continuousClock = TestClock()
+      $0.date = .constant(now)
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in sessions }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.scenePhaseChanged(.active))
+    await store.skipReceivedActions()
+    await store.finish()
+    #expect(mirror.writes.value.isEmpty)
+    #expect(activity.calls.value.isEmpty)
+  }
+
+  /// A profile switch resets the list's rows, so the projection goes unknown under a live
+  /// activity and a vouched mirror. They keep their content but stop vouching for it (the
+  /// suspension margin): the refetch may fail offline, or the user may background first —
+  /// the background edge then has nothing to stamp, and the old profile must not read fresh
+  /// for hours.
+  @Test func aProfileSwitchStopsVouchingForTheOldRows() async {
+    let mirror = MirrorRecorder()
+    let activity = ActivityRecorder()
+    var home = fetchedHome([session("s1", active: true)])
+    home.profilesSupported = true
+    home.selectedProfileName = "default"
+    var state = AppFeature.State(home: home)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = mirror.client
+      $0.liveActivity = activity.client
+      $0.continuousClock = TestClock()
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      // The scoped refetch fails: the user is offline.
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in throw RESTError.offline }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.offline }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work")))
+    #expect(store.state.agentStatus == nil)
+    await store.send(.scenePhaseChanged(.background))
+    await store.finish()
+    let oldRow = WidgetSessionRow(
+      id: "s1", title: "Title s1", status: .working, updatedAt: updatedAt, profile: "default"
+    )
+    #expect(mirror.writes.value == [snapshot(freshFor: 10, [oldRow])])
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1"]), staleDate: now.addingTimeInterval(10)),
+    ])
+  }
+
+  /// …and once the switched profile's rows land the surfaces vouch again: the activity is
+  /// restamped with the foreground freshness even when its content didn't change.
+  @Test func theRefetchAfterAProfileSwitchVouchesAgain() async {
+    let activity = ActivityRecorder()
+    let clock = TestClock()
+    var home = fetchedHome([session("s1", active: true)])
+    home.profilesSupported = true
+    home.selectedProfileName = "default"
+    var state = AppFeature.State(home: home)
+    // Already showing what the "work" profile's rows will project.
+    var content = working(["s1"])
+    content.headlineProfile = "work"
+    state.liveActivity = seat("a1", content)
+    let rows = [session("s1", active: true)]
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = MirrorRecorder().client
+      $0.liveActivity = activity.client
+      $0.continuousClock = clock
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in rows }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.selectProfile(name: "work")))
+    await store.receive(\.home.sessionsResponse)
+    #expect(store.state.agentStatus != nil)
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(activity.calls.value == [
+      .update("a1", content, staleDate: now.addingTimeInterval(10)),
+      .update("a1", content, staleDate: now.addingTimeInterval(Self.foreground)),
+    ])
+  }
+
+  /// The first fetch landing while backgrounded (nothing to stamp at the background edge)
+  /// still writes the short promise, never the foreground freshness.
+  @Test func aFirstFetchWhileBackgroundedWritesTheMargin() async {
+    let mirror = MirrorRecorder()
+    let clock = TestClock()
+    var state = AppFeature.State(home: SessionListFeature.State(connection: connection))
+    state.isSceneBackgrounded = true
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = mirror.client
+      $0.continuousClock = clock
+      $0.date = .constant(now)
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.sessionsResponse(.success([session("s1", active: true)]))))
+    await clock.advance(by: .seconds(1))
+    await store.finish()
+    #expect(mirror.writes.value == [snapshot(freshFor: 10, [row("s1", .working)])])
   }
 
   /// The toggle off ends every activity at once and drops the seat; back on, it starts again.
@@ -581,12 +832,13 @@ struct WidgetSurfacesTests {
     state.liveActivity = seat("a1", working(["s1"]))
     let store = makeStore(state, activity: activity)
 
-    await store.send(.liveActivityToggled(false)) {
+    await store.send(.home(.delegate(.liveActivityToggled(false)))) {
       $0.liveActivityEnabled = false
       $0.liveActivity = nil
     }
-    await store.send(.liveActivityToggled(true)) {
+    await store.send(.home(.delegate(.liveActivityToggled(true)))) {
       $0.liveActivityEnabled = true
+      $0.liveActivityRequests = 1
       $0.liveActivity = self.seat(nil, self.working(["s1"]))
     }
     await store.receive(\.liveActivityStarted) {
@@ -595,13 +847,14 @@ struct WidgetSurfacesTests {
     await store.finish()
     #expect(activity.calls.value == [
       .endAll,
+      .endAll,
       .start(working(["s1"]), staleDate: now.addingTimeInterval(Self.foreground)),
     ])
   }
 
-  /// The Settings toggles reach `AppFeature` through the session list's delegate and take the
-  /// same path as the direct actions: off ends the activity, show-titles off drops the title
-  /// through the edge (the activity is already gone here, so nothing more is sent).
+  /// The Settings toggles reach `AppFeature` through the session list's delegate: off ends
+  /// the activity, show-titles off drops the title through the edge (the activity is already
+  /// gone here, so nothing more is sent).
   @Test func theSettingsTogglesArriveThroughTheListDelegate() async {
     let activity = ActivityRecorder()
     var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
@@ -629,7 +882,7 @@ struct WidgetSurfacesTests {
     state.liveActivity = seat("a1", working(["s1"]))
     let store = makeStore(state, activity: activity, clock: clock)
 
-    await store.send(.liveActivityShowsTitlesToggled(false)) {
+    await store.send(.home(.delegate(.liveActivityShowsTitlesToggled(false)))) {
       $0.liveActivityShowsTitles = false
     }
     await clock.advance(by: .seconds(1))
@@ -766,10 +1019,13 @@ private final class ActivityRecorder: Sendable {
   let calls = LockIsolated<[Call]>([])
   let enabled: Bool
   let startFails: Bool
+  /// Ids the user swiped away / iOS ended (`isActive` reads `false`).
+  let gone: Set<String>
 
-  init(enabled: Bool = true, startFails: Bool = false) {
+  init(enabled: Bool = true, startFails: Bool = false, gone: Set<String> = []) {
     self.enabled = enabled
     self.startFails = startFails
+    self.gone = gone
   }
 
   var client: LiveActivityClient {
@@ -786,7 +1042,8 @@ private final class ActivityRecorder: Sendable {
       end: { [calls] id, final, dismissAfter in
         calls.withValue { $0.append(.end(id, final, dismissAfter: dismissAfter)) }
       },
-      endAll: { [calls] in calls.withValue { $0.append(.endAll) } }
+      endAll: { [calls] in calls.withValue { $0.append(.endAll) } },
+      isActive: { [gone] id in !gone.contains(id) }
     )
   }
 }
