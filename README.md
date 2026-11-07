@@ -134,6 +134,13 @@ away from your desk and still keep your agent moving.
   work from Shortcuts, Siri, Spotlight and the app icon's long-press menu with no setup, and
   can be assigned to the Action button (iPhone 15 Pro and later): the app opens on a fresh
   chat under your selected profile, and the dictation shortcut starts the mic as soon as the chat appears.
+- **Keep an eye on it from the Home Screen.** A quick-actions widget starts a chat, a photo
+  or a dictation in one tap; a sessions widget lists your latest sessions with which ones are
+  working or waiting on you; New Chat and Dictate controls sit in Control Center and on the
+  Lock Screen. While agents run, a Live Activity on the Lock Screen and in the Dynamic Island
+  counts them and headlines the session that needs you, else the one at work (turn it off,
+  or hide session titles, in Settings). Everything is local: when the app can no longer see
+  your agents, the widgets and the activity say "Outdated" instead of guessing.
 - **Make it yours.** Pick the home-screen icon from eight designs in Settings: the gold and
   blueprint originals plus six Hermes variants. Settings also gathers everything else in
   one place: the server you're connected to and how you signed in, notifications, a

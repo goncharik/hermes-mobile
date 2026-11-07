@@ -15,7 +15,11 @@ approval/clarify requests).
 - **`HermesKit/`** — a local Swift package holding the engine: models, dependency
   clients, and TCA reducers. This is where the logic lives. Built and tested
   independently with `swift test` (no simulator needed), which keeps the
-  reducer/event-reduction test loop fast.
+  reducer/event-reduction test loop fast. It ships two library products: `HermesKit` and
+  the Foundation-only `HermesWidgetKit`, which HermesKit re-exports.
+- **`HermesWidgets/`** — the widget extension (#138). It links only `HermesWidgetKit`; its
+  `Sources/Views/` are also compiled into `HermesMobileTests` for snapshots. Packaging
+  rules: `docs/features/widgets.md`.
 - **`HermesMobileTests/`** — an iOS XCTest target for SwiftUI snapshot tests
   (separate from the SPM suite).
 - **`Probe/`** — non-shipping harnesses, never referenced by `Project.swift`: a Swift script
@@ -162,7 +166,12 @@ a `testValue`/`.inMemory()` variant):
   `LaunchIntent` values fed by the process-wide, Foundation-only `LaunchIntentBridge` (the app
   target's intents call `received(_:)`; same consume-once, last-wins launch-race buffer as
   `PushBridge`, so the `liveValue` needs no UIKit guard). `AppFeature` observes it next to the
-  push-tap observer. Contract: `docs/features/app-intents.md`.
+  push-tap observer. Contract: `docs/features/app-intents.md`. `received(url:)` maps the
+  widgets' `hermesmobile://` deep links (#138) into the same stream.
+- **`WidgetMirrorClient`** / **`LiveActivityClient`** (#138) — the App Group mirror the widget
+  extension reads and the aggregate ActivityKit Live Activity, both driven from `AppFeature`.
+  Live values iOS-guarded; test values are `.noop`. Members and contract:
+  `docs/features/widgets.md`.
 - **`BackgroundTaskClient`** — a finite background-execution window (~30s) wrapping
   `UIApplication.beginBackgroundTask`/`endBackgroundTask`: `begin(name) → AsyncStream<Void>`
   yields exactly once if iOS expires the window early (then finishes; a normal end finishes

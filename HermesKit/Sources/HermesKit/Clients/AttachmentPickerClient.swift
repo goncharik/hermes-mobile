@@ -79,7 +79,8 @@ public extension DependencyValues {
     }
   }
 
-  /// Walk to the top-most presented view controller of the active foreground scene.
+  /// Walk to the top-most presented view controller of the active foreground scene, stopping
+  /// below one that is being dismissed (it can't host a presentation).
   @MainActor
   private func topViewController() -> UIViewController? {
     let scene = UIApplication.shared.connectedScenes
@@ -87,8 +88,37 @@ public extension DependencyValues {
       .first { $0.activationState == .foregroundActive }
       ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
     var top = scene?.keyWindow?.rootViewController ?? scene?.windows.first?.rootViewController
-    while let presented = top?.presentedViewController { top = presented }
+    while let presented = top?.presentedViewController, !presented.isBeingDismissed {
+      top = presented
+    }
     return top
+  }
+
+  /// How long `settlePresentation` waits for a transition at most, and how often it checks.
+  private let settleTimeout: Duration = .seconds(2)
+  private let settleInterval: Duration = .milliseconds(50)
+
+  /// Waits (up to `settleTimeout`) for the top view controller to finish a transition. A
+  /// picker raised by a widget's launch action runs at the chat's first `.task` — during the
+  /// push, or right after the launch dismissed a sheet — when UIKit would refuse the
+  /// presentation.
+  @MainActor
+  private func settlePresentation() async {
+    for _ in 0..<Int(settleTimeout / settleInterval) {
+      guard let top = topViewController() else { return }
+      if top.transitionCoordinator == nil, !top.isBeingPresented, !top.isBeingDismissed { return }
+      try? await Task.sleep(for: settleInterval)
+    }
+  }
+
+  /// Presents `picker` on the top view controller; `false` when UIKit didn't (no host, or a
+  /// presentation still in progress) — no delegate callback will ever come, so the caller
+  /// must finish with an empty batch rather than leave its continuation waiting.
+  @MainActor
+  private func presentOnTop(_ picker: UIViewController) -> Bool {
+    guard let host = topViewController() else { return false }
+    host.present(picker, animated: true)
+    return picker.presentingViewController != nil
   }
 
   private func mimeType(for url: URL) -> String {
@@ -102,7 +132,8 @@ public extension DependencyValues {
     private static var retained: PhotoPickerPresenter?
 
     static func present() async -> PickedBatch {
-      await withCheckedContinuation { continuation in
+      await settlePresentation()
+      return await withCheckedContinuation { continuation in
         let presenter = PhotoPickerPresenter()
         presenter.continuation = continuation
         retained = presenter
@@ -113,11 +144,7 @@ public extension DependencyValues {
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = presenter
 
-        guard let host = topViewController() else {
-          presenter.finish(PickedBatch())
-          return
-        }
-        host.present(picker, animated: true)
+        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
       }
     }
 
@@ -164,11 +191,9 @@ public extension DependencyValues {
     private static let jpegQuality: CGFloat = 0.85
 
     static func present() async -> PickedBatch {
-      await withCheckedContinuation { continuation in
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-          continuation.resume(returning: PickedBatch())
-          return
-        }
+      guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return PickedBatch() }
+      await settlePresentation()
+      return await withCheckedContinuation { continuation in
         let presenter = CameraPresenter()
         presenter.continuation = continuation
         retained = presenter
@@ -177,11 +202,7 @@ public extension DependencyValues {
         picker.sourceType = .camera
         picker.delegate = presenter
 
-        guard let host = topViewController() else {
-          presenter.finish(PickedBatch())
-          return
-        }
-        host.present(picker, animated: true)
+        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
       }
     }
 
@@ -230,7 +251,8 @@ public extension DependencyValues {
     private static var retained: DocumentPickerPresenter?
 
     static func present() async -> PickedBatch {
-      await withCheckedContinuation { continuation in
+      await settlePresentation()
+      return await withCheckedContinuation { continuation in
         let presenter = DocumentPickerPresenter()
         presenter.continuation = continuation
         retained = presenter
@@ -239,11 +261,7 @@ public extension DependencyValues {
         picker.allowsMultipleSelection = true
         picker.delegate = presenter
 
-        guard let host = topViewController() else {
-          presenter.finish(PickedBatch())
-          return
-        }
-        host.present(picker, animated: true)
+        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
       }
     }
 

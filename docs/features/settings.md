@@ -26,12 +26,16 @@ three rows push a sub-screen, and they push through a TCA stack:
 ## Seeding and `.task`
 
 `SessionListFeature.settingsButtonTapped` seeds `connection`, `pushAvailable`,
-`defaultSwipeAction`, `deleteSupported` and `profileName: scopedProfileName`. The auth session
+`defaultSwipeAction`, `deleteSupported`, `profileName: scopedProfileName`, and the two Live
+Activity prefs (`liveActivityEnabled`, `liveActivityShowsTitles`, read synchronously from
+`PreferencesClient`). The auth session
 is not copied: `State.authSession` is computed from `connection.auth`, because
 `saveTokenTapped` rewrites `connection.token` and a stored copy would drift.
 
 `.task` assigns the two synchronous facts directly, `bundleInfo.info()` and
-`appIcon.catalog()` (so there is no `bundleInfoLoaded` action), then merges four effects:
+`appIcon.catalog()` (so there is no `bundleInfoLoaded` action), plus
+`liveActivity.areActivitiesEnabled()` → `liveActivitiesAllowedBySystem` (default `true`, so a
+fixture that skips `.task` shows the normal footer; not re-read on foreground), then merges four effects:
 `rest.status(baseURL)` → `agentStatusLoaded`, `appIcon.current()` → `currentAppIconLoaded`,
 the push authorization status, and the push plugin info.
 
@@ -49,7 +53,17 @@ the push authorization status, and the push plugin info.
 2. **App.** "App Icon" (value `selectedAppIconLabel`, plus a small thumbnail of
    `selectedAppIconOption`'s preview) pushes the picker. "Default swipe
    action" stays gated on `deleteSupported` (`docs/features/session-list.md`).
-3. **Notifications.** The existing block, unchanged (`docs/features/push-notifications.md`).
+3. **Notifications.** The push block, unchanged (`docs/features/push-notifications.md`),
+   then a second, headerless `Section` with the Live Activity rows (#138,
+   `docs/features/widgets.md`). It is a separate section so it has its own footer, and it shows
+   whether or not push is available (the Live Activity is local; no plugin). "Live Activity"
+   (default on) with "Show session titles" (default on) nested under it, hidden while Live
+   Activity is off. Footer: "Shows running agents on the Lock Screen and in the Dynamic
+   Island.", or "Live Activities are turned off for Hermes in iOS Settings." when
+   `liveActivitiesAllowedBySystem` is false (no link; the toggle stays usable and keeps the
+   pref). Each toggle persists through `PreferencesClient` and sends a delegate
+   (`liveActivityToggled` / `liveActivityShowsTitlesToggled`) that the session list forwards to
+   `AppFeature`: off ends every activity, show-titles changes the projection.
 4. **Feedback.** "Report a bug" and "Request a feature" open `reportBugURL` /
    `requestFeatureURL`, which fall back to `FeedbackLinks.allIssues` until `bundleInfo`
    loads, so the view never unwraps. "Rate Hermes Mobile" opens `FeedbackLinks.rateApp` (the
@@ -60,8 +74,9 @@ the push authorization status, and the push plugin info.
    policy (`FeedbackLinks.privacyPolicy`, the repo's `PRIVACY.md` on GitHub);
    Acknowledgements and Diagnostics push. The Diagnostics row shows no entry count.
 6. **Sign out.** A destructive button sending the same `clearTokenTapped`, with the same
-   name and the same clear list (logout clears every prefs entry) plus `debugLog.clear()`. It
-   never calls `appIcon.set`: the icon survives logout.
+   name and the same clear list (logout clears every prefs entry, including
+   `clearLiveActivityPrefs()`, which resets both Live Activity toggles to on) plus
+   `debugLog.clear()`. It never calls `appIcon.set`: the icon survives logout.
 
 External rows (`ExternalLinkRow`) are `Link`s with a trailing `arrow.up.right`.
 
@@ -214,8 +229,10 @@ the license text) and takes no store.
 - HermesKit: `AppIconCatalogTests`, `AcknowledgementTests`, `FeedbackLinksTests`, `BundleInfoClientTests`,
   `AuthSessionTests` (labels), `DiagnosticsReportTests`, `AppIconPickerFeatureTests`,
   `DiagnosticsFeatureTests`, `SettingsFeatureTests` (seeding, pushes, gates, sign out never
-  touching the icon), `SessionListFeatureTests` (`profileName` seeding).
-- Snapshots: `SettingsSnapshotTests` (per-regime auth, profile, unloaded, Acknowledgements;
+  touching the icon, the Live Activity toggles and the iOS-permission read),
+  `SessionListFeatureTests` (`profileName` and Live Activity seeding, delegate forwarding).
+- Snapshots: `SettingsSnapshotTests` (per-regime auth, profile, unloaded, Acknowledgements,
+  the Live Activity rows with titles off, off, and disabled by iOS;
   whole-Form fixtures at `deviceImage(height: formHeight)`, 1 800 pt, so Feedback, About and
   Sign out are in frame), `AppIconPickerSnapshotTests`,
   `DiagnosticsSnapshotTests`.

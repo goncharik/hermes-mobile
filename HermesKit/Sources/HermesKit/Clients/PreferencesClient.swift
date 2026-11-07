@@ -54,6 +54,15 @@ public struct PreferencesClient: Sendable {
   /// Device-global, cleared on logout via `clearModelPickerPrefs()`.
   public var loadFavoriteModels: @Sendable () -> [FavoriteModel] = { [] }
   public var saveFavoriteModels: @Sendable (_ favorites: [FavoriteModel]) -> Void
+  /// The aggregate "running agents" Live Activity (#138). Device-local, default ON.
+  public var loadLiveActivityEnabled: @Sendable () -> Bool = { true }
+  public var saveLiveActivityEnabled: @Sendable (_ enabled: Bool) -> Void
+  /// Whether the Live Activity shows the headline session's title (off = workspace only).
+  /// Device-local, default ON.
+  public var loadLiveActivityShowsTitles: @Sendable () -> Bool = { true }
+  public var saveLiveActivityShowsTitles: @Sendable (_ shows: Bool) -> Void
+  /// Resets both Live Activity prefs to their defaults (on). Called on logout.
+  public var clearLiveActivityPrefs: @Sendable () -> Void
 }
 
 public extension PreferencesClient {
@@ -92,6 +101,8 @@ public extension PreferencesClient {
     let autoSpeakKey = "hermes.auto-speak-replies"
     let collapsedProvidersKey = "hermes.model-picker.collapsed-providers"
     let favoriteModelsKey = "hermes.model-picker.favorite-models"
+    let liveActivityKey = "hermes.live-activity-enabled"
+    let liveActivityTitlesKey = "hermes.live-activity-shows-titles"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
 
@@ -160,6 +171,15 @@ public extension PreferencesClient {
         } else if let data = try? JSONEncoder().encode(favorites) {
           store.set(data, forKey: favoriteModelsKey)
         }
+      },
+      // Default ON: an unset key reads true (`bool(forKey:)` would read false).
+      loadLiveActivityEnabled: { store.object(forKey: liveActivityKey) as? Bool ?? true },
+      saveLiveActivityEnabled: { store.set($0, forKey: liveActivityKey) },
+      loadLiveActivityShowsTitles: { store.object(forKey: liveActivityTitlesKey) as? Bool ?? true },
+      saveLiveActivityShowsTitles: { store.set($0, forKey: liveActivityTitlesKey) },
+      clearLiveActivityPrefs: {
+        store.removeObject(forKey: liveActivityKey)
+        store.removeObject(forKey: liveActivityTitlesKey)
       }
     )
   }
@@ -176,6 +196,8 @@ public extension PreferencesClient {
     let autoSpeak = LockIsolated(false)
     let collapsedProviders = LockIsolated<Set<String>>([])
     let favoriteModels = LockIsolated<[FavoriteModel]>([])
+    let liveActivity = LockIsolated(true)
+    let liveActivityTitles = LockIsolated(true)
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -201,7 +223,15 @@ public extension PreferencesClient {
       loadCollapsedModelProviders: { collapsedProviders.value },
       saveCollapsedModelProviders: { collapsedProviders.setValue($0) },
       loadFavoriteModels: { favoriteModels.value },
-      saveFavoriteModels: { favoriteModels.setValue($0) }
+      saveFavoriteModels: { favoriteModels.setValue($0) },
+      loadLiveActivityEnabled: { liveActivity.value },
+      saveLiveActivityEnabled: { liveActivity.setValue($0) },
+      loadLiveActivityShowsTitles: { liveActivityTitles.value },
+      saveLiveActivityShowsTitles: { liveActivityTitles.setValue($0) },
+      clearLiveActivityPrefs: {
+        liveActivity.setValue(true)
+        liveActivityTitles.setValue(true)
+      }
     )
   }
 }

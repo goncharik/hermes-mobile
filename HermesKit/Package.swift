@@ -9,6 +9,9 @@ let package = Package(
   ],
   products: [
     .library(name: "HermesKit", targets: ["HermesKit"]),
+    // Foundation-only types shared with the widget extension (which must not link HermesKit:
+    // TCA, GRDB and `UIApplication.shared` are off-limits there). HermesKit re-exports it.
+    .library(name: "HermesWidgetKit", targets: ["HermesWidgetKit"]),
   ],
   dependencies: [
     .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.15.0"),
@@ -19,9 +22,12 @@ let package = Package(
     .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
   ],
   targets: [
+    // No package dependencies, ever: the widget extension links only this target.
+    .target(name: "HermesWidgetKit"),
     .target(
       name: "HermesKit",
       dependencies: [
+        "HermesWidgetKit",
         .product(name: "ComposableArchitecture", package: "swift-composable-architecture"),
         // DependenciesMacros provides @DependencyClient for the REST/WS/Keychain clients.
         .product(name: "DependenciesMacros", package: "swift-dependencies"),
@@ -33,6 +39,10 @@ let package = Package(
       name: "HermesKitTests",
       // Transitive deps (ComposableArchitecture, etc.) come through HermesKit — do not relink.
       dependencies: ["HermesKit"]
+    ),
+    .testTarget(
+      name: "HermesWidgetKitTests",
+      dependencies: ["HermesWidgetKit"]
     ),
   ]
 )

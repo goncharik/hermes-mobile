@@ -177,6 +177,32 @@ final class SettingsSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
   }
 
+  // MARK: Live Activity (#138)
+
+  /// Live Activity on with titles off: "Show session titles" nested under "Live Activity",
+  /// with the Lock Screen / Dynamic Island footer. (Both on — the defaults — is every other
+  /// Form fixture, e.g. `testSettingsNotificationsEnabled`.)
+  func testSettingsLiveActivityOn() {
+    var state = loadedState(notificationsEnabled: true)
+    state.liveActivityShowsTitles = false
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
+  }
+
+  /// Live Activity off: the nested "Show session titles" row is gone.
+  func testSettingsLiveActivityOff() {
+    var state = loadedState(notificationsEnabled: true)
+    state.liveActivityEnabled = false
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
+  }
+
+  /// iOS has Live Activities turned off for the app: the footer says so (the toggles stay).
+  /// Shown with push unavailable too — the rows are local and don't depend on the plugin.
+  func testSettingsLiveActivityDisabledByIOS() {
+    var state = loadedState(pushAvailable: false)
+    state.liveActivitiesAllowedBySystem = false
+    assertSnapshot(of: settingsView(state), as: deviceImage(height: formHeight))
+  }
+
   // MARK: Push guide
 
   /// The "how push works" info sheet, plugin NOT installed — install action + Later snooze.

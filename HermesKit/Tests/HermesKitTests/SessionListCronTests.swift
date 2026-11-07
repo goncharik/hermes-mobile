@@ -220,6 +220,8 @@ struct SessionListCronTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [self.cronSession("job1", stamp: "20260702_090000")]
+      // Cron rows ride along; the projection, not the source, excludes them.
+      $0.statusSessions = [self.cronSession("job1", stamp: "20260702_090000")]
       $0.seenCounts = ["cron_job1_20260702_090000": 1]  // cron sessions ARE seeded (issue #24 gap 1)
     }
     await store.receive(\.cronJobsResponse.success) {
@@ -306,7 +308,9 @@ struct SessionListCronTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -343,6 +347,7 @@ struct SessionListCronTests {
     }
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
+      $0.statusSessions = []
     }
     // No state change: previous jobs survive a transient failure (no section flapping).
     await store.receive(\.cronJobsResponse.failure)
@@ -368,7 +373,9 @@ struct SessionListCronTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
+    }
     await store.receive(\.cronJobsResponse.success) {
       $0.isLoading = false
     }
@@ -391,7 +398,9 @@ struct SessionListCronTests {
     }
     // An empty list is still loading until the sequential cron fetch lands, so neither the
     // placeholder nor the tab bar appears ahead of the other.
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
+    }
     #expect(!store.state.showsEmptyPlaceholder)
     #expect(!store.state.showsTabBar)
     await store.receive(\.cronJobsResponse.success) {
@@ -416,7 +425,9 @@ struct SessionListCronTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
+    }
     // A transient jobs failure still ends the load (no stuck spinner); no job is known.
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
@@ -467,7 +478,9 @@ struct SessionListCronTests {
       $0.now = self.now
       $0.isLoading = true  // trigger → FULL load so the new run session appears
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
+    }
     await store.receive(\.cronJobsResponse.success) {
       $0.isLoading = false
       $0.cronJobs = [CronJob(id: "job1", state: "running")]

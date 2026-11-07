@@ -218,6 +218,44 @@ struct PreferencesClientTests {
     #expect(prefs.loadCollapsedModelProviders() == [])
   }
 
+  // MARK: Live Activity (#138)
+
+  @Test func inMemoryLiveActivityPrefsDefaultOnRoundTripAndClear() {
+    let prefs = PreferencesClient.inMemory()
+    #expect(prefs.loadLiveActivityEnabled()) // default on
+    #expect(prefs.loadLiveActivityShowsTitles()) // default on
+
+    prefs.saveLiveActivityEnabled(false)
+    prefs.saveLiveActivityShowsTitles(false)
+    #expect(prefs.loadLiveActivityEnabled() == false)
+    #expect(prefs.loadLiveActivityShowsTitles() == false)
+
+    prefs.clearLiveActivityPrefs()
+    #expect(prefs.loadLiveActivityEnabled())
+    #expect(prefs.loadLiveActivityShowsTitles())
+  }
+
+  @Test func liveLiveActivityPrefsBackOntoProvidedDefaults() {
+    let suite = UserDefaults(suiteName: "hermes.prefs.test.liveactivity")!
+    suite.removePersistentDomain(forName: "hermes.prefs.test.liveactivity")
+    let prefs = PreferencesClient.live(defaults: suite)
+
+    #expect(prefs.loadLiveActivityEnabled()) // unset → on
+    #expect(prefs.loadLiveActivityShowsTitles()) // unset → on
+    prefs.saveLiveActivityEnabled(false)
+    prefs.saveLiveActivityShowsTitles(false)
+    #expect(suite.object(forKey: "hermes.live-activity-enabled") as? Bool == false)
+    #expect(suite.object(forKey: "hermes.live-activity-shows-titles") as? Bool == false)
+    #expect(prefs.loadLiveActivityEnabled() == false)
+    #expect(prefs.loadLiveActivityShowsTitles() == false)
+
+    prefs.clearLiveActivityPrefs()
+    #expect(suite.object(forKey: "hermes.live-activity-enabled") == nil) // removed, not set
+    #expect(suite.object(forKey: "hermes.live-activity-shows-titles") == nil)
+    #expect(prefs.loadLiveActivityEnabled())
+    #expect(prefs.loadLiveActivityShowsTitles())
+  }
+
   // MARK: Push prompt snooze
 
   @Test func inMemoryPushPromptSnoozeRoundTripAndClear() {
