@@ -11,6 +11,7 @@ struct AgentsLiveActivity: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: HermesActivityAttributes.self) { context in
       AgentsActivityView(content: context.state, isStale: context.isStale)
+        .activityBackgroundTint(Self.backgroundTint)
         .widgetURL(tapURL(context.state))
     } dynamicIsland: { context in
       DynamicIsland {
@@ -28,6 +29,13 @@ struct AgentsLiveActivity: Widget {
       }
       .widgetURL(tapURL(context.state))
     }
+  }
+
+  /// A clear tint reveals iOS 26's Liquid Glass platter (T3 Code does the same); earlier iOS
+  /// keeps the system's standard surface (`nil`).
+  private static var backgroundTint: Color? {
+    if #available(iOS 26, *) { return .clear }
+    return nil
   }
 
   private func tapURL(_ content: AgentActivityContent) -> URL? {

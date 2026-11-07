@@ -279,4 +279,35 @@ struct PushClientTests {
     let revived = bridge.tapStream()
     #expect(await collect(1, from: revived) == [PushTap(sessionID: "s1")])
   }
+
+  // MARK: PushBridge delivered pushes (background wake, #138)
+
+  /// A delivered push reaches the live subscribers with its session id and type; a malformed
+  /// payload (no session id) is dropped.
+  @Test func bridgeDeliveredPushReachesLiveSubscribers() async {
+    let bridge = PushBridge()
+    let stream = bridge.deliveryStream()
+    bridge.pushDelivered(["type": "complete"])
+    bridge.pushDelivered(["session_id": "s1", "type": "complete"])
+    #expect(await collect(1, from: stream) == [PushTap(sessionID: "s1", type: "complete")])
+  }
+
+  /// Unlike a tap, a delivered push is never buffered: one that lands before anyone observes
+  /// is gone, and a later subscriber's first value is the next live push.
+  @Test func bridgeDeliveredPushIsNotBuffered() async {
+    let bridge = PushBridge()
+    bridge.pushDelivered(["session_id": "early", "type": "complete"])
+    let stream = bridge.deliveryStream()
+    bridge.pushDelivered(["session_id": "live", "type": "error"])
+    #expect(await collect(1, from: stream) == [PushTap(sessionID: "live", type: "error")])
+  }
+
+  /// Only `complete` and `error` end a turn; an approval / clarify push (or none) doesn't.
+  @Test func onlyCompleteAndErrorEndATurn() {
+    #expect(PushTap(sessionID: "s", type: "complete").endsTurn)
+    #expect(PushTap(sessionID: "s", type: "error").endsTurn)
+    #expect(!PushTap(sessionID: "s", type: "approval").endsTurn)
+    #expect(!PushTap(sessionID: "s", type: "clarify").endsTurn)
+    #expect(!PushTap(sessionID: "s").endsTurn)
+  }
 }

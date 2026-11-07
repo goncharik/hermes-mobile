@@ -3,12 +3,11 @@ import HermesWidgetKit
 import Testing
 
 /// The Live Activity's wording (#138): the status label (with ActivityKit's staleness), the
-/// count header, the headline / secondary text with and without titles, and the tap target.
+/// count, the T3-style header with its needs-input suffix, and the tap target.
 struct AgentActivityPresentationTests {
   private func content(
     _ count: Int,
     title: String? = "Fix the build",
-    workspace: String? = "hermes",
     id: String? = "s1",
     profile: String? = "work",
     status: AgentActivityContent.Status = .working
@@ -16,7 +15,6 @@ struct AgentActivityPresentationTests {
     AgentActivityContent(
       activeCount: count,
       headlineTitle: title,
-      headlineWorkspace: workspace,
       headlineSessionID: id,
       headlineProfile: profile,
       status: status
@@ -43,24 +41,25 @@ struct AgentActivityPresentationTests {
     #expect(content(3).countLabel == "3 active agents")
   }
 
-  /// With a title: title, then the workspace. Titles off: the workspace takes the title's
-  /// place and is not repeated. Neither: only the status shows.
-  @Test func headlineFallsBackToTheWorkspaceWithoutATitle() {
-    let titled = content(1)
-    #expect(titled.headlineText == "Fix the build")
-    #expect(titled.secondaryText == "hermes")
+  /// T3 Code's header: the count while active, the outcome once done, "out of date" past the
+  /// stale date — the final "Done" never goes stale.
+  @Test func headerTitleFollowsTheDisplayStatus() {
+    #expect(content(2).headerTitle(isStale: false) == "2 active agents")
+    #expect(content(1, status: .needsInput).headerTitle(isStale: false) == "1 active agent")
+    #expect(content(0, status: .done).headerTitle(isStale: false) == "Agent work completed")
+    #expect(content(0, status: .done).headerTitle(isStale: true) == "Agent work completed")
+    #expect(content(2).headerTitle(isStale: true) == "Agent status out of date")
+    #expect(
+      content(1, status: .needsInput).headerTitle(isStale: true) == "Agent status out of date"
+    )
+  }
 
-    let untitled = content(1, title: nil)
-    #expect(untitled.headlineText == "hermes")
-    #expect(untitled.secondaryText == nil)
-
-    let titleOnly = content(1, workspace: nil)
-    #expect(titleOnly.headlineText == "Fix the build")
-    #expect(titleOnly.secondaryText == nil)
-
-    let bare = content(1, title: nil, workspace: nil)
-    #expect(bare.headlineText == nil)
-    #expect(bare.secondaryText == nil)
+  /// The tinted suffix shows only while the headline needs input and the app still vouches.
+  @Test func headerAttentionOnlyWhileNeedsInputIsFresh() {
+    #expect(content(1, status: .needsInput).headerAttention(isStale: false) == "Needs input")
+    #expect(content(1, status: .needsInput).headerAttention(isStale: true) == nil)
+    #expect(content(1).headerAttention(isStale: false) == nil)
+    #expect(content(0, status: .done).headerAttention(isStale: false) == nil)
   }
 
   /// A tap opens the headline session in its own profile; no headline → the app as is.

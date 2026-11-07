@@ -43,14 +43,26 @@ public struct AgentStatusProjection: Equatable, Sendable {
   ///     or needs input — so the first turn of a new chat counts at once.
   ///   - showsTitles: the "Show session titles" pref.
   ///   - profile: the list's wire profile, stamped on every row for the `openSession` link.
+  ///   - finishedByPush: sessions a turn-complete / error push reported over while the app was
+  ///     backgrounded (`AppFeature.State.pushFinishedSessionIDs`). Overrides the live slot's
+  ///     running flag and its needs-input card, both stale with its socket down; the list row
+  ///     was patched by the push itself.
   public static func make(
     sessions: [Session],
     needsInput: Set<String>,
     slotRunning: (id: String, running: Bool)?,
     slotSession: Session? = nil,
     showsTitles: Bool,
-    profile: String?
+    profile: String?,
+    finishedByPush: Set<String> = []
   ) -> AgentStatusProjection {
+    var slotRunning = slotRunning
+    if let slot = slotRunning, finishedByPush.contains(slot.id) {
+      slotRunning = (slot.id, false)
+    }
+    // A turn that ended has no prompt open either: the slot's card is as stale as its flag
+    // (answered elsewhere while the socket was down).
+    let needsInput = needsInput.subtracting(finishedByPush)
     var sessions = sessions
     if let slotSession, let slotRunning, slotSession.id == slotRunning.id,
       slotRunning.running || needsInput.contains(slotSession.id),
@@ -96,14 +108,13 @@ public struct AgentStatusProjection: Equatable, Sendable {
   }
 
   /// The aggregate Live Activity's content, or `nil` when nothing is active (the activity
-  /// ends). The headline's title is omitted when "Show session titles" is off; the view then
-  /// falls back to the workspace.
+  /// ends). The headline's title is omitted when "Show session titles" is off; the banner then
+  /// shows only the status.
   public var activityContent: AgentActivityContent? {
     guard activeCount > 0, let headline else { return nil }
     return AgentActivityContent(
       activeCount: activeCount,
       headlineTitle: showsTitles ? headline.title : nil,
-      headlineWorkspace: headline.workspace,
       headlineSessionID: headline.id,
       headlineProfile: headline.profile,
       status: headline.status == .needsInput ? .needsInput : .working

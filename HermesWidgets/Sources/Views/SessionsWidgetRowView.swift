@@ -2,30 +2,25 @@ import HermesWidgetKit
 import SwiftUI
 import WidgetKit
 
-/// How a row's "updated" time reads. The widget keeps it live (`Text(_, style: .relative)`
-/// ticks on its own, so a `.never` timeline stays truthful); snapshot tests pin `now` and get
-/// the same wording, rendered deterministically.
+/// How a row's "updated" time reads: relative, minutes the finest unit ("12 minutes ago",
+/// "yesterday", never "36 min, 30 sec ago"; the style has no abbreviated units). The widget
+/// keeps it live (`.currentDate` ticks on its own, so a `.never` timeline stays truthful);
+/// snapshot tests pin `now` and format the same style against it, rendered deterministically.
 enum WidgetRelativeTime {
   case live
   case fixed(now: Date)
 
   func text(for date: Date) -> Text {
     switch self {
-    case .live:
-      Text("\(Text(date, style: .relative)) ago")
-    case let .fixed(now):
-      // The `.relative` style's own wording: up to two units, short names ("2 hr, 5 min").
-      Text("\(Self.formatter.string(from: max(0, now.timeIntervalSince(date))) ?? "") ago")
+    case .live: Text(.currentDate, format: Self.style(for: date))
+    case let .fixed(now): Text(now, format: Self.style(for: date))
     }
   }
 
-  private static let formatter: DateComponentsFormatter = {
-    let formatter = DateComponentsFormatter()
-    formatter.allowedUnits = [.day, .hour, .minute, .second]
-    formatter.unitsStyle = .short
-    formatter.maximumUnitCount = 2
-    return formatter
-  }()
+  /// At most two units, the finest a minute.
+  private static func style(for date: Date) -> SystemFormatStyle.DateReference {
+    .reference(to: date, allowedFields: [.year, .month, .day, .hour, .minute], maxFieldCount: 2)
+  }
 }
 
 /// One session in the sessions widget (#138), Codex-task style: the title over a meta line

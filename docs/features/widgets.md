@@ -8,8 +8,9 @@ Home Screen, Lock Screen and Control Center surfaces, plus ONE aggregate Live Ac
 shows running agents on the Lock Screen and in the Dynamic Island. The thin-client rule holds
 all the way out: the widget extension never touches the network or the Keychain, every tap is
 a `hermesmobile://` URL the app routes, and freshness is local only. When the app can no
-longer observe, the surfaces say "Outdated" instead of guessing. No plugin or gateway change,
-no ActivityKit push.
+longer observe, the surfaces say "Outdated" instead of guessing. No ActivityKit push: the one
+outside input is the existing turn-complete / error push, which the gateway marks
+`content-available` so it wakes the backgrounded app (see "Delivered pushes" below).
 
 ## Surfaces
 
@@ -32,21 +33,30 @@ All six live in one `WidgetBundle` (`HermesWidgets/Sources/HermesWidgetsBundle.s
 - **The glyph** is a template "HA" mask (`HermesWidgets/Resources`, `HermesGlyph`) drawn with
   `.widgetAccentable()`, so tinted and clear Home Screens recolor it.
 - **Sessions rows**: title; folder icon + workspace (`Session.workspaceLabel`, omitted when
-  `cwd` is blank) · relative time ("… ago"); a trailing glyph: working = `progress.indicator`
+  `cwd` is blank) · relative time ("12 minutes ago", "yesterday": the iOS 18
+  `SystemFormatStyle.DateReference` over `.currentDate`, minutes the finest unit — never
+  seconds); a trailing glyph: working = `progress.indicator`
   in system blue, needs input = `questionmark.circle` in yellow, outdated = `clock` in
   secondary, idle = none. Row text uses `Color.primary` / `Color.secondary`: inside a `Link`
   the hierarchical styles resolve to the link tint. Empty states: signed out → "Sign in to
   Hermes"; no sessions → "No sessions yet" plus a New Chat link.
-- **Live Activity, lock screen**: "Hermes" + "N active agent(s)" header ("No active agents"
-  when Done); the headline title, or the workspace in its place when titles are off, then the
-  workspace as secondary text; a trailing status label: Working (blue), Needs input (yellow),
-  Done (green), Outdated (secondary, when `context.isStale`). **Dynamic Island**: compact
-  leading = glyph; compact trailing = the count, `?` when the headline needs input, a green
-  checkmark when Done, a secondary count when stale; minimal = glyph; expanded = the
-  lock-screen layout in the bottom region.
-- The wording (`displayStatus(isStale:)`, `countLabel`, `headlineText`, `secondaryText`,
-  `tapIntent`) lives on `AgentActivityContent` in HermesWidgetKit and is unit-tested
-  (`AgentActivityPresentationTests`); the views only lay it out.
+- **Live Activity, lock screen** — T3 Code's banner: on iOS 26 a clear
+  `activityBackgroundTint` reveals the Liquid Glass platter (earlier iOS keeps the standard
+  surface); 13 pt semibold text in hierarchical `.primary` / `.secondary` (the system's
+  vibrancy), 11 pt for the status, 14 pt padding. The glyph on the left and a centred header:
+  "N active agent(s)", with "· Needs input" tinted while the headline waits on the user;
+  "Agent work completed" (green) when Done; "Agent status out of date" when stale. Below it the
+  headline title (truncating first) and a trailing status: Working (sky), Needs input (amber),
+  Done (emerald) — T3's palette, lighter on the dark material, deeper on a light one — or
+  Outdated (secondary, when `context.isStale`); every tint is secondary on the dimmed
+  Always-On display. No workspace / project label. Titles off: the row shows only the status.
+  **Dynamic Island**: compact leading = glyph; compact trailing = the count, `?` when the
+  headline needs input, a checkmark when Done, a secondary count when stale; minimal = glyph;
+  expanded = the lock-screen layout in the bottom region.
+- The wording (`displayStatus(isStale:)`, `countLabel`, `headerTitle(isStale:)`,
+  `headerAttention(isStale:)`, `tapIntent`) lives on `AgentActivityContent` in HermesWidgetKit
+  and is unit-tested (`AgentActivityPresentationTests`); the views only lay it out. The glass
+  itself only the system draws, so the snapshots show the layout on a plain background.
 
 ## Packaging: `HermesWidgetKit`
 
@@ -123,7 +133,7 @@ sees one module.
 
 `AppFeature.State.agentStatus: AgentStatusProjection?` is computed, pure and `Equatable`, with
 no timestamps, so its edge fires only on a real change. Built by
-`AgentStatusProjection.make(sessions:needsInput:slotRunning:slotSession:showsTitles:profile:)`
+`AgentStatusProjection.make(sessions:needsInput:slotRunning:slotSession:showsTitles:profile:finishedByPush:)`
 from `State.agentStatusInputs` (the raw inputs plus the list's connection):
 
 - **Source = `SessionListFeature.State.statusSessions`**, the list's UNFILTERED rows: `nil`
@@ -137,7 +147,9 @@ from `State.agentStatusInputs` (the raw inputs plus the list's connection):
 - **Rules**: interactive sessions only (cron excluded); status from `needsInputSessionIDs` and
   the working flag, never `.unread` (the widgets paint no unread state, and a read flip must
   not churn the mirror). The live slot's running flag overrides its row's polled `isActive`,
-  but only when the slot is in the list's profile (`isSameProfile`). A running or needs-input
+  but only when the slot is in the list's profile (`isSameProfile`), and a delivered
+  turn-end push overrides the slot's flag in turn (`finishedByPush`, see "Delivered pushes"
+  below). A running or needs-input
   slot the list doesn't carry yet (a new chat's first turn) gets its own row (`slotSession`),
   titled by its first prompt.
 - **Text is clamped**: every row's title and workspace keeps its first line, cut to
@@ -158,8 +170,9 @@ connection (a profile switch reset the rows), the mirror is re-written with the 
 the activity restamped, both with `min(freshUntil, now + 10 s)`; coming back from `nil`
 restamps the activity even when its content didn't change. Under a new connection (a
 different-user re-auth, surfaces already cleared) nothing is written. The other paths only
-restamp (the scene edges) or end / clear (the toggle off, the landing sweep, logout). Never add
-a writer in `SessionListFeature` or `ChatFeature`.
+restamp (the scene edges) or end / clear (the toggle off, the landing sweep, logout); a
+delivered turn-end push only moves the inputs and applies them at once. Never add a writer in
+`SessionListFeature` or `ChatFeature`.
 
 ## The App Group mirror
 
@@ -205,7 +218,42 @@ The app vouches for what it wrote until `freshUntil`; past it nothing observes t
   Exactly at `freshUntil` is already outdated. Past it, working / needs-input glyphs become the
   clock; titles stay.
 - **The Live Activity**: `staleDate = freshUntil`, the same promise, so it reads "Outdated" at
-  the same instant the widget does.
+  the same instant the widget does. Every update / end is debug-logged (`live.activity`, with
+  the seconds until stale), so Diagnostics shows what the app last promised.
+
+## Delivered pushes (the background wake)
+
+Backgrounded, the app is blind: the socket drops after the grace window and the list poll
+stops. The plugin's existing pushes are the only news, and the gateway marks the turn-end ones
+(`complete`, `error`) `content-available: 1` (alert + background wake, still the generic
+title/body + `session_id` — the privacy rule is untouched), so iOS hands such a push to
+`application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`. `PushAppDelegate`
+forwards it to `PushBridge.pushDelivered` (live-only: a push with no subscriber is dropped — a
+relaunched process has no surfaces state, and its landing sweeps old activities anyway) and
+calls the completion 3 s later, so the ActivityKit call and the mirror's 1 s debounced write land
+before iOS suspends the app again. `PushClient.deliveredPushes` feeds
+`AppFeature.deliveredPushReceived`:
+
+- **Only while backgrounded, only a turn end** (`PushTap.endsTurn`: `complete` or `error`).
+  In the foreground the app observes itself; an approval / clarify push is no turn end.
+- **The list row is patched** exactly as a slot event patches it
+  (`.home(.setSessionRunning(running: false))`); the next fetch overwrites it with server truth.
+- **A slot still on its socket is left alone**: inside the grace window (`status == .ready`)
+  the slot's events are the truth for its session, and the push for turn N can land after
+  turn N+1 (a drained queue, another client) already started there. Only a socket-less slot
+  is blind.
+- **The socket-less slot's stale running flag and needs-input card are overridden** while its
+  id is in `State.pushFinishedSessionIDs` (passed to the projection as `finishedByPush`; a
+  turn that ended has no prompt open either). Only the slot's own session is marked; the mark
+  goes on the slot's next `runningChanged` for it (a new turn, a foreground hydrate), on any
+  slot change (`clearLiveChat`, `seatLiveChat`) and on every logout / user switch.
+- **Then the activity syncs at once** (`liveActivitySyncDue`, no debounce: the wake is short).
+  The last working session ending ends the activity "Done" (no stale date); with another agent
+  still working the activity updates to it under the background promise, so it still reads
+  "Outdated" once that passes.
+- **Not guaranteed**: iOS may delay or drop a background wake (Low Power Mode, throttling) and
+  never delivers one to an app the user swiped away; turns under ~10 s push nothing. The stale
+  date stays the fallback.
 
 ## Live Activity lifecycle
 
@@ -258,7 +306,7 @@ Activity is on). Rows, footer and seeding: `docs/features/settings.md`.
   if agents are active). Show-titles goes through the projection edge.
 - Settings persists and delegates; the list forwards; `AppFeature` handles the delegate
   through `setLiveActivityEnabled`. `landOnHome` seeds both from prefs on every landing.
-- **Titles off OMITS the title** from the activity content (the workspace takes its place),
+- **Titles off OMITS the title** from the activity content (the row shows only the status),
   not `.privacySensitive()` redaction. The Home Screen widgets are unaffected.
 - `clearLiveActivityPrefs()` resets both at the Settings sign-out and both `AppFeature` full
   logouts. A different-user re-auth ends the activity but keeps the device prefs.
@@ -267,7 +315,9 @@ Activity is on). Rows, footer and seeding: `docs/features/settings.md`.
 
 - **Start is foreground-only.** A turn that starts while the app is backgrounded or killed
   (including one started from the desktop) gets no activity until the app is next opened.
-  Pushing the activity would need plugin and gateway work.
+  Pushing the activity (ActivityKit pushes) would need plugin and gateway work, and its content
+  state would have to carry the session title through the gateway — against the generic-body
+  privacy rule — so it isn't done.
 - **A foreground crash or kill skips the background edge**, so the mirror stays "fresh" for
   up to 8 h and the widgets keep the last working / needs-input glyphs until the app runs
   again. The activity, stamped with the same 8 h, keeps its last status until the next landing
@@ -297,7 +347,8 @@ Activity is on). Rows, footer and seeding: `docs/features/settings.md`.
 - HermesKit: `AgentStatusProjectionTests`, `AppAgentStatusTests`, `WidgetLaunchRoutingTests`
   (URL routing, `openSession`, stash, last-wins, logout, camera / photos),
   `WidgetSurfacesTests` (debounce on `TestClock`, background / foreground stamps, every Live
-  Activity transition, orphans, the landing sweep, logout), list `statusSessions` tests,
+  Activity transition, orphans, the landing sweep, logout, delivered pushes), list
+  `statusSessions` tests, `PushClientTests` (the delivery stream, `endsTurn`),
   `SettingsFeatureTests` (toggles), `PreferencesClientTests`.
 - Snapshots (`HermesMobileTests/WidgetSnapshotTests.swift`): quick actions small / medium,
   accessory circular, sessions medium / large (light, dark, outdated, signed out, empty) with

@@ -155,7 +155,6 @@ struct WidgetSnapshotTests {
     let content = AgentActivityContent(
       activeCount: 2,
       headlineTitle: "Fix the build",
-      headlineWorkspace: "~/code",
       headlineSessionID: "a",
       headlineProfile: "default",
       status: .needsInput

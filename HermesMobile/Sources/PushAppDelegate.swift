@@ -46,6 +46,28 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     Self.log.error("APNs registration failed: \(error.localizedDescription, privacy: .public)")
   }
 
+  /// A push reached the running (or just-woken) app: the gateway marks the turn-end pushes
+  /// `content-available`, so a turn-complete push wakes a suspended app in the background.
+  /// Forwarded to `PushBridge` — the reducer marks the session finished so the Live Activity
+  /// and widgets stop claiming it works (#138). The completion waits a few seconds so the
+  /// reducer's ActivityKit update and the mirror's debounced write land before iOS suspends
+  /// the app again (the budget is 30 s).
+  func application(
+    _: UIApplication,
+    didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+    fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+  ) {
+    PushBridge.shared.pushDelivered(userInfo)
+    Task {
+      try? await Task.sleep(for: Self.deliveryGrace)
+      completionHandler(.newData)
+    }
+  }
+
+  /// How long a delivered push keeps the app awake for the surfaces to catch up: the reducer
+  /// ends / updates the activity at once, the mirror write lands after its 1 s debounce.
+  private static let deliveryGrace: Duration = .seconds(3)
+
   // MARK: - UNUserNotificationCenterDelegate
 
   /// User tapped a notification → forward the `session_id` for deep-linking.

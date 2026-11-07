@@ -86,6 +86,19 @@ stored URL) replays unverified. Home creation seeds the persisted profile select
 and capability verdict (`makeHomeState`; see `docs/architecture.md`) so the replayed open resumes under the right profile — the replay fires before
 the list's `.task` prefs reload.
 
+## Delivered pushes wake the app (#138)
+
+The gateway sends the turn-end pushes (`complete`, `error`) with `content-available: 1` next to
+the alert (still `apns-push-type: alert`, priority 10, the generic title/body + `session_id` +
+`type` — no new content); approval / clarify need no wake. iOS then also hands it to the
+backgrounded app
+(`didReceiveRemoteNotification:fetchCompletionHandler:` → `PushBridge.pushDelivered` →
+`PushClient.deliveredPushes`, live-only, never buffered), and a `complete` / `error` push corrects
+the Live Activity and widgets the app can no longer observe. Taps, foreground suppression and
+the badge are unchanged (only taps bump the badge). Contract: `docs/features/widgets.md` →
+"Delivered pushes". Without the gateway flag nothing breaks; the surfaces fall back to their
+stale date.
+
 ## Internal agent forks never push (#64)
 
 Plugin-side only — no iOS/gateway change: a `delegate_task`/`curator` child fires the same hooks
