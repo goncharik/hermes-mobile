@@ -49,7 +49,7 @@ struct AgentsActivityView: View {
       }
       HStack(spacing: 6) {
         Text(content.headerTitle(isStale: isStale))
-          .foregroundStyle(status == .done ? AnyShapeStyle(statusTint) : AnyShapeStyle(.primary))
+          .foregroundStyle(status == .done ? statusTint : AnyShapeStyle(.primary))
         if let attention = content.headerAttention(isStale: isStale) {
           Text(verbatim: "·")
             .foregroundStyle(.secondary)

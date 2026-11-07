@@ -978,8 +978,6 @@ struct WidgetSurfacesTests {
     }
   }
 
-  // MARK: The file-backed client
-
   // MARK: Delivered pushes (the background wake)
 
   /// Backgrounded with the poll stopped, the only news is a push: `complete` on the last
@@ -1118,6 +1116,113 @@ struct WidgetSurfacesTests {
       $0.pushFinishedSessionIDs = []
     }
   }
+
+  /// Inside the grace window the slot's socket is still live and its events are the truth:
+  /// the push for turn N can land after turn N+1 (a drained queue) started there, so it marks
+  /// nothing, patches nothing and leaves the activity alone.
+  @Test func aPushForASlotStillOnItsSocketChangesNothing() async {
+    let activity = ActivityRecorder()
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.isSending = true
+    chat.status = .ready
+    var state = AppFeature.State(
+      home: fetchedHome([session("s1", active: true)]),
+      path: StackState([ChatScreen.State(sessionKey: "s1")]),
+      liveChat: chat
+    )
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(40)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "complete")))
+    #expect(store.state.pushFinishedSessionIDs.isEmpty)
+    #expect(activity.calls.value.isEmpty)
+  }
+
+  /// The socket-less slot had an approval card up that was answered elsewhere: the turn-end push
+  /// clears the stale card's needs-input too, so the activity ends instead of holding it.
+  @Test func aPushClearsTheSocketlessSlotsStaleCard() {
+    let projection = AgentStatusProjection.make(
+      sessions: [session("s1", active: true)],
+      needsInput: ["s1"],
+      slotRunning: ("s1", true),
+      showsTitles: true,
+      profile: nil,
+      finishedByPush: ["s1"]
+    )
+    #expect(projection.activeCount == 0)
+    #expect(projection.activityContent == nil)
+  }
+
+  /// The real wiring: a push the bridge delivers reaches the reducer through the `.task`
+  /// observer and ends the activity.
+  @Test func aDeliveredPushReachesTheReducerThroughTheTaskObserver() async {
+    let activity = ActivityRecorder()
+    let push = PushClient.inMemory()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(10)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = TestStore(initialState: state) {
+      AppFeature()
+    } withDependencies: {
+      $0.widgetMirror = MirrorRecorder().client
+      $0.liveActivity = activity.client
+      $0.continuousClock = TestClock()
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      $0.push = push.client
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    let task = await store.send(.task)
+    // Let the observer subscribe before the push lands (the bridge is live-only).
+    for _ in 0..<50 { await Task.yield() }
+    push.emit(delivery: PushTap(sessionID: "s1", type: "complete"))
+    await store.receive(\.deliveredPushReceived)
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity = nil
+    }
+    await task.cancel()
+  }
+
+  /// Every identity teardown drops the push marks with the rest of the identity's state.
+  @Test func everyLogoutDropsThePushMarks() async {
+    for action in [
+      AppFeature.Action.home(.delegate(.disconnect)),
+      .connectionFailed(.delegate(.logoutConfirmed)),
+      .reauth(.presented(.delegate(.quit))),
+      .reauth(.presented(.delegate(.reauthenticated(
+        connection: ServerConnection(baseURL: connection.baseURL, token: "other"),
+        sameUser: false
+      )))),
+    ] {
+      var state = AppFeature.State(
+        home: fetchedHome([session("s1")]),
+        connectionFailed: ConnectionFailedFeature.State(connection: connection, reason: .offline),
+        reauth: ReauthFeature.State(serverURL: connection.baseURL, method: .token)
+      )
+      state.pushFinishedSessionIDs = ["s1"]
+      let store = TestStore(initialState: state) {
+        AppFeature()
+      } withDependencies: {
+        $0.widgetMirror = MirrorRecorder().client
+        $0.liveActivity = ActivityRecorder().client
+        $0.continuousClock = TestClock()
+        $0.date = .constant(now)
+        $0.preferences = .inMemory()
+        $0.push = PushClient.inMemory().client
+      }
+      store.exhaustivity = .off(showSkippedAssertions: false)
+
+      await store.send(action)
+      #expect(store.state.pushFinishedSessionIDs.isEmpty, "\(action) kept the push marks")
+      await store.finish()
+    }
+  }
+
+  // MARK: The file-backed client
 
   @Test func fileBackedClientWritesAndClearsTheMirrorAtomically() throws {
     let directory = FileManager.default.temporaryDirectory

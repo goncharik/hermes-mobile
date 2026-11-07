@@ -45,7 +45,8 @@ public struct AgentStatusProjection: Equatable, Sendable {
   ///   - profile: the list's wire profile, stamped on every row for the `openSession` link.
   ///   - finishedByPush: sessions a turn-complete / error push reported over while the app was
   ///     backgrounded (`AppFeature.State.pushFinishedSessionIDs`). Overrides the live slot's
-  ///     running flag, stale with its socket down; the list row was patched by the push itself.
+  ///     running flag and its needs-input card, both stale with its socket down; the list row
+  ///     was patched by the push itself.
   public static func make(
     sessions: [Session],
     needsInput: Set<String>,
@@ -59,6 +60,9 @@ public struct AgentStatusProjection: Equatable, Sendable {
     if let slot = slotRunning, finishedByPush.contains(slot.id) {
       slotRunning = (slot.id, false)
     }
+    // A turn that ended has no prompt open either: the slot's card is as stale as its flag
+    // (answered elsewhere while the socket was down).
+    let needsInput = needsInput.subtracting(finishedByPush)
     var sessions = sessions
     if let slotSession, let slotRunning, slotSession.id == slotRunning.id,
       slotRunning.running || needsInput.contains(slotSession.id),

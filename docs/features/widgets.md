@@ -238,11 +238,15 @@ before iOS suspends the app again. `PushClient.deliveredPushes` feeds
   In the foreground the app observes itself; an approval / clarify push is no turn end.
 - **The list row is patched** exactly as a slot event patches it
   (`.home(.setSessionRunning(running: false))`); the next fetch overwrites it with server truth.
-- **The live slot's stale running flag is overridden** while its id is in
-  `State.pushFinishedSessionIDs` (passed to the projection as `finishedByPush`). Only the
-  slot's own session is marked; the mark goes on the slot's next `runningChanged` for it (a new
-  turn, a foreground hydrate), on any slot change (`clearLiveChat`, `seatLiveChat`) and on every
-  logout / user switch.
+- **A slot still on its socket is left alone**: inside the grace window (`status == .ready`)
+  the slot's events are the truth for its session, and the push for turn N can land after
+  turn N+1 (a drained queue, another client) already started there. Only a socket-less slot
+  is blind.
+- **The socket-less slot's stale running flag and needs-input card are overridden** while its
+  id is in `State.pushFinishedSessionIDs` (passed to the projection as `finishedByPush`; a
+  turn that ended has no prompt open either). Only the slot's own session is marked; the mark
+  goes on the slot's next `runningChanged` for it (a new turn, a foreground hydrate), on any
+  slot change (`clearLiveChat`, `seatLiveChat`) and on every logout / user switch.
 - **Then the activity syncs at once** (`liveActivitySyncDue`, no debounce: the wake is short).
   The last working session ending ends the activity "Done" (no stale date); with another agent
   still working the activity updates to it under the background promise, so it still reads

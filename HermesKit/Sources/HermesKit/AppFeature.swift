@@ -1173,6 +1173,12 @@ public struct AppFeature {
         // slot's events and the poll already tell. Only a turn END is news the surfaces can act
         // on: the session stops counting as working, so the last one ends the activity "Done".
         guard state.isSceneBackgrounded, push.endsTurn, state.home != nil else { return .none }
+        // A slot still on its live socket (the grace window) is the truth for its session: the
+        // push for turn N can land after turn N+1 (a drained queue, another client) already
+        // started there, and must not end it. Only a socket-less slot is blind.
+        if let chat = state.liveChat, chat.sessionKey == push.sessionID, chat.status == .ready {
+          return .none
+        }
         debugLog.note("live.activity", "\(push.type ?? "push") ended \(push.sessionID)")
         // The slot's flag (stale, socket down) is overridden here; the list row is patched like
         // a slot event would (`setSessionRunning`). Then the activity syncs at once, not after
