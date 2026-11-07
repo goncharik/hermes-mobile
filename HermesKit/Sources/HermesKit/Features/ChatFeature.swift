@@ -187,6 +187,23 @@ public struct ChatFeature {
     /// Draft text for the rename alert. `nil` = alert closed; non-nil = alert open
     /// with the in-progress title (Task 4).
     public var renameDraft: String?
+    /// The ⋯ menu's Archive/Delete confirmation — the session list's destructive-actions
+    /// idiom (`ConfirmationDialogState`, presented as a bottom action sheet).
+    @Presents public var confirmationDialog: ConfirmationDialogState<Action.Dialog>?
+    /// Mirror of the session list's `deleteSupported` (server-wide capability): seeded and
+    /// kept in sync by `AppFeature`; a 404/405 from this chat's own delete flips it off here
+    /// and `AppFeature` flips the list's flag (`sessionRemovalFinished`). Default `true`,
+    /// like the list.
+    public var deleteSupported: Bool = true
+    /// The session id an Archive/Delete from the ⋯ menu is in flight for (the PARENT runs the
+    /// REST call — see `Delegate.removeSession`). Kept as the id, not a flag, so the parent
+    /// can route the reply to this chat even if the #17 heal recreated the session meanwhile
+    /// (`sessionKey` no longer matches). Cleared when the parent re-injects a failure; on
+    /// success the parent tears the slot down.
+    public var removingSessionID: String?
+    /// Both ⋯ menu items disable while a removal is in flight, so a second confirmation
+    /// can't double-fire.
+    public var isRemovingSession: Bool { removingSessionID != nil }
     /// Token of the copy target most recently tapped — a code block (#9) or a whole
     /// message row (`ChatFeature.rowCopyToken(_:)`, #34) — for the transient "copied"
     /// checkmark. Cleared by a clock-driven effect; the latest copy owns the feedback.
@@ -383,6 +400,14 @@ public struct ChatFeature {
     static func isUserMessage(_ row: ChatRow) -> Bool {
       if case .message(.user, _, _) = row.kind { return true }
       return false
+    }
+
+    /// The text of the first user message in the transcript — a new chat's stand-in title (the
+    /// list's preview) until the server names it.
+    var firstUserMessageText: String? {
+      guard case let .message(.user, text, _) = transcript.first(where: Self.isUserMessage)?.kind
+      else { return nil }
+      return text
     }
 
     /// The turn `rowID` belongs to: how many user message rows precede it. Survives a
@@ -738,12 +763,13 @@ public struct ChatFeature {
     /// gap drops streamed events). Once started, later appearances are routed by
     /// `AppFeature` through `.reattached`, which guards the live socket.
     var hasStarted: Bool
-    /// One-shot "start the mic as soon as this chat opens" request from the dictation App
-    /// Intent (#93). Consumed — cleared whatever happens — at the slot's first `.task`, so it
-    /// can never fire later (after a reconnect, or once the user has started typing). Starts
-    /// recording only from `.idle`.
+    /// One-shot "do this as soon as this chat opens" request from an App Intent (#93) or a
+    /// widget / control deep link (#138): start the mic, open the camera, or open the photo
+    /// picker. Consumed — cleared whatever happens — at the slot's first `.task`, so it can
+    /// never fire later (after a reconnect, or once the user has started typing). Dictation
+    /// starts recording only from `.idle`.
     /// Per-slot, unpersisted.
-    var pendingDictation: Bool
+    var pendingLaunchAction: LaunchAction?
     /// Set when the gated session died (`.authExpired`): reconnect backoff is paused and the
     /// trailing `.gatewayClosed` (the finished stream) is ignored until re-auth resumes us.
     var awaitingReauth: Bool
@@ -853,7 +879,7 @@ public struct ChatFeature {
       self.reconnectAttempt = 0
       self.hasRequestedSession = false
       self.hasStarted = false
-      self.pendingDictation = false
+      self.pendingLaunchAction = nil
       self.awaitingReauth = false
       self.hydrateRetriedAfterTimeout = false
       self.hasHydrated = false
@@ -1058,6 +1084,14 @@ public struct ChatFeature {
     /// Rename is only meaningful once we have a live session id (otherwise `confirmRename`
     /// silently no-ops) — drives whether the toolbar Rename control is enabled.
     public var canRename: Bool { liveSessionID != nil }
+    /// Whether the ⋯ menu may offer Archive/Delete: the chat addresses a session the server
+    /// has a ROW for. A new chat before its first prompt (no stored id, or a minted key with
+    /// no row yet — `awaitsFirstPersist`) and an unpersisted branch (#34) have nothing to
+    /// archive or delete.
+    public var canArchiveOrDelete: Bool {
+      storedSessionID != nil && !awaitsFirstPersist && attachLiveSessionID == nil
+        && branchSeed == nil
+    }
 
     /// Rows for the slash-command autocomplete panel (#36), derived PURELY from
     /// `composerText` + the cached catalog on every keystroke — no stored suggestion
@@ -1237,10 +1271,11 @@ public struct ChatFeature {
     case copiedIDToastExpired
     // Voice input (#7)
     case voiceButtonTapped
-    /// Start the mic now if idle — on an already-started slot, which no first `.task` will
-    /// reach (sent by `AppFeature` when the dictation App Intent reuses the new-chat seat, #93).
+    /// Run a launch action (dictation, camera, photos) now — on an already-started slot, which
+    /// no first `.task` will reach (sent by `AppFeature` when an App Intent or a widget deep
+    /// link reuses the new-chat seat, #93 / #138). Dictation starts the mic only if idle.
     /// Never sent by the view.
-    case startDictation
+    case startLaunchAction(LaunchAction)
     case recordingPermission(Bool)
     case recordingStarted
     case recordingLevel(Float)
@@ -1293,6 +1328,14 @@ public struct ChatFeature {
     case confirmRename
     case renameFailed(previousTitle: String?)
     case cancelRename
+    // Archive / Delete from the ⋯ menu: confirm → the PARENT runs the REST call under the
+    // chat's OWN profile (`Delegate.removeSession`) and tears the slot down only on the
+    // server's acknowledgement; a failure comes back here while the slot still holds it.
+    case archiveButtonTapped
+    case deleteButtonTapped
+    case confirmationDialog(PresentationAction<Dialog>)
+    case archiveFailed(id: String, error: RESTError)
+    case deleteFailed(id: String, error: RESTError)
     // Attachments (#8)
     case attachPhotosTapped
     case attachCameraTapped
@@ -1363,6 +1406,12 @@ public struct ChatFeature {
     /// rows are carried across the wholesale replace by the reducer.
     case slashHistoryRefreshed(ActivateResponse)
 
+    /// The ⋯ menu's destructive confirmations.
+    public enum Dialog: Equatable, Sendable {
+      case confirmArchive
+      case confirmDelete
+    }
+
     /// Signals the parent (`AppFeature`) routes: the dead-session signal that raises the
     /// re-auth modal (reconnect backoff is paused for it), and the authoritative
     /// working-state change that drives the session-list glow.
@@ -1387,6 +1436,30 @@ public struct ChatFeature {
       /// chat's `branchSeed`, so a server-side reap of the never-prompted branch can be
       /// healed by replaying the seeded create.
       case branchCreated(BranchCreation)
+      /// The user CONFIRMED Archive/Delete from this chat's ⋯ menu. The PARENT runs the REST
+      /// round-trip in its own effect — a slot effect is cancelled when the user navigates
+      /// away or picks another chat (`.ifLet`), which would drop a server-applied removal's
+      /// cleanup — and on success applies the list contract (row/pin/seen drop, teardown;
+      /// for Delete the snapshot wipe and badge entry too).
+      case removeSession(SessionRemoval)
+
+      /// The `removeSession` payload: everything the parent needs to run the call after the
+      /// slot is gone — the session, the chat's connection and its OWN profile (never the
+      /// list's: the slot survives a sidebar profile switch).
+      public struct SessionRemoval: Equatable, Sendable {
+        public enum Kind: Equatable, Sendable { case archive, delete }
+        public var kind: Kind
+        public var id: String
+        public var connection: ServerConnection
+        public var profileName: String?
+
+        public init(kind: Kind, id: String, connection: ServerConnection, profileName: String?) {
+          self.kind = kind
+          self.id = id
+          self.connection = connection
+          self.profileName = profileName
+        }
+      }
 
       /// The `branchCreated` payload: the create response's handle plus the client-held
       /// seed that can rebuild the branch wholesale after an orphan reap.
@@ -1497,9 +1570,10 @@ public struct ChatFeature {
         // when on, so the replies already painted (instant-paint snapshot) are never read.
         state.autoSpeakReplies = preferences.loadAutoSpeakReplies()
         if state.autoSpeakReplies { arm(&state) }
-        // The dictation App Intent's one-shot (#93) is consumed HERE, at first start — never
-        // on a later `.ready`. Recording is REST-transcribed, so it needn't wait for the socket.
-        return .merge(connect(state.connection), consumePendingDictation(&state))
+        // The launch action's one-shot (#93 / #138) is consumed HERE, at first start — never
+        // on a later `.ready`. Recording is REST-transcribed and attachments upload at send
+        // time, so none of them needs to wait for the socket.
+        return .merge(connect(state.connection), consumePendingLaunchAction(&state))
 
       case .viewDisappeared:
         // View-only cleanup: the screen left, but the slot (socket, streaming fold,
@@ -2236,8 +2310,8 @@ public struct ChatFeature {
           return .none
         }
 
-      case .startDictation:
-        return state.recording == .idle ? startVoiceRecording(&state) : .none
+      case let .startLaunchAction(action):
+        return runLaunchAction(action, &state)
 
       case let .recordingPermission(granted):
         guard granted else {
@@ -2407,14 +2481,10 @@ public struct ChatFeature {
       // MARK: Attachments (#8)
 
       case .attachPhotosTapped:
-        return .run { [attachmentPicker, uuid] send in
-          await stagePicked(await attachmentPicker.pickPhotos(), uuid: uuid, send: send)
-        }
+        return pickPhotos()
 
       case .attachCameraTapped:
-        return .run { [attachmentPicker, uuid] send in
-          await stagePicked(await attachmentPicker.capturePhoto(), uuid: uuid, send: send)
-        }
+        return capturePhoto()
 
       case .attachFilesTapped:
         return .run { [attachmentPicker, uuid] send in
@@ -2782,6 +2852,76 @@ public struct ChatFeature {
       case .cancelRename:
         state.renameDraft = nil
         return .none
+
+      // MARK: Archive / Delete (⋯ menu)
+
+      case .archiveButtonTapped:
+        guard state.canArchiveOrDelete, !state.isRemovingSession else { return .none }
+        state.confirmationDialog = ConfirmationDialogState {
+          TextState("Archive session?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmArchive) { TextState("Archive") }
+          ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+          TextState("This hides the session from the list. You can restore it from the server.")
+        }
+        return .none
+
+      case .deleteButtonTapped:
+        guard state.deleteSupported, state.canArchiveOrDelete, !state.isRemovingSession
+        else { return .none }
+        state.confirmationDialog = ConfirmationDialogState {
+          TextState("Delete session?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmDelete) { TextState("Delete") }
+          ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+          TextState("This permanently deletes the session and its history.")
+        }
+        return .none
+
+      case .confirmationDialog(.presented(.confirmArchive)):
+        // Re-checked: the session state can change while the dialog is up.
+        guard state.canArchiveOrDelete, !state.isRemovingSession,
+          let id = state.storedSessionID
+        else { return .none }
+        state.removingSessionID = id
+        state.errorBanner = nil
+        // The chat's OWN profile, not the list's: the slot survives a sidebar profile
+        // switch, and the list's scope would mutate another profile's `state.db`.
+        return .send(.delegate(.removeSession(.init(
+          kind: .archive, id: id, connection: state.connection, profileName: state.profileName
+        ))))
+
+      case .confirmationDialog(.presented(.confirmDelete)):
+        guard state.deleteSupported, state.canArchiveOrDelete, !state.isRemovingSession,
+          let id = state.storedSessionID
+        else { return .none }
+        state.removingSessionID = id
+        state.errorBanner = nil
+        return .send(.delegate(.removeSession(.init(
+          kind: .delete, id: id, connection: state.connection, profileName: state.profileName
+        ))))
+
+      case .confirmationDialog:
+        return .none
+
+      case .archiveFailed:
+        // The chat stays open; the user can retry. Same copy as the list.
+        state.removingSessionID = nil
+        state.errorBanner = "Couldn’t archive the session."
+        return .none
+
+      case let .deleteFailed(_, error):
+        state.removingSessionID = nil
+        // Missing-endpoint verdict: flip the capability off SILENTLY (no banner), as the
+        // list's own delete does. The parent has already flipped the list's flag.
+        if error.isMissingEndpointVerdict {
+          state.deleteSupported = false
+          return .none
+        }
+        state.errorBanner = "Couldn’t delete the session."
+        return .none
       }
     }
     // Keep-awake (#74): report every `wantsScreenAwake` edge to the system idle timer, in
@@ -2799,6 +2939,7 @@ public struct ChatFeature {
     .ifLet(\.$filePreview, action: \.filePreview) {
       FilePreviewFeature()
     }
+    .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
   }
 
   // MARK: - Event fold
@@ -3793,7 +3934,7 @@ public struct ChatFeature {
   }
 
   /// The mic button's idle → recording leg, shared by `.voiceButtonTapped` and the dictation
-  /// App Intent (`consumePendingDictation`, #93) so the barge-in order can never drift.
+  /// launch action (`runLaunchAction`, #93) so the barge-in order can never drift.
   private func startVoiceRecording(_ state: inout State) -> Effect<Action> {
     state.recording = .requestingPermission
     // Voice barge-in (#74): silence the clip and stamp the latch. The `tts.stop()`
@@ -3810,13 +3951,41 @@ public struct ChatFeature {
     )
   }
 
-  /// Consume the dictation App Intent's one-shot (#93): always clear the flag, and start the
-  /// mic only from `.idle` — never toggle a recording (or a pending permission / transcription)
-  /// the user already has going. A denial lands on `.recordingPermission`'s existing banner.
-  private func consumePendingDictation(_ state: inout State) -> Effect<Action> {
-    guard state.pendingDictation else { return .none }
-    state.pendingDictation = false
-    return state.recording == .idle ? startVoiceRecording(&state) : .none
+  /// Consume the launch one-shot (#93 / #138): always clear it, then run it once.
+  private func consumePendingLaunchAction(_ state: inout State) -> Effect<Action> {
+    guard let action = state.pendingLaunchAction else { return .none }
+    state.pendingLaunchAction = nil
+    return runLaunchAction(action, &state)
+  }
+
+  /// One launch action, shared by the first-`.task` consume and the reused-seat
+  /// `.startLaunchAction`. Dictation starts the mic only from `.idle` — never toggling a
+  /// recording (or a pending permission / transcription) the user already has going; a denial
+  /// lands on `.recordingPermission`'s existing banner. Camera and photos run the composer
+  /// buttons' own picker effects, so a cancel is the same silent empty batch.
+  private func runLaunchAction(_ action: LaunchAction, _ state: inout State) -> Effect<Action> {
+    switch action {
+    case .dictation:
+      return state.recording == .idle ? startVoiceRecording(&state) : .none
+    case .camera:
+      return capturePhoto()
+    case .photos:
+      return pickPhotos()
+    }
+  }
+
+  /// The photo-library picker, shared by the composer button and the photos launch action.
+  private func pickPhotos() -> Effect<Action> {
+    .run { [attachmentPicker, uuid] send in
+      await stagePicked(await attachmentPicker.pickPhotos(), uuid: uuid, send: send)
+    }
+  }
+
+  /// The camera capture, shared by the composer button and the camera launch action.
+  private func capturePhoto() -> Effect<Action> {
+    .run { [attachmentPicker, uuid] send in
+      await stagePicked(await attachmentPicker.capturePhoto(), uuid: uuid, send: send)
+    }
   }
 
   /// Shared voice cleanup for `.viewDisappeared` and `.teardown`: reset the recording UI

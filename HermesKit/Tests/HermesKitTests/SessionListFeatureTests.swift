@@ -35,6 +35,8 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1", title: "Hello", preview: "hi")]
+      // The first unfiltered fetch opens the widgets' gate (`agentStatus` stops being nil).
+      $0.statusSessions = [Session(id: "s1", title: "Hello", preview: "hi")]
       $0.seenCounts = ["s1": 0] // seeded so the session isn't shown unread on first sight
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -102,6 +104,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1", isActive: true)]
+      $0.statusSessions = [Session(id: "s1", isActive: true)]
       $0.seenCounts = ["s1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -177,7 +180,9 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -249,6 +254,7 @@ struct SessionListFeatureTests {
         Session(id: "a", title: "First a", messageCount: 3),
         Session(id: "b", title: "b", messageCount: 1),
       ]
+      $0.statusSessions = $0.sessions
       $0.seenCounts = ["a": 3, "b": 1]
     }
     #expect(store.state.sessions.map(\.id) == ["a", "b"])
@@ -272,6 +278,7 @@ struct SessionListFeatureTests {
     ]))) {
       $0.isLoading = false
       $0.sessions = [Session(id: "b")]
+      $0.statusSessions = [Session(id: "b")]  // the in-flight guard applies here too
       $0.seenCounts = ["b": 0]
     }
     #expect(store.state.seenCounts["a"] == nil)
@@ -332,7 +339,9 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -698,6 +707,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1")]
+      $0.statusSessions = [Session(id: "s1")]
       $0.seenCounts = ["s1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -860,6 +870,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "b")]
+      $0.statusSessions = [Session(id: "b")]
       $0.seenCounts = ["b": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -981,6 +992,7 @@ struct SessionListFeatureTests {
     await store.send(.sessionsResponse(.success([Session(id: "a"), Session(id: "b")]))) {
       $0.isLoading = false
       $0.sessions = [Session(id: "b")] // "a" filtered out while in flight
+      $0.statusSessions = [Session(id: "b")]
     }
     #expect(store.state.seenCounts["a"] == nil)
 
@@ -994,6 +1006,7 @@ struct SessionListFeatureTests {
     // no permanent filter (the server is the source of truth for archived state now).
     await store.send(.sessionsResponse(.success([Session(id: "a"), Session(id: "b")]))) {
       $0.sessions = [Session(id: "a"), Session(id: "b")]
+      $0.statusSessions = [Session(id: "a"), Session(id: "b")]
       $0.seenCounts = ["a": 0, "b": 2]
     }
     #expect(store.state.sessions.map(\.id) == ["a", "b"])
@@ -1190,6 +1203,7 @@ struct SessionListFeatureTests {
     await store.send(.sessionsResponse(.success([Session(id: "a"), Session(id: "b")]))) {
       $0.isLoading = false
       $0.sessions = [Session(id: "b")] // "a" filtered out while in flight
+      $0.statusSessions = [Session(id: "b")]
     }
     #expect(store.state.seenCounts["a"] == nil)
 
@@ -1371,6 +1385,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "b")]
+      $0.statusSessions = [Session(id: "b")]
       $0.seenCounts = ["b": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -1575,6 +1590,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "fresh")]
+      $0.statusSessions = [Session(id: "fresh")]
       $0.seenCounts = ["fresh": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -1617,6 +1633,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "fresh")]
+      $0.statusSessions = [Session(id: "fresh")]
       $0.seenCounts = ["fresh": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -1652,7 +1669,9 @@ struct SessionListFeatureTests {
       $0.isLoading = true
       $0.defaultSwipeAction = .delete // seeded from prefs with the other pref reloads
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -1733,7 +1752,9 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -2049,6 +2070,45 @@ struct SessionListFeatureTests {
     }
   }
 
+  /// Settings opens on the persisted Live Activity toggles (#138).
+  @Test func settingsPresentationSeedsTheLiveActivityToggles() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveLiveActivityEnabled(true)
+    preferences.saveLiveActivityShowsTitles(false)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(
+        connection: self.connection, liveActivityEnabled: true, liveActivityShowsTitles: false
+      )
+    }
+
+    preferences.saveLiveActivityEnabled(false)
+    await store.send(.settings(.dismiss)) { $0.settings = nil }
+    await store.send(.settingsButtonTapped) {
+      $0.settings = SettingsFeature.State(
+        connection: self.connection, liveActivityEnabled: false, liveActivityShowsTitles: false
+      )
+    }
+  }
+
+  /// The Live Activity toggles are `AppFeature`'s to act on: the list forwards both delegates
+  /// unchanged and keeps no state of its own.
+  @Test func settingsLiveActivityDelegatesAreForwarded() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: initial) { SessionListFeature() }
+
+    await store.send(.settings(.presented(.delegate(.liveActivityToggled(false)))))
+    await store.receive(\.delegate.liveActivityToggled, false)
+    await store.send(.settings(.presented(.delegate(.liveActivityShowsTitlesToggled(false)))))
+    await store.receive(\.delegate.liveActivityShowsTitlesToggled, false)
+  }
+
   // MARK: Push registration (Task C4)
 
   @Test func requestAuthorizationRegistersWhenAuthorized() async {
@@ -2175,6 +2235,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1")]
+      $0.statusSessions = [Session(id: "s1")]
       $0.seenCounts = ["s1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -2222,7 +2283,9 @@ struct SessionListFeatureTests {
     await store.receive(\.setupPush)
     await store.receive(\.pushPluginStatusLoaded)
     await store.receive(\.profilesResponse.failure)
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -2262,7 +2325,10 @@ struct SessionListFeatureTests {
       $0.now = nextMorning
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success) { $0.isLoading = false }
+    await store.receive(\.sessionsResponse.success) {
+      $0.isLoading = false
+      $0.statusSessions = [session]
+    }
     await store.receive(\.cronJobsResponse.failure) { $0.cronJobsSupported = false }
     #expect(store.state.dateSections.map(\.id) == ["yesterday"])
     #expect(store.state.dateSections.map(\.label) == ["Yesterday"])
@@ -2782,6 +2848,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "w1", title: "Work")]
+      $0.statusSessions = [Session(id: "w1", title: "Work")]
       $0.seenCounts = ["w1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -2817,6 +2884,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1")]
+      $0.statusSessions = [Session(id: "s1")]
       $0.seenCounts = ["s1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -2833,6 +2901,7 @@ struct SessionListFeatureTests {
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection,
+        statusSessions: [Session(id: "d1", isActive: true)],
         searchQuery: "stale",
         profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
         selectedProfileName: "default",
@@ -2852,6 +2921,8 @@ struct SessionListFeatureTests {
 
     await store.send(.selectProfile(name: "work")) {
       $0.selectedProfileName = "work"
+      // The old profile's rows never feed the widgets: "unknown" until the scoped refetch.
+      $0.statusSessions = nil
       $0.searchQuery = "" // list UI reset on switch
       $0.now = self.now
       $0.isLoading = true
@@ -2859,6 +2930,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "w1")]
+      $0.statusSessions = [Session(id: "w1")]
       $0.seenCounts = ["w1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -2907,7 +2979,9 @@ struct SessionListFeatureTests {
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -2921,6 +2995,7 @@ struct SessionListFeatureTests {
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection,
+        statusSessions: [Session(id: "w1")],
         profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
         selectedProfileName: "work",
         profilesSupported: true
@@ -2959,10 +3034,13 @@ struct SessionListFeatureTests {
     await store.receive(\.deleteProfileSucceeded) {
       $0.profiles = [Profile(name: "default", isDefault: true)]
       $0.selectedProfileName = "default"
+      $0.statusSessions = nil  // the deleted profile's rows are gone with it
       $0.now = self.now
       $0.isLoading = true
     }
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -3060,6 +3138,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "d1")]
+      $0.statusSessions = [Session(id: "d1")]
       $0.seenCounts = ["d1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -3307,6 +3386,105 @@ struct SessionListFeatureTests {
     await store.send(.setSessionRunning(id: "s1", running: true))
   }
 
+  // MARK: statusSessions (the widgets' unfiltered source)
+
+  @Test func setSessionRunningPatchesStatusSessions() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection,
+        sessions: [Session(id: "s1", isActive: false)],
+        statusSessions: [Session(id: "s1", isActive: false)]
+      )
+    ) {
+      SessionListFeature()
+    }
+
+    await store.send(.setSessionRunning(id: "s1", running: true)) {
+      $0.sessions[id: "s1"]?.isActive = true
+      $0.statusSessions?[id: "s1"]?.isActive = true
+    }
+  }
+
+  @Test func setSessionRunningPatchesStatusSessionsWhileASearchHidesTheRow() async {
+    // A search narrowed `sessions` to a hit; the running row is only in the unfiltered source.
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection,
+        sessions: [Session(id: "hit")],
+        statusSessions: [Session(id: "hit"), Session(id: "s1", isActive: true)],
+        searchQuery: "hit"
+      )
+    ) {
+      SessionListFeature()
+    }
+
+    await store.send(.setSessionRunning(id: "s1", running: false)) {
+      $0.statusSessions?[id: "s1"]?.isActive = false
+    }
+  }
+
+  @Test func setSessionRunningBeforeTheFirstFetchLeavesStatusSessionsUnknown() async {
+    // No unfiltered fetch yet: the slot's event must not conjure a source (the gate stays shut).
+    let store = TestStore(
+      initialState: SessionListFeature.State(connection: connection)
+    ) {
+      SessionListFeature()
+    }
+
+    await store.send(.setSessionRunning(id: "s1", running: true))
+    #expect(store.state.statusSessions == nil)
+  }
+
+  @Test func searchResponseLeavesStatusSessionsUntouched() async {
+    let clock = TestClock()
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection,
+        sessions: [Session(id: "s1", isActive: true), Session(id: "s2")],
+        statusSessions: [Session(id: "s1", isActive: true), Session(id: "s2")]
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.continuousClock = clock
+      $0.preferences = .inMemory()
+      $0.hermesREST.search = { @Sendable _, _, _ in [Session(id: "s2")] }
+    }
+
+    await store.send(\.binding.searchQuery, "two") { $0.searchQuery = "two" }
+    await clock.advance(by: .milliseconds(300))
+    await store.receive(\.sessionsResponse.success) {
+      $0.sessions = [Session(id: "s2")]
+      $0.seenCounts = ["s2": 0]
+      // `statusSessions` keeps the unfiltered list: the widgets never follow a search.
+    }
+  }
+
+  @Test func renamingTheSelectedProfileKeepsStatusSessions() async {
+    // Same sessions under a new name: no reset (only a scope change to OTHER rows resets).
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection,
+        statusSessions: [Session(id: "w1")],
+        profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+        selectedProfileName: "work",
+        profilesSupported: true
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+      $0.hermesProfiles.rename = { @Sendable _, _, _ in }
+    }
+
+    await store.send(.renameProfileButtonTapped(name: "work", newName: "job")) {
+      $0.profiles = [Profile(name: "default", isDefault: true), Profile(name: "job")]
+      $0.selectedProfileName = "job"
+    }
+    await store.receive(\.renameProfileSucceeded)
+    #expect(store.state.statusSessions == [Session(id: "w1")])
+  }
+
   // Poll backstop: a session that started working ELSEWHERE (no open chat, so no delegate)
   // is reconciled by the next REST poll flipping `isActive` true.
   @Test func pollReconcilesSessionStartedElsewhere() async {
@@ -3337,6 +3515,7 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1", isActive: false)]
+      $0.statusSessions = [Session(id: "s1", isActive: false)]
       $0.seenCounts = ["s1": 0]
     }
     await store.receive(\.cronJobsResponse.failure) {
@@ -3351,6 +3530,8 @@ struct SessionListFeatureTests {
     await store.receive(\.sessionsResponse.success) {
       $0.isLoading = false
       $0.sessions = [Session(id: "s1", isActive: true)] // glow lit by the poll backstop
+      // …and the widgets count a desktop-started turn the same way.
+      $0.statusSessions = [Session(id: "s1", isActive: true)]
     }
 
     await store.send(.onDisappear)
@@ -3535,7 +3716,9 @@ struct SessionListFeatureTests {
       $0.now = self.now
     }
     #expect(prefs.loadSelectedProfileID() == "default")
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false
@@ -3552,6 +3735,7 @@ struct SessionListFeatureTests {
     prefs.saveSelectedProfileID("work")
     var initial = SessionListFeature.State(connection: connection, selectedProfileName: "work")
     initial.profilesSupported = true
+    initial.statusSessions = [Session(id: "w1")]
     let store = TestStore(initialState: initial) {
       SessionListFeature()
     } withDependencies: {
@@ -3563,11 +3747,15 @@ struct SessionListFeatureTests {
 
     await store.send(.profilesResponse(.failure(error))) {
       $0.profilesSupported = false
+      // The scope moved from "work" to the unscoped launch profile: different rows.
+      $0.statusSessions = nil
       $0.isLoading = true
       $0.now = self.now
     }
     #expect(prefs.loadSelectedProfileID() == persisted)
-    await store.receive(\.sessionsResponse.success)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = []
+    }
     await store.receive(\.cronJobsResponse.failure) {
       $0.isLoading = false
       $0.cronJobsSupported = false

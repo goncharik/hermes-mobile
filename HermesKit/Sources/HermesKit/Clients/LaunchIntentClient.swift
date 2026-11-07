@@ -2,13 +2,15 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
-/// Delivers App Intent launch requests (#93) to the reducer. The intents in the app target
-/// call `LaunchIntentBridge.shared.received(_:)`; `AppFeature.task` observes `incoming()` next
-/// to the push-tap observer and routes each request.
+/// Delivers launch requests to the reducer: App Intents and Home Screen quick actions (#93)
+/// call `LaunchIntentBridge.shared.received(_:)`; widget, control and Live Activity deep links
+/// (#138) arrive through `received(url:)`. `AppFeature.task` observes `incoming()` next to the
+/// push-tap observer and routes each request.
 @DependencyClient
 public struct LaunchIntentClient: Sendable {
-  /// A stream of launch requests raised by App Intents. A request that arrived before anyone
-  /// subscribed (a cold launch from an intent) is delivered to the first subscriber, once.
+  /// A stream of launch requests (App Intents, quick actions, deep links). A request that
+  /// arrived before anyone subscribed (a cold launch from an intent) is delivered to the first
+  /// subscriber, once.
   public var incoming: @Sendable () -> AsyncStream<LaunchIntent> = { AsyncStream { $0.finish() } }
 }
 
@@ -96,5 +98,16 @@ public final class LaunchIntentBridge: @unchecked Sendable {
       }
       if !delivered { pendingIntent = intent }
     }
+  }
+
+  /// Called by the app's `.onOpenURL` with a widget / control / Live Activity tap (#138): a
+  /// `hermesmobile://` URL `WidgetDeepLink` maps to an intent goes through `received(_:)`,
+  /// so it shares the cold-launch buffer and the reducer's stash; anything else is ignored
+  /// (returns `false`, nothing buffered).
+  @discardableResult
+  public func received(url: URL) -> Bool {
+    guard let intent = WidgetDeepLink.intent(from: url) else { return false }
+    received(intent)
+    return true
   }
 }

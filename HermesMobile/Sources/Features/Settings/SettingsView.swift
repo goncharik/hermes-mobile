@@ -48,6 +48,7 @@ struct SettingsView: View {
       serverSection
       appSection
       notificationsSection
+      liveActivitySection
       feedbackSection
       aboutSection
       signOutSection
@@ -221,6 +222,36 @@ struct SettingsView: View {
         Text("Get a push when Hermes needs your approval, even while the app is closed.")
       } else {
         Text("Needs the hermes-push plugin running on your agent.")
+      }
+    }
+  }
+
+  /// The Live Activity rows (#138): the second, headerless half of the Notifications group,
+  /// so they get their own footer and show whether or not push is available (the activity
+  /// is local, no plugin involved). "Show session titles" exists only while it is on.
+  private var liveActivitySection: some View {
+    Section {
+      Toggle(
+        "Live Activity",
+        isOn: Binding(
+          get: { store.liveActivityEnabled },
+          set: { store.send(.liveActivityToggled($0)) }
+        )
+      )
+      if store.liveActivityEnabled {
+        Toggle(
+          "Show session titles",
+          isOn: Binding(
+            get: { store.liveActivityShowsTitles },
+            set: { store.send(.liveActivityShowsTitlesToggled($0)) }
+          )
+        )
+      }
+    } footer: {
+      if store.liveActivitiesAllowedBySystem {
+        Text("Shows running agents on the Lock Screen and in the Dynamic Island.")
+      } else {
+        Text("Live Activities are turned off for Hermes in iOS Settings.")
       }
     }
   }

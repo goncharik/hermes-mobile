@@ -590,6 +590,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.chatSnapshot = snapshotClient
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -648,6 +649,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.chatSnapshot = .inMemory()
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -1732,6 +1734,7 @@ struct AppFeatureTests {
     let autoSpeakCleared = LockIsolated(false)
     let collapsedCleared = LockIsolated(false)
     let favoritesCleared = LockIsolated(false)
+    let liveActivityCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1757,6 +1760,7 @@ struct AppFeatureTests {
       $0.preferences.saveFavoriteModels = { @Sendable favorites in
         if favorites.isEmpty { favoritesCleared.setValue(true) }
       }
+      $0.preferences.clearLiveActivityPrefs = { @Sendable in liveActivityCleared.setValue(true) }
     }
     store.exhaustivity = .off
 
@@ -1773,6 +1777,7 @@ struct AppFeatureTests {
     #expect(autoSpeakCleared.value) // read-aloud toggle cleared on the quit logout (#74)
     #expect(collapsedCleared.value) // model picker collapse + favorites cleared too (#130)
     #expect(favoritesCleared.value)
+    #expect(liveActivityCleared.value) // Live Activity toggles reset on the quit logout (#138)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -1963,6 +1968,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       // The chat reconnect opens a never-yielding socket; the list refresh hits REST.
       $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
@@ -1991,6 +1997,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
@@ -3523,7 +3530,7 @@ struct AppFeatureTests {
   }
 
   /// Behind the re-auth modal the dictation intent still seats the chat (it resumes with the
-  /// re-auth), but without the mic: no `pendingDictation` the user couldn't see recording.
+  /// re-auth), but without the mic: no `pendingLaunchAction` the user couldn't see recording.
   @Test func dictationLaunchIntentBehindReauthSeatsChatWithoutMic() async {
     let store = TestStore(
       initialState: AppFeature.State(
@@ -3571,12 +3578,12 @@ struct AppFeatureTests {
     }
     await store.receive(\.fillLiveChat) {
       var fresh = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      fresh.pendingDictation = true
+      fresh.pendingLaunchAction = .dictation
       $0.liveChat = fresh
       $0.slotGeneration = 1
     }
     await store.receive(\.liveChat.task) {
-      $0.liveChat?.pendingDictation = false
+      $0.liveChat?.pendingLaunchAction = nil
       $0.liveChat?.recording = .requestingPermission
     }
     await store.receive(\.liveChat.recordingPermission) {
@@ -3587,9 +3594,9 @@ struct AppFeatureTests {
     await store.send(.liveChat(.teardown))
   }
 
-  /// The dictation intent seats the fresh chat carrying the one-shot `pendingDictation`; the
+  /// The dictation intent seats the fresh chat carrying the one-shot `pendingLaunchAction`; the
   /// chat consumes it at its first `.task` (no recording starts from the router itself).
-  @Test func dictationLaunchIntentSeatsChatWithPendingDictation() async {
+  @Test func dictationLaunchIntentSeatsChatWithPendingLaunchAction() async {
     let store = TestStore(
       initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
     ) {
@@ -3598,7 +3605,7 @@ struct AppFeatureTests {
 
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      chat.pendingDictation = true
+      chat.pendingLaunchAction = .dictation
       $0.liveChat = chat
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }
@@ -3606,7 +3613,7 @@ struct AppFeatureTests {
 
   /// Over a reusable seat — already started, so no first `.task` will run — the dictation
   /// intent takes the button's shortcut (draft reset, no teardown, no redial) and sends
-  /// `startDictation` straight to the slot.
+  /// `startLaunchAction(.dictation)` straight to the slot.
   @Test func dictationLaunchIntentOverReusableSeatStartsDictation() async {
     var seat = ChatFeature.State(connection: connection, profileName: nil, composerText: "half-typed")
     seat.liveSessionID = "live-new"
@@ -3626,7 +3633,7 @@ struct AppFeatureTests {
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       $0.liveChat?.composerText = ""
     }
-    await store.receive(\.liveChat.startDictation) {
+    await store.receive(\.liveChat.startLaunchAction, .dictation) {
       $0.liveChat?.recording = .requestingPermission
     }
     await store.receive(\.liveChat.recordingPermission) {
@@ -3653,7 +3660,7 @@ struct AppFeatureTests {
       $0.home = SessionListFeature.State(connection: self.connection)
       $0.pendingLaunchIntent = nil
       var chat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
-      chat.pendingDictation = true
+      chat.pendingLaunchAction = .dictation
       $0.liveChat = chat
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
     }
@@ -4372,6 +4379,8 @@ struct AppFeatureTests {
     preferences.saveAutoSpeakReplies(true)
     preferences.saveCollapsedModelProviders(["openrouter"])
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
+    preferences.saveLiveActivityEnabled(false)
+    preferences.saveLiveActivityShowsTitles(false)
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -4409,6 +4418,8 @@ struct AppFeatureTests {
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off (#74)
     #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
     #expect(preferences.loadFavoriteModels() == [])
+    #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
+    #expect(preferences.loadLiveActivityShowsTitles())
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)
@@ -6201,6 +6212,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6257,6 +6269,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6310,6 +6323,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6351,6 +6365,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.uuid = .incrementing
       $0.preferences = .inMemory()
@@ -6396,6 +6411,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.push = PushClient.inMemory().client
@@ -6426,6 +6442,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6473,6 +6490,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6514,6 +6532,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6651,6 +6670,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -6662,7 +6682,9 @@ struct AppFeatureTests {
       $0.home?.now = Date(timeIntervalSince1970: 0)
       $0.home?.isLoading = true
     }
-    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.statusSessions = []
+    }
     await store.receive(\.home.cronJobsResponse) {
       $0.home?.isLoading = false
       $0.home?.cronJobsSupported = false
@@ -6688,6 +6710,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -6699,7 +6722,9 @@ struct AppFeatureTests {
       $0.home?.now = Date(timeIntervalSince1970: 0)
       $0.home?.isLoading = true
     }
-    await store.receive(\.home.sessionsResponse)
+    await store.receive(\.home.sessionsResponse) {
+      $0.home?.statusSessions = []
+    }
     await store.receive(\.home.cronJobsResponse) {
       $0.home?.isLoading = false
       $0.home?.cronJobsSupported = false
@@ -6730,6 +6755,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.uuid = .incrementing
       $0.preferences = .inMemory()
@@ -6775,6 +6801,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()

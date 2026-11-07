@@ -729,6 +729,7 @@ struct SelfHealTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.chatSnapshot = .inMemory()
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }

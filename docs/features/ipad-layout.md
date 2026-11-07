@@ -92,9 +92,11 @@ Regular renders the detail column at all times, so an empty slot would be a blan
 
 - **Home appearance** — `landOnHome` (the cold-launch replay funnel, shared by the launch probe,
   the retry screen, and manual login). Replay decides first: a stashed App Intent's new chat
-  (#93, `docs/features/app-intents.md`) or a stashed tap's `openSession` fills the slot itself,
-  so a replay never has to tear down a throwaway seat; only the no-replay and
-  dropped-foreign-origin branches call `fillNewChatIfDetailEmpty` (nil slot + `detailRefill`).
+  (#93, `docs/features/app-intents.md`), a stashed widget `.openSession`
+  (`docs/features/widgets.md`) or a stashed tap's `openSession` fills the slot itself, so a
+  replay never has to tear down a throwaway seat; only the no-replay branch and the
+  dropped-foreign-origin branches (a tap or a widget `.openSession`) call
+  `fillNewChatIfDetailEmpty` (nil slot + `detailRefill`).
 - **`layoutChanged(.regular)`** with a nil slot seats one; narrowing never fills.
 - **Archive / delete of the on-screen session** — `teardownSlot(thenFill: detailRefill(state))`.
   Delete keeps its `flushSnapshot: false` + snapshot wipe (`docs/features/session-list.md`).

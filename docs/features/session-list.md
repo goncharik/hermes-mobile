@@ -285,6 +285,49 @@ delete restarts (not bare-cancels) a listing fetch still in flight — same stal
 resurrection window as the main list, and the sheet has no poll to self-heal a stranded
 spinner.
 
+## Archive & Delete from the open chat's ⋯ menu
+
+The chat screen's ⋯ menu (`ChatMenuButton`) offers Archive and Delete next to Rename / Copy ID,
+over the SAME REST calls as the list (`rest.archive` / `rest.deleteSession`) and the same
+`ConfirmationDialogState` copy, presented with `.bottomActionSheet`. Differences from the list,
+all deliberate:
+
+- **Scoped to the chat's own `profileName`**, never the list's `scopedProfileName`: the slot
+  survives a sidebar profile switch, so the list's scope could hit another profile's `state.db`.
+- **Not optimistic, and run by the parent**: the chat only confirms and hands the call to
+  `AppFeature` (`ChatFeature.Delegate.removeSession`, carrying the chat's connection and
+  profile). A slot effect would die with the slot (`.ifLet`) when the user goes back or picks
+  another chat before the reply — the archived sheet's reason for running its DELETE in the list.
+  `isRemovingSession` disables both items while the call is in flight.
+- On success (`sessionRemovalFinished`) `AppFeature` applies the list contract through the
+  SAME helpers the list's own archive/delete use (`closeRemovedSession`,
+  `clearDeletedSessionBadge`), so the two paths can't drift. A slot that STILL holds the
+  session is torn down FIRST, synchronously, before any awaited effect (the badge update awaits
+  the notification center — a chat opened in that gap must never be the one torn down):
+  archive → `teardownSlot(thenFill: detailRefill)`; delete → `teardownSlot(flushSnapshot:
+  false)`, then the snapshot wipe, and the approval-badge entry drops at once (already
+  confirmed). **In compact the on-screen marker is popped with the slot** — otherwise the stack
+  keeps a `ChatScreen` destination with no chat behind it (blank screen under a Back button).
+  The list drops the row and its pin/seen entries via `sessionRemovedElsewhere`, which persists
+  them BEFORE restarting an in-flight fetch (the restart's `reloadPrefs` would otherwise read
+  the stale pins/seen back).
+- A failure goes back to the chat that asked while the slot still holds it (banner "Couldn’t
+  archive/delete the session.", items re-enabled); with the chat gone it lands on the list's
+  `loadError` instead. Routing keys on the chat's in-flight `removingSessionID`, not its
+  `sessionKey`, so a #17 heal that recreated the session mid-call can't strand the items
+  disabled.
+- **The removal effect dies with the identity**: every logout / different-user re-auth cancels
+  it (`CancelID.sessionRemovals`), and a reply whose `removal.connection` isn't the current
+  list's server is dropped — no stale banner, no 404/405 verdict on the wrong server.
+- **Delete follows the list's `deleteSupported`**, mirrored both ways: `AppFeature` seeds it on
+  every seat and copies list changes onto the slot; a 404/405 from the chat's delete flips the
+  list's flag silently (and so the slot's). Archive has no capability flag (neither does the
+  list's).
+- **Hidden until the session has a server row** (`canArchiveOrDelete`): a new chat before its
+  first prompt (`awaitsFirstPersist`) and an unpersisted branch offer neither action.
+- Known limitation: a chat opened from the archived sheet still offers Archive (the chat
+  doesn't know the row's archived state); left as is.
+
 ## Swipe default, row polish & confirmation presentation (#73)
 
 **The default swipe action is a device-local pref**: `SessionSwipeAction` (`archive` |

@@ -116,6 +116,8 @@ struct ChatView: View {
       Button("Save") { store.send(.confirmRename) }
       Button("Cancel", role: .cancel) { store.send(.cancelRename) }
     }
+    // The ⋯ menu's Archive/Delete confirmation — the app's destructive-actions idiom.
+    .bottomActionSheet($store.scope(state: \.confirmationDialog, action: \.confirmationDialog))
     .task { store.send(.task) }
     // NOTE: no `.onDisappear` here — disappearance is observed by the DESTINATION in
     // `AppView` (`AppFeature.chatViewDisappeared`), which guards a nil slot and forwards
