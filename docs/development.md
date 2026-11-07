@@ -60,10 +60,31 @@ make snapshot-record  # re-record SwiftUI snapshot baselines
   calendar via `SessionListFeature.State(calendar:)` (UTC, `en_US`, Monday-first), or the
   date-section headers would follow the simulator's time zone and week start;
   `deviceImage(height:)` renders a list taller than one screen. The suite passes clean
-  (338 of 338) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
+  (364 of 364) on iOS 26 / iPhone 17 Pro, so any failure is a real signal; a PR that
   changes a view re-records that view's baselines itself. If a future runtime drifts
   again, judge by render size first (a size mismatch is a real regression; equal size with
   a small pixel residual is drift), and land the re-record as its own commit.
+- **Widget snapshots** compile `HermesWidgets/Sources/Views/**` straight into
+  `HermesMobileTests` (an app extension can't be imported) and bundle
+  `HermesWidgets/Resources` for the glyph. `widgetRenderingMode` is read-only, so the tinted
+  and clear Home Screen modes are an on-device check (`docs/features/widgets.md`).
+
+## Targets and the App Group
+
+`Project.swift` defines three targets: the app `HermesMobile` (`me.honcharenko.HermesMobile`),
+the widget extension `HermesWidgets` (`me.honcharenko.HermesMobile.Widgets`, embedded in the
+app; widgets, Control Center controls and the Live Activity) and `HermesMobileTests`. The
+extension links only the Foundation-only `HermesWidgetKit` product of the HermesKit package
+(`APPLICATION_EXTENSION_API_ONLY = YES`), never HermesKit itself.
+
+- **Both** app and extension carry the App Group `group.me.honcharenko.HermesMobile`
+  (`appGroupIdentifier` in `Project.swift`, `AppGroup.identifier` in HermesWidgetKit; keep
+  them equal). The app writes the sessions-widget mirror into its container; the extension
+  only reads it.
+- The app adds `NSSupportsLiveActivities = true` and the `hermesmobile` URL scheme; the
+  `aps-environment` entitlement stays app-only.
+- Both targets share the `marketingVersion` / `currentProjectVersion` constants (an embedded
+  extension must match the app's version and build), so bump `currentProjectVersion` once.
 
 ## Verifying the protocol
 
@@ -101,7 +122,11 @@ creates the development certificate and a matching provisioning profile for your
 the fly — nothing to set up by hand. The bundle id (`me.honcharenko.HermesMobile`) is
 fine to build under any team for local/dev runs; only App Store/TestFlight distribution
 needs the registered id. If you hit a bundle-id conflict, change `bundleId` in
-`Project.swift` to something unique to you and re-run `make generate`.
+`Project.swift` to something unique to you and re-run `make generate`. Change the
+extension's `bundleId` with it (it must stay prefixed by the app's, e.g.
+`<yours>.Widgets`), and if the App Group id is taken too, change `appGroupIdentifier` in
+`Project.swift` AND `AppGroup.identifier` in `HermesKit/Sources/HermesWidgetKit/AppGroup.swift`
+together. Automatic signing registers the extension id and the App Group for your team.
 
 The default server URL can be baked in at generate time (otherwise enter it in the app's
 onboarding screen):
@@ -130,12 +155,23 @@ openssl pkcs12 -export -inkey dist.key -in dist.pem -out dist.p12 -passout pass:
   -legacy -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1   # macOS-importable
 security import dist.p12 -k ~/Library/Keychains/login.keychain-db -P <pw> -T /usr/bin/codesign
 
-# 3. new App Store provisioning profile referencing that cert, installed locally
+# 3. new App Store provisioning profiles referencing that cert, installed locally:
+#    one per bundle id (the app AND the widget extension)
 asc --profile hermes profiles create --name "HermesMobile AppStore" \
-  --profile-type IOS_APP_STORE --bundle <bundle-id asc id> --certificate <cert id>
+  --profile-type IOS_APP_STORE --bundle <app bundle-id asc id> --certificate <cert id>
+asc --profile hermes profiles create --name "HermesMobile Widgets AppStore" \
+  --profile-type IOS_APP_STORE --bundle <widgets bundle-id asc id> --certificate <cert id>
 asc --profile hermes profiles download --id <profile id> \
   --output "$HOME/Library/MobileDevice/Provisioning Profiles/<UUID>.mobileprovision"
+#    …and the same download for the second profile
 ```
+
+**Both bundle ids need the App Group.** Register
+`me.honcharenko.HermesMobile.Widgets` next to the app's id, register the App Group
+`group.me.honcharenko.HermesMobile`, and enable the App Groups capability with that group
+on BOTH ids (Developer portal → Identifiers) before creating the profiles. A profile made
+before the capability was enabled lacks the entitlement and must be regenerated: the export
+fails when a profile doesn't cover an entitlement the target signs with.
 
 The `-legacy …` PBE flags on the `.p12` export matter: OpenSSL 3's default MAC algorithm
 fails macOS `security import` with "MAC verification failed". Apple Distribution certs
@@ -143,9 +179,9 @@ are capped at 2 per account.
 
 ## TestFlight distribution
 
-Distribution runs through the `asc` CLI (the `hermes` profile). Bump
-`CURRENT_PROJECT_VERSION` in `Project.swift`, then archive → export with **manual**
-signing → upload:
+Distribution runs through the `asc` CLI (the `hermes` profile). Bump the
+`currentProjectVersion` constant in `Project.swift` (it sets `CURRENT_PROJECT_VERSION` on
+the app and the extension alike), then archive → export with **manual** signing → upload:
 
 ```sh
 # 1. archive (Release, generic iOS) with automatic signing
@@ -165,8 +201,25 @@ xcodebuild -exportArchive -archivePath build/testflight/HermesMobile.xcarchive \
 asc --profile hermes builds upload --app <app id> --ipa build/testflight/export/HermesMobile.ipa
 ```
 
-The provisioning profile must be installed locally first
-(`asc --profile hermes profiles download --id <profile id>`). `build/` is gitignored.
+Both App Store provisioning profiles (app and widget extension) must be installed locally
+first (`asc --profile hermes profiles download --id <profile id>`, once per profile).
+`build/` is gitignored. The archive embeds `HermesWidgets.appex`, so the manual-signing
+export needs a profile for EACH bundle id; `ExportOptions.plist` lists both:
+
+```xml
+<key>method</key><string>app-store-connect</string>
+<key>teamID</key><string><team id></string>
+<key>signingStyle</key><string>manual</string>
+<key>signingCertificate</key><string>Apple Distribution</string>
+<key>provisioningProfiles</key>
+<dict>
+  <key>me.honcharenko.HermesMobile</key><string>HermesMobile AppStore</string>
+  <key>me.honcharenko.HermesMobile.Widgets</key><string>HermesMobile Widgets AppStore</string>
+</dict>
+```
+
+Without the extension entry the manual export has no profile to sign the `.appex` with
+and fails, however valid the app's own profile is.
 
 ### App icon per build (TestFlight vs App Store)
 
@@ -179,7 +232,7 @@ build, archive the Release config but override the icon on the command line — 
 to the archive command above:
 
 ```sh
-  ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev   # blue icon for all TestFlight builds
+  HERMES_APP_ICON=AppIconDev   # blue icon for all TestFlight builds (app target only)
 ```
 
 (A custom Xcode configuration would break Tuist's SwiftPM integration, so the icon is

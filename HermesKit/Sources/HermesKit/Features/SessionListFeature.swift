@@ -28,6 +28,14 @@ public struct SessionListFeature {
   public struct State: Equatable {
     public var connection: ServerConnection
     public var sessions: IdentifiedArrayOf<Session>
+    /// The last UNFILTERED list response — the source of the widgets / Live Activity
+    /// projection (`AgentStatusProjection`), which must not follow a search's result set
+    /// the way `sessions` does. `nil` until the first successful unfiltered fetch of the
+    /// process: that is the "a cached guess never starts anything" gate. Replaced on each
+    /// unfiltered success (search responses never touch it), patched by `setSessionRunning`
+    /// like `sessions`, and reset to `nil` when the list's profile scope changes (the
+    /// refetch repopulates it).
+    public var statusSessions: IdentifiedArrayOf<Session>?
     public var searchQuery: String
     public var isLoading: Bool
     public var loadError: String?
@@ -157,6 +165,7 @@ public struct SessionListFeature {
     public init(
       connection: ServerConnection,
       sessions: IdentifiedArrayOf<Session> = [],
+      statusSessions: IdentifiedArrayOf<Session>? = nil,
       searchQuery: String = "",
       isLoading: Bool = false,
       loadError: String? = nil,
@@ -190,6 +199,7 @@ public struct SessionListFeature {
     ) {
       self.connection = connection
       self.sessions = sessions
+      self.statusSessions = statusSessions
       self.searchQuery = searchQuery
       self.isLoading = isLoading
       self.loadError = loadError
@@ -625,6 +635,11 @@ public struct SessionListFeature {
       /// still pending on the server and nothing short of a fresh push would repopulate
       /// the entry.
       case sessionDeleteSucceeded(id: Session.ID)
+      /// The Settings "Live Activity" toggle changed (Settings persisted it) — forwarded so
+      /// `AppFeature`, which owns the activity, ends or starts it (#138).
+      case liveActivityToggled(Bool)
+      /// The Settings "Show session titles" toggle changed (Settings persisted it).
+      case liveActivityShowsTitlesToggled(Bool)
     }
   }
 
@@ -727,9 +742,15 @@ public struct SessionListFeature {
       case let .setSessionRunning(id, running):
         // Patch the in-memory row's working flag (drives the glow) the instant the open chat
         // tells us this session's authoritative running state changed. No-op if the session
-        // isn't in the current list (e.g. archived/filtered) — the poll handles those.
-        guard state.sessions[id: id]?.isActive != running else { return .none }
-        state.sessions[id: id]?.isActive = running
+        // isn't in the current list (e.g. archived/filtered) — the poll handles those. The
+        // unfiltered `statusSessions` gets the same patch on its own: a search can hide the
+        // row from `sessions` while the widgets still show it.
+        if state.sessions[id: id]?.isActive != running {
+          state.sessions[id: id]?.isActive = running
+        }
+        if state.statusSessions?[id: id]?.isActive != running {
+          state.statusSessions?[id: id]?.isActive = running
+        }
         return .none
 
       case let .cronJobsResponse(.success(jobs)):
@@ -917,6 +938,12 @@ public struct SessionListFeature {
         // (#78). `IdentifiedArray(uniqueElements:)` preconditions on unique ids and
         // trapped in the field, so dedupe first — keep the FIRST occurrence (server order).
         state.sessions = IdentifiedArray(filtered, uniquingIDsWith: { first, _ in first })
+        // Only an unfiltered response feeds the widgets' source. The list and search fetches
+        // share `CancelID.fetch` (cancel-in-flight), so the response landing now is the one
+        // the current query started: searching ⇔ a search response.
+        if !state.isSearching {
+          state.statusSessions = state.sessions
+        }
         state.isLoading = state.awaitsCronJobs
         let visible = state.sessions
         // Seed last-seen counts for newly-discovered sessions so they don't all show as
@@ -1240,6 +1267,8 @@ public struct SessionListFeature {
           pushAvailable: state.pushAvailable,
           defaultSwipeAction: state.defaultSwipeAction,
           deleteSupported: state.deleteSupported,
+          liveActivityEnabled: preferences.loadLiveActivityEnabled(),
+          liveActivityShowsTitles: preferences.loadLiveActivityShowsTitles(),
           profileName: state.scopedProfileName
         )
         return .none
@@ -1504,6 +1533,12 @@ public struct SessionListFeature {
         state.defaultSwipeAction = action
         return .none
 
+      case let .settings(.presented(.delegate(.liveActivityToggled(enabled)))):
+        return .send(.delegate(.liveActivityToggled(enabled)))
+
+      case let .settings(.presented(.delegate(.liveActivityShowsTitlesToggled(shows)))):
+        return .send(.delegate(.liveActivityShowsTitlesToggled(shows)))
+
       case .settings(.presented(.delegate(.installPushPlugin))):
         // The Settings push guide's "Ask agent" → dismiss Settings (Settings already requested
         // its own dismissal) and open a new chat with the install prompt pre-filled.
@@ -1527,6 +1562,22 @@ public struct SessionListFeature {
       AddProfileFeature()
     }
     .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
+    // A profile switch (a selection, a deleted active profile re-homing to default, the probe
+    // re-homing or withdrawing the scope) makes the old unfiltered rows another profile's:
+    // drop them so the widgets hold ("unknown") until the scoped refetch lands, instead of
+    // projecting the previous profile's sessions. A rename (and its rollback) keeps the same
+    // sessions under a new name, so it keeps them.
+    .onChange(of: \.scopedProfileName) { _, _ in
+      Reduce { state, action in
+        switch action {
+        case .renameProfileButtonTapped, .renameProfileFailed:
+          break
+        default:
+          state.statusSessions = nil
+        }
+        return .none
+      }
+    }
   }
 
   /// Refresh "now" + the section calendar, clear errors, and reload the non-secret persisted

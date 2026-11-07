@@ -2355,39 +2355,56 @@ struct ChatReductionTests {
     }
   }
 
-  // MARK: Dictation App Intent one-shot (#93)
+  // MARK: Launch action one-shot (#93 dictation, #138 camera / photos)
 
-  /// A slot carrying the dictation intent's `pendingDictation`, over a socket that never
-  /// yields (the connect effect is cancelled by `.teardown` at the end of each test).
-  /// `dialed` records that the first start still connected alongside the dictation.
-  private func dictationStore(
+  /// A slot carrying an intent's `pendingLaunchAction`, over a socket that never yields (the
+  /// connect effect is cancelled by `.teardown` at the end of each test). `dialed` records
+  /// that the first start still connected alongside the action; `opened` records every picker
+  /// the reducer opened (each returns one image, so a run is visible as `attachmentAdded`).
+  private func launchActionStore(
+    _ action: LaunchAction = .dictation,
     recording: ChatFeature.State.RecordingState = .idle,
     permission: Bool = true
-  ) -> (store: TestStore<ChatFeature.State, ChatFeature.Action>, dialed: LockIsolated<Bool>) {
+  ) -> (
+    store: TestStore<ChatFeature.State, ChatFeature.Action>,
+    dialed: LockIsolated<Bool>,
+    opened: LockIsolated<[String]>
+  ) {
     var initial = ChatFeature.State(connection: conn)
-    initial.pendingDictation = true
+    initial.pendingLaunchAction = action
     initial.recording = recording
     let dialed = LockIsolated(false)
+    let opened = LockIsolated<[String]>([])
+    let picked = PickedItem(data: Data([1]), filename: "a.jpg", mimeType: "image/jpeg", kind: .image)
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
       $0.continuousClock = TestClock() // unadvanced → recording timer never ticks here
+      $0.uuid = .incrementing
       $0.audioRecorder = .testValue
       $0.audioRecorder.requestPermission = { @Sendable in permission }
+      $0.attachmentPicker.capturePhoto = { @Sendable in
+        opened.withValue { $0.append("camera") }
+        return PickedBatch(items: [picked])
+      }
+      $0.attachmentPicker.pickPhotos = { @Sendable in
+        opened.withValue { $0.append("photos") }
+        return PickedBatch(items: [picked])
+      }
       $0.hermesGateway.connect = { @Sendable _, _ in
         dialed.setValue(true)
         return AsyncStream { _ in }
       }
     }
-    return (store, dialed)
+    return (store, dialed, opened)
   }
 
   @Test func firstTaskWithPendingDictationStartsRecording() async {
-    let (store, dialed) = dictationStore()
+    let (store, dialed, opened) = launchActionStore()
 
     // Consumed at first start, alongside the connect — not on a later `.ready`.
     await store.send(.task) {
       $0.isOnScreen = true
       $0.hasStarted = true
-      $0.pendingDictation = false
+      $0.pendingLaunchAction = nil
       $0.recording = .requestingPermission
     }
     await store.receive(\.recordingPermission)
@@ -2404,17 +2421,18 @@ struct ChatReductionTests {
       $0.waveformLevels = []
     }
     await store.send(.task) { $0.isOnScreen = true }
+    #expect(opened.value.isEmpty, "dictation opens no picker")
 
     await store.send(.teardown)
   }
 
   @Test func pendingDictationPermissionDeniedShowsMicBanner() async {
-    let (store, dialed) = dictationStore(permission: false)
+    let (store, dialed, _) = launchActionStore(permission: false)
 
     await store.send(.task) {
       $0.isOnScreen = true
       $0.hasStarted = true
-      $0.pendingDictation = false
+      $0.pendingLaunchAction = nil
       $0.recording = .requestingPermission
     }
     await store.receive(\.recordingPermission) {
@@ -2427,19 +2445,101 @@ struct ChatReductionTests {
   }
 
   @Test func pendingDictationNeverTogglesAnActiveRecording() async {
-    let (store, _) = dictationStore(recording: .recording)
+    let (store, _, _) = launchActionStore(recording: .recording)
 
-    // The flag is cleared, but recording is NOT toggled off (no transcription hand-off).
+    // The action is cleared, but recording is NOT toggled off (no transcription hand-off).
     await store.send(.task) {
       $0.isOnScreen = true
       $0.hasStarted = true
-      $0.pendingDictation = false
+      $0.pendingLaunchAction = nil
     }
 
     await store.send(.teardown) { $0.recording = .idle }
   }
 
-  @Test func startDictationOnStartedSlotStartsOnlyFromIdle() async {
+  /// The camera / photos one-shot (#138) opens ITS picker exactly once at the first start,
+  /// alongside the connect, and stages what it returns; a re-appearance never re-fires it.
+  @Test(arguments: [LaunchAction.camera, .photos])
+  func firstTaskWithPendingPickerActionOpensThePickerOnce(action: LaunchAction) async {
+    let (store, dialed, opened) = launchActionStore(action)
+
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingLaunchAction = nil
+    }
+    await store.receive(\.attachmentAdded) {
+      $0.attachments = [
+        PickedItem(data: Data([1]), filename: "a.jpg", mimeType: "image/jpeg", kind: .image)
+          .attachment(id: self.uuid(0))
+      ]
+    }
+    #expect(dialed.value, "the picker never replaces the first-start connect")
+    #expect(opened.value == [action == .camera ? "camera" : "photos"])
+    #expect(store.state.recording == .idle, "a picker action never starts the mic")
+
+    // A re-appearance (the `hasStarted` guard) never re-opens the picker.
+    await store.send(.viewDisappeared) { $0.isOnScreen = false }
+    await store.send(.task) { $0.isOnScreen = true }
+    #expect(opened.value.count == 1)
+
+    await store.send(.teardown)
+  }
+
+  /// A cancelled picker is the silent empty batch: nothing staged, no banner.
+  @Test(arguments: [LaunchAction.camera, .photos])
+  func pendingPickerActionCancelledStagesNothing(action: LaunchAction) async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.pendingLaunchAction = action
+    let opened = LockIsolated<[String]>([])
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.attachmentPicker.capturePhoto = { @Sendable in // a cancel
+        opened.withValue { $0.append("camera") }
+        return PickedBatch()
+      }
+      $0.attachmentPicker.pickPhotos = { @Sendable in
+        opened.withValue { $0.append("photos") }
+        return PickedBatch()
+      }
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
+    }
+
+    await store.send(.task) {
+      $0.isOnScreen = true
+      $0.hasStarted = true
+      $0.pendingLaunchAction = nil
+    }
+    // The picker really ran (and was cancelled) before the store settles: nothing staged.
+    await waitUntil { !opened.value.isEmpty }
+    #expect(opened.value == [action == .camera ? "camera" : "photos"])
+    await store.send(.teardown)
+  }
+
+  /// The reused-seat path: an already-started slot runs the picker action at once.
+  @Test(arguments: [LaunchAction.camera, .photos])
+  func startLaunchActionOnStartedSlotOpensThePicker(action: LaunchAction) async {
+    var initial = ChatFeature.State(connection: conn)
+    initial.hasStarted = true
+    let opened = LockIsolated<[String]>([])
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.attachmentPicker.capturePhoto = { @Sendable in
+        opened.withValue { $0.append("camera") }
+        return PickedBatch()
+      }
+      $0.attachmentPicker.pickPhotos = { @Sendable in
+        opened.withValue { $0.append("photos") }
+        return PickedBatch()
+      }
+    }
+
+    await store.send(.startLaunchAction(action))
+    await store.finish()
+    #expect(opened.value == [action == .camera ? "camera" : "photos"])
+  }
+
+  @Test func startLaunchActionDictationOnStartedSlotStartsOnlyFromIdle() async {
     var initial = ChatFeature.State(connection: conn)
     initial.hasStarted = true
     let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
@@ -2448,7 +2548,7 @@ struct ChatReductionTests {
       $0.audioRecorder.requestPermission = { @Sendable in false }
     }
 
-    await store.send(.startDictation) {
+    await store.send(.startLaunchAction(.dictation)) {
       $0.recording = .requestingPermission
     }
     await store.receive(\.recordingPermission) {
@@ -2459,7 +2559,7 @@ struct ChatReductionTests {
     // A recording the user already has going is never toggled.
     initial.recording = .recording
     let busy = TestStore(initialState: initial) { ChatFeature() }
-    await busy.send(.startDictation)
+    await busy.send(.startLaunchAction(.dictation))
   }
 
   // MARK: Attachments (#8)

@@ -13,6 +13,17 @@ let debugServerURL = Environment.serverUrl.getString(default: "")
 // builds pass CODE_SIGNING_ALLOWED=NO).
 let developmentTeam = Environment.developmentTeam.getString(default: "")
 
+// The app and its widget extension MUST ship the same version and build number (App Store
+// validation rejects an embedded extension whose CFBundleVersion differs) — bump the build
+// number here, once, for both targets.
+let marketingVersion: SettingValue = "1.0"
+let currentProjectVersion: SettingValue = "86"
+
+// Shared by the app and the widget extension (#138): the app writes the widget mirror into
+// this container, the extension only reads it. Must match `AppGroup.identifier` in
+// HermesWidgetKit.
+let appGroupIdentifier = "group.me.honcharenko.HermesMobile"
+
 let project = Project(
   name: "HermesMobile",
   packages: [
@@ -70,6 +81,17 @@ let project = Project(
         "UIBackgroundModes": ["remote-notification"],
         // No static `UIApplicationShortcutItems`: the Home Screen quick actions (#93) are
         // dynamic, set by `QuickActionsClient` only while signed in.
+        // Widget / Control Center / Live Activity taps (#138) open `hermesmobile://` URLs,
+        // mapped by `WidgetDeepLink` (the scheme constant lives there).
+        "CFBundleURLTypes": [
+          [
+            "CFBundleURLName": "me.honcharenko.HermesMobile.widgets",
+            "CFBundleURLSchemes": ["hermesmobile"],
+          ],
+        ],
+        // The aggregate running-agents Live Activity (#138), started and updated locally by
+        // `AppFeature` (no ActivityKit pushes).
+        "NSSupportsLiveActivities": true,
       ]),
       sources: ["HermesMobile/Sources/**"],
       resources: ["HermesMobile/Resources/**"],
@@ -81,25 +103,32 @@ let project = Project(
       // "development" would otherwise ship a sandbox entitlement on Release builds while
       // the app reports production — APNs would reject. The compile-time `apns_env`
       // (DEBUG → "sandbox", else "production") mirrors this.
+      // The App Group is shared with the widget extension (the widget mirror).
       entitlements: .dictionary([
         "aps-environment": "$(APS_ENVIRONMENT)",
+        "com.apple.security.application-groups": [.string(appGroupIdentifier)],
       ]),
       dependencies: [
         .package(product: "HermesKit"),
+        // Embeds the widget extension (widgets, Control Center controls, Live Activity).
+        .target(name: "HermesWidgets"),
       ],
       settings: .settings(
         base: [
           "DEVELOPMENT_TEAM": .string(developmentTeam),
           "CODE_SIGN_STYLE": "Automatic",
-          "MARKETING_VERSION": "1.0",
-          "CURRENT_PROJECT_VERSION": "84",
+          "MARKETING_VERSION": marketingVersion,
+          "CURRENT_PROJECT_VERSION": currentProjectVersion,
           // App Store release default — the orange "AppIcon". ONLY App Store submission
           // builds keep it. Debug builds override to the blue "AppIconDev" below, and ALL
           // TestFlight archives (internal AND external — they share one build) override it
-          // on the xcodebuild command line (`ASSETCATALOG_COMPILER_APPICON_NAME=AppIconDev`)
-          // — a custom configuration breaks Tuist's SwiftPM integration, so we switch the
-          // icon via a build setting.
-          "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+          // on the xcodebuild command line (`HERMES_APP_ICON=AppIconDev`) — a custom
+          // configuration breaks Tuist's SwiftPM integration, so we switch the icon via a
+          // build setting. A custom one, not `ASSETCATALOG_COMPILER_APPICON_NAME` itself: a
+          // command-line setting reaches EVERY target, and the widget extension's catalog has
+          // no such icon set (actool fails the archive).
+          "HERMES_APP_ICON": "AppIcon",
+          "ASSETCATALOG_COMPILER_APPICON_NAME": "$(HERMES_APP_ICON)",
           // The Settings icon picker (#135). EVERY set is an alternate — the primary
           // included on purpose: the primary differs per build (gold for App Store, blueprint
           // for Debug/TestFlight), so listing every set lets any build reach any icon.
@@ -112,7 +141,7 @@ let project = Project(
           // Local dev → blue icon, so it's visually distinct from the production app.
           // `APS_ENVIRONMENT=development` → sandbox APNs (matches DEBUG `apns_env`).
           .debug(name: "Debug", settings: [
-            "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIconDev",
+            "HERMES_APP_ICON": "AppIconDev",
             "APS_ENVIRONMENT": "development",
           ]),
           // App Store release → orange (base). Every TestFlight archive reuses this config
@@ -124,13 +153,52 @@ let project = Project(
         ]
       )
     ),
+    // Widgets, Control Center controls and the Live Activity (#138). Thin-client rule: it
+    // links ONLY the Foundation-only `HermesWidgetKit` (no TCA, no GRDB, no
+    // `UIApplication.shared`), never touches the network or the Keychain, and reads the App
+    // Group mirror the app writes. Every tap is a `hermesmobile://` URL (`WidgetDeepLink`).
+    .target(
+      name: "HermesWidgets",
+      destinations: [.iPhone, .iPad],
+      product: .appExtension,
+      bundleId: "me.honcharenko.HermesMobile.Widgets",
+      deploymentTargets: .iOS("18.0"),
+      infoPlist: .extendingDefault(with: [
+        "CFBundleShortVersionString": "$(MARKETING_VERSION)",
+        "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+        "CFBundleDisplayName": "Hermes",
+        "NSExtension": [
+          "NSExtensionPointIdentifier": "com.apple.widgetkit-extension",
+        ],
+      ]),
+      sources: ["HermesWidgets/Sources/**"],
+      resources: ["HermesWidgets/Resources/**"],
+      entitlements: .dictionary([
+        "com.apple.security.application-groups": [.string(appGroupIdentifier)],
+      ]),
+      dependencies: [
+        .package(product: "HermesWidgetKit"),
+      ],
+      settings: .settings(
+        base: [
+          "DEVELOPMENT_TEAM": .string(developmentTeam),
+          "CODE_SIGN_STYLE": "Automatic",
+          "MARKETING_VERSION": marketingVersion,
+          "CURRENT_PROJECT_VERSION": currentProjectVersion,
+          "APPLICATION_EXTENSION_API_ONLY": "YES",
+        ]
+      )
+    ),
     .target(
       name: "HermesMobileTests",
       destinations: [.iPhone, .iPad],
       product: .unitTests,
       bundleId: "me.honcharenko.HermesMobileTests",
       deploymentTargets: .iOS("18.0"),
-      sources: ["HermesMobileTests/**"],
+      // The widget extension can't be imported, so its plain views are compiled in here
+      // directly (with its asset catalog, for the glyph) to be snapshot-tested.
+      sources: ["HermesMobileTests/**", "HermesWidgets/Sources/Views/**"],
+      resources: ["HermesWidgets/Resources/**"],
       dependencies: [
         .target(name: "HermesMobile"),
         .package(product: "SnapshotTesting"),

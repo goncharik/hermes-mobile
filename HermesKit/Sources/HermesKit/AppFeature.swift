@@ -83,12 +83,43 @@ public struct AppFeature {
     /// An App Intent launch request (#93) that arrived before the session list existed — the
     /// cold-launch Action button / Siri / Shortcuts case, where `home` only appears once the
     /// auto-connect probe (or a manual login) finishes. Same shape as `pendingPushTap`: single
-    /// stash, last-wins, replayed in `landOnHome` (dictation only on the launch auto-connect
-    /// landing), process-lifetime only, cleared on every logout path. Last-wins ACROSS both
+    /// stash, last-wins, replayed in `landOnHome` (the launch action — dictation / camera /
+    /// photos — only on the launch auto-connect landing), process-lifetime only, cleared on every logout path. Last-wins ACROSS both
     /// stashes too: stashing an intent clears the tap stash and vice versa, so the landing
-    /// replays only the most recent request. No server-origin guard: a new chat belongs to no
-    /// session, so it is valid on whatever server the user signs into.
+    /// replays only the most recent request. A new chat belongs to no session, so it is valid
+    /// on whatever server the user signs into; an `.openSession` (a widget / Live Activity tap)
+    /// names a session, so it carries `pendingLaunchIntentServerURL`.
     var pendingLaunchIntent: LaunchIntent?
+    /// The server a stashed `.openSession` intent belongs to: the persisted server URL at stash
+    /// time (the server whose sessions the widget mirror showed). Same guard as
+    /// `pendingPushTapServerURL` — a login to a DIFFERENT server drops the open instead of
+    /// resuming a foreign session id there. `nil` for the new-chat intents (no session to
+    /// guard) and when no URL was stored (the replay then proceeds unverified).
+    var pendingLaunchIntentServerURL: URL?
+    /// The "Show session titles" pref for the Live Activity: off omits the headline title
+    /// from the activity content (the Home Screen widgets keep it). Part of `agentStatus`,
+    /// so flipping it updates the activity through the one edge.
+    public var liveActivityShowsTitles = true
+    /// The "Live Activity" pref (#138): off ends the activity and starts none. Seeded from
+    /// `PreferencesClient` at every landing; the Settings toggle persists it and reports the
+    /// change (`liveActivityToggled`).
+    public var liveActivityEnabled = true
+    /// The aggregate Live Activity this process started, or `nil` when none is up. Its `id` is
+    /// `nil` while the start request is in flight (`liveActivityStarted` adopts it), so a second
+    /// change can never start a second activity.
+    var liveActivity: LiveActivitySeat?
+    /// How many start requests this process sent: the next seat's `request` token.
+    var liveActivityRequests = 0
+    /// The running Live Activity's ActivityKit id (`nil` while none is up or its start is
+    /// still in flight).
+    var liveActivityID: String? { liveActivity?.id }
+    /// Until when the widget mirror may vouch for working / needs-input while backgrounded:
+    /// stamped by the `.background` edge (`now` + the running slot's ~30 s grace + a margin)
+    /// and reused by every write until `.active` clears it, so a change during the grace can't
+    /// extend the promise past what the app can still observe. `nil` in the foreground, and
+    /// when the edge found nothing to mirror (`agentStatus == nil` — the unknown edge already
+    /// shortened the surfaces' promise).
+    var backgroundFreshUntil: Date?
 
     public init(
       onboarding: ConnectionFeature.State = .init(),
@@ -152,6 +183,38 @@ public struct AppFeature {
       return ids
     }
 
+    /// What the widgets and the aggregate Live Activity show (`AgentStatusProjection`), or
+    /// `nil` ("unknown" — hold, never end) while signed out or before the list's first
+    /// unfiltered fetch (of the process, or since a profile switch reset the rows).
+    public var agentStatus: AgentStatusProjection? { agentStatusInputs?.projection }
+
+    /// What `agentStatus` is built from — the cheap key the surfaces edge watches, so the
+    /// projection is only built when an input moved (not on every streaming frame). The live
+    /// slot's running flag overrides its row only when the slot is in the list's profile (the
+    /// same rule as the row-glow patch): another profile's id can't be in these rows. A slot
+    /// the list doesn't carry yet (a new chat) brings its own row, titled by its first prompt.
+    var agentStatusInputs: AgentStatusInputs? {
+      guard let home, let sessions = home.statusSessions else { return nil }
+      var inputs = AgentStatusInputs(
+        connection: home.connection,
+        sessions: sessions,
+        needsInput: needsInputSessionIDs,
+        showsTitles: liveActivityShowsTitles,
+        profile: home.scopedProfileName
+      )
+      if let chat = liveChat, let key = chat.sessionKey,
+        AppFeature.isSameProfile(home.scopedProfileName, chat.profileName) {
+        inputs.slotID = key
+        inputs.slotRunning = chat.isRunning
+        if sessions[id: key] == nil {
+          inputs.slotSession = Session(
+            id: key, title: chat.title, preview: chat.firstUserMessageText
+          )
+        }
+      }
+      return inputs
+    }
+
     /// What the regular-width seat reseat (`reduceProfileReseat`) is watching: the list's
     /// scoped profile, whether the seat's composer input is still resolving, and the layout.
     /// The second member DEFERS rather than skips a reseat that would land mid-paste or
@@ -191,6 +254,43 @@ public struct AppFeature {
     /// presumed good (the launch probe, the retry screen, home), never on onboarding. A probe
     /// that ends in a credentials verdict lands on onboarding and hides them again.
     var offersQuickActions: Bool { rootScreen != .onboarding }
+  }
+
+  /// The aggregate Live Activity as `AppFeature` last drove it (#138).
+  struct LiveActivitySeat: Equatable, Sendable {
+    /// ActivityKit's id; `nil` while the start request is in flight.
+    var id: String?
+    /// The content last sent (start or update): the dedupe for the edge's updates and the
+    /// headline the final "Done" content keeps.
+    var content: AgentActivityContent
+    /// Which start request took this seat (`State.liveActivityRequests`), so a request that
+    /// lands for a seat it didn't take — a fast toggle off→on — is ended, never adopted.
+    var request: Int
+  }
+
+  /// `State.agentStatusInputs`: everything `AgentStatusProjection.make` reads, plus the list's
+  /// connection (an unknown projection under the SAME list is a profile switch; under a new
+  /// one, a different-user re-auth that already cleared the surfaces).
+  struct AgentStatusInputs: Equatable, Sendable {
+    var connection: ServerConnection
+    var sessions: IdentifiedArrayOf<Session>
+    var needsInput: Set<String>
+    var slotID: String?
+    var slotRunning = false
+    var slotSession: Session?
+    var showsTitles: Bool
+    var profile: String?
+
+    var projection: AgentStatusProjection {
+      AgentStatusProjection.make(
+        sessions: Array(sessions),
+        needsInput: needsInput,
+        slotRunning: slotID.map { ($0, slotRunning) },
+        slotSession: slotSession,
+        showsTitles: showsTitles,
+        profile: profile
+      )
+    }
   }
 
   /// The root branches of the app shell, in the order `State.rootScreen` resolves them.
@@ -294,11 +394,49 @@ public struct AppFeature {
     /// foreground re-hydrate.
     case backgroundGraceExpired
     case reauth(PresentationAction<ReauthFeature.Action>)
+    /// Internal: the debounced Live Activity update / end fell due.
+    case liveActivitySyncDue
+    /// Internal: ActivityKit accepted start request `request` (the seat's token).
+    case liveActivityStarted(id: String, request: Int)
+    /// Internal: ActivityKit refused start request `request` (already debug-logged; no banner).
+    case liveActivityStartFailed(request: Int)
   }
 
-  /// Ids for the long-running incoming-tap and launch-intent observers and the
-  /// background-grace listener.
-  private enum CancelID { case backgroundGrace, launchIntents, pushTaps, sessionRemovals }
+  /// Ids for the long-running incoming-tap and launch-intent observers, the
+  /// background-grace listener, the chat menu's session removals, the widget-mirror write and
+  /// the Live Activity's debounced update / end (both debounced, last-wins).
+  private enum CancelID {
+    case backgroundGrace, launchIntents, pushTaps, sessionRemovals, mirrorSync
+    case liveActivitySync
+  }
+
+  /// How `syncLiveActivity` applies the projection to the activity.
+  private enum LiveActivitySync {
+    /// The `agentStatus` edge: a start goes out at once (the user may background the app any
+    /// moment, and a start is foreground-only); an update or end waits out
+    /// `surfacesSyncDebounce`, so a turn ending right before the next queued one starts updates
+    /// the activity instead of ending and restarting it.
+    case debounced
+    /// Apply now; an update whose content didn't change is skipped.
+    case immediate
+    /// Apply now and always update: a scene edge moved the stale date.
+    case restamp
+  }
+
+  /// How long an ended activity keeps its final "Done" content on the Lock Screen.
+  static let liveActivityDismissal: TimeInterval = 5 * 60
+
+  /// How long a foreground mirror write vouches for its rows: the app observes the list for
+  /// as long as it stays in the foreground, so this only bounds a crash / kill that skips
+  /// the `.background` restamp.
+  static let foregroundFreshness: TimeInterval = 8 * 60 * 60
+  /// The background restamp: the running slot's ~30 s grace window (`BackgroundTaskClient`)
+  /// when there is one, plus a margin for the suspension itself.
+  static let backgroundGraceFreshness: TimeInterval = 30
+  static let backgroundFreshnessMargin: TimeInterval = 10
+  /// Coalesces a burst of `agentStatus` changes (a list fetch landing next to a slot's
+  /// running flip) into one mirror write + timeline reload.
+  static let surfacesSyncDebounce: Duration = .seconds(1)
 
   /// Name of the finite background task requested while a running turn is backgrounded
   /// (shows up in OS background-task diagnostics). Tests re-type the literal on purpose —
@@ -314,6 +452,10 @@ public struct AppFeature {
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
+  @Dependency(\.widgetMirror) var widgetMirror
+  @Dependency(\.liveActivity) var liveActivity
+  @Dependency(\.date) var date
+  @Dependency(\.continuousClock) var clock
   // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.idleTimer) var idleTimer
@@ -396,7 +538,7 @@ public struct AppFeature {
         // Defensive: a retry screen and a live list must never coexist (see the `.task` guard).
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return landOnHome(&state, replaysDictation: true)
+        return landOnHome(&state, replaysLaunchAction: true)
 
       case let .autoConnectFailed(connection, error):
         state.autoConnecting = false
@@ -420,7 +562,7 @@ public struct AppFeature {
         // auto-connect, cold-launch push-tap replay included.
         state.connectionFailed = nil
         state.home = makeHomeState(connection: connection)
-        return landOnHome(&state, replaysDictation: false)
+        return landOnHome(&state, replaysLaunchAction: false)
 
       case let .connectionFailed(.delegate(.credentialsRejected(connection))):
         // The retry reached the server and it turned us away — retrying can't fix that, so
@@ -443,6 +585,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearLiveActivityPrefs()
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -452,10 +595,11 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
+        state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(&state),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case let .scenePhaseChanged(phase):
@@ -469,8 +613,28 @@ public struct AppFeature {
           // chat via `.foreground` (which reconnects only if the socket died — a socket the
           // grace window kept alive is reused, not redialed) and refresh the list
           // immediately (don't wait for the poll).
+          let wasBackgrounded = state.isSceneBackgrounded
           state.isSceneBackgrounded = false
+          state.backgroundFreshUntil = nil
+          // Back from the background, the app observes again: restamp the mirror and the Live
+          // Activity with the foreground freshness so the "Outdated" the background edge
+          // scheduled doesn't fire under a live app, and start the activity if agents are
+          // active without one — including when the one up was swiped away or timed out
+          // meanwhile (its seat is dropped). A brief `.active` (Control Center, the
+          // notification shade) never left the foreground freshness: nothing to restamp.
+          var surfaces: Effect<Action> = .none
+          if wasBackgrounded {
+            if let id = state.liveActivity?.id, !liveActivity.isActive(id) {
+              state.liveActivity = nil
+            }
+            let status = state.agentStatus
+            surfaces = .merge(
+              syncMirror(status, state, debounced: false),
+              syncLiveActivity(status, &state, .restamp)
+            )
+          }
           return .merge(
+            surfaces,
             .cancel(id: CancelID.backgroundGrace),
             .run { [backgroundTask] _ in await backgroundTask.end() },
             state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
@@ -490,7 +654,22 @@ public struct AppFeature {
           // Backgrounding: flush the live chat's snapshot + anchor IMMEDIATELY (don't rely on
           // the 1s debounce) so a process kill can't lose the latest paint or the timer anchor.
           state.isSceneBackgrounded = true
-          guard let chat = state.liveChat else { return .none }
+          // The widgets may vouch for working / needs-input only as long as the app can still
+          // observe: the grace window of a running slot plus a margin. Written NOW, not
+          // debounced — an idle app may be suspended within seconds.
+          var surfaces: Effect<Action> = .none
+          if let status = state.agentStatus {
+            var freshFor = Self.backgroundFreshnessMargin
+            if state.liveChat?.isRunning == true { freshFor += Self.backgroundGraceFreshness }
+            state.backgroundFreshUntil = date.now.addingTimeInterval(freshFor)
+            // The Live Activity goes "Outdated" at the same instant (`staleDate`); no start
+            // from here — `Activity.request` is foreground-only.
+            surfaces = .merge(
+              syncMirror(status, state, debounced: false),
+              syncLiveActivity(status, &state, .restamp)
+            )
+          }
+          guard let chat = state.liveChat else { return surfaces }
           // Read aloud (#74): no background audio — stop the clip first, idle AND running
           // slots alike (the grace below keeps a running turn's process, and so the player,
           // alive), and hold auto-speak until `.foreground`.
@@ -504,8 +683,9 @@ public struct AppFeature {
           // socket-only disconnect (state stays in memory for the #26-preserving foreground
           // hydrate); catch-up is then the existing push + `.foreground` reconnect. An idle
           // chat starts NO task — nothing to keep alive, no battery burn.
-          guard chat.isRunning else { return flush }
+          guard chat.isRunning else { return .merge(surfaces, flush) }
           return .merge(
+            surfaces,
             flush,
             .run { [backgroundTask] send in
               for await _ in await backgroundTask.begin(Self.backgroundGraceTaskName) {
@@ -547,19 +727,34 @@ public struct AppFeature {
           // retry screen) — stash for `landOnHome`, never drop: the Action button from a cold
           // start is the main use case. Last-wins across both stashes, so a tap that came
           // earlier no longer replays. Its origin URL is kept: the landing's cross-server
-          // guard still scrubs that tap's approval badge entry on a foreign login.
+          // guard still scrubs that tap's approval badge entry on a foreign login. An
+          // `.openSession` records its own origin, guarded the same way at the landing.
           state.pendingLaunchIntent = intent
+          if case .openSession = intent {
+            state.pendingLaunchIntentServerURL = preferences.loadServerURL()
+              .flatMap(parseServerURL)
+          } else {
+            state.pendingLaunchIntentServerURL = nil
+          }
           state.pendingPushTap = nil
           return .none
         }
-        // Unlike the button, an intent can arrive over a list sheet: dismiss them so the new
-        // chat is what the user sees. Behind the re-auth modal the chat still seats (it resumes
-        // with the re-auth), but never with a hot mic the user can't see.
+        // Unlike the button, an intent can arrive over a list sheet: dismiss them so the chat
+        // it opens is what the user sees.
         state.home?.dismissPresentations()
+        if case let .openSession(id, profile) = intent {
+          // A widget / Live Activity row: the push-tap routing (#32 — in place, re-attach, or
+          // replace, never stack), without a push tap's approval bookkeeping.
+          return reduceOpenSessionRouting(
+            &state, sessionID: id, profile: profile, armsApprovalHint: false
+          )
+        }
+        // Behind the re-auth modal the chat still seats (it resumes with the re-auth), but
+        // never with a hot mic or a picker the user can't see.
         return reduceCreateSession(
           &state,
           composerText: nil,
-          startsDictation: intent == .newChatWithDictation && state.reauth == nil
+          launchAction: state.reauth == nil ? intent.launchAction : nil
         )
 
       case let .onboarding(.delegate(.connected(connection))):
@@ -570,76 +765,16 @@ public struct AppFeature {
         state.home = makeHomeState(connection: connection)
         // Auto-connect failure falls back to onboarding, so a manual login must also replay
         // a stashed cold-launch tap (#46).
-        return landOnHome(&state, replaysDictation: false)
+        return landOnHome(&state, replaysLaunchAction: false)
 
       case let .home(.delegate(.openSession(session))):
         guard let home = state.home else { return .none }
-        // Approval-recovery hint (#30 workaround): a badged session (approval push tapped or
-        // received) may have missed the real `approval.request` while detached — read the flag
-        // BEFORE clearing the badge entry so the hydrating chat can synthesize a generic card
-        // when the turn is still running. Covers tap→open, slot replacement, and a badged
-        // session opened later from the list.
-        let expectsApproval = state.pendingApprovalSessionIDs.contains(session.id)
-        // Opening a session clears its pending-approval badge entry (the user is now viewing it).
-        // The current-viewing marker is updated by the `.onChange(of: currentViewingSessionID)`
-        // modifier below (one source of truth for nav-derived state).
-        state.pendingApprovalSessionIDs.remove(session.id)
-        let badge = setBadge(state)
-        // Re-opening the slot's OWN session (e.g. tapping the glowing row of a detached
-        // running turn): the accumulated live state must survive — a fresh
-        // `ChatFeature.State` would discard the detached reasoning/tool/streaming rows.
-        // Push the marker back (the path is empty when coming from the list) and
-        // re-attach: hydrate against the live socket, reconnecting only if it died.
-        if let chat = state.liveChat, chat.sessionKey == session.id {
-          if expectsApproval {
-            state.liveChat?.expectsPendingApproval = true
-          }
-          let read = acknowledgeRead(
-            &state,
-            sessionID: session.id,
-            connection: chat.connection,
-            profileName: chat.profileName
-          )
-          // Marker only when the chat is actually detached (compact + empty path) — in
-          // regular the slot is already the visible detail and the path stays empty.
-          // Defensive guard too: the path is normally empty here in compact (re-opens come
-          // from the list, and an on-screen match short-circuits in `pushTapped` before
-          // reaching this delegate) — but a double-delivered open must not stack a second
-          // marker.
-          if state.isChatDetached {
-            state.path.append(ChatScreen.State(sessionKey: session.id))
-          }
-          return .merge(badge, read, .send(.liveChat(.reattached)))
-        }
-        // `resolvedTitle` keeps the server's "Untitled" placeholder out of the header
-        // (and the rename pre-fill); a real title arrives via `session.info` on resume.
         // Carry the active profile so resume/history scope to the right `state.db`.
-        let profileName = home.scopedProfileName
-        var chat = ChatFeature.State(
-          connection: home.connection,
-          resumeStoredID: session.id,
-          profileName: profileName,
-          title: session.resolvedTitle
-        )
-        let read = acknowledgeRead(
-          &state,
-          sessionID: session.id,
-          connection: home.connection,
-          profileName: profileName
-        )
-        chat.expectsPendingApproval = expectsApproval
-        guard state.liveChat != nil else {
-          seatLiveChat(chat, into: &state)
-          return .merge(badge, read)
-        }
-        // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
-        // must be fully torn down (through the nil-out, so even its un-ID'd one-shot RPC
-        // effects are cancelled) before the new chat fills the slot.
-        return .merge(badge, read, teardownSlot(thenFill: chat))
+        return reduceOpenSession(&state, session: session, profileName: home.scopedProfileName)
 
       case let .home(.delegate(.createSession(initialComposerText))):
         return reduceCreateSession(
-          &state, composerText: initialComposerText, startsDictation: false
+          &state, composerText: initialComposerText, launchAction: nil
         )
 
       case let .fillLiveChat(chat):
@@ -739,10 +874,11 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
+        state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(&state),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case .liveChat(.delegate(.sessionExpired)):
@@ -789,10 +925,14 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
+        state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
+        // The mirror shows the previous user's sessions: clear it like a logout; the new
+        // list's first fetch writes the new user's rows through the `agentStatus` edge.
         let identityCleanup: Effect<Action> = .merge(
-          releaseSlot, setBadge(state), .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(&state),
+          .cancel(id: CancelID.sessionRemovals)
         )
         // The stash was just cleared, so there is nothing to replay — but in regular the new
         // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
@@ -815,6 +955,7 @@ public struct AppFeature {
         preferences.saveDefaultSessionSwipeAction(.default)
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
+        preferences.clearLiveActivityPrefs()
         debugLog.clear()
         state.reauth = nil
         state.path = .init()
@@ -824,10 +965,11 @@ public struct AppFeature {
         state.pendingPushTap = nil
         state.pendingPushTapServerURL = nil
         state.pendingLaunchIntent = nil
+        state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(&state),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case let .liveChat(.delegate(.branchCreated(creation))):
@@ -979,6 +1121,39 @@ public struct AppFeature {
         }
         return .none
 
+      case let .home(.delegate(.liveActivityToggled(enabled))):
+        return setLiveActivityEnabled(enabled, &state)
+
+      case let .home(.delegate(.liveActivityShowsTitlesToggled(shows))):
+        // Part of `agentStatus`: the edge below updates the activity with or without the title.
+        state.liveActivityShowsTitles = shows
+        return .none
+
+      case .liveActivitySyncDue:
+        return syncLiveActivity(state.agentStatus, &state, .immediate)
+
+      case let .liveActivityStarted(id, request):
+        // Adopt the id only for the seat this request took. No seat (the toggle went off or
+        // the user logged out mid-request) or another request's seat (a fast toggle off→on):
+        // this activity is an orphan — end it at once.
+        guard let seat = state.liveActivity, seat.id == nil, seat.request == request else {
+          return .run { [liveActivity] _ in await liveActivity.end(id, nil, nil) }
+        }
+        state.liveActivity?.id = id
+        // Catch up with whatever changed while the request was in flight (changes skip a seat
+        // without an id). A background edge, or the projection going unknown, during the
+        // request moved the stale date too.
+        let status = state.agentStatus
+        let restamp = state.isSceneBackgrounded || status == nil
+        return syncLiveActivity(status, &state, restamp ? .restamp : .immediate)
+
+      case let .liveActivityStartFailed(request):
+        // Free the seat so the next change may try again; the failure is only debug-logged.
+        if let seat = state.liveActivity, seat.id == nil, seat.request == request {
+          state.liveActivity = nil
+        }
+        return .none
+
       case .onboarding, .connectionFailed, .home, .path, .reauth, .liveChat:
         return .none
       }
@@ -1043,6 +1218,203 @@ public struct AppFeature {
         return .none
       }
     }
+    // The ONE edge the widget surfaces sync from (#138): whatever moved the projection — a
+    // list fetch, a slot's running flip, an approval card, the show-titles pref — rewrites the
+    // App Group mirror once the burst settles and syncs the Live Activity (start / update / end).
+    // Evaluated after every child reducer, so it reads the reduced state. It watches the cheap
+    // inputs and builds the projection only when one moved. `nil` is "unknown" (signed out, or
+    // no unfiltered fetch yet): hold — never end; a logout clears the surfaces on its own. A
+    // projection going unknown under the same list (a profile switch reset its rows) stops
+    // vouching: both surfaces keep their content but go "Outdated" after the margin unless the
+    // refetch lands first — it may fail, or the user may background before it.
+    .onChange(of: \.agentStatusInputs) { old, new in
+      Reduce { state, _ in
+        let previous = old?.projection
+        guard let status = new?.projection else {
+          guard let previous, let old, state.home?.connection == old.connection else {
+            return .none
+          }
+          return .merge(
+            writeMirror(
+              rows: previous.rows, freshUntil: unknownFreshUntil(state), debounced: false
+            ),
+            syncLiveActivity(nil, &state, .restamp)
+          )
+        }
+        guard status != previous else { return .none }
+        // Back from unknown, the activity's stale date was shortened: restamp it even when
+        // its content didn't change.
+        return .merge(
+          syncMirror(status, state, debounced: true),
+          syncLiveActivity(status, &state, previous == nil ? .restamp : .debounced)
+        )
+      }
+    }
+  }
+
+  /// How long the surfaces may vouch for the projection: `backgroundFreshUntil` while
+  /// backgrounded (`now` + the margin when the background edge had nothing to stamp), else
+  /// `now` + `foregroundFreshness`. The mirror's `freshUntil` and the activity's `staleDate`.
+  private func freshUntil(_ state: State) -> Date {
+    let now = date.now
+    return state.isSceneBackgrounded
+      ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
+      : now.addingTimeInterval(Self.foregroundFreshness)
+  }
+
+  /// The promise for content the app can no longer back (the projection went unknown): the
+  /// suspension margin, or the background stamp when that is sooner.
+  private func unknownFreshUntil(_ state: State) -> Date {
+    min(freshUntil(state), date.now.addingTimeInterval(Self.backgroundFreshnessMargin))
+  }
+
+  /// The "Live Activity" pref changed (Settings persisted it). Off ends every activity of the
+  /// app at once (an in-flight start is ended when it lands — `liveActivityStarted` finds no
+  /// seat) and drops a pending update; on starts one at once when agents are active.
+  private func setLiveActivityEnabled(_ enabled: Bool, _ state: inout State) -> Effect<Action> {
+    state.liveActivityEnabled = enabled
+    guard enabled else {
+      state.liveActivity = nil
+      return .merge(
+        .cancel(id: CancelID.liveActivitySync),
+        .run { [liveActivity] _ in await liveActivity.endAll() }
+      )
+    }
+    return syncLiveActivity(state.agentStatus, &state, .immediate)
+  }
+
+  /// Drives the aggregate Live Activity from `status`, the caller's `state.agentStatus` (#138),
+  /// so a caller that already built the projection doesn't build it again. `nil` (unknown) holds
+  /// the content; only a `restamp` acts on it, shortening the stale date (`unknownFreshUntil`).
+  /// - No activity and agents active → start one, only while the pref is on, the scene is in
+  ///   the foreground and iOS allows activities; the seat is taken at once (id pending, a fresh
+  ///   request token) so a second change can't start a second one, and `liveActivityStarted`
+  ///   adopts the id. The start first ends every activity still on screen — the previous one's
+  ///   lingering "Done" — so back-to-back turns never stack. A start failure is only
+  ///   debug-logged.
+  /// - An activity and agents active → update it (skipped when the content didn't change,
+  ///   unless a scene edge `restamp`s the stale date).
+  /// - An activity and nothing active → end it with its last headline as "Done", dismissed
+  ///   after `liveActivityDismissal`.
+  /// The edge debounces the update / end (`LiveActivitySync.debounced`); the stale date is
+  /// `freshUntil`, the same promise as the widget mirror.
+  private func syncLiveActivity(
+    _ status: AgentStatusProjection?, _ state: inout State, _ mode: LiveActivitySync
+  ) -> Effect<Action> {
+    guard let status else {
+      guard mode == .restamp, let seat = state.liveActivity, let id = seat.id else {
+        return .none
+      }
+      let staleDate = unknownFreshUntil(state)
+      return .merge(
+        .cancel(id: CancelID.liveActivitySync),
+        .run { [liveActivity] _ in await liveActivity.update(id, seat.content, staleDate) }
+      )
+    }
+    let content = status.activityContent
+    guard let seat = state.liveActivity else {
+      guard let content, state.liveActivityEnabled, !state.isSceneBackgrounded,
+        liveActivity.areActivitiesEnabled()
+      else { return .none }
+      state.liveActivityRequests += 1
+      let request = state.liveActivityRequests
+      state.liveActivity = LiveActivitySeat(id: nil, content: content, request: request)
+      let staleDate = freshUntil(state)
+      return .run { [liveActivity, debugLog] send in
+        await liveActivity.endAll()
+        do {
+          let id = try await liveActivity.start(content, staleDate)
+          await send(.liveActivityStarted(id: id, request: request))
+        } catch {
+          debugLog.note("live.activity", "start failed: \(error)")
+          await send(.liveActivityStartFailed(request: request))
+        }
+      }
+    }
+    // A start in flight: `liveActivityStarted` catches up with whatever changed meanwhile.
+    guard let id = seat.id else { return .none }
+    if mode == .debounced {
+      return .run { [clock] send in
+        try await clock.sleep(for: Self.surfacesSyncDebounce)
+        await send(.liveActivitySyncDue)
+      }
+      .cancellable(id: CancelID.liveActivitySync, cancelInFlight: true)
+    }
+    // Applied now: supersedes a debounced update / end still waiting.
+    let pending: Effect<Action> = .cancel(id: CancelID.liveActivitySync)
+    guard let content else {
+      state.liveActivity = nil
+      var final = seat.content
+      final.activeCount = 0
+      final.status = .done
+      let dismissAfter = date.now.addingTimeInterval(Self.liveActivityDismissal)
+      return .merge(
+        pending,
+        .run { [liveActivity, final] _ in await liveActivity.end(id, final, dismissAfter) }
+      )
+    }
+    guard mode == .restamp || content != seat.content else { return pending }
+    state.liveActivity?.content = content
+    let staleDate = freshUntil(state)
+    return .merge(
+      pending,
+      .run { [liveActivity] _ in await liveActivity.update(id, content, staleDate) }
+    )
+  }
+
+  /// Writes `status` (the caller's `state.agentStatus`) into the widget mirror and reloads the
+  /// sessions widget, stamped with how long the app can vouch for it: `backgroundFreshUntil`
+  /// while backgrounded (a change during the grace window must not extend the promise; `now` +
+  /// the margin when the background edge had nothing to stamp), else `now` +
+  /// `foregroundFreshness`. Last-wins under
+  /// `CancelID.mirrorSync`: `debounced` waits `surfacesSyncDebounce` first, so a burst
+  /// coalesces into one write; the scene edges write at once and supersede a pending one. A
+  /// `nil` projection writes nothing. A failed write is only logged — the mirror is a
+  /// non-authoritative cache the next change rewrites.
+  private func syncMirror(
+    _ status: AgentStatusProjection?, _ state: State, debounced: Bool
+  ) -> Effect<Action> {
+    guard let status else { return .none }
+    return writeMirror(rows: status.rows, freshUntil: freshUntil(state), debounced: debounced)
+  }
+
+  /// `syncMirror`'s write, for explicit rows and promise (the unknown edge re-sends the last
+  /// known rows with a short one).
+  private func writeMirror(
+    rows: [WidgetSessionRow], freshUntil: Date, debounced: Bool
+  ) -> Effect<Action> {
+    let snapshot = WidgetSessionSnapshot(freshUntil: freshUntil, isSignedIn: true, rows: rows)
+    return .run { [widgetMirror, clock, debugLog] _ in
+      if debounced { try await clock.sleep(for: Self.surfacesSyncDebounce) }
+      do {
+        try widgetMirror.write(snapshot)
+      } catch {
+        debugLog.note("widget.mirror", "write failed: \(error)")
+      }
+      widgetMirror.reloadTimelines()
+    }
+    .cancellable(id: CancelID.mirrorSync, cancelInFlight: true)
+  }
+
+  /// The logout half of the surfaces: replace the mirror with the signed-out snapshot and
+  /// reload, so the widget stops showing the old identity's sessions, and end every Live
+  /// Activity (an in-flight start is ended when it lands — no seat adopts it). Shares the
+  /// syncs' cancel ids, so a write or update still waiting out its debounce can't land after.
+  private func clearSurfaces(_ state: inout State) -> Effect<Action> {
+    state.liveActivity = nil
+    return .merge(
+      .run { [widgetMirror, debugLog] _ in
+        do {
+          try widgetMirror.clear()
+        } catch {
+          debugLog.note("widget.mirror", "clear failed: \(error)")
+        }
+        widgetMirror.reloadTimelines()
+      }
+      .cancellable(id: CancelID.mirrorSync, cancelInFlight: true),
+      .cancel(id: CancelID.liveActivitySync),
+      .run { [liveActivity] _ in await liveActivity.endAll() }
+    )
   }
 
   /// The layout regime changed: set `layout` FIRST (the view's column move fires
@@ -1080,11 +1452,11 @@ public struct AppFeature {
 
   /// "New session": the list's button (`.home(.delegate(.createSession))`) and an App Intent
   /// (`.launchIntentReceived`, #93) both land here, so the two can never drift. No list → no-op.
-  /// `startsDictation` is the intent's dictation request (`.newChatWithDictation`): a one-shot
-  /// `pendingDictation` on the chat, consumed at its first `.task` — or `.startDictation` on the
-  /// reused-seat path, whose slot has already started.
+  /// `launchAction` is the intent's one-shot request (`LaunchIntent.launchAction`), `nil` for a
+  /// plain new chat. It is a one-shot `pendingLaunchAction` on the chat, consumed at its first
+  /// `.task` — or `.startLaunchAction` on the reused-seat path, whose slot has already started.
   private func reduceCreateSession(
-    _ state: inout State, composerText: String?, startsDictation: Bool
+    _ state: inout State, composerText: String?, launchAction: LaunchAction?
   ) -> Effect<Action> {
     guard let home = state.home else { return .none }
     // "New session" over a slot the list would rebuild identically (`isReusableNewChat`
@@ -1101,12 +1473,12 @@ public struct AppFeature {
       if state.isChatDetached {
         state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
       }
-      return startsDictation ? .send(.liveChat(.startDictation)) : .none
+      return launchAction.map { .send(.liveChat(.startLaunchAction($0))) } ?? .none
     }
     // New chats are created under the currently-selected profile. `composerText` (push "Ask
     // agent to install") seeds the composer draft but is NOT auto-sent.
     var chat = newChat(for: home, composerText: composerText ?? "")
-    chat.pendingDictation = startsDictation
+    chat.pendingLaunchAction = launchAction
     guard state.liveChat != nil else {
       seatLiveChat(chat, into: &state)
       return .none
@@ -1164,22 +1536,48 @@ public struct AppFeature {
       state.pendingPushTap = tap
       state.pendingPushTapServerURL = preferences.loadServerURL().flatMap(parseServerURL)
       state.pendingLaunchIntent = nil
+      state.pendingLaunchIntentServerURL = nil
       return setBadge(state)
     }
-    // The tapped session is the one ALREADY on screen (`currentViewingSessionID` — the
-    // slot key when NOT detached: in compact that means its marker is on the path, in
-    // regular the slot is always the visible detail) → NO navigation, path untouched
-    // (empty in regular). Badge bookkeeping only: the user is now viewing it, so the
-    // pending entry clears (mark-then-clear nets zero); the content update arrives in
-    // place — the live socket is already streaming, and the tap's app activation fires
-    // the existing `.foreground` re-hydrate.
-    if state.currentViewingSessionID == tap.sessionID {
-      state.pendingApprovalSessionIDs.remove(tap.sessionID)
+    // Approval-recovery hint (#30 workaround): only an approval tap arms it.
+    return reduceOpenSessionRouting(
+      &state, sessionID: tap.sessionID, profile: nil, armsApprovalHint: tap.isApproval
+    )
+  }
+
+  /// The session-opening body shared by a push tap (`reducePushTapped`, which adds its badge
+  /// marking and stash around it) and a widget / Live Activity `.openSession` intent — so the
+  /// #32 rules can never drift between them. Requires `home`; three outcomes, in order:
+  /// on screen → in place; detached slot match (compact only) → re-attach; different
+  /// session → slot replacement (marker only in compact). Never stacks.
+  ///
+  /// `profile` is the intent's row profile (`nil` = the list's selected profile, which is
+  /// all a push tap knows). A row from ANOTHER profile resumes under that profile without
+  /// changing the list's selection — the chat's own `profileName` scopes its calls, exactly
+  /// as a slot that outlived a profile switch does. Ignored on an agent without the profiles
+  /// API, whose calls must stay profile-less (#114).
+  ///
+  /// `armsApprovalHint` is a push tap's `isApproval`: the in-place branch then arms the #30
+  /// recovery hint and drives its consuming hydrate. The other branches need no flag — the
+  /// open reads the hint from `pendingApprovalSessionIDs`, which the tap has just marked.
+  private func reduceOpenSessionRouting(
+    _ state: inout State, sessionID: Session.ID, profile: String?, armsApprovalHint: Bool
+  ) -> Effect<Action> {
+    guard let home = state.home else { return .none }
+    // The session is the one ALREADY on screen (`currentViewingSessionID` — the slot key
+    // when NOT detached: in compact that means its marker is on the path, in regular the
+    // slot is always the visible detail) → NO navigation, path untouched (empty in
+    // regular). Badge bookkeeping only: the user is now viewing it, so the pending entry
+    // clears (a tap's mark-then-clear nets zero); the content update arrives in place —
+    // the live socket is already streaming, and the app activation fires the existing
+    // `.foreground` re-hydrate.
+    if state.currentViewingSessionID == sessionID {
+      state.pendingApprovalSessionIDs.remove(sessionID)
       let read: Effect<Action>
       if let chat = state.liveChat {
         read = acknowledgeRead(
           &state,
-          sessionID: tap.sessionID,
+          sessionID: sessionID,
           connection: chat.connection,
           profileName: chat.profileName
         )
@@ -1193,11 +1591,18 @@ public struct AppFeature {
       // would otherwise leave the hint armed for an arbitrary later hydrate.
       // `.foreground` is idempotent: it never cancel-and-redials a healthy socket,
       // just re-hydrates. Nil slot guarded (the hint is meaningless without one).
-      if tap.isApproval, state.liveChat != nil {
+      if armsApprovalHint, state.liveChat != nil {
         state.liveChat?.expectsPendingApproval = true
         return .merge(setBadge(state), read, .send(.liveChat(.foreground)))
       }
       return .merge(setBadge(state), read)
+    }
+    // A row from another profile than the list shows: open it directly under its own
+    // profile (the list's row, if any, belongs to a different `state.db`).
+    if let profile, home.profilesSupported,
+       !Self.isSameProfile(profile, home.scopedProfileName)
+    {
+      return reduceOpenSession(&state, session: Session(id: sessionID), profileName: profile)
     }
     // Otherwise share the SAME `openSession` flow a list tap uses: a DETACHED slot match
     // (compact only — the user popped to the list; in regular a slot match always took
@@ -1207,9 +1612,78 @@ public struct AppFeature {
     // (`seatLiveChat` resets rather than appends — no stacking on cold launch either).
     // Prefer the loaded `Session` (carries a title); fall back to a minimal `Session(id:)`
     // if it isn't in the list (the chat resumes by stored id and hydrates the title).
-    let session = state.home?.sessions[id: tap.sessionID] ?? Session(id: tap.sessionID)
+    let session = home.sessions[id: sessionID] ?? Session(id: sessionID)
     // Opening clears the badge entry + marks current-viewing (handled in the openSession case).
     return .send(.home(.delegate(.openSession(session))))
+  }
+
+  /// Open `session` into the live-chat slot under `profileName` — the body of the list's
+  /// `openSession` delegate (which passes the selected profile) and of a cross-profile
+  /// widget open (which passes the row's).
+  private func reduceOpenSession(
+    _ state: inout State, session: Session, profileName: String?
+  ) -> Effect<Action> {
+    guard let home = state.home else { return .none }
+    // Approval-recovery hint (#30 workaround): a badged session (approval push tapped or
+    // received) may have missed the real `approval.request` while detached — read the flag
+    // BEFORE clearing the badge entry so the hydrating chat can synthesize a generic card
+    // when the turn is still running. Covers tap→open, slot replacement, and a badged
+    // session opened later from the list.
+    let expectsApproval = state.pendingApprovalSessionIDs.contains(session.id)
+    // Opening a session clears its pending-approval badge entry (the user is now viewing it).
+    // The current-viewing marker is updated by the reducer's
+    // `.onChange(of: currentViewingSessionID)` (one source of truth for nav-derived state).
+    state.pendingApprovalSessionIDs.remove(session.id)
+    let badge = setBadge(state)
+    // Re-opening the slot's OWN session (e.g. tapping the glowing row of a detached
+    // running turn): the accumulated live state must survive — a fresh
+    // `ChatFeature.State` would discard the detached reasoning/tool/streaming rows.
+    // Push the marker back (the path is empty when coming from the list) and
+    // re-attach: hydrate against the live socket, reconnecting only if it died.
+    if let chat = state.liveChat, chat.sessionKey == session.id {
+      if expectsApproval {
+        state.liveChat?.expectsPendingApproval = true
+      }
+      let read = acknowledgeRead(
+        &state,
+        sessionID: session.id,
+        connection: chat.connection,
+        profileName: chat.profileName
+      )
+      // Marker only when the chat is actually detached (compact + empty path) — in
+      // regular the slot is already the visible detail and the path stays empty.
+      // Defensive guard too: the path is normally empty here in compact (re-opens come
+      // from the list, and an on-screen match short-circuits in `pushTapped` before
+      // reaching this delegate) — but a double-delivered open must not stack a second
+      // marker.
+      if state.isChatDetached {
+        state.path.append(ChatScreen.State(sessionKey: session.id))
+      }
+      return .merge(badge, read, .send(.liveChat(.reattached)))
+    }
+    // `resolvedTitle` keeps the server's "Untitled" placeholder out of the header
+    // (and the rename pre-fill); a real title arrives via `session.info` on resume.
+    var chat = ChatFeature.State(
+      connection: home.connection,
+      resumeStoredID: session.id,
+      profileName: profileName,
+      title: session.resolvedTitle
+    )
+    let read = acknowledgeRead(
+      &state,
+      sessionID: session.id,
+      connection: home.connection,
+      profileName: profileName
+    )
+    chat.expectsPendingApproval = expectsApproval
+    guard state.liveChat != nil else {
+      seatLiveChat(chat, into: &state)
+      return .merge(badge, read)
+    }
+    // Slot occupied (e.g. a push tap while a chat is open): replace it — the old chat
+    // must be fully torn down (through the nil-out, so even its un-ID'd one-shot RPC
+    // effects are cancelled) before the new chat fills the slot.
+    return .merge(badge, read, teardownSlot(thenFill: chat))
   }
 
   /// Body of the `profileReseatSignal` `onChange` above (see it for when and why): reseat a
@@ -1346,24 +1820,61 @@ public struct AppFeature {
   /// A stashed App Intent request (#93) replays through the "New session" path, which fills
   /// the slot, so no detail seat is filled first. The two stashes are mutually exclusive
   /// (last-wins across both), so at most one replays; the cross-server badge scrub runs either
-  /// way. The intent keeps its dictation only on the launch auto-connect landing
-  /// (`replaysDictation`): a retry-screen re-probe or a manual login can come minutes or hours
-  /// later, so those replay it as a plain new chat.
-  private func landOnHome(_ state: inout State, replaysDictation: Bool) -> Effect<Action> {
+  /// way. The intent keeps its launch action (dictation, camera, photos) only on the launch
+  /// auto-connect landing (`replaysLaunchAction`): a retry-screen re-probe or a manual login
+  /// can come minutes or hours later, so those replay it as a plain new chat. A stashed
+  /// `.openSession` replays through the push-tap routing instead, under the same cross-server
+  /// guard as a tap (its own `pendingLaunchIntentServerURL`).
+  ///
+  /// The Live Activity (#138): the toggles are seeded from the device prefs, and any activity
+  /// already on screen is ended. None can be this landing's — a start needs the list's first
+  /// fetch, which comes after — so it is a previous process's (killed in the background, or
+  /// crashed) that nothing would ever update or end: it would sit "Outdated" next to the new
+  /// one the fetch starts. The sweep ends the activities listed when it runs, and the start
+  /// waits on that network fetch.
+  private func landOnHome(_ state: inout State, replaysLaunchAction: Bool) -> Effect<Action> {
+    // The Live Activity prefs (#138): device-local, reset to on by a logout.
+    state.liveActivityEnabled = preferences.loadLiveActivityEnabled()
+    state.liveActivityShowsTitles = preferences.loadLiveActivityShowsTitles()
+    let sweep: Effect<Action> = .run { [liveActivity] _ in await liveActivity.endAll() }
+    return .merge(sweep, replayLandingStash(&state, replaysLaunchAction: replaysLaunchAction))
+  }
+
+  /// `landOnHome`'s replay half: the stashed push tap or launch intent, else the detail seat.
+  private func replayLandingStash(
+    _ state: inout State, replaysLaunchAction: Bool
+  ) -> Effect<Action> {
     let intent = state.pendingLaunchIntent
+    let intentOrigin = state.pendingLaunchIntentServerURL
     let tap = state.pendingPushTap
     let origin = state.pendingPushTapServerURL
     state.pendingLaunchIntent = nil
+    state.pendingLaunchIntentServerURL = nil
     state.pendingPushTap = nil
     state.pendingPushTapServerURL = nil
-    var isForeign = false
-    if let origin, let connected = state.home?.connection.baseURL {
-      isForeign = !Self.isSameServer(origin, connected)
+    let connected = state.home?.connection.baseURL
+    func isForeign(_ origin: URL?) -> Bool {
+      guard let origin, let connected else { return false }
+      return !Self.isSameServer(origin, connected)
     }
+    let tapIsForeign = isForeign(origin)
     var badge: Effect<Action> = .none
-    if isForeign, !state.pendingApprovalSessionIDs.isEmpty {
+    if tapIsForeign, !state.pendingApprovalSessionIDs.isEmpty {
       state.pendingApprovalSessionIDs.removeAll()
       badge = setBadge(state)
+    }
+    if case let .openSession(id, profile) = intent {
+      guard !isForeign(intentOrigin) else {
+        // Dropped as foreign — nothing will fill the slot, so seat the detail here.
+        fillNewChatIfDetailEmpty(&state)
+        return badge
+      }
+      return .merge(
+        badge,
+        reduceOpenSessionRouting(
+          &state, sessionID: id, profile: profile, armsApprovalHint: false
+        )
+      )
     }
     if let intent {
       return .merge(
@@ -1371,11 +1882,11 @@ public struct AppFeature {
         reduceCreateSession(
           &state,
           composerText: nil,
-          startsDictation: replaysDictation && intent == .newChatWithDictation
+          launchAction: replaysLaunchAction ? intent.launchAction : nil
         )
       )
     }
-    guard let tap, !isForeign else {
+    guard let tap, !tapIsForeign else {
       // No tap, or dropped as foreign — nothing will fill the slot, so seat the detail here.
       fillNewChatIfDetailEmpty(&state)
       return badge

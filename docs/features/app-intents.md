@@ -10,6 +10,10 @@ there. The same two entry points are Home Screen quick actions (below). The app 
 client here too:
 both intents are `openAppWhenRun = true` and only ROUTE. No agent logic runs in the intent.
 
+The widgets, Control Center controls and the Live Activity (#138) reuse this whole path
+through `hermesmobile://` deep links, which add three `LaunchIntent` cases (below; surfaces:
+`docs/features/widgets.md`).
+
 ## Intents and phrases
 
 | Intent | Title | `LaunchIntent` | App Shortcut phrases | Short title / symbol |
@@ -27,6 +31,27 @@ both intents are `openAppWhenRun = true` and only ROUTE. No agent logic runs in 
   to a new chat (opening the app should just open it), and no "Talk to \(.applicationName)":
   that phrase is reserved for the voice-conversation intent (#92), which will add a third
   `LaunchIntent` case.
+
+## `LaunchIntent` and deep links
+
+`LaunchIntent` and `LaunchAction` live in the Foundation-only `HermesWidgetKit` product
+(re-exported by HermesKit), because the widget extension builds the same values:
+
+| Case | `launchAction` | Deep link (#138) | Entry points |
+|---|---|---|---|
+| `.newChat` | none | `hermesmobile://new` | App Intent, quick action, widgets, control |
+| `.newChatWithDictation` | `.dictation` | `hermesmobile://new?with=dictation` | App Intent, quick action, widgets, control |
+| `.newChatWithCamera` | `.camera` | `hermesmobile://new?with=camera` | quick-actions widget |
+| `.newChatWithPhotos` | `.photos` | `hermesmobile://new?with=photos` | quick-actions widget (medium) |
+| `.openSession(id:profile:)` | none | `hermesmobile://session/<id>[?profile=<name>]` | sessions widget rows, Live Activity |
+
+- `LaunchIntent.quickActions` stays `[.newChat, .newChatWithDictation]`. The widget-only cases
+  have distinct `shortcutItemType` literals that `init?(shortcutItemType:)` rejects, so they
+  never become quick actions.
+- **The URL path**: the app's one `.onOpenURL` calls `LaunchIntentBridge.shared
+  .received(url:)`, which maps through `WidgetDeepLink.intent(from:)` and ignores anything that
+  isn't a well-formed Hermes link. Everything below (buffering, stash, last-wins, logout clear)
+  then applies unchanged.
 
 ## Bridge, stash and replay
 
@@ -55,24 +80,37 @@ a smaller payload:
   the main use case. With `home == nil`, `launchIntentReceived` stores the intent in
   `State.pendingLaunchIntent` and returns. The stash survives onboarding and the retry screen;
   every `landOnHome` caller (auto-connect success, the retry screen's connect, onboarding's
-  connect) replays it through `reduceCreateSession`. The replay seats the chat itself, so
-  `landOnHome` skips its regular-width detail fill for that landing.
-- **Only the launch auto-connect landing keeps the dictation.** The retry screen re-probes on
-  every foreground and a manual login can come much later, so those landings replay a stashed
-  `.newChatWithDictation` as a plain new chat: the mic never starts hours after the request.
+  connect) replays it through `reduceCreateSession` (an `.openSession` through the push-tap
+  routing, below). The replay seats the chat itself, so `landOnHome` skips its regular-width
+  detail fill for that landing.
+- **Only the launch auto-connect landing keeps the launch action**
+  (`landOnHome(replaysLaunchAction:)`). The retry screen re-probes on every foreground and a
+  manual login can come much later, so those landings replay a stashed dictation, camera or
+  photos intent as a plain new chat: the mic or a picker never opens hours after the request.
 - **Last-wins across both stashes.** Stashing an intent clears `pendingPushTap`; stashing a
   push tap clears `pendingLaunchIntent`. `landOnHome` replays only the most recent request.
   Approval badge entries are inserted independently and stay, but the tap's server URL is
   kept, so a login to a different server still scrubs them (the #46 cross-server guard).
-- **No server-origin guard.** Unlike a push tap, a new chat belongs to no session, so it is
-  valid on whatever server the user signs into.
+- **No server-origin guard for a new chat.** Unlike a push tap, a new chat belongs to no
+  session, so it is valid on whatever server the user signs into.
+- **`.openSession` does carry its origin.** It names a session on one server, so stashing it
+  records `pendingLaunchIntentServerURL` (the persisted server URL at stash time), and
+  `landOnHome` drops it on a login to a different server, the same guard as
+  `pendingPushTapServerURL`. A push tap superseding the stash clears it too.
 - **Cleared on every logout path**, at each site that clears `pendingPushTap`: Settings → Sign
   out, the retry screen's Log Out, the re-auth sheet's "Quit to start", and a different-user
   re-auth. The stash is process-lifetime only (never persisted).
 
+## Routing `.openSession`
+
+With `home` set, `.openSession(id:profile:)` dismisses list presentations, then runs
+`reduceOpenSessionRouting`, the body a push tap also runs, so the #32 rules can't drift: on
+screen → in place; a detached compact slot → re-attach; otherwise replace the slot, never
+stack. Approval bookkeeping and the cross-profile rule: `docs/features/widgets.md`.
+
 ## Routing: the exact "New session" path
 
-With `home` set, the intent runs `reduceCreateSession(_:composerText:startsDictation:)`, the
+Every other case runs `reduceCreateSession(_:composerText:launchAction:)`, the
 body the list's "New session" button (`.home(.delegate(.createSession))`) also calls, so the
 two can never drift. That gives, unchanged:
 
@@ -90,7 +128,7 @@ Two things differ from the button, because an intent can arrive at any moment:
   Settings, Archived, Add Profile, the action sheet, the push-setup sheet, the rename alerts),
   so the new chat isn't seated behind a sheet.
 - **Behind the re-auth modal** the chat still seats (it resumes with the re-auth), but the
-  dictation is dropped: no recording the user can't see.
+  launch action is dropped: no recording or picker the user can't see.
 
 **Busy-slot policy: silent replace.** A slot with a running turn or `hasQueuedWork` is replaced
 without a prompt, exactly as the "New session" button and a push tap to a different session
@@ -98,11 +136,14 @@ replace it. The running turn continues on the server, keeps its working glow in 
 is reachable from there; the client-side queue (#66) goes with the slot, as it does for the
 button.
 
-## Dictation: a one-shot, consumed at first start
+## Launch actions: a one-shot, consumed at first start
 
-`.newChatWithDictation` sets `ChatFeature.State.pendingDictation` (per slot, unpersisted) on
-the chat it seats. The flag is consumed by `consumePendingDictation`, which always clears it
-and starts the mic only when it was set AND `recording == .idle`:
+An intent's `launchAction` (`.dictation`, `.camera`, `.photos`) becomes
+`ChatFeature.State.pendingLaunchAction: LaunchAction?` (per slot, unpersisted) on the chat it
+seats. `consumePendingLaunchAction` always clears it and hands it to `runLaunchAction`:
+`.dictation` starts the mic only when `recording == .idle`; `.camera` and `.photos` run the
+composer buttons' own `capturePhoto()` / `pickPhotos()` effect builders (shared, not a
+`.send` of the tap actions), so a cancelled picker is the same silent empty batch.
 
 - **New chat**: at the slot's first `.task` (the `hasStarted` branch, merged with `connect`).
   In compact that is the chat view's `.task`. In regular it is the reducer's `.fillLiveChat`
@@ -110,17 +151,18 @@ and starts the mic only when it was set AND `recording == .idle`:
   `.id(slotGeneration)`-keyed detail view's `.task`. A re-appearance never re-fires
   (`hasStarted`).
 - **Reused seat**: that slot has already started, so `reduceCreateSession` sends
-  `.liveChat(.startDictation)` (no flag), which starts the mic only from `.idle`. The action
-  exists only so the parent can reach a started slot; the view never sends it.
+  `.liveChat(.startLaunchAction(_))` (no pending field), which goes through the same
+  `runLaunchAction`. The action exists only so the parent can reach a started slot; the view
+  never sends it.
 
 Consequences, all deliberate (an "arm on `.ready`" design could fire minutes later after a
 backoff reconnect and toggle the user's own recording off):
 
-- It never waits for the socket. Transcription is REST (`POST /api/audio/transcribe`) and the
-  mic button is not gated on connection state, so there is nothing to wait for, and a flag
-  that waited could fire after the user has started typing.
-- It never toggles: a recording, pending permission or transcription already in progress just
-  clears the flag.
+- It never waits for the socket. Transcription is REST (`POST /api/audio/transcribe`) and
+  neither the mic nor the attach buttons are gated on connection state, so there is nothing
+  to wait for, and an action that waited could fire after the user has started typing.
+- Dictation never toggles: a recording, pending permission or transcription already in
+  progress just clears the action.
 - **It goes through the normal permission flow.** Both the mic button's `.voiceButtonTapped`
   idle leg and the consume call one shared `startVoiceRecording` helper (not a
   `.send(.voiceButtonTapped)`), so the read-aloud barge-in order (`await tts.stop()` BEFORE
