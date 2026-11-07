@@ -224,9 +224,9 @@ The app vouches for what it wrote until `freshUntil`; past it nothing observes t
 ## Delivered pushes (the background wake)
 
 Backgrounded, the app is blind: the socket drops after the grace window and the list poll
-stops. The plugin's existing pushes are the only news, and the gateway marks every push
-`content-available: 1` (alert + background wake, still the generic title/body + `session_id` —
-the privacy rule is untouched), so iOS hands a delivered push to
+stops. The plugin's existing pushes are the only news, and the gateway marks the turn-end ones
+(`complete`, `error`) `content-available: 1` (alert + background wake, still the generic
+title/body + `session_id` — the privacy rule is untouched), so iOS hands such a push to
 `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`. `PushAppDelegate`
 forwards it to `PushBridge.pushDelivered` (live-only: a push with no subscriber is dropped — a
 relaunched process has no surfaces state, and its landing sweeps old activities anyway) and

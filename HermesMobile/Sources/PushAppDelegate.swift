@@ -46,7 +46,7 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate, UNUserNotification
     Self.log.error("APNs registration failed: \(error.localizedDescription, privacy: .public)")
   }
 
-  /// A push reached the running (or just-woken) app: the gateway marks every push
+  /// A push reached the running (or just-woken) app: the gateway marks the turn-end pushes
   /// `content-available`, so a turn-complete push wakes a suspended app in the background.
   /// Forwarded to `PushBridge` — the reducer marks the session finished so the Live Activity
   /// and widgets stop claiming it works (#138). The completion waits a few seconds so the

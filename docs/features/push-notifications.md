@@ -88,9 +88,10 @@ the list's `.task` prefs reload.
 
 ## Delivered pushes wake the app (#138)
 
-The gateway sends every push with `content-available: 1` next to the alert (still
-`apns-push-type: alert`, priority 10, the generic title/body + `session_id` + `type` — no new
-content). iOS then also hands it to the backgrounded app
+The gateway sends the turn-end pushes (`complete`, `error`) with `content-available: 1` next to
+the alert (still `apns-push-type: alert`, priority 10, the generic title/body + `session_id` +
+`type` — no new content); approval / clarify need no wake. iOS then also hands it to the
+backgrounded app
 (`didReceiveRemoteNotification:fetchCompletionHandler:` → `PushBridge.pushDelivered` →
 `PushClient.deliveredPushes`, live-only, never buffered), and a `complete` / `error` push corrects
 the Live Activity and widgets the app can no longer observe. Taps, foreground suppression and
