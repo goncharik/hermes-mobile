@@ -980,6 +980,145 @@ struct WidgetSurfacesTests {
 
   // MARK: The file-backed client
 
+  // MARK: Delivered pushes (the background wake)
+
+  /// Backgrounded with the poll stopped, the only news is a push: `complete` on the last
+  /// working session patches its stale row and ends the activity "Done" AT ONCE (no debounce —
+  /// the wake is short).
+  @Test func aTurnCompletePushWhileBackgroundedEndsTheActivityAsDone() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(10)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "complete")))
+    await store.receive(\.home.setSessionRunning) {
+      $0.home?.statusSessions?[id: "s1"]?.isActive = false
+    }
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity = nil
+    }
+    let done = AgentActivityContent(
+      activeCount: 0, headlineTitle: "Title s1", headlineSessionID: "s1", status: .done
+    )
+    #expect(activity.calls.value == [
+      .end("a1", done, dismissAfter: now.addingTimeInterval(5 * 60)),
+    ])
+  }
+
+  /// The pushed session is the live slot's, whose running flag is stale with the socket down:
+  /// the push marks it finished, so the projection stops reading it as working.
+  @Test func aPushEndsTheSocketlessSlotsTurn() async {
+    let activity = ActivityRecorder()
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.isSending = true
+    var state = AppFeature.State(
+      home: fetchedHome([session("s1", active: true)]),
+      path: StackState([ChatScreen.State(sessionKey: "s1")]),
+      liveChat: chat
+    )
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(40)
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "error"))) {
+      $0.pushFinishedSessionIDs = ["s1"]
+    }
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity = nil
+    }
+    #expect(store.state.agentStatus?.activeCount == 0)
+    #expect(activity.calls.value.count == 1)
+    guard case .end("a1", _, _) = activity.calls.value.first else {
+      Issue.record("expected the activity to end, got \(activity.calls.value)")
+      return
+    }
+  }
+
+  /// Another agent still works: the activity updates to it, keeping the background promise
+  /// (the app still can't observe that one).
+  @Test func aPushWithAnotherAgentStillWorkingUpdatesTheActivity() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(
+      home: fetchedHome([session("s1", active: true), session("s2", active: true)])
+    )
+    state.isSceneBackgrounded = true
+    state.backgroundFreshUntil = now.addingTimeInterval(10)
+    state.liveActivity = seat("a1", working(["s1", "s2"]))
+    let store = makeStore(state, activity: activity)
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "complete")))
+    await store.receive(\.home.setSessionRunning)
+    await store.receive(\.liveActivitySyncDue) {
+      $0.liveActivity?.content = self.working(["s2"])
+    }
+    #expect(activity.calls.value == [
+      .update("a1", working(["s2"]), staleDate: now.addingTimeInterval(10)),
+    ])
+  }
+
+  /// In the foreground the app observes for itself, and an approval / clarify push is no
+  /// turn end: both change nothing.
+  @Test func aForegroundOrNonEndingPushChangesNothing() async {
+    let activity = ActivityRecorder()
+    var state = AppFeature.State(home: fetchedHome([session("s1", active: true)]))
+    state.liveActivity = seat("a1", working(["s1"]))
+    let store = makeStore(state, activity: activity)
+
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "complete")))
+    await store.send(.scenePhaseChanged(.background)) {
+      $0.isSceneBackgrounded = true
+      $0.backgroundFreshUntil = self.now.addingTimeInterval(10)
+    }
+    await store.send(.deliveredPushReceived(PushTap(sessionID: "s1", type: "approval")))
+    await store.finish()
+    // Only the background edge's restamp.
+    #expect(activity.calls.value == [
+      .update("a1", working(["s1"]), staleDate: now.addingTimeInterval(10)),
+    ])
+  }
+
+  /// The slot reporting the session's running state again (a new turn, a hydrate) retires the
+  /// push mark; so does any slot change.
+  @Test func freshSlotEvidenceRetiresThePushMark() async {
+    var chat = ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    chat.isSending = true
+    var state = AppFeature.State(
+      home: fetchedHome([session("s1")]),
+      path: StackState([ChatScreen.State(sessionKey: "s1")]),
+      liveChat: chat
+    )
+    state.pushFinishedSessionIDs = ["s1"]
+    let store = makeStore(state, activity: ActivityRecorder())
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    #expect(store.state.agentStatus?.activeCount == 0)
+
+    await store.send(.liveChat(.delegate(.runningChanged(sessionID: "s1", running: true)))) {
+      $0.pushFinishedSessionIDs = []
+    }
+    #expect(store.state.agentStatus?.activeCount == 1)
+  }
+
+  @Test func clearingTheSlotDropsThePushMark() async {
+    var state = AppFeature.State(
+      home: fetchedHome([session("s1")]),
+      liveChat: ChatFeature.State(connection: connection, resumeStoredID: "s1")
+    )
+    state.pushFinishedSessionIDs = ["s1"]
+    let store = makeStore(state, activity: ActivityRecorder())
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.clearLiveChat) {
+      $0.pushFinishedSessionIDs = []
+    }
+  }
+
   @Test func fileBackedClientWritesAndClearsTheMirrorAtomically() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("widget-mirror-\(UUID().uuidString)", isDirectory: true)

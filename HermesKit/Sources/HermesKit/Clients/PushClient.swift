@@ -31,6 +31,9 @@ public struct PushTap: Equatable, Sendable {
 
   /// Whether this tap is an approval request (the only type that bumps the badge).
   public var isApproval: Bool { type == PushClient.approvalType }
+
+  /// Whether this push reports the session's turn over (completed or failed).
+  public var endsTurn: Bool { type.map(PushClient.turnEndedTypes.contains) ?? false }
 }
 
 /// Bridges APNs registration + notification handling behind a dependency so reducers stay
@@ -48,6 +51,13 @@ public struct PushClient: Sendable {
   public var register: @Sendable () -> AsyncStream<String> = { AsyncStream { $0.finish() } }
   /// A stream of incoming notification taps (carrying the `session_id`) for deep-linking.
   public var incomingTaps: @Sendable () -> AsyncStream<PushTap> = { AsyncStream { $0.finish() } }
+  /// A stream of pushes DELIVERED to the running app — the background wake the gateway's
+  /// `content-available` flag asks for — carrying the same `session_id` + `type` as a tap.
+  /// Live-only: a push no subscriber takes is dropped (a wake that relaunched the process has
+  /// no surfaces state to correct). Drives the Live Activity / widgets (#138).
+  public var deliveredPushes: @Sendable () -> AsyncStream<PushTap> = {
+    AsyncStream { $0.finish() }
+  }
   /// The app's short version string (`CFBundleShortVersionString`), sent with the device-token
   /// registration so the plugin/gateway can record which build registered. Behind the client so
   /// reducers stay free of `Bundle` access and tests can inject a fixed value.
@@ -65,6 +75,9 @@ public struct PushClient: Sendable {
 
   /// The trigger `type` string for an approval request (the only push that bumps the badge).
   public static let approvalType = "approval"
+  /// The trigger types that end a turn: the plugin's `complete` (`post_llm_call`, once per turn
+  /// after the tool loop) and `error` (`on_session_end`, genuine failures only).
+  public static let turnEndedTypes: Set<String> = ["complete", "error"]
 
   /// The foreground-presentation decision (#push C5), kept pure so it's unit-tested on any
   /// platform and the app delegate stays logic-free. Suppress the banner (return `false`) only
@@ -124,6 +137,7 @@ extension PushClient: DependencyKey {
       authorizationStatus: { .notDetermined },
       register: { AsyncStream { $0.finish() } },
       incomingTaps: { AsyncStream { $0.finish() } },
+      deliveredPushes: { AsyncStream { $0.finish() } },
       appVersion: { "0.0" },
       setBadgeCount: { _ in },
       setCurrentSession: { _ in }
@@ -150,6 +164,7 @@ private final class PushBox: @unchecked Sendable {
   private var _currentSession: String?
   private var tokenContinuations: [AsyncStream<String>.Continuation] = []
   private var tapContinuations: [AsyncStream<PushTap>.Continuation] = []
+  private var deliveryContinuations: [AsyncStream<PushTap>.Continuation] = []
 
   init(granted: Bool, status: PushAuthorizationStatus) {
     _granted = granted
@@ -198,6 +213,17 @@ private final class PushBox: @unchecked Sendable {
     let continuations = lock.withLock { tapContinuations }
     for continuation in continuations { continuation.yield(tap) }
   }
+
+  func deliveryStream() -> AsyncStream<PushTap> {
+    AsyncStream { continuation in
+      lock.withLock { deliveryContinuations.append(continuation) }
+    }
+  }
+
+  func emit(delivery: PushTap) {
+    let continuations = lock.withLock { deliveryContinuations }
+    for continuation in continuations { continuation.yield(delivery) }
+  }
 }
 
 public extension PushClient {
@@ -219,6 +245,7 @@ public extension PushClient {
         authorizationStatus: { box.status },
         register: { box.tokenStream() },
         incomingTaps: { box.tapStream() },
+        deliveredPushes: { box.deliveryStream() },
         appVersion: { "1.2.3" },
         setBadgeCount: { count in box.setBadgeCount(count) },
         setCurrentSession: { sessionID in box.setCurrentSession(sessionID) }
@@ -234,6 +261,9 @@ public extension PushClient {
     /// cold-launch buffer itself, inject a real `PushBridge` behind a `PushClient`
     /// instead (see `coldLaunchTapBufferedInBridgeReplaysThroughTaskObserver`).
     public func emit(tap: PushTap) { box.emit(tap: tap) }
+    /// Push a delivered (background-wake) push into the `deliveredPushes()` stream. Live-only,
+    /// like the production bridge.
+    public func emit(delivery: PushTap) { box.emit(delivery: delivery) }
     /// Change the granted result the next `requestAuthorization()` returns.
     public func setAuthorized(_ granted: Bool) { box.setAuthorized(granted) }
     /// The last badge count the reducer set (spy hook for tests).
@@ -271,6 +301,9 @@ public final class PushBridge: @unchecked Sendable {
   /// `onTermination` still racing for this lock) can't swallow a tap.
   private var tokenContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
   private var tapContinuations: [UUID: AsyncStream<PushTap>.Continuation] = [:]
+  /// Live subscribers to delivered (background-wake) pushes. Unlike taps these are never
+  /// buffered: a push that finds no observer belongs to a process with nothing to correct.
+  private var deliveryContinuations: [UUID: AsyncStream<PushTap>.Continuation] = [:]
   private var lastToken: String?
   /// The last tap no live subscriber accepted (a launch-from-push fires the app
   /// delegate's `didReceive` before the reducer's `.task` subscribes — #46). Unlike
@@ -350,6 +383,28 @@ public final class PushBridge: @unchecked Sendable {
     }
   }
 
+  func deliveryStream() -> AsyncStream<PushTap> {
+    AsyncStream { continuation in
+      let id = UUID()
+      lock.withLock { deliveryContinuations[id] = continuation }
+      continuation.onTermination = { [weak self] _ in
+        guard let self else { return }
+        self.lock.withLock { _ = self.deliveryContinuations.removeValue(forKey: id) }
+      }
+    }
+  }
+
+  /// Called by the app delegate when a push is delivered to the running app
+  /// (`didReceiveRemoteNotification`, the gateway's `content-available` wake). Fans out to the
+  /// live subscribers; dropped when there are none (see `deliveryContinuations`). Malformed
+  /// payloads (no session id) are dropped.
+  public func pushDelivered(_ payload: [AnyHashable: Any]) {
+    guard let push = PushClient.tap(fromPayload: payload) else { return }
+    lock.withLock {
+      for continuation in deliveryContinuations.values { continuation.yield(push) }
+    }
+  }
+
   /// Called by the app delegate on `didRegisterForRemoteNotificationsWithDeviceToken`.
   public func tokenReceived(_ data: Data) {
     let hex = PushClient.hexToken(from: data)
@@ -415,6 +470,7 @@ public final class PushBridge: @unchecked Sendable {
           return PushBridge.shared.tokenStream()
         },
         incomingTaps: { PushBridge.shared.tapStream() },
+        deliveredPushes: { PushBridge.shared.deliveryStream() },
         appVersion: {
           (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0"
         },

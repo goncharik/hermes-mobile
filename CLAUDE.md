@@ -355,7 +355,8 @@ bullets below are the compressed rules.
   (`.onChange(of: \.agentStatusInputs)`; nil = hold, never end); scene edges only restamp,
   toggle-off / landing sweep / logout only end or clear. Both the App Group mirror and the
   aggregate activity (foreground-only start) are stamped `freshUntil` (8 h foreground, ≤ 40 s
-  backgrounded → "Outdated"). Details: `docs/features/widgets.md`.
+  backgrounded → "Outdated"); a backgrounded turn-end push (`content-available` wake) marks its
+  session finished. Details: `docs/features/widgets.md`.
 
 ## Multi-profile
 

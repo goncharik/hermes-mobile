@@ -110,6 +110,14 @@ public struct AppFeature {
     var liveActivity: LiveActivitySeat?
     /// How many start requests this process sent: the next seat's `request` token.
     var liveActivityRequests = 0
+    /// The live slot's session when a turn-complete / error push reported it over while the app
+    /// was backgrounded (`deliveredPushReceived`): the slot's running flag is stale with the
+    /// socket down, so the surfaces read it as not working while its id is here. (The push
+    /// patches the list row directly; the next fetch overwrites that with server truth.) Goes
+    /// on the slot's next `runningChanged` for it — fresher evidence either way, and how every
+    /// new turn starts — on any slot change (`clearLiveChat`, `seatLiveChat`), and on every
+    /// logout / user switch. A set only so the projection's input stays plain.
+    var pushFinishedSessionIDs: Set<String> = []
     /// The running Live Activity's ActivityKit id (`nil` while none is up or its start is
     /// still in flight).
     var liveActivityID: String? { liveActivity?.id }
@@ -200,7 +208,8 @@ public struct AppFeature {
         sessions: sessions,
         needsInput: needsInputSessionIDs,
         showsTitles: liveActivityShowsTitles,
-        profile: home.scopedProfileName
+        profile: home.scopedProfileName,
+        finishedByPush: pushFinishedSessionIDs
       )
       if let chat = liveChat, let key = chat.sessionKey,
         AppFeature.isSameProfile(home.scopedProfileName, chat.profileName) {
@@ -280,6 +289,7 @@ public struct AppFeature {
     var slotSession: Session?
     var showsTitles: Bool
     var profile: String?
+    var finishedByPush: Set<String> = []
 
     var projection: AgentStatusProjection {
       AgentStatusProjection.make(
@@ -288,7 +298,8 @@ public struct AppFeature {
         slotRunning: slotID.map { ($0, slotRunning) },
         slotSession: slotSession,
         showsTitles: showsTitles,
-        profile: profile
+        profile: profile,
+        finishedByPush: finishedByPush
       )
     }
   }
@@ -350,6 +361,11 @@ public struct AppFeature {
     /// different session → replace the slot and SET the path (one marker in compact, empty
     /// in regular; never stack). Approval taps clear their pending-badge entry on view.
     case pushTapped(PushTap)
+    /// A push was delivered to the running app (the gateway's `content-available` wake, #138).
+    /// While backgrounded, a turn-complete / error push marks its session finished
+    /// (`pushFinishedSessionIDs`) and the Live Activity syncs at once — it is the only news the
+    /// app gets with its socket down. Ignored in the foreground, where the app observes itself.
+    case deliveredPushReceived(PushTap)
     /// An App Intent asked for a new chat (#93) — routed through the exact "New session" path
     /// (`reduceCreateSession`: selected-profile scoping, the reusable-seat shortcut, compact
     /// marker vs regular detail, a busy slot replaced through `teardownSlot(thenFill:)`). With
@@ -406,7 +422,7 @@ public struct AppFeature {
   /// background-grace listener, the chat menu's session removals, the widget-mirror write and
   /// the Live Activity's debounced update / end (both debounced, last-wins).
   private enum CancelID {
-    case backgroundGrace, launchIntents, pushTaps, sessionRemovals, mirrorSync
+    case backgroundGrace, launchIntents, pushTaps, pushDeliveries, sessionRemovals, mirrorSync
     case liveActivitySync
   }
 
@@ -491,7 +507,14 @@ public struct AppFeature {
           }
         }
         .cancellable(id: CancelID.launchIntents, cancelInFlight: true)
-        let observers: Effect<Action> = .merge(tapObserver, intentObserver)
+        // Pushes delivered to the running app (#138), for the Live Activity / widgets.
+        let deliveryObserver: Effect<Action> = .run { [push] send in
+          for await delivered in push.deliveredPushes() {
+            await send(.deliveredPushReceived(delivered))
+          }
+        }
+        .cancellable(id: CancelID.pushDeliveries, cancelInFlight: true)
+        let observers: Effect<Action> = .merge(tapObserver, intentObserver, deliveryObserver)
         // Launch auto-connect: if a persisted session (token *or* gated cookie) + server
         // URL exist, silently validate and skip onboarding. Only runs once, before we have
         // a home. `loadSession` rehydrates a `.cookie` session's cookies into `.shared` so
@@ -598,6 +621,7 @@ public struct AppFeature {
         state.pendingLaunchIntent = nil
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
+        state.pushFinishedSessionIDs = []
         return .merge(
           releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
@@ -659,6 +683,8 @@ public struct AppFeature {
           // observe: the grace window of a running slot plus a margin. Written NOW, not
           // debounced — an idle app may be suspended within seconds.
           var surfaces: Effect<Action> = .none
+          // An unknown projection has nothing to stamp: going unknown already shortened both
+          // surfaces to the margin (the `agentStatusInputs` edge).
           if let status = state.agentStatus {
             var freshFor = Self.backgroundFreshnessMargin
             if state.liveChat?.isRunning == true { freshFor += Self.backgroundGraceFreshness }
@@ -795,6 +821,8 @@ public struct AppFeature {
         // the assignment.
         let release = releaseSlotDeviceResources(state)
         state.liveChat = nil
+        // A push's "finished" mark only ever overrides this slot's stale flag (#138).
+        state.pushFinishedSessionIDs = []
         return release
 
       case .path(.popFrom):
@@ -877,6 +905,7 @@ public struct AppFeature {
         state.pendingLaunchIntent = nil
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
+        state.pushFinishedSessionIDs = []
         return .merge(
           releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
@@ -928,6 +957,7 @@ public struct AppFeature {
         state.pendingLaunchIntent = nil
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
+        state.pushFinishedSessionIDs = []
         state.home = makeHomeState(connection: connection)
         // The mirror shows the previous user's sessions: clear it like a logout; the new
         // list's first fetch writes the new user's rows through the `agentStatus` edge.
@@ -969,6 +999,7 @@ public struct AppFeature {
         state.pendingLaunchIntent = nil
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
+        state.pushFinishedSessionIDs = []
         return .merge(
           releaseSlot, setBadge(state), clearSurfaces(&state),
           serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
@@ -1009,6 +1040,9 @@ public struct AppFeature {
         // Route the live chat's authoritative working-state change to the session list so its
         // row glow clears/lights INSTANTLY (event-driven), without waiting for the next poll.
         // The poll stays the backstop for not-open sessions. No `home` → nothing to patch.
+        // The slot reporting this session's running state again — a new turn, or a foreground
+        // hydrate confirming the end — is fresher than a push's "finished" mark (#138).
+        state.pushFinishedSessionIDs.remove(sessionID)
         let canPatchVisibleRow: Bool
         if let home = state.home, let chat = state.liveChat {
           canPatchVisibleRow = Self.isSameProfile(home.scopedProfileName, chat.profileName)
@@ -1133,6 +1167,24 @@ public struct AppFeature {
 
       case .liveActivitySyncDue:
         return syncLiveActivity(state.agentStatus, &state, .immediate)
+
+      case let .deliveredPushReceived(push):
+        // Only the backgrounded app is blind (socket down, poll stopped); in the foreground the
+        // slot's events and the poll already tell. Only a turn END is news the surfaces can act
+        // on: the session stops counting as working, so the last one ends the activity "Done".
+        guard state.isSceneBackgrounded, push.endsTurn, state.home != nil else { return .none }
+        debugLog.note("live.activity", "\(push.type ?? "push") ended \(push.sessionID)")
+        // The slot's flag (stale, socket down) is overridden here; the list row is patched like
+        // a slot event would (`setSessionRunning`). Then the activity syncs at once, not after
+        // the edge's debounce: the wake is short. The edge still fires (the inputs moved) and
+        // rewrites the mirror; its activity sync then finds nothing new.
+        if state.liveChat?.sessionKey == push.sessionID {
+          state.pushFinishedSessionIDs.insert(push.sessionID)
+        }
+        return .concatenate(
+          .send(.home(.setSessionRunning(id: push.sessionID, running: false))),
+          .send(.liveActivitySyncDue)
+        )
 
       case let .liveActivityStarted(id, request):
         // Adopt the id only for the seat this request took. No seat (the toggle went off or
@@ -1350,6 +1402,7 @@ public struct AppFeature {
       final.activeCount = 0
       final.status = .done
       let dismissAfter = date.now.addingTimeInterval(Self.liveActivityDismissal)
+      debugLog.note("live.activity", "end: done")
       return .merge(
         pending,
         .run { [liveActivity, final] _ in await liveActivity.end(id, final, dismissAfter) }
@@ -1358,6 +1411,10 @@ public struct AppFeature {
     guard mode == .restamp || content != seat.content else { return pending }
     state.liveActivity?.content = content
     let staleDate = freshUntil(state)
+    let staleIn = Int(staleDate.timeIntervalSince(date.now))
+    debugLog.note(
+      "live.activity", "update: \(content.status.rawValue) ×\(content.activeCount), stale in \(staleIn)s"
+    )
     return .merge(
       pending,
       .run { [liveActivity] _ in await liveActivity.update(id, content, staleDate) }
@@ -1992,6 +2049,8 @@ public struct AppFeature {
     var chat = chat
     chat.deleteSupported = state.home?.deleteSupported ?? true
     state.liveChat = chat
+    // A new slot reports its own running state; no push mark carries over to it (#138).
+    state.pushFinishedSessionIDs = []
     state.path.removeAll()
     if state.layout == .compact {
       state.path.append(ChatScreen.State(sessionKey: chat.sessionKey))
