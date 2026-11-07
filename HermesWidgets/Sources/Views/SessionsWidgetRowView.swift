@@ -3,9 +3,9 @@ import SwiftUI
 import WidgetKit
 
 /// How a row's "updated" time reads: relative, minutes the finest unit ("12 minutes ago",
-/// "yesterday", never "36 min, 30 sec ago"; the style has no abbreviated units). The widget keeps it live (`.currentDate` ticks on its own, so a
-/// `.never` timeline stays truthful); snapshot tests pin `now` and format the same style
-/// against it, rendered deterministically.
+/// "yesterday", never "36 min, 30 sec ago"; the style has no abbreviated units). The widget
+/// keeps it live (`.currentDate` ticks on its own, so a `.never` timeline stays truthful);
+/// snapshot tests pin `now` and format the same style against it, rendered deterministically.
 enum WidgetRelativeTime {
   case live
   case fixed(now: Date)
