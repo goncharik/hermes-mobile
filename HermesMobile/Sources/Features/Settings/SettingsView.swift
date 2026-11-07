@@ -74,6 +74,8 @@ struct SettingsView: View {
       if let agentVersion = store.agentVersion {
         LabeledContent("Agent", value: agentVersion)
       }
+      // Update availability / progress for the agent install (hidden when unsupported).
+      AgentUpdateRows(store: store.scope(state: \.agentUpdate, action: \.agentUpdate))
       // Only the token regime has a credential the user can re-paste; a password / OAuth
       // session re-authenticates through sign-in instead.
       if store.showsTokenField {

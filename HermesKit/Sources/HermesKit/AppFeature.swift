@@ -586,6 +586,7 @@ public struct AppFeature {
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
+        preferences.clearOwnedAgentUpdate(nil)
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -956,6 +957,7 @@ public struct AppFeature {
         preferences.clearAutoSpeakReplies()
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
+        preferences.clearOwnedAgentUpdate(nil)
         debugLog.clear()
         state.reauth = nil
         state.path = .init()
