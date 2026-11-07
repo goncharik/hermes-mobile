@@ -13,9 +13,9 @@ public struct AgentActivityContent: Codable, Hashable, Sendable {
 
   /// Sessions that are working or need input.
   public var activeCount: Int
-  /// The headline session's title; `nil` when "Show session titles" is off.
+  /// The headline session's title; `nil` when "Show session titles" is off. No workspace: the
+  /// banner carries none (T3 Code's layout without its project label).
   public var headlineTitle: String?
-  public var headlineWorkspace: String?
   /// The session a tap on the activity opens.
   public var headlineSessionID: String?
   public var headlineProfile: String?
@@ -24,14 +24,12 @@ public struct AgentActivityContent: Codable, Hashable, Sendable {
   public init(
     activeCount: Int,
     headlineTitle: String? = nil,
-    headlineWorkspace: String? = nil,
     headlineSessionID: String? = nil,
     headlineProfile: String? = nil,
     status: Status
   ) {
     self.activeCount = activeCount
     self.headlineTitle = headlineTitle
-    self.headlineWorkspace = headlineWorkspace
     self.headlineSessionID = headlineSessionID
     self.headlineProfile = headlineProfile
     self.status = status
@@ -71,8 +69,7 @@ extension AgentActivityContent {
     }
   }
 
-  /// The header: "1 active agent", "3 active agents", or "No active agents" (the final
-  /// "Done" content).
+  /// "1 active agent", "3 active agents", or "No active agents" (the final "Done" content).
   public var countLabel: String {
     switch activeCount {
     case ...0: "No active agents"
@@ -81,17 +78,20 @@ extension AgentActivityContent {
     }
   }
 
-  /// The headline line's leading text: the session title, or — with "Show session titles"
-  /// off — the workspace in its place. `nil` when neither is known (the line shows only the
-  /// status).
-  public var headlineText: String? {
-    headlineTitle ?? headlineWorkspace
+  /// The banner's centred header (T3 Code's wording): "Agent work completed" once done,
+  /// "Agent status out of date" past the stale date, else the count.
+  public func headerTitle(isStale: Bool) -> String {
+    switch displayStatus(isStale: isStale) {
+    case .done: "Agent work completed"
+    case .outdated: "Agent status out of date"
+    case .working, .needsInput: countLabel
+    }
   }
 
-  /// The secondary text after the headline: the workspace, unless it already took the
-  /// title's place.
-  public var secondaryText: String? {
-    headlineTitle == nil ? nil : headlineWorkspace
+  /// The header's tinted suffix after a "·" while the headline waits on the user; `nil`
+  /// otherwise (and once stale — the app no longer knows).
+  public func headerAttention(isStale: Bool) -> String? {
+    displayStatus(isStale: isStale) == .needsInput ? "Needs input" : nil
   }
 
   /// What a tap on the activity opens: the headline session (in its own profile), or `nil`

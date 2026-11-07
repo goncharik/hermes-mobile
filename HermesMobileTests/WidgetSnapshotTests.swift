@@ -175,14 +175,14 @@ final class WidgetSnapshotTests: SnapshotTestCase {
     AgentActivityContent(
       activeCount: count,
       headlineTitle: title,
-      headlineWorkspace: "hermes-mobile",
       headlineSessionID: "s1",
       headlineProfile: "default",
       status: status
     )
   }
 
-  /// A stand-in for the Lock Screen's activity platter: the system background, rounded.
+  /// A stand-in for the Lock Screen's activity platter: the system background, rounded. The
+  /// iOS 26 glass (`activityBackgroundTint(.clear)`) only the system draws — a device check.
   private func lockScreenActivity(_ content: AgentActivityContent, isStale: Bool = false) -> some View {
     AgentsActivityView(content: content, isStale: isStale)
       .frame(width: activityWidth)
@@ -190,7 +190,7 @@ final class WidgetSnapshotTests: SnapshotTestCase {
       .clipShape(.rect(cornerRadius: 22, style: .continuous))
   }
 
-  /// One agent working; the long title truncates, the workspace keeps its room (T3 layout).
+  /// One agent working; the long title truncates before the status (T3 layout).
   func testLiveActivity_working_dark() {
     assertSnapshot(of: lockScreenActivity(activityContent(1)), as: componentImage())
   }
@@ -217,7 +217,7 @@ final class WidgetSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: lockScreenActivity(activityContent(3), isStale: true), as: componentImage())
   }
 
-  /// "Show session titles" off: the workspace takes the title's place.
+  /// "Show session titles" off: the row shows only the status.
   func testLiveActivity_titleOmitted() {
     assertSnapshot(of: lockScreenActivity(activityContent(1, title: nil)), as: componentImage())
   }

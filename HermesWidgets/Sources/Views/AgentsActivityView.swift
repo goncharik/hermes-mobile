@@ -2,10 +2,15 @@ import HermesWidgetKit
 import SwiftUI
 import WidgetKit
 
-/// The aggregate Live Activity's lock-screen banner (#138), T3 Code style: "Hermes" and
-/// "N active agent(s)" on top; the headline session's title (truncated), its workspace in
-/// secondary and a coloured status label on the line below. With "Show session titles" off
-/// the workspace takes the title's place. The expanded Dynamic Island shows the same layout.
+/// The aggregate Live Activity's lock-screen banner (#138), after T3 Code's: the Hermes mark on
+/// the left and a centred header ("1 active agent", "· Needs input", "Agent work completed");
+/// below it the headline session's title (truncated) and its tinted status. No workspace label.
+/// With "Show session titles" off the row shows only the status. The expanded Dynamic Island
+/// shows the same layout.
+///
+/// Small fixed sizes (13 / 11 pt, as T3) and hierarchical `.primary` / `.secondary` styles, so
+/// the text takes the system's vibrancy over the iOS 26 glass the configuration reveals
+/// (`AgentsLiveActivity`).
 ///
 /// Plain values only (no `ActivityViewContext`), so the snapshot tests can render it:
 /// `isStale` is ActivityKit's `context.isStale` — past the stale date working / needs input
@@ -22,69 +27,105 @@ struct AgentsActivityView: View {
   let isStale: Bool
   var style: Style = .lockScreen
 
+  private var status: AgentActivityContent.DisplayStatus {
+    content.displayStatus(isStale: isStale)
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 6) {
       header
       headline
     }
-    .padding(style == .lockScreen ? 16 : 0)
+    .padding(style == .lockScreen ? 14 : 0)
   }
 
   private var header: some View {
     ZStack {
-      HStack(spacing: 6) {
+      HStack(spacing: 0) {
         HermesGlyph()
-          .frame(width: 16, height: 16)
-        Text("Hermes")
-          .font(.subheadline.weight(.bold))
+          .frame(width: 20, height: 13)
+          .foregroundStyle(.primary)
         Spacer(minLength: 0)
       }
-      .accessibilityElement(children: .combine)
-      Text(content.countLabel)
-        .font(.subheadline.weight(.semibold))
-        .lineLimit(1)
-    }
-  }
-
-  private var headline: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      if let headlineText = content.headlineText {
-        Text(headlineText)
-          .font(.body.weight(.semibold))
-          .lineLimit(1)
+      HStack(spacing: 6) {
+        Text(content.headerTitle(isStale: isStale))
+          .foregroundStyle(status == .done ? AnyShapeStyle(statusTint) : AnyShapeStyle(.primary))
+        if let attention = content.headerAttention(isStale: isStale) {
+          Text(verbatim: "·")
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+          Text(attention)
+            .foregroundStyle(statusTint)
+        }
       }
-      if let secondaryText = content.secondaryText {
-        Text(secondaryText)
-          .font(.subheadline)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          // The title truncates first (T3): the workspace keeps its room.
-          .layoutPriority(1)
-      }
-      Spacer(minLength: 8)
-      AgentsActivityStatusLabel(status: content.displayStatus(isStale: isStale))
-        .layoutPriority(2)
+      .font(.system(size: 13, weight: .semibold))
+      .lineLimit(1)
+      // Clear of the mark on either side, so a long header never runs under it.
+      .padding(.horizontal, 24)
     }
     .accessibilityElement(children: .combine)
   }
+
+  private var headline: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 7) {
+      if let title = content.headlineTitle {
+        Text(title)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(.primary)
+          .lineLimit(1)
+        Spacer(minLength: 8)
+      }
+      AgentsActivityStatusLabel(status: status)
+        .layoutPriority(1)
+      if content.headlineTitle == nil {
+        Spacer(minLength: 0)
+      }
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private var statusTint: AnyShapeStyle {
+    AgentsActivityStatusLabel.tint(for: status, scheme: colorScheme, dimmed: isLuminanceReduced)
+  }
+
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 }
 
-/// The trailing status label: Working in blue, Needs input in yellow, Done in green,
-/// Outdated in secondary — the session list's status colours.
+/// The row's trailing status ("Working", "Needs input", "Done", "Outdated"), tinted with
+/// T3 Code's palette: light on the dark Live Activity material, deeper on a light one.
 struct AgentsActivityStatusLabel: View {
   let status: AgentActivityContent.DisplayStatus
 
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
   var body: some View {
     Text(status.label)
-      .font(.subheadline.weight(.semibold))
-      .foregroundStyle(status.color)
+      .font(.system(size: 11, weight: .semibold))
+      .foregroundStyle(Self.tint(for: status, scheme: colorScheme, dimmed: isLuminanceReduced))
       .lineLimit(1)
       .fixedSize()
   }
+
+  /// The status tint: sky (working), amber (needs input), emerald (done), secondary once
+  /// outdated — and secondary for every status on the dimmed Always-On display.
+  static func tint(
+    for status: AgentActivityContent.DisplayStatus, scheme: ColorScheme, dimmed: Bool
+  ) -> AnyShapeStyle {
+    if dimmed { return AnyShapeStyle(.secondary) }
+    let dark = scheme == .dark
+    switch status {
+    case .working: return AnyShapeStyle(dark ? Color(hex: 0x7DD3FC) : Color(hex: 0x0284C7))
+    case .needsInput: return AnyShapeStyle(dark ? Color(hex: 0xFCD34D) : Color(hex: 0xD97706))
+    case .done: return AnyShapeStyle(dark ? Color(hex: 0x6EE7B7) : Color(hex: 0x059669))
+    case .outdated: return AnyShapeStyle(.secondary)
+    }
+  }
 }
 
-/// The compact Dynamic Island's trailing side: how many agents are active, a yellow "?" while
-/// the headline needs input, a green checkmark once done; secondary once stale.
+/// The compact Dynamic Island's trailing side: how many agents are active, a "?" while the
+/// headline needs input, a checkmark once done; secondary once stale. The island is always dark.
 struct AgentsActivityCompactTrailing: View {
   let content: AgentActivityContent
   let isStale: Bool
@@ -95,8 +136,8 @@ struct AgentsActivityCompactTrailing: View {
 
   var body: some View {
     label
-      .font(.subheadline.weight(.bold))
-      .foregroundStyle(status.color)
+      .font(.system(size: 13, weight: .bold))
+      .foregroundStyle(AgentsActivityStatusLabel.tint(for: status, scheme: .dark, dimmed: false))
       .fixedSize()
       .accessibilityLabel("\(content.countLabel), \(status.label)")
   }
@@ -111,8 +152,7 @@ struct AgentsActivityCompactTrailing: View {
 }
 
 extension AgentActivityContent.DisplayStatus {
-  /// The one status colour table (the session list's status dots), for the activity and the
-  /// sessions widget's row glyphs alike.
+  /// The sessions widget's row-glyph colours (the session list's status dots).
   var color: Color {
     switch self {
     case .working: .blue
@@ -120,5 +160,17 @@ extension AgentActivityContent.DisplayStatus {
     case .done: .green
     case .outdated: .secondary
     }
+  }
+}
+
+private extension Color {
+  /// An sRGB colour from a 0xRRGGBB literal.
+  init(hex: UInt32) {
+    self.init(
+      .sRGB,
+      red: Double((hex >> 16) & 0xFF) / 255,
+      green: Double((hex >> 8) & 0xFF) / 255,
+      blue: Double(hex & 0xFF) / 255
+    )
   }
 }

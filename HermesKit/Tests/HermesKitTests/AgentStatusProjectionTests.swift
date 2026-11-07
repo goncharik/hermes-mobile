@@ -214,7 +214,7 @@ struct AgentStatusProjectionTests {
     expectNoDifference(
       projection?.activityContent,
       AgentActivityContent(
-        activeCount: 1, headlineTitle: "Title a", headlineWorkspace: "hermes",
+        activeCount: 1, headlineTitle: "Title a",
         headlineSessionID: "a", headlineProfile: "work", status: .working
       )
     )
@@ -223,7 +223,6 @@ struct AgentStatusProjectionTests {
   @Test func titleOmittedFromTheActivityWhenShowTitlesIsOff() {
     let projection = make([session("a", minutesAgo: 1, active: true)], showsTitles: false)
     #expect(projection?.activityContent?.headlineTitle == nil)
-    #expect(projection?.activityContent?.headlineWorkspace == "hermes")
     // The Home Screen widgets keep the title.
     #expect(projection?.rows.first?.title == "Title a")
     // Flipping the pref is a projection change (the activity updates through the edge).
