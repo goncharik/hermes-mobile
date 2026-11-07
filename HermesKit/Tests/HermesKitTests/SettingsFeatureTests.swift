@@ -114,6 +114,7 @@ struct SettingsFeatureTests {
     }
     await store.send(.saveTokenTapped) {
       $0.connection.token = "newtok"
+      $0.agentUpdate.connection.token = "newtok"
       $0.savedConfirmation = true
     }
     await store.receive(\.delegate.tokenSaved)

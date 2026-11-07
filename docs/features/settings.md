@@ -44,7 +44,9 @@ the push authorization status, and the push plugin info.
    and an empty bearer provider reads `OAuth`. Profile shows only when `profileName != nil`
    (nil when the agent has no profiles API). Agent shows only once `agentVersion` lands: the
    `/api/status` probe is informational, so a failure maps to `nil` with **no banner** (the
-   row stays hidden), only an `api.status` debug-log note. The token `SecureField` + "Save token" show only when `showsTokenField`
+   row stays hidden), only an `api.status` debug-log note. Under it, `AgentUpdateRows` hosts
+   the agent updater (hidden unless the agent has the update endpoints and accepts this
+   credential; contract in `docs/features/agent-update.md`). The token `SecureField` + "Save token" show only when `showsTokenField`
    (`AuthSession.isToken`): a password or OAuth session has no token to re-paste. Reconnect.
 2. **App.** "App Icon" (value `selectedAppIconLabel`, plus a small thumbnail of
    `selectedAppIconOption`'s preview) pushes the picker. "Default swipe
@@ -214,7 +216,8 @@ the license text) and takes no store.
 - HermesKit: `AppIconCatalogTests`, `AcknowledgementTests`, `FeedbackLinksTests`, `BundleInfoClientTests`,
   `AuthSessionTests` (labels), `DiagnosticsReportTests`, `AppIconPickerFeatureTests`,
   `DiagnosticsFeatureTests`, `SettingsFeatureTests` (seeding, pushes, gates, sign out never
-  touching the icon), `SessionListFeatureTests` (`profileName` seeding).
+  touching the icon), `SessionListFeatureTests` (`profileName` seeding), `AgentUpdateTests`
+  (the updater; see `agent-update.md`).
 - Snapshots: `SettingsSnapshotTests` (per-regime auth, profile, unloaded, Acknowledgements;
   whole-Form fixtures at `deviceImage(height: formHeight)`, 1 800 pt, so Feedback, About and
   Sign out are in frame), `AppIconPickerSnapshotTests`,

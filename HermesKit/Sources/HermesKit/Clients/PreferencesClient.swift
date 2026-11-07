@@ -2,6 +2,9 @@ import ComposableArchitecture
 import DependenciesMacros
 import Foundation
 
+/// Serializes the owned-update slot's read-modify-write (compare-and-clear) across threads.
+private let ownedUpdateLock = NSLock()
+
 /// Non-secret, persisted app preferences. Currently just the last server URL, kept so
 /// the app can auto-reconnect on launch without re-running onboarding (the token lives
 /// in `KeychainClient`). Live implementation backs onto `UserDefaults`; an in-memory
@@ -54,6 +57,14 @@ public struct PreferencesClient: Sendable {
   /// Device-global, cleared on logout via `clearModelPickerPrefs()`.
   public var loadFavoriteModels: @Sendable () -> [FavoriteModel] = { [] }
   public var saveFavoriteModels: @Sendable (_ favorites: [FavoriteModel]) -> Void
+  /// The agent update THIS phone started (`OwnedAgentUpdate`: action id + POST time, no
+  /// secret), so reopening Settings or relaunching re-observes it instead of losing it. One
+  /// slot: loading under a different `scope` (server + account) drops it. Cleared on logout.
+  public var loadOwnedAgentUpdate: @Sendable (_ scope: String) -> OwnedAgentUpdate? = { _ in nil }
+  public var saveOwnedAgentUpdate: @Sendable (_ owned: OwnedAgentUpdate) -> Void
+  /// Compare-and-clear: drops the slot only while it still names `actionID`, so settling an
+  /// old run can't erase a newer one; `nil` clears whatever is stored (logout).
+  public var clearOwnedAgentUpdate: @Sendable (_ actionID: String?) -> Void
 }
 
 public extension PreferencesClient {
@@ -92,6 +103,7 @@ public extension PreferencesClient {
     let autoSpeakKey = "hermes.auto-speak-replies"
     let collapsedProvidersKey = "hermes.model-picker.collapsed-providers"
     let favoriteModelsKey = "hermes.model-picker.favorite-models"
+    let ownedUpdateKey = "hermes.agent-update-owned"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
 
@@ -160,6 +172,34 @@ public extension PreferencesClient {
         } else if let data = try? JSONEncoder().encode(favorites) {
           store.set(data, forKey: favoriteModelsKey)
         }
+      },
+      loadOwnedAgentUpdate: { scope in
+        ownedUpdateLock.withLock {
+          guard let data = store.data(forKey: ownedUpdateKey) else { return nil }
+          guard let owned = try? JSONDecoder().decode(OwnedAgentUpdate.self, from: data),
+                owned.scope == scope
+          else {
+            store.removeObject(forKey: ownedUpdateKey)
+            return nil
+          }
+          return owned
+        }
+      },
+      saveOwnedAgentUpdate: { owned in
+        ownedUpdateLock.withLock {
+          store.set(try? JSONEncoder().encode(owned), forKey: ownedUpdateKey)
+        }
+      },
+      clearOwnedAgentUpdate: { actionID in
+        ownedUpdateLock.withLock {
+          if let actionID {
+            guard let data = store.data(forKey: ownedUpdateKey),
+                  let owned = try? JSONDecoder().decode(OwnedAgentUpdate.self, from: data),
+                  owned.actionID == actionID
+            else { return }
+          }
+          store.removeObject(forKey: ownedUpdateKey)
+        }
       }
     )
   }
@@ -176,6 +216,7 @@ public extension PreferencesClient {
     let autoSpeak = LockIsolated(false)
     let collapsedProviders = LockIsolated<Set<String>>([])
     let favoriteModels = LockIsolated<[FavoriteModel]>([])
+    let ownedUpdate = LockIsolated<OwnedAgentUpdate?>(nil)
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -201,7 +242,20 @@ public extension PreferencesClient {
       loadCollapsedModelProviders: { collapsedProviders.value },
       saveCollapsedModelProviders: { collapsedProviders.setValue($0) },
       loadFavoriteModels: { favoriteModels.value },
-      saveFavoriteModels: { favoriteModels.setValue($0) }
+      saveFavoriteModels: { favoriteModels.setValue($0) },
+      loadOwnedAgentUpdate: { scope in
+        ownedUpdate.withValue { value in
+          guard let owned = value else { return nil }
+          guard owned.scope == scope else { value = nil; return nil }
+          return owned
+        }
+      },
+      saveOwnedAgentUpdate: { ownedUpdate.setValue($0) },
+      clearOwnedAgentUpdate: { actionID in
+        ownedUpdate.withValue { value in
+          if actionID == nil || value?.actionID == actionID { value = nil }
+        }
+      }
     )
   }
 }
