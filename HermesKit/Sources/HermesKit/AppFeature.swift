@@ -100,6 +100,12 @@ public struct AppFeature {
     /// from the activity content (the Home Screen widgets keep it). Part of `agentStatus`,
     /// so flipping it updates the activity through the one edge.
     public var liveActivityShowsTitles = true
+    /// Until when the widget mirror may vouch for working / needs-input while backgrounded:
+    /// stamped by the `.background` edge (`now` + the running slot's ~30 s grace + a margin)
+    /// and reused by every write until `.active` clears it, so a change during the grace can't
+    /// extend the promise past what the app can still observe. `nil` in the foreground, and
+    /// when the edge found nothing to mirror (`agentStatus == nil`).
+    var backgroundFreshUntil: Date?
 
     public init(
       onboarding: ConnectionFeature.State = .init(),
@@ -330,9 +336,24 @@ public struct AppFeature {
     case reauth(PresentationAction<ReauthFeature.Action>)
   }
 
-  /// Ids for the long-running incoming-tap and launch-intent observers and the
-  /// background-grace listener.
-  private enum CancelID { case backgroundGrace, launchIntents, pushTaps, sessionRemovals }
+  /// Ids for the long-running incoming-tap and launch-intent observers, the
+  /// background-grace listener, the chat menu's session removals, and the widget-surfaces
+  /// sync (debounced, last-wins).
+  private enum CancelID {
+    case backgroundGrace, launchIntents, pushTaps, sessionRemovals, surfacesSync
+  }
+
+  /// How long a foreground mirror write vouches for its rows: the app observes the list for
+  /// as long as it stays in the foreground, so this only bounds a crash / kill that skips
+  /// the `.background` restamp.
+  static let foregroundFreshness: TimeInterval = 8 * 60 * 60
+  /// The background restamp: the running slot's ~30 s grace window (`BackgroundTaskClient`)
+  /// when there is one, plus a margin for the suspension itself.
+  static let backgroundGraceFreshness: TimeInterval = 30
+  static let backgroundFreshnessMargin: TimeInterval = 10
+  /// Coalesces a burst of `agentStatus` changes (a list fetch landing next to a slot's
+  /// running flip) into one mirror write + timeline reload.
+  static let surfacesSyncDebounce: Duration = .seconds(1)
 
   /// Name of the finite background task requested while a running turn is backgrounded
   /// (shows up in OS background-task diagnostics). Tests re-type the literal on purpose —
@@ -348,6 +369,9 @@ public struct AppFeature {
   @Dependency(\.backgroundTask) var backgroundTask
   @Dependency(\.chatSnapshot) var chatSnapshot
   @Dependency(\.debugLog) var debugLog
+  @Dependency(\.widgetMirror) var widgetMirror
+  @Dependency(\.date) var date
+  @Dependency(\.continuousClock) var clock
   // Only for `releaseSlotDeviceResources` — what a dropped slot holds outside its effects.
   @Dependency(\.audioRecorder) var audioRecorder
   @Dependency(\.idleTimer) var idleTimer
@@ -489,8 +513,8 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case let .scenePhaseChanged(phase):
@@ -505,7 +529,11 @@ public struct AppFeature {
           // grace window kept alive is reused, not redialed) and refresh the list
           // immediately (don't wait for the poll).
           state.isSceneBackgrounded = false
+          state.backgroundFreshUntil = nil
           return .merge(
+            // The app observes again: restamp the mirror with the foreground freshness so the
+            // "Outdated" the background edge scheduled doesn't fire under a live app.
+            syncSurfaces(state, debounced: false),
             .cancel(id: CancelID.backgroundGrace),
             .run { [backgroundTask] _ in await backgroundTask.end() },
             state.liveChat != nil ? .send(.liveChat(.foreground)) : .none,
@@ -525,7 +553,17 @@ public struct AppFeature {
           // Backgrounding: flush the live chat's snapshot + anchor IMMEDIATELY (don't rely on
           // the 1s debounce) so a process kill can't lose the latest paint or the timer anchor.
           state.isSceneBackgrounded = true
-          guard let chat = state.liveChat else { return .none }
+          // The widgets may vouch for working / needs-input only as long as the app can still
+          // observe: the grace window of a running slot plus a margin. Written NOW, not
+          // debounced — an idle app may be suspended within seconds.
+          var surfaces: Effect<Action> = .none
+          if state.agentStatus != nil {
+            var freshFor = Self.backgroundFreshnessMargin
+            if state.liveChat?.isRunning == true { freshFor += Self.backgroundGraceFreshness }
+            state.backgroundFreshUntil = date.now.addingTimeInterval(freshFor)
+            surfaces = syncSurfaces(state, debounced: false)
+          }
+          guard let chat = state.liveChat else { return surfaces }
           // Read aloud (#74): no background audio — stop the clip first, idle AND running
           // slots alike (the grace below keeps a running turn's process, and so the player,
           // alive), and hold auto-speak until `.foreground`.
@@ -539,8 +577,9 @@ public struct AppFeature {
           // socket-only disconnect (state stays in memory for the #26-preserving foreground
           // hydrate); catch-up is then the existing push + `.foreground` reconnect. An idle
           // chat starts NO task — nothing to keep alive, no battery burn.
-          guard chat.isRunning else { return flush }
+          guard chat.isRunning else { return .merge(surfaces, flush) }
           return .merge(
+            surfaces,
             flush,
             .run { [backgroundTask] send in
               for await _ in await backgroundTask.begin(Self.backgroundGraceTaskName) {
@@ -732,8 +771,8 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case .liveChat(.delegate(.sessionExpired)):
@@ -783,8 +822,10 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         state.home = makeHomeState(connection: connection)
+        // The mirror shows the previous user's sessions: clear it like a logout; the new
+        // list's first fetch writes the new user's rows through the `agentStatus` edge.
         let identityCleanup: Effect<Action> = .merge(
-          releaseSlot, setBadge(state), .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(), .cancel(id: CancelID.sessionRemovals)
         )
         // The stash was just cleared, so there is nothing to replay — but in regular the new
         // user's detail column still needs its fresh new chat. Routed through the `.fillLiveChat`
@@ -819,8 +860,8 @@ public struct AppFeature {
         state.pendingLaunchIntentServerURL = nil
         state.pendingApprovalSessionIDs = []
         return .merge(
-          releaseSlot, setBadge(state), serverSideLogout(connection: connection),
-          .cancel(id: CancelID.sessionRemovals)
+          releaseSlot, setBadge(state), clearSurfaces(),
+          serverSideLogout(connection: connection), .cancel(id: CancelID.sessionRemovals)
         )
 
       case let .liveChat(.delegate(.branchCreated(creation))):
@@ -1036,6 +1077,61 @@ public struct AppFeature {
         return .none
       }
     }
+    // The ONE edge the widget surfaces sync from (#138): whatever moved the projection — a
+    // list fetch, a slot's running flip, an approval card, the show-titles pref — rewrites the
+    // App Group mirror once the burst settles. Evaluated after every child reducer, so it reads
+    // the reduced state. `nil` is "unknown" (signed out, or no unfiltered fetch yet): hold —
+    // write nothing; a logout clears the mirror on its own.
+    .onChange(of: \.agentStatus) { _, status in
+      Reduce { state, _ in
+        guard status != nil else { return .none }
+        return syncSurfaces(state, debounced: true)
+      }
+    }
+  }
+
+  /// Writes `state.agentStatus` into the widget mirror and reloads the sessions widget, stamped
+  /// with how long the app can vouch for it: `backgroundFreshUntil` while backgrounded (a
+  /// change during the grace window must not extend the promise; `now` + the margin when the
+  /// background edge had nothing to stamp), else `now` + `foregroundFreshness`. Last-wins under
+  /// `CancelID.surfacesSync`: `debounced` waits `surfacesSyncDebounce` first, so a burst
+  /// coalesces into one write; the scene edges write at once and supersede a pending one. A
+  /// `nil` projection writes nothing. A failed write is only logged — the mirror is a
+  /// non-authoritative cache the next change rewrites.
+  private func syncSurfaces(_ state: State, debounced: Bool) -> Effect<Action> {
+    guard let status = state.agentStatus else { return .none }
+    let now = date.now
+    let freshUntil = state.isSceneBackgrounded
+      ? state.backgroundFreshUntil ?? now.addingTimeInterval(Self.backgroundFreshnessMargin)
+      : now.addingTimeInterval(Self.foregroundFreshness)
+    let snapshot = WidgetSessionSnapshot(
+      freshUntil: freshUntil, isSignedIn: true, rows: status.rows
+    )
+    return .run { [widgetMirror, clock, debugLog] _ in
+      if debounced { try await clock.sleep(for: Self.surfacesSyncDebounce) }
+      do {
+        try widgetMirror.write(snapshot)
+      } catch {
+        debugLog.note("widget.mirror", "write failed: \(error)")
+      }
+      widgetMirror.reloadTimelines()
+    }
+    .cancellable(id: CancelID.surfacesSync, cancelInFlight: true)
+  }
+
+  /// The logout half of the mirror: replace it with the signed-out snapshot and reload, so the
+  /// widget stops showing the old identity's sessions. Shares the sync's cancel id, so a write
+  /// still waiting out its debounce can't land after the clear.
+  private func clearSurfaces() -> Effect<Action> {
+    .run { [widgetMirror, debugLog] _ in
+      do {
+        try widgetMirror.clear()
+      } catch {
+        debugLog.note("widget.mirror", "clear failed: \(error)")
+      }
+      widgetMirror.reloadTimelines()
+    }
+    .cancellable(id: CancelID.surfacesSync, cancelInFlight: true)
   }
 
   /// The layout regime changed: set `layout` FIRST (the view's column move fires

@@ -404,12 +404,12 @@ guard.
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Create: `HermesKit/Tests/HermesKitTests/WidgetSurfacesTests.swift`
 
-- [ ] implement `WidgetMirrorClient` (live: atomic write into the App Group container + `WidgetCenter.reloadTimelines(ofKind:)`, iOS-guarded; test: unimplemented)
-- [ ] add `.onChange(of: \.agentStatus)` → a debounced `cancelInFlight` sync effect (1 s, `continuousClock`) that writes `WidgetSessionSnapshot(freshUntil: now + 8h)`; `nil` → no write
-- [ ] on `.background` re-sync with `freshUntil = now + (running slot ? 30 : 0) + 10 s`; on `.foreground` re-sync with `+ 8h`
-- [ ] on every logout site: `widgetMirror.clear()` + reload (a signed-out snapshot, `isSignedIn = false`)
-- [ ] write `TestStore` tests with `TestClock`: a change writes once after the debounce; a burst coalesces; nil writes nothing; the background `freshUntil` with and without a running slot; the foreground restore; logout clears
-- [ ] run tests - must pass before task 8
+- [x] implement `WidgetMirrorClient` (live: atomic write into the App Group container + `WidgetCenter.reloadTimelines(ofKind:)`, iOS-guarded; test: unimplemented) (⚠️ test value is a no-op, not unimplemented — CLAUDE.md's "no-op or in-memory" convention, as `QuickActionsClient`; every logout and list fetch reaches it. ➕ `fileBacked(at:reloadTimelines:)` holds the file logic so macOS tests cover it; `AppGroup.sessionsWidgetKind` is the shared kind for Task 8)
+- [x] add `.onChange(of: \.agentStatus)` → a debounced `cancelInFlight` sync effect (1 s, `continuousClock`) that writes `WidgetSessionSnapshot(freshUntil: now + 8h)`; `nil` → no write (➕ the edge calls `syncSurfaces` directly, no `.agentStatusChanged` action; a write failure is only debug-logged)
+- [x] on `.background` re-sync with `freshUntil = now + (running slot ? 30 : 0) + 10 s`; on `.foreground` re-sync with `+ 8h` (➕ both write at once, no debounce; the background stamp is kept in `State.backgroundFreshUntil` and reused by any edge write until `.active`, so a change during the grace can't re-extend it)
+- [x] on every logout site: `widgetMirror.clear()` + reload (a signed-out snapshot, `isSignedIn = false`) (➕ the clear shares the sync cancel id, so a pending debounced write can't land after it; the different-user re-auth clears too)
+- [x] write `TestStore` tests with `TestClock`: a change writes once after the debounce; a burst coalesces; nil writes nothing; the background `freshUntil` with and without a running slot; the foreground restore; logout clears (➕ a change while backgrounded keeps the background stamp; the file-backed client round-trip; 17 existing tests that cross a first fetch got `ImmediateClock`)
+- [x] run tests - must pass before task 8
 
 ### Task 8: Build the sessions widget and its timeline provider
 

@@ -590,6 +590,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.chatSnapshot = snapshotClient
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -648,6 +649,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.chatSnapshot = .inMemory()
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -1963,6 +1965,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       // The chat reconnect opens a never-yielding socket; the list refresh hits REST.
       $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { _ in } }
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
@@ -1991,6 +1994,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
       $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
@@ -6201,6 +6205,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6257,6 +6262,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6310,6 +6316,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6351,6 +6358,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.uuid = .incrementing
       $0.preferences = .inMemory()
@@ -6396,6 +6404,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.push = PushClient.inMemory().client
@@ -6426,6 +6435,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6473,6 +6483,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6514,6 +6525,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
@@ -6651,6 +6663,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -6690,6 +6703,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
@@ -6734,6 +6748,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.uuid = .incrementing
       $0.preferences = .inMemory()
@@ -6779,6 +6794,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.continuousClock = ImmediateClock() // the widget-mirror debounce after the refetch
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.preferences = .inMemory()
       $0.chatSnapshot = .inMemory()
