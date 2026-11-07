@@ -386,6 +386,9 @@ struct ChatView: View {
         isParked: store.isQueueParked,
         composerHasDraft: !store.composerText
           .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !store.attachments.isEmpty,
+        canSteer: store.canSteerQueued,
+        onSteer: { store.send(.queuedPromptSteer(id: $0)) },
+        steeringID: store.steeringEntryID,
         onSendNow: { store.send(.queuedPromptSendNow(id: $0)) },
         onEdit: { store.send(.queuedPromptEditTapped(id: $0)) },
         onDelete: { store.send(.queuedPromptDeleted(id: $0)) }
