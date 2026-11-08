@@ -106,14 +106,23 @@ struct SessionListCronTests {
     #expect(unsupported.effectiveTab == .sessions)
     #expect(unsupported.showsEmptyPlaceholder)
 
-    // Runs alone (flat fallback, no jobs) still make a Cron Jobs tab, and cron runs never
-    // count as Sessions-tab content.
+    // With the jobs API, runs alone (e.g. a deleted job's) never make a Cron Jobs tab.
     let runsOnly = SessionListFeature.State(
       connection: connection,
       sessions: [cronSession("job1", stamp: "20260702_090000")]
     )
-    #expect(runsOnly.hasCronContent)
+    #expect(!runsOnly.hasCronContent)
     #expect(runsOnly.showsEmptyPlaceholder)
+
+    // Without it, runs alone make the flat-fallback tab, and cron runs never count as
+    // Sessions-tab content.
+    let flatRuns = SessionListFeature.State(
+      connection: connection,
+      sessions: [cronSession("job1", stamp: "20260702_090000")],
+      cronJobsSupported: false
+    )
+    #expect(flatRuns.hasCronContent)
+    #expect(flatRuns.showsEmptyPlaceholder)
 
     // Nothing at all → placeholder, unless still loading or failed.
     var empty = SessionListFeature.State(connection: connection)
@@ -153,14 +162,15 @@ struct SessionListCronTests {
       $0.now = self.now
       $0.isLoading = true
     }
+    // Only a cron run, no interactive session: still loading until the jobs decide the tab.
     await store.receive(\.sessionsResponse.success) {
-      $0.isLoading = false
       $0.sessions = [self.cronSession("job1", stamp: "20260702_090000")]
       // Cron rows ride along; the projection, not the source, excludes them.
       $0.statusSessions = [self.cronSession("job1", stamp: "20260702_090000")]
       $0.seenCounts = ["cron_job1_20260702_090000": 1]  // cron sessions ARE seeded (issue #24 gap 1)
     }
     await store.receive(\.cronJobsResponse.success) {
+      $0.isLoading = false
       $0.cronJobs = [CronJob(id: "job1", name: "Digest")]
     }
     // Profile-scoped agents get the LITERAL selected name (matching the scoped session list).
@@ -538,11 +548,36 @@ struct SessionListCronTests {
       $0.expandedCronRuns = [self.runRow("local-1")]
       $0.expandedCronRunsFailed = false
     }
-    // Re-expanding after a collapse starts clean (no stale failed flag).
-    await store.send(.cronJobTapped(id: "job1")) {
-      $0.expandedCronJobID = nil
-      $0.expandedCronRuns = nil
+  }
+
+  @Test func collapsingOrSwitchingAwayFromAFailedJobStartsTheNextExpansionClean() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, expandedCronJobID: "job1", expandedCronRunsFailed: true
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.cronJobRuns = { @Sendable _, _, _, _ in try await Task.never() }
     }
+
+    // Switching to another job never shows job1's failure under it while it loads.
+    await store.send(.cronJobTapped(id: "job2")) {
+      $0.expandedCronJobID = "job2"
+      $0.expandedCronRunsFailed = false
+    }
+    await store.send(.cronRunsResponse(jobID: "job2", .failure(.unreachable))) {
+      $0.expandedCronRunsFailed = true
+    }
+    // Collapsing with the flag set clears it, so re-expanding starts on the spinner.
+    await store.send(.cronJobTapped(id: "job2")) {
+      $0.expandedCronJobID = nil
+      $0.expandedCronRunsFailed = false
+    }
+    await store.send(.cronJobTapped(id: "job2")) {
+      $0.expandedCronJobID = "job2"
+    }
+    await store.send(.onDisappear)
   }
 
   @Test func aRefreshFailureKeepsTheRunsOnScreen() async {
@@ -563,8 +598,13 @@ struct SessionListCronTests {
 
   @Test func aPollTickRefetchesRunsOnlyWhileAJobIsExpanded() async {
     let runsFetches = LockIsolated<[String]>([])
+    let first = [runRow("local-1")]
     let fresh = [runRow("local-2"), runRow("local-1")]
-    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, selectedTab: .cron, cronJobs: [CronJob(id: "job1", name: "Digest")]
+      )
+    ) {
       SessionListFeature()
     } withDependencies: {
       $0.date = .constant(now)
@@ -572,8 +612,8 @@ struct SessionListCronTests {
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
       $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job1", name: "Digest")] }
       $0.hermesREST.cronJobRuns = { @Sendable _, id, _, _ in
-        runsFetches.withValue { $0.append(id) }
-        return fresh
+        let count = runsFetches.withValue { $0.append(id); return $0.count }
+        return count == 1 ? first : fresh
       }
     }
     store.exhaustivity = .off
@@ -583,22 +623,83 @@ struct SessionListCronTests {
     await store.receive(\.cronJobsResponse.success)
     #expect(runsFetches.value.isEmpty)
 
-    // Expanded → the poll also refreshes the open job's runs.
+    // Expanded → the poll also refreshes the open job's runs, and the refreshed runs land.
     await store.send(.cronJobTapped(id: "job1"))
     await store.receive(\.cronRunsResponse)
-    #expect(runsFetches.value == ["job1"])
+    #expect(store.state.expandedCronRuns == first)
     await store.send(.pollTick)
     await store.receive(\.cronJobsResponse.success)
     await store.finish()
+    await store.skipReceivedActions(strict: false)  // the runs may land after the jobs
     #expect(runsFetches.value == ["job1", "job1"])
     #expect(store.state.expandedCronRuns == fresh)
+  }
+
+  @Test func runsArePolledOnlyOnTheCronTabAndRefreshOnReturn() async {
+    let runsFetches = LockIsolated(0)
+    let runs = [runRow("local-1")]
+    let chat = Session(id: "chat", title: "Chat")
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, sessions: [chat],
+        cronJobs: [CronJob(id: "job1", name: "Digest")], expandedCronJobID: "job1",
+        expandedCronRuns: []
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [chat] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job1", name: "Digest")] }
+      $0.hermesREST.cronJobRuns = { @Sendable _, _, _, _ in
+        runsFetches.withValue { $0 += 1 }
+        return runs
+      }
+    }
+    store.exhaustivity = .off
+
+    // On the Sessions tab nothing shows the runs: the refresh skips them.
+    #expect(store.state.effectiveTab == .sessions)
+    await store.send(.pulledToRefresh)
+    await store.receive(\.cronJobsResponse.success)
+    await store.finish()
+    #expect(runsFetches.value == 0)
+
+    // Back on the Cron tab, the expanded job's runs refresh at once.
+    await store.send(.selectTab(.cron))
+    await store.receive(\.cronRunsResponse)
+    #expect(runsFetches.value == 1)
+    #expect(store.state.expandedCronRuns == runs)
+  }
+
+  @Test func aRefreshWhileSearchingSkipsTheRunsFetch() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, searchQuery: "digest", selectedTab: .cron,
+        cronJobs: [CronJob(id: "job1", name: "Digest")], expandedCronJobID: "job1",
+        expandedCronRuns: []
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.hermesREST.search = { @Sendable _, _, _ in [] }
+      // `cronJobRuns` deliberately unstubbed: the Cron tab is hidden while searching.
+    }
+    store.exhaustivity = .off
+
+    await store.send(.pulledToRefresh)
+    await store.receive(\.sessionsResponse.success)
+    await store.finish()
   }
 
   @Test func runNowSuccessRefetchesTheExpandedJobsRuns() async {
     let afterTrigger = [runRow("local-new"), runRow("local-1")]
     let store = TestStore(
       initialState: SessionListFeature.State(
-        connection: connection, cronJobs: [CronJob(id: "job1", name: "Digest")],
+        connection: connection, selectedTab: .cron, cronJobs: [CronJob(id: "job1", name: "Digest")],
         expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
       )
     ) {
@@ -664,6 +765,77 @@ struct SessionListCronTests {
       $0.expandedCronJobID = nil
       $0.expandedCronRunsFailed = false
     }
+  }
+
+  @Test func deletingTheActiveProfileClearsTheExpandedJobAndItsRuns() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, profiles: [Profile(name: "work")], selectedProfileName: "work",
+        profilesSupported: true, cronJobs: [CronJob(id: "job1")], expandedCronJobID: "job1",
+        expandedCronRuns: [runRow("local-1")]
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = .inMemory()
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
+      // `cronJobRuns` deliberately unstubbed: the re-home must not refetch the old job.
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [] }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.deleteProfileSucceeded(name: "work")) {
+      $0.selectedProfileName = SessionListFeature.State.defaultProfileName
+      $0.cronJobs = []
+      $0.expandedCronJobID = nil
+      $0.expandedCronRuns = nil
+    }
+    await store.finish()
+  }
+
+  @Test func disappearingCancelsTheRunsFetch() async {
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.cronJobRuns = { @Sendable _, _, _, _ in try await Task.never() }
+    }
+
+    await store.send(.cronJobTapped(id: "job1")) {
+      $0.expandedCronJobID = "job1"
+    }
+    // The hanging fetch is cancelled (the store would fail on an unfinished effect otherwise).
+    await store.send(.onDisappear)
+  }
+
+  @Test func aJobsRefetchThatDropsTheExpandedJobCollapsesIt() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, sessions: [Session(id: "chat", title: "Chat")], selectedTab: .cron,
+        cronJobs: [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
+        expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [Session(id: "chat", title: "Chat")] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job2", name: "Backup")] }
+      // `cronJobRuns` deliberately unstubbed: once collapsed, no poll asks for the gone job.
+    }
+
+    // Deleted elsewhere (desktop, CLI): its expansion goes with it.
+    await store.send(.cronJobsResponse(.success([CronJob(id: "job2", name: "Backup")]))) {
+      $0.cronJobs = [CronJob(id: "job2", name: "Backup")]
+      $0.expandedCronJobID = nil
+      $0.expandedCronRuns = nil
+    }
+    store.exhaustivity = .off
+    await store.send(.pollTick)
+    await store.receive(\.cronJobsResponse.success)
+    await store.finish()
   }
 
   @Test func cronRunTappedOpensASessionRunAndMarksItSeen() async {
@@ -836,8 +1008,10 @@ struct SessionListCronTests {
     await store.send(.triggerCronJob(id: "job1"))
     await store.send(.pauseCronJob(id: "job1"))
     await store.send(.resumeCronJob(id: "job1"))
+    // A confirmed delete is not dropped silently: it says why nothing happened.
     await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
       $0.confirmationDialog = nil
+      $0.loadError = SessionListFeature.cronJobBusyMessage
     }
   }
 
@@ -961,6 +1135,7 @@ struct SessionListCronTests {
     }
     await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
       $0.confirmationDialog = nil
+      $0.loadError = SessionListFeature.cronJobBusyMessage
     }
     gate.continuation.yield()
     gate.continuation.finish()
@@ -1047,6 +1222,100 @@ struct SessionListCronTests {
     #expect(!store.state.hasCronContent)
     #expect(!store.state.showsTabBar)
     #expect(store.state.effectiveTab == .sessions)
+  }
+
+  @Test func deletingTheLastJobNeverBringsItsRunsBackAsAFlatList() async {
+    // The deleted job's runs are still in the list's cron slice: they must not resurface.
+    var initial = confirmingDelete(
+      [CronJob(id: "job1", name: "Digest")],
+      sessions: [Session(id: "chat", title: "Chat"), runRow("local-1")]
+    )
+    initial.selectedTab = .cron
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [] }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = []
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(store.state.cronSessions.map(\.id) == ["local-1"])
+    #expect(!store.state.hasCronContent)
+    #expect(store.state.effectiveTab == .sessions)
+  }
+
+  @Test func deletingAnotherJobKeepsTheExpandedJobAndItsRuns() async {
+    let shown = [runRow("local-9")]
+    let store = TestStore(
+      initialState: confirmingDelete(
+        [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
+        expandedCronJobID: "job2", expandedCronRuns: shown
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job2", name: "Backup")] }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = [CronJob(id: "job2", name: "Backup")]
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(store.state.expandedCronJobID == "job2")
+    #expect(store.state.expandedCronRuns == shown)
+  }
+
+  @Test func aDeleteSupersedesAListLoadWhoseJobsResponseIsStillInFlight() async {
+    let clock = TestClock()
+    let deleted = LockIsolated(false)
+    let staleFetchStarted = AsyncStream<Void>.makeStream()
+    let chat = Session(id: "chat", title: "Chat")
+    let job1 = CronJob(id: "job1", name: "Digest"), job2 = CronJob(id: "job2", name: "Backup")
+    let store = TestStore(initialState: confirmingDelete([job1, job2], sessions: [chat])) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = clock
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [chat] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in
+        if deleted.value { return [job2] }
+        // A pre-DELETE snapshot that answers late.
+        staleFetchStarted.continuation.yield()
+        try await clock.sleep(for: .seconds(5))
+        return [job1, job2]
+      }
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in deleted.setValue(true) }
+    }
+    store.exhaustivity = .off
+
+    // A poll's list lands; its jobs half is still in flight when the DELETE is confirmed.
+    await store.send(.pulledToRefresh)
+    await store.receive(\.sessionsResponse.success)
+    for await _ in staleFetchStarted.stream { break }
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1"))))
+    await store.receive(\.cronJobActionFinished)
+    await store.receive(\.cronJobsResponse.success)
+    #expect(store.state.cronJobs.map(\.id) == ["job2"])
+
+    // The superseded stale response never lands to bring the deleted job back.
+    await clock.advance(by: .seconds(5))
+    await store.finish()
+    await store.skipReceivedActions(strict: false)  // applies a late response, if one landed
+    #expect(store.state.cronJobs.map(\.id) == ["job2"])
   }
 
   @Test func openingACronRunMarksItSeen() async {

@@ -225,12 +225,12 @@ struct SessionListView: View {
   /// (state dot, status caption), desktop-style: tapping a job expands a single-open inline
   /// list of its recent *runs*, loaded from `/runs` into `expandedCronRuns` — one timestamp
   /// row per run (`cronJobRunRow(_:)`); a context menu offers Run now / Pause / Resume /
-  /// Delete. Older agents (or before the first jobs fetch) fall back to the flat run list.
+  /// Delete. Only agents without the jobs API fall back to the flat run list.
   @ViewBuilder
   private var cronTabContent: some View {
     tabTitleHeader("Cron Jobs")
-    if store.sortedCronJobs.isEmpty {
-      // Flat fallback: agent without the jobs API, or the jobs fetch hasn't landed yet.
+    if !store.cronJobsSupported {
+      // Flat fallback: agent without the jobs API.
       ForEach(store.cronSessions) { session in
         cronRunRow(session)
       }
@@ -337,10 +337,10 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 2) {
           Text(job.title)
             .lineLimit(1)
-          if caption.kind != .none {
+          if let caption {
             Text(caption.text)
               .font(.caption)
-              .foregroundStyle(caption.kind == .overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+              .foregroundStyle(caption.isOverdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
               .lineLimit(1)
           }
         }
@@ -354,7 +354,7 @@ struct SessionListView: View {
     }
     .buttonStyle(.plain)
     .listRowSeparator(.hidden)
-    .accessibilityLabel(cronJobAccessibilityLabel(job, caption: caption.text, isExpanded: isExpanded))
+    .accessibilityLabel(cronJobAccessibilityLabel(job, caption: caption?.text, isExpanded: isExpanded))
     .contextMenu {
       Button("Run now", systemImage: "play") {
         store.send(.triggerCronJob(id: job.id))
@@ -391,9 +391,9 @@ struct SessionListView: View {
 
   /// Title, the visible status caption ("Paused", "Next in 1 hr.", "Overdue · 2 hr. ago" —
   /// so the state word is announced), and the disclosure state.
-  private func cronJobAccessibilityLabel(_ job: CronJob, caption: String, isExpanded: Bool) -> String {
+  private func cronJobAccessibilityLabel(_ job: CronJob, caption: String?, isExpanded: Bool) -> String {
     var parts = [job.title]
-    if !caption.isEmpty { parts.append(caption) }
+    if let caption { parts.append(caption) }
     parts.append(isExpanded ? "expanded" : "collapsed")
     return parts.joined(separator: ", ")
   }

@@ -133,33 +133,34 @@ struct CronJobTests {
       ("paused", "Paused"), ("error", "Error"), ("completed", "Completed"), ("disabled", "Disabled"),
     ] {
       let caption = CronJob(id: "a", state: state, nextRunAt: next).statusCaption(now: captionNow)
-      #expect(caption.text == word)
-      #expect(caption.kind == .inactive)
+      #expect(caption?.text == word)
+      #expect(caption?.isOverdue == false)
     }
   }
 
   @Test func statusCaptionTreatsDisabledFlagWithoutStateAsDisabled() {
     let job = CronJob(id: "a", enabled: false, nextRunAt: captionNow.addingTimeInterval(3600))
     let caption = job.statusCaption(now: captionNow)
-    #expect(caption.text == "Disabled")
-    #expect(caption.kind == .inactive)
+    #expect(caption?.text == "Disabled")
+    #expect(caption?.isOverdue == false)
   }
 
   @Test func statusCaptionShowsUpcomingNextRun() {
     let job = CronJob(id: "a", state: "scheduled", nextRunAt: captionNow.addingTimeInterval(3600))
     let caption = job.statusCaption(now: captionNow)
-    #expect(caption.text == "Next in 1 hr.")
-    #expect(caption.kind == .next)
+    #expect(caption?.text == "Next in 1 hr.")
+    #expect(caption?.isOverdue == false)
   }
 
   @Test func statusCaptionKeepsNextWithinOverdueGrace() {
     let fiveMinAgo = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-5 * 60))
-    #expect(fiveMinAgo.statusCaption(now: captionNow).text == "Next 5 min. ago")
-    #expect(fiveMinAgo.statusCaption(now: captionNow).kind == .next)
+    #expect(fiveMinAgo.statusCaption(now: captionNow)?.text == "Next 5 min. ago")
+    #expect(fiveMinAgo.statusCaption(now: captionNow)?.isOverdue == false)
 
     // Exactly at the grace boundary is still "Next" (strictly greater flips to overdue).
     let atGrace = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace))
-    #expect(atGrace.statusCaption(now: captionNow).kind == .next)
+    #expect(atGrace.statusCaption(now: captionNow)?.text == "Next 15 min. ago")
+    #expect(atGrace.statusCaption(now: captionNow)?.isOverdue == false)
   }
 
   @Test func statusCaptionFlagsOverdueJustPastGrace() {
@@ -167,26 +168,24 @@ struct CronJobTests {
       id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace - 1)
     )
     let caption = justPast.statusCaption(now: captionNow)
-    #expect(caption.text == "Overdue · 15 min. ago")
-    #expect(caption.kind == .overdue)
+    #expect(caption?.text == "Overdue · 15 min. ago")
+    #expect(caption?.isOverdue == true)
 
     let twoHours = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-2 * 3600))
-    #expect(twoHours.statusCaption(now: captionNow).text == "Overdue · 2 hr. ago")
+    #expect(twoHours.statusCaption(now: captionNow)?.text == "Overdue · 2 hr. ago")
   }
 
   @Test func statusCaptionFallsBackToScheduleThenNone() {
     let scheduled = CronJob(id: "a", scheduleDisplay: "every day at 09:00")
     let caption = scheduled.statusCaption(now: captionNow)
-    #expect(caption.text == "every day at 09:00")
-    #expect(caption.kind == .schedule)
+    #expect(caption?.text == "every day at 09:00")
+    #expect(caption?.isOverdue == false)
 
     let blank = CronJob(id: "a", scheduleDisplay: "  ")
-    #expect(blank.statusCaption(now: captionNow).text == "")
-    #expect(blank.statusCaption(now: captionNow).kind == .none)
+    #expect(blank.statusCaption(now: captionNow) == nil)
 
     let bare = CronJob(id: "a")
-    #expect(bare.statusCaption(now: captionNow).text == "")
-    #expect(bare.statusCaption(now: captionNow).kind == .none)
+    #expect(bare.statusCaption(now: captionNow) == nil)
   }
 
   @Test func statusCaptionCountsRunningEnabledAndUnknownStatesAsActive() {
@@ -198,10 +197,10 @@ struct CronJobTests {
       CronJob(id: "a", state: "hibernating", nextRunAt: overdueAt),
     ]
     for job in jobs {
-      #expect(job.statusCaption(now: captionNow).kind == .overdue)
+      #expect(job.statusCaption(now: captionNow)?.isOverdue == true)
     }
     let upcoming = CronJob(id: "a", state: "running", nextRunAt: captionNow.addingTimeInterval(600))
-    #expect(upcoming.statusCaption(now: captionNow).text == "Next in 10 min.")
+    #expect(upcoming.statusCaption(now: captionNow)?.text == "Next in 10 min.")
   }
 
   // MARK: Run timestamp

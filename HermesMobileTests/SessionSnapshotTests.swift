@@ -536,6 +536,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
               source: "cron")
     })
     let seen = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.messageCount ?? 0) })
+    // The jobs behind those runs: with the jobs API, jobs (not runs) bring up the tab pill.
+    let jobs = [CronJob(id: "backup", name: "Nightly backup"), CronJob(id: "digest", name: "Weekly digest")]
 
     let view = NavigationStack {
       SessionListView(
@@ -545,12 +547,14 @@ final class SessionSnapshotTests: SnapshotTestCase {
             sessions: IdentifiedArray(uniqueElements: sessions),
             now: now,
             calendar: listCalendar,
-            seenCounts: seen
+            seenCounts: seen,
+            cronJobs: IdentifiedArray(uniqueElements: jobs)
           )
         ) {
           SessionListFeature().ignoring(\.task)
         } withDependencies: {
           $0.hermesREST.sessions = { _, _, _, _, _ in sessions }
+          $0.hermesREST.cronJobs = { _, _ in jobs }
           $0.continuousClock = ImmediateClock()
           $0.date = .constant(now)
         }
@@ -613,7 +617,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
   private func cronTabHost(
     cronJobsSupported: Bool = true,
     expandedCronJobID: String? = nil,
-    expandedCronRuns: [Session]? = nil
+    expandedCronRuns: [Session]? = nil,
+    expandedCronRunsFailed: Bool = false
   ) -> some View {
     let now = self.now
     let (sessions, jobs, seen) = cronFixtures()
@@ -630,7 +635,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             cronJobs: cronJobsSupported ? IdentifiedArray(uniqueElements: jobs) : [],
             cronJobsSupported: cronJobsSupported,
             expandedCronJobID: expandedCronJobID,
-            expandedCronRuns: expandedCronRuns
+            expandedCronRuns: expandedCronRuns,
+            expandedCronRunsFailed: expandedCronRunsFailed
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -670,6 +676,22 @@ final class SessionSnapshotTests: SnapshotTestCase {
   /// The backup job expanded before its first `/runs` load lands: a spinner under the job.
   func testSessionList_cronJobs_expandedLoading() {
     assertSnapshot(of: cronTabHost(expandedCronJobID: "backup01"), as: deviceImage())
+  }
+
+  /// The backup job expanded after its first `/runs` load failed: "Couldn't load runs".
+  func testSessionList_cronJobs_expandedFailed() {
+    assertSnapshot(
+      of: cronTabHost(expandedCronJobID: "backup01", expandedCronRunsFailed: true),
+      as: deviceImage()
+    )
+  }
+
+  /// The backup job expanded with no runs on the server: "No runs yet".
+  func testSessionList_cronJobs_expandedEmpty() {
+    assertSnapshot(
+      of: cronTabHost(expandedCronJobID: "backup01", expandedCronRuns: []),
+      as: deviceImage()
+    )
   }
 
   /// Old agent (no `/api/cron/jobs` → `cronJobsSupported == false`): the Cron Jobs tab falls

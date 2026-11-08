@@ -542,27 +542,26 @@ public extension HermesRESTClient {
       },
       triggerCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: .post("trigger"), profile: profile,
+          conn, id: id, action: "trigger", profile: profile,
           auth: authFor(conn), session: session
         )
       },
       pauseCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: .post("pause"), profile: profile,
+          conn, id: id, action: "pause", profile: profile,
           auth: authFor(conn), session: session
         )
       },
       resumeCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: .post("resume"), profile: profile,
+          conn, id: id, action: "resume", profile: profile,
           auth: authFor(conn), session: session
         )
       },
       deleteCronJob: { conn, id, profile in
-        try await cronJobAction(
-          conn, id: id, action: .delete, profile: profile,
-          auth: authFor(conn), session: session
-        )
+        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+        let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)", query: query)
+        try await send(url, method: "DELETE", body: nil, auth: authFor(conn), session: session)
       },
       cronJobRuns: { conn, id, profile, limit in
         var query = [URLQueryItem(name: "limit", value: String(limit))]
@@ -661,30 +660,16 @@ public extension DependencyValues {
   }
 }
 
-/// A write against one cron job: a POST to a trailing action segment, or a DELETE of the job.
-private enum CronJobAction {
-  /// `POST /api/cron/jobs/{id}/{segment}` with an empty JSON object body.
-  case post(_ segment: String)
-  /// `DELETE /api/cron/jobs/{id}` — no path suffix, no body.
-  case delete
-}
-
-/// Shared write for the cron job actions (`trigger` / `pause` / `resume` POSTs and the
-/// `delete`) — same URL root and `profile` query. Interpolates the RAW id (`makeURL`
-/// percent-encodes the path). 404 → `RESTError.notFound` (job gone or old agent).
+/// Shared POST for the cron job actions (`trigger` / `pause` / `resume`) — same
+/// URL/query/body shape, only the trailing path segment differs. Interpolates the RAW id
+/// (`makeURL` percent-encodes the path). 404 → `RESTError.notFound` (job gone or old agent).
 private func cronJobAction(
-  _ conn: ServerConnection, id: String, action: CronJobAction, profile: String?,
+  _ conn: ServerConnection, id: String, action: String, profile: String?,
   auth: RequestAuth, session: URLSession
 ) async throws {
   let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-  switch action {
-  case let .post(segment):
-    let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)/\(segment)", query: query)
-    try await send(url, method: "POST", body: Data("{}".utf8), auth: auth, session: session)
-  case .delete:
-    let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)", query: query)
-    try await send(url, method: "DELETE", body: nil, auth: auth, session: session)
-  }
+  let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)/\(action)", query: query)
+  try await send(url, method: "POST", body: Data("{}".utf8), auth: auth, session: session)
 }
 
 /// Where the best-effort logout failure goes instead of a banner (see `logout` above).
@@ -1003,12 +988,7 @@ private struct CronRunsResponse: Decodable {
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
-    guard c.contains(.runs), try !c.decodeNil(forKey: .runs) else {
-      runs = []
-      return
-    }
-    let rows = try c.decode([LenientRow].self, forKey: .runs)
-    runs = rows.compactMap { $0.dto?.asSession }
+    runs = (try c.decodeIfPresent([LenientRow].self, forKey: .runs) ?? []).compactMap { $0.dto?.asSession }
   }
 
   /// Swallows a single row's decoding failure so the array decode carries on past it.
