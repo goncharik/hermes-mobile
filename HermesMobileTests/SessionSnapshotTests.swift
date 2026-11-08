@@ -696,7 +696,7 @@ final class SessionSnapshotTests: SnapshotTestCase {
 
   /// Old agent (no `/api/cron/jobs` → `cronJobsSupported == false`): the Cron Jobs tab falls
   /// back to flat run rows, with no unread badge on the tab pill.
-  func testSessionList_cronJobsFallbackFlat() {
+  func testSessionList_cronJobs_fallbackFlat() {
     assertSnapshot(of: cronTabHost(cronJobsSupported: false), as: deviceImage())
   }
 

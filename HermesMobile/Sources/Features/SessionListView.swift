@@ -560,7 +560,7 @@ struct SessionListView: View {
   }
 
   /// One tab: icon over label, the selected one on an inner capsule in the accent color. No
-  /// unread badge: cron runs carry no unread tracking (desktop parity).
+  /// unread badge: unread shows only on an expanded job's run rows (desktop parity).
   private func tabButton(
     _ tab: SessionListTab,
     title: String,

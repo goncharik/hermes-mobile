@@ -140,14 +140,15 @@ keys once, when it is built (no migration — cron runs have their own tab now).
 into the **Cron Jobs tab**. The partition lives in the reducer's computed state
 (`cronSessions` vs the non-cron `interactiveSessions` that feeds
 `pinnedSessions`/`unpinnedSessions` → `chronologicalSessions` → `dateSections`), so cron rows
-never appear in Pinned or the date sections. The tab exists whenever `hasCronContent` holds
-(any cron run OR any fetched job, so a job with no runs in the fetched window stays
-reachable); it renders a "Cron Jobs" title row and the jobs, and is never searched. The "No
-sessions" placeholder follows `showsEmptyPlaceholder`: the Sessions tab with no search hit (or,
-outside search, no interactive session), not loading or failed. An empty non-search list with
-no jobs known holds `isLoading` until the load's cron-jobs response lands (`awaitsCronJobs`),
-so the placeholder and the tab pill appear together; a transient cron failure there settles on
-the placeholder.
+never appear in Pinned or the date sections. The tab exists whenever `hasCronContent` holds:
+with the jobs API, any fetched job (a job with no runs stays reachable; runs alone, incl. a
+deleted job's, never bring the tab back); without it, any cron run (the flat fallback). It
+renders a "Cron Jobs" title row and the jobs, and is never searched. The "No sessions"
+placeholder follows `showsEmptyPlaceholder`: the Sessions tab with no search hit (or, outside
+search, no interactive session), not loading or failed. A non-search list with no interactive
+session and no jobs known holds `isLoading` until the load's cron-jobs response lands
+(`awaitsCronJobs`), so the placeholder and the tab pill appear together; a transient cron
+failure there settles on the placeholder.
 
 **The Cron Jobs tab lists *jobs* only, desktop-style** (`State.sortedCronJobs`: soonest next
 run first, no-next-run last, then title). `GET /api/cron/jobs` is fetched sequentially INSIDE
@@ -171,24 +172,25 @@ a job's runs come only from the server's own job↔run join:
   refresh or a job switch supersedes it without touching the list load, and a late response
   for a job that is no longer expanded is dropped (`cronRunsResponse(jobID:)` guard). Tap is
   single-open (`expandedCronJobID`); every collapse — re-tap, the jobs-API 404 flip, a profile
-  switch, deleting the expanded job — goes through `collapseExpandedCronJob` (clears id + slot,
-  cancels the fetch), so one job's runs never show under another; `onDisappear` cancels the
-  fetch too.
-- **Refresh**: every `load` (the 10 s poll, pull-to-refresh, the Run now success) refetches the
-  expanded job's runs alongside — never inside — the shared-`fetch` list effect; skipped while
-  searching (the tab is hidden then), like the jobs fetch.
+  switch, deleting the expanded job, a jobs refetch that no longer lists it — goes through
+  `collapseExpandedCronJob` (clears id + slot, cancels the fetch), so one job's runs never
+  show under another; `onDisappear` cancels the fetch too.
+- **Refresh**: a `load` (the 10 s poll, pull-to-refresh, the Run now success) refetches the
+  expanded job's runs alongside — never inside — the shared-`fetch` list effect, only while
+  the Cron Jobs tab is on screen (`effectiveTab == .cron`; never on the Sessions tab or while
+  searching); `selectTab(.cron)` refetches them on return.
 - **Failure**: any `/runs` failure, 404 included, is a load failure — "Couldn't load runs" on
   the FIRST load only (a failed refresh keeps the runs on screen; the next poll retries). It
   flips NO capability: upstream ships `/runs` with the jobs API, and a 404 there can also mean
   the job is gone.
 - **Run rows are timestamp-only** (sibling runs share the job's title): `CronJob.runTimestampLabel`
   over `updatedAt ?? startedAt` (desktop `last_active || started_at`), "Jun 10, 07:00",
-  hand-rolled in the list calendar's time zone so snapshots are locale-deterministic. A session
-  run (`isCron`) is tap-only — no swipe or context menu — and `cronRunTapped` looks it up in
-  `expandedCronRuns`, NOT `state.sessions` (an older run may sit outside the list's 50-row cron
-  slice), then opens it. A script-only `cron_output` row (synthetic or missing id, no backing
-  session) is plain secondary text and does nothing on tap; `/runs` rows that don't decode are
-  dropped, not fatal.
+  a `Date.VerbatimFormatStyle` with a POSIX locale in the list calendar's time zone, so
+  snapshots are locale-deterministic. A session run (`isCron`) is tap-only — no swipe or
+  context menu — and `cronRunTapped` looks it up in `expandedCronRuns`, NOT `state.sessions`
+  (an older run may sit outside the list's 50-row cron slice), then opens it. A script-only
+  `cron_output` row (synthetic `cron_output:…` id, no backing session) is plain secondary text —
+  never a tap; `/runs` rows that don't decode (incl. a row with no `id`) are dropped, not fatal.
 
 **Job rows**: a state pip (**green live / amber paused** — deliberately NOT the accent, which is
 orange and would be indistinguishable from amber; red error, gray inactive), the title, and a
@@ -208,9 +210,13 @@ mutation**). Success reconciles by kind (`CronJobActionKind`): Run now → full 
 jobs + the expanded job's runs, so the new run appears); pause/resume → jobs-only refetch.
 **Delete** raises a `ConfirmationDialogState` (title names the job; presented via
 `.bottomActionSheet`) and is NOT optimistic: the row stays until `DELETE /api/cron/jobs/{id}`
-returns. Success — or a **404, read as already gone** — drops the job locally (collapsing it
-if expanded), then a jobs-only refetch. Any other failure banners the server's copy. The job's
-past runs stay on the server but are no longer reachable from the app.
+returns. A confirm that hits the in-flight guard is never dropped silently: it banners
+`cronJobBusyMessage`. Success — or a **404, read as already gone** — drops the job locally
+(collapsing it if expanded), then `cancelOrRestartFetch`: a pending list load or an active
+search is restarted (so a pre-DELETE jobs response can't bring the row back; the restarted
+load refetches the jobs, a search load skips them until its clear reloads), otherwise the
+in-flight fetch is cancelled and a jobs-only refetch runs. Any other failure banners the
+server's copy. The job's past runs stay on the server but are no longer listed in the tab.
 
 **No cron unread tracking**: no tab badge, no job-row dot (desktop parity). A run row still
 shows the shared unread dot when that run is in the list's cron slice and unread

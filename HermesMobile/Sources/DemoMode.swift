@@ -172,9 +172,9 @@ enum DemoMode {
         isActive: row.isActive
       )
     }
-    // The cron run sessions also land in the list's `source=cron` slice (it keeps the Cron
-    // Jobs tab visible); the tab itself shows them only under their expanded job, served
-    // from `seededCronRuns`.
+    // The cron run sessions also land in the list's `source=cron` slice, as on a real agent
+    // (the jobs alone bring up the Cron Jobs tab); the tab shows runs only under their
+    // expanded job, served from `seededCronRuns`.
     sessions.append(contentsOf: seededCronRuns.keys.sorted().flatMap { seededCronRuns[$0] ?? [] })
     return sessions
   }()

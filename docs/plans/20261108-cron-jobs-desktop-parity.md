@@ -339,7 +339,7 @@
       `.notFound` → `cronJobsSupported = false`, `sortedCronJobs` empty → view's `cronSessions`
       fallback; tests `notFoundDisablesCronJobsAndSkipsLaterFetches`,
       `sortedCronJobsEmptyWhenUnsupportedOrNoJobs`, `theJobsAPI404ClearsTheExpandedJobAndItsRuns`;
-      snapshot `testSessionList_cronJobsFallbackFlat`)
+      snapshot `testSessionList_cronJobs_fallbackFlat`)
 - [x] run full test suite: `make test` (2696 tests in 107 suites passed, 2 known issues)
 - [x] run snapshot suite: `make snapshot` (365/365, 0 failures)
 

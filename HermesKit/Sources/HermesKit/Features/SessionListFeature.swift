@@ -265,9 +265,10 @@ public struct SessionListFeature {
       !searchQuery.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    /// Cron-scheduled sessions, pulled out of the interactive list and shown in their own
-    /// always-on "Cron Jobs" section. Sorted by recency (`updatedAt` desc, `nil` last),
-    /// mirroring `chronologicalSessions`.
+    /// Cron-scheduled sessions, pulled out of the interactive list: the flat Cron Jobs
+    /// fallback for agents without the jobs API (with it they are not rendered and don't
+    /// gate the tab). Sorted by recency (`updatedAt` desc, `nil` last), mirroring
+    /// `chronologicalSessions`.
     public var cronSessions: [Session] {
       sessions.filter(\.isCron)
         .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
@@ -547,8 +548,7 @@ public struct SessionListFeature {
     /// Confirming sends `DELETE /api/cron/jobs/{id}`.
     case deleteCronJobTapped(id: String)
     /// A cron action RPC finished: lift the in-flight guard; on success refetch from the
-    /// server (the full load after a trigger so the new run session appears, jobs-only for
-    /// pause/resume and delete); on failure surface the banner. No optimistic mutation — job
+    /// server (see `CronJobActionKind`); on failure surface the banner. No optimistic mutation — job
     /// state is server-computed and the refetch/poll reconciles. A delete's success (or 404:
     /// already gone) drops the job locally first so the row disappears at once.
     case cronJobActionFinished(id: String, kind: CronJobActionKind, error: RESTError?)
@@ -590,7 +590,8 @@ public struct SessionListFeature {
       case trigger
       /// Pause/resume: jobs-only refetch.
       case pauseResume
-      /// Delete: drop the job (404 = already gone = success), then a jobs-only refetch.
+      /// Delete: drop the job (404 = already gone = success), supersede a pending list load
+      /// (which refetches jobs), else a jobs-only refetch.
       case delete
     }
 
@@ -852,8 +853,8 @@ public struct SessionListFeature {
           return .none
         }
         // Success → reconcile from the server. A trigger just spawned a run session, so do
-        // the full load (sessions + jobs + the expanded job's runs); pause/resume and delete
-        // only changed the job, so a jobs-only refetch avoids churning the list.
+        // the full load (sessions + jobs + the expanded job's runs); pause/resume only
+        // changed the job, so a jobs-only refetch avoids churning the list.
         switch kind {
         case .trigger:
           return load(&state)

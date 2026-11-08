@@ -290,7 +290,7 @@ bullets below are the compressed rules.
   `SessionCardView` on every interactive row, compact `SessionRowView` only for the flat cron
   fallback + archived sheet; the Cron Jobs TAB lists jobs (pill only with cron content; views
   read `effectiveTab`; no badge; search is Sessions-only). **Never group cron runs by session
-  id** (upstream runs are `local-*`) — an expanded job's runs come from `/runs`. Nesting via
+  id** — an expanded job's runs come from `/runs` (its 404 flips no flag). Nesting via
   pure `flattenSessionsWithBranches` (orphans de-nest). Details: `docs/features/session-list.md`.
 - **Row affordances**: trailing swipe = destructive default FIRST (full-swipe target),
   then Rename; context menu always offers both Archive and Delete (gated); Copy ID
