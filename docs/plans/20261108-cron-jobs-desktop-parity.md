@@ -192,19 +192,19 @@
 - Modify: `HermesKit/Sources/HermesKit/Clients/HermesRESTClient.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/HermesRESTClientTests.swift`
 
-- [ ] add `cronJobRuns(connection, id, profile, limit) -> [Session]` to the client struct (doc
+- [x] add `cronJobRuns(connection, id, profile, limit) -> [Session]` to the client struct (doc
       comment: upstream `/runs`, session rows + `cron_output` rows) and its live implementation
       (`GET /api/cron/jobs/{id}/runs`, `limit` + optional `profile` query)
-- [ ] add a private `CronRunsResponse` that decodes `runs` per element through `SessionListDTO`,
+- [x] add a private `CronRunsResponse` that decodes `runs` per element through `SessionListDTO`,
       dropping rows that fail, with a missing `runs` key → `[]`
-- [ ] make `cronJobAction` method-aware and add `deleteCronJob(connection, id, profile)` →
+- [x] make `cronJobAction` method-aware and add `deleteCronJob(connection, id, profile)` →
       `DELETE /api/cron/jobs/{id}` (no body)
-- [ ] write tests: the `/runs` URL, method and query (with and without profile, limit); decoding of
+- [x] write tests: the `/runs` URL, method and query (with and without profile, limit); decoding of
       session rows plus a `cron_output` row; a row without `id` is skipped; an empty or missing
       `runs` key
-- [ ] write tests: the `deleteCronJob` URL, method and profile query; 404 → `RESTError.notFound`;
+- [x] write tests: the `deleteCronJob` URL, method and profile query; 404 → `RESTError.notFound`;
       400 `detail` surfaced; trigger/pause/resume still POST to their paths (regression)
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 2: Add `CronJob.statusCaption(now:)`
 

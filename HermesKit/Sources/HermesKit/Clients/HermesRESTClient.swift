@@ -291,6 +291,16 @@ public struct HermesRESTClient: Sendable {
   public var pauseCronJob: @Sendable (_ connection: ServerConnection, _ id: String, _ profile: String?) async throws -> Void
   /// Resume a paused cron job — `POST /api/cron/jobs/{id}/resume`. `profile` as above.
   public var resumeCronJob: @Sendable (_ connection: ServerConnection, _ id: String, _ profile: String?) async throws -> Void
+  /// Delete a cron job — `DELETE /api/cron/jobs/{id}` (no body). `profile` as above. An
+  /// unknown job surfaces as `RESTError.notFound` (the caller treats it as already gone); a
+  /// malformed id is a 400 whose `detail` rides in `RESTError.server`.
+  public var deleteCronJob: @Sendable (_ connection: ServerConnection, _ id: String, _ profile: String?) async throws -> Void
+  /// A cron job's recent runs — `GET /api/cron/jobs/{id}/runs?limit=` (upstream clamps `limit`
+  /// to 1–100), newest first. `profile` as above. Rows have the `/api/sessions` shape: session
+  /// runs carry `source: "cron"`; script-only runs carry `source: "cron_output"`, a synthetic
+  /// `cron_output:…` id (or none) and no backing session. A row that doesn't decode (no `id`)
+  /// is dropped rather than failing the list.
+  public var cronJobRuns: @Sendable (_ connection: ServerConnection, _ id: String, _ profile: String?, _ limit: Int) async throws -> [Session]
   /// Authoritative readiness probe for the `hermes-push` plugin — `GET /api/dashboard/plugins/hub`
   /// → `{plugins: [{name, runtime_status, …}], …}`. Matches the plugin by `name == "hermes-push"`
   /// and maps: `runtime_status == "enabled"` → `.ready`; present-but-not-enabled or absent →
@@ -532,21 +542,34 @@ public extension HermesRESTClient {
       },
       triggerCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: "trigger", profile: profile,
+          conn, id: id, action: .post("trigger"), profile: profile,
           auth: authFor(conn), session: session
         )
       },
       pauseCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: "pause", profile: profile,
+          conn, id: id, action: .post("pause"), profile: profile,
           auth: authFor(conn), session: session
         )
       },
       resumeCronJob: { conn, id, profile in
         try await cronJobAction(
-          conn, id: id, action: "resume", profile: profile,
+          conn, id: id, action: .post("resume"), profile: profile,
           auth: authFor(conn), session: session
         )
+      },
+      deleteCronJob: { conn, id, profile in
+        try await cronJobAction(
+          conn, id: id, action: .delete, profile: profile,
+          auth: authFor(conn), session: session
+        )
+      },
+      cronJobRuns: { conn, id, profile, limit in
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let profile { query.append(URLQueryItem(name: "profile", value: profile)) }
+        let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)/runs", query: query)
+        let response: CronRunsResponse = try await get(url, auth: authFor(conn), session: session)
+        return response.runs
       },
       pushPluginStatus: { conn in
         await fetchPushPluginInfo(conn, authFor: authFor, session: session).status
@@ -638,16 +661,30 @@ public extension DependencyValues {
   }
 }
 
-/// Shared POST for the cron job actions (`trigger` / `pause` / `resume`) — same
-/// URL/query/body shape, only the trailing path segment differs. Interpolates the RAW id
-/// (`makeURL` percent-encodes the path). 404 → `RESTError.notFound` (job gone or old agent).
+/// A write against one cron job: a POST to a trailing action segment, or a DELETE of the job.
+private enum CronJobAction {
+  /// `POST /api/cron/jobs/{id}/{segment}` with an empty JSON object body.
+  case post(_ segment: String)
+  /// `DELETE /api/cron/jobs/{id}` — no path suffix, no body.
+  case delete
+}
+
+/// Shared write for the cron job actions (`trigger` / `pause` / `resume` POSTs and the
+/// `delete`) — same URL root and `profile` query. Interpolates the RAW id (`makeURL`
+/// percent-encodes the path). 404 → `RESTError.notFound` (job gone or old agent).
 private func cronJobAction(
-  _ conn: ServerConnection, id: String, action: String, profile: String?,
+  _ conn: ServerConnection, id: String, action: CronJobAction, profile: String?,
   auth: RequestAuth, session: URLSession
 ) async throws {
   let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-  let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)/\(action)", query: query)
-  try await send(url, method: "POST", body: Data("{}".utf8), auth: auth, session: session)
+  switch action {
+  case let .post(segment):
+    let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)/\(segment)", query: query)
+    try await send(url, method: "POST", body: Data("{}".utf8), auth: auth, session: session)
+  case .delete:
+    let url = try makeURL(conn.baseURL, "/api/cron/jobs/\(id)", query: query)
+    try await send(url, method: "DELETE", body: nil, auth: auth, session: session)
+  }
 }
 
 /// Where the best-effort logout failure goes instead of a banner (see `logout` above).
@@ -954,6 +991,31 @@ func send(
 private struct SessionsResponse: Decodable {
   let sessions: [SessionListDTO]
   let total: Int?
+}
+
+/// `GET /api/cron/jobs/{id}/runs` → `{"runs": [...], "limit": n}`. Each row decodes on its own
+/// through `SessionListDTO`: a row that fails (a script-only `cron_output` row without an `id`)
+/// is dropped instead of failing the whole list. A missing `runs` key yields `[]`.
+private struct CronRunsResponse: Decodable {
+  let runs: [Session]
+
+  enum CodingKeys: String, CodingKey { case runs }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    guard c.contains(.runs), try !c.decodeNil(forKey: .runs) else {
+      runs = []
+      return
+    }
+    let rows = try c.decode([LenientRow].self, forKey: .runs)
+    runs = rows.compactMap { $0.dto?.asSession }
+  }
+
+  /// Swallows a single row's decoding failure so the array decode carries on past it.
+  private struct LenientRow: Decodable {
+    let dto: SessionListDTO?
+    init(from decoder: Decoder) throws { dto = try? SessionListDTO(from: decoder) }
+  }
 }
 
 /// `GET /api/auth/providers`. The server wraps the list in an object
