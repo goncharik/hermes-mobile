@@ -140,4 +140,86 @@ struct CronJobTests {
     let now = Date(timeIntervalSince1970: 1_000_000)
     #expect(CronJob.relativeRunLabel(for: now, now: now) == "in 1 sec.")
   }
+
+  // MARK: Status caption
+
+  private let captionNow = Date(timeIntervalSince1970: 1_000_000)
+
+  @Test func statusCaptionNamesInactiveStates() {
+    // A far-future next run must not leak into an inactive job's caption.
+    let next = captionNow.addingTimeInterval(3600)
+    for (state, word) in [
+      ("paused", "Paused"), ("error", "Error"), ("completed", "Completed"), ("disabled", "Disabled"),
+    ] {
+      let caption = CronJob(id: "a", state: state, nextRunAt: next).statusCaption(now: captionNow)
+      #expect(caption.text == word)
+      #expect(caption.kind == .inactive)
+    }
+  }
+
+  @Test func statusCaptionTreatsDisabledFlagWithoutStateAsDisabled() {
+    let job = CronJob(id: "a", enabled: false, nextRunAt: captionNow.addingTimeInterval(3600))
+    let caption = job.statusCaption(now: captionNow)
+    #expect(caption.text == "Disabled")
+    #expect(caption.kind == .inactive)
+  }
+
+  @Test func statusCaptionShowsUpcomingNextRun() {
+    let job = CronJob(id: "a", state: "scheduled", nextRunAt: captionNow.addingTimeInterval(3600))
+    let caption = job.statusCaption(now: captionNow)
+    #expect(caption.text == "Next in 1 hr.")
+    #expect(caption.kind == .next)
+  }
+
+  @Test func statusCaptionKeepsNextWithinOverdueGrace() {
+    let fiveMinAgo = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-5 * 60))
+    #expect(fiveMinAgo.statusCaption(now: captionNow).text == "Next 5 min. ago")
+    #expect(fiveMinAgo.statusCaption(now: captionNow).kind == .next)
+
+    // Exactly at the grace boundary is still "Next" (strictly greater flips to overdue).
+    let atGrace = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace))
+    #expect(atGrace.statusCaption(now: captionNow).kind == .next)
+  }
+
+  @Test func statusCaptionFlagsOverdueJustPastGrace() {
+    let justPast = CronJob(
+      id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace - 1)
+    )
+    let caption = justPast.statusCaption(now: captionNow)
+    #expect(caption.text == "Overdue · 15 min. ago")
+    #expect(caption.kind == .overdue)
+
+    let twoHours = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-2 * 3600))
+    #expect(twoHours.statusCaption(now: captionNow).text == "Overdue · 2 hr. ago")
+  }
+
+  @Test func statusCaptionFallsBackToScheduleThenNone() {
+    let scheduled = CronJob(id: "a", scheduleDisplay: "every day at 09:00")
+    let caption = scheduled.statusCaption(now: captionNow)
+    #expect(caption.text == "every day at 09:00")
+    #expect(caption.kind == .schedule)
+
+    let blank = CronJob(id: "a", scheduleDisplay: "  ")
+    #expect(blank.statusCaption(now: captionNow).text == "")
+    #expect(blank.statusCaption(now: captionNow).kind == .none)
+
+    let bare = CronJob(id: "a")
+    #expect(bare.statusCaption(now: captionNow).text == "")
+    #expect(bare.statusCaption(now: captionNow).kind == .none)
+  }
+
+  @Test func statusCaptionCountsRunningEnabledAndUnknownStatesAsActive() {
+    let overdueAt = captionNow.addingTimeInterval(-2 * 3600)
+    let jobs = [
+      CronJob(id: "a", state: "running", nextRunAt: overdueAt),
+      CronJob(id: "a", enabled: true, nextRunAt: overdueAt),
+      CronJob(id: "a", state: "enabled", nextRunAt: overdueAt),
+      CronJob(id: "a", state: "hibernating", nextRunAt: overdueAt),
+    ]
+    for job in jobs {
+      #expect(job.statusCaption(now: captionNow).kind == .overdue)
+    }
+    let upcoming = CronJob(id: "a", state: "running", nextRunAt: captionNow.addingTimeInterval(600))
+    #expect(upcoming.statusCaption(now: captionNow).text == "Next in 10 min.")
+  }
 }

@@ -212,14 +212,14 @@
 - Modify: `HermesKit/Sources/HermesKit/Models/CronJob.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/CronJobTests.swift`
 
-- [ ] add `StatusCaptionKind`, `overdueGrace` and `statusCaption(now:)` per Technical Details, next to
+- [x] add `StatusCaptionKind`, `overdueGrace` and `statusCaption(now:)` per Technical Details, next to
       `relativeRunLabel`, with a doc comment citing desktop `job-state.ts` / `nextRunOverdueMs`
-- [ ] write tests: each inactive state → its word (Paused / Error / Completed / Disabled), including
+- [x] write tests: each inactive state → its word (Paused / Error / Completed / Disabled), including
       `enabled == false` without `state` → Disabled
-- [ ] write tests: active with future next → "Next in …"; past within the grace → "Next … ago";
+- [x] write tests: active with future next → "Next in …"; past within the grace → "Next … ago";
       just past the grace → "Overdue · … ago"; no next → schedule; neither → `.none`;
       `running` / `enabled` / an unknown state count as active
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 3: Load the expanded job's runs from `/runs`
 
