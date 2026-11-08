@@ -1,24 +1,6 @@
 import ComposableArchitecture
 import Foundation
 
-/// A cron job with its run-history sessions — one row of the grouped Cron Jobs tab.
-/// Built by `SessionListFeature.State.cronJobGroups`.
-public struct CronJobGroup: Equatable, Sendable, Identifiable {
-  public var job: CronJob
-  /// The job's most recent runs (newest first), capped to `State.cronPeekLimit`.
-  public var runs: [Session]
-  /// Whether ANY of the job's runs (capped or not) is unread — drives the job row's dot.
-  public var hasUnread: Bool
-
-  public var id: String { job.id }
-
-  public init(job: CronJob, runs: [Session], hasUnread: Bool = false) {
-    self.job = job
-    self.runs = runs
-    self.hasUnread = hasUnread
-  }
-}
-
 /// Lists Hermes sessions for the connected server and supports full-text search.
 /// Tapping a row or the "+" button emits a delegate the parent uses to open chat
 /// (resume) or start a new session — `ChatFeature` wiring lands in Task 8.
@@ -303,49 +285,21 @@ public struct SessionListFeature {
     /// section into a full history browser (mirrors the desktop sidebar's limit).
     public static let cronPeekLimit = 5
 
-    /// The Cron Jobs tab grouped desktop-style: one entry per *job* (sorted soonest
-    /// next-run first, no-next-run last, then title), each carrying its most recent *runs*
-    /// (the cron sessions whose id-embedded job id matches, capped to `cronPeekLimit`).
-    /// Empty when the agent lacks the jobs API or no jobs were fetched yet — the view then
-    /// falls back to the flat run list.
-    public var cronJobGroups: [CronJobGroup] {
-      guard cronJobsSupported, !cronJobs.isEmpty else { return [] }
-      var runsByJob: [String: [Session]] = [:]
-      for session in cronSessions {  // recency-sorted, so each bucket inherits newest-first
-        guard let jobID = CronJob.jobID(fromSessionID: session.id) else { continue }
-        runsByJob[jobID, default: []].append(session)
-      }
-      let unread = unreadSessionIDs
-      return cronJobs.elements
-        .sorted(by: Self.cronJobOrder)
-        .map { job in
-          let runs = runsByJob[job.id] ?? []
-          return CronJobGroup(
-            job: job,
-            runs: Array(runs.prefix(Self.cronPeekLimit)),
-            // Unread is judged over ALL the job's runs (not just the peeked ones) so a
-            // burst of runs can't hide an unread older one.
-            hasUnread: runs.contains { unread.contains($0.id) }
-          )
-        }
+    /// The Cron Jobs tab's job rows, desktop-style: the fetched jobs only, sorted soonest
+    /// next-run first, no-next-run last, then title. A job's runs are NOT derived from the
+    /// session list (upstream `local-*` run ids carry no job id); the expanded job loads them
+    /// from `/runs` into `expandedCronRuns`. Empty when the agent lacks the jobs API or no
+    /// jobs were fetched yet — the view then falls back to the flat `cronSessions` list.
+    public var sortedCronJobs: [CronJob] {
+      guard cronJobsSupported else { return [] }
+      return cronJobs.elements.sorted(by: Self.cronJobOrder)
     }
 
-    /// Cron sessions that match none of the fetched jobs (deleted job, legacy id shape) —
-    /// rendered flat below the groups so no run is ever invisible. Empty while job grouping is
-    /// inactive (the flat fallback shows everything then).
-    public var unmatchedCronSessions: [Session] {
-      guard cronJobsSupported, !cronJobs.isEmpty else { return [] }
-      let known = Set(cronJobs.ids)
-      return cronSessions.filter { session in
-        CronJob.jobID(fromSessionID: session.id).map { !known.contains($0) } ?? true
-      }
-    }
-
-    /// Whether there is cron content for the Cron Jobs tab: any cron run, or any fetched
-    /// job — a job with no runs (in the fetched window) stays reachable for Run now / Pause /
-    /// Resume.
+    /// Whether there is cron content for the Cron Jobs tab: any cron run (the flat fallback's
+    /// source), or any fetched job — a job with no runs stays reachable for Run now / Pause /
+    /// Resume / Delete.
     public var hasCronContent: Bool {
-      !cronSessions.isEmpty || !cronJobGroups.isEmpty
+      !cronSessions.isEmpty || (cronJobsSupported && !cronJobs.isEmpty)
     }
 
     /// Whether the bottom bar shows the Sessions | Cron Jobs tabs: only with cron content,
@@ -374,13 +328,6 @@ public struct SessionListFeature {
     /// lands and the list settles once (placeholder and tab bar together).
     var awaitsCronJobs: Bool {
       sessions.isEmpty && cronJobs.isEmpty && cronJobsSupported && !isSearching
-    }
-
-    /// Cron sessions with unseen output — the section header's aggregate badge (the
-    /// desktop's `CRON JOBS 4`), visible without scrolling into the section.
-    public var cronUnreadCount: Int {
-      let unread = unreadSessionIDs
-      return cronSessions.filter { unread.contains($0.id) }.count
     }
 
     /// Desktop-parity job ordering: soonest next run first, jobs without a next run sink

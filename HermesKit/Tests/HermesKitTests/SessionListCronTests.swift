@@ -4,7 +4,7 @@ import Testing
 
 @testable import HermesKit
 
-/// Cron Jobs section: grouping, capability gating, unread badge, and the inline peek.
+/// Cron Jobs tab: job rows, capability gating, the expanded job's runs, and job actions.
 @MainActor
 struct SessionListCronTests {
   private let connection = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "tok")
@@ -21,31 +21,25 @@ struct SessionListCronTests {
     )
   }
 
-  // MARK: Grouping (pure state)
+  // MARK: Job rows + tab gating (pure state)
 
-  @Test func groupsRunsUnderTheirJobsByEmbeddedID() {
+  @Test func sortedCronJobsListsJobsOnlyNotRuns() {
+    // Runs (any id shape, including upstream `local-*` ids) never feed the job rows: the tab
+    // lists the fetched jobs, and an expanded job loads its runs from `/runs`.
     let state = SessionListFeature.State(
       connection: connection,
       sessions: [
         cronSession("job1", stamp: "20260701_090000", updatedAt: 100),
-        cronSession("job1", stamp: "20260702_090000", updatedAt: 200),
-        cronSession("job2", stamp: "20260702_100000", updatedAt: 300),
+        Session(id: "local-abc123", updatedAt: Date(timeIntervalSince1970: 200), source: "cron"),
         Session(id: "interactive", title: "Chat"),
       ],
       cronJobs: [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")]
     )
 
-    let groups = state.cronJobGroups
     // Neither job has a next run → alphabetical by title: Backup (job2), Digest (job1).
-    #expect(groups.map(\.id) == ["job2", "job1"])
-    let byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
-    // Runs are newest-first within a job (inherits cronSessions' recency sort).
-    #expect(byID["job1"]?.runs.map(\.id) == [
-      "cron_job1_20260702_090000", "cron_job1_20260701_090000",
-    ])
-    #expect(byID["job2"]?.runs.count == 1)
-    // Interactive sessions never leak into cron groups.
-    #expect(groups.flatMap(\.runs).allSatisfy { $0.isCron })
+    #expect(state.sortedCronJobs.map(\.id) == ["job2", "job1"])
+    // The cron slice still holds both runs (the flat-fallback source and the tab gate).
+    #expect(state.cronSessions.map(\.id) == ["local-abc123", "cron_job1_20260701_090000"])
   }
 
   @Test func jobsSortSoonestNextRunFirstThenNilThenTitle() {
@@ -59,84 +53,41 @@ struct SessionListCronTests {
       ]
     )
 
-    #expect(state.cronJobGroups.map(\.id) == ["j-soon", "j-late", "j-none-a", "j-none-b"])
+    #expect(state.sortedCronJobs.map(\.id) == ["j-soon", "j-late", "j-none-a", "j-none-b"])
   }
 
-  @Test func peekCapsRunsButUnreadJudgesAllRuns() {
-    // 7 runs, newest 5 peeked; ONLY the oldest (6th/7th, outside the peek) is unread —
-    // the job dot must still light up.
-    var sessions: [Session] = []
-    for day in 1...7 {
-      sessions.append(cronSession(
-        "job1", stamp: "2026070\(day)_090000", messageCount: 3, updatedAt: TimeInterval(day * 100)
-      ))
-    }
-    var seen = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, 3) })
-    seen["cron_job1_20260701_090000"] = 1  // the OLDEST run has unseen output
-    let state = SessionListFeature.State(
-      connection: connection,
-      sessions: IdentifiedArray(uniqueElements: sessions),
-      seenCounts: seen,
-      cronJobs: [CronJob(id: "job1", name: "Digest")]
-    )
-
-    let group = state.cronJobGroups[0]
-    #expect(group.runs.count == SessionListFeature.State.cronPeekLimit)
-    // Newest-first: the peek holds days 7...3; the unread day-1 run is outside it.
-    #expect(!group.runs.map(\.id).contains("cron_job1_20260701_090000"))
-    #expect(group.hasUnread)
-    #expect(state.cronUnreadCount == 1)
-  }
-
-  @Test func runsMatchingNoJobLandInUnmatchedBucket() {
-    let state = SessionListFeature.State(
-      connection: connection,
-      sessions: [
-        cronSession("job1", stamp: "20260702_090000"),
-        cronSession("deleted-job", stamp: "20260702_100000"),
-        Session(id: "cron_odd-shape", source: "cron"),  // unparseable id (no datetime tail)
-      ],
-      cronJobs: [CronJob(id: "job1")]
-    )
-
-    #expect(state.unmatchedCronSessions.map(\.id) == [
-      "cron_deleted-job_20260702_100000", "cron_odd-shape",
-    ])
-    #expect(state.cronJobGroups.flatMap(\.runs).map(\.id) == ["cron_job1_20260702_090000"])
-  }
-
-  @Test func groupingInactiveWhenUnsupportedOrNoJobs() {
+  @Test func sortedCronJobsEmptyWhenUnsupportedOrNoJobs() {
     let unsupported = SessionListFeature.State(
       connection: connection,
       sessions: [cronSession("job1", stamp: "20260702_090000")],
       cronJobs: [CronJob(id: "job1")],
       cronJobsSupported: false
     )
-    #expect(unsupported.cronJobGroups.isEmpty)
-    #expect(unsupported.unmatchedCronSessions.isEmpty)  // flat fallback shows everything
+    #expect(unsupported.sortedCronJobs.isEmpty)  // the view falls back to the flat run list
+    #expect(unsupported.cronSessions.count == 1)
 
     let noJobs = SessionListFeature.State(
       connection: connection,
       sessions: [cronSession("job1", stamp: "20260702_090000")]
     )
-    #expect(noJobs.cronJobGroups.isEmpty)
-    #expect(noJobs.unmatchedCronSessions.isEmpty)
+    #expect(noJobs.sortedCronJobs.isEmpty)
   }
 
   @Test func jobsWithoutRunsKeepTheCronTabAndThePlaceholderFollowsTheTab() {
     // No sessions at all (no runs in the fetched window), but the agent has a job: the
-    // Cron Jobs tab must stay so the job can still be run, paused, or resumed. The Sessions
-    // tab has nothing interactive, so it shows "No sessions"; the Cron tab never does.
+    // Cron Jobs tab must stay so the job can still be run, paused, resumed, or deleted. The
+    // Sessions tab has nothing interactive, so it shows "No sessions"; the Cron tab never does.
     var jobsOnly = SessionListFeature.State(
       connection: connection,
       cronJobs: [CronJob(id: "job1", name: "Digest")]
     )
     #expect(jobsOnly.cronSessions.isEmpty)
-    #expect(jobsOnly.cronJobGroups.map(\.id) == ["job1"])
+    #expect(jobsOnly.sortedCronJobs.map(\.id) == ["job1"])
     #expect(jobsOnly.hasCronContent)
     #expect(jobsOnly.showsTabBar)
     #expect(jobsOnly.showsEmptyPlaceholder)
     jobsOnly.selectedTab = .cron
+    #expect(jobsOnly.effectiveTab == .cron)
     #expect(!jobsOnly.showsEmptyPlaceholder)
 
     // Search is a Sessions-only mode: an empty result set shows the placeholder.
@@ -145,12 +96,14 @@ struct SessionListCronTests {
     #expect(searching.showsEmptyPlaceholder)
 
     // Jobs fetched but the API is unsupported → no Cron Jobs tab.
-    let unsupported = SessionListFeature.State(
+    var unsupported = SessionListFeature.State(
       connection: connection,
       cronJobs: [CronJob(id: "job1")],
       cronJobsSupported: false
     )
+    unsupported.selectedTab = .cron
     #expect(!unsupported.hasCronContent)
+    #expect(unsupported.effectiveTab == .sessions)
     #expect(unsupported.showsEmptyPlaceholder)
 
     // Runs alone (flat fallback, no jobs) still make a Cron Jobs tab, and cron runs never
@@ -163,32 +116,15 @@ struct SessionListCronTests {
     #expect(runsOnly.showsEmptyPlaceholder)
 
     // Nothing at all → placeholder, unless still loading or failed.
-    let empty = SessionListFeature.State(connection: connection)
+    var empty = SessionListFeature.State(connection: connection)
+    empty.selectedTab = .cron
     #expect(!empty.hasCronContent)
+    #expect(empty.effectiveTab == .sessions)
     #expect(empty.showsEmptyPlaceholder)
     #expect(!SessionListFeature.State(connection: connection, isLoading: true).showsEmptyPlaceholder)
     #expect(
       !SessionListFeature.State(connection: connection, loadError: "boom").showsEmptyPlaceholder
     )
-  }
-
-  @Test func cronUnreadCountCountsOnlyUnreadCronSessions() {
-    let state = SessionListFeature.State(
-      connection: connection,
-      sessions: [
-        cronSession("job1", stamp: "20260701_090000", messageCount: 5),  // unread (seen 2)
-        cronSession("job1", stamp: "20260702_090000", messageCount: 3),  // read (seen 3)
-        Session(id: "interactive", messageCount: 9),  // unread but NOT cron
-      ],
-      seenCounts: [
-        "cron_job1_20260701_090000": 2,
-        "cron_job1_20260702_090000": 3,
-        "interactive": 1,
-      ]
-    )
-
-    #expect(state.cronUnreadCount == 1)
-    #expect(state.unreadSessionIDs.contains("interactive"))  // interactive dot unaffected
   }
 
   // MARK: Fetch + capability gate (store)
@@ -915,11 +851,11 @@ struct SessionListCronTests {
       $0.preferences = .inMemory()
     }
 
-    #expect(store.state.cronUnreadCount == 1)
+    #expect(store.state.unreadSessionIDs.contains(run.id))
     await store.send(.sessionTapped(run.id)) {
       $0.seenCounts[run.id] = 5
     }
     await store.receive(\.delegate.openSession)
-    #expect(store.state.cronUnreadCount == 0)
+    #expect(!store.state.unreadSessionIDs.contains(run.id))
   }
 }

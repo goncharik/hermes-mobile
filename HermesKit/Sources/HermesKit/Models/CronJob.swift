@@ -85,21 +85,6 @@ public struct CronJob: Equatable, Sendable, Identifiable, Decodable {
 
   public var isPaused: Bool { effectiveState == "paused" }
 
-  /// Extracts the owning job id from a cron run-session id. The scheduler names run
-  /// sessions `cron_{job_id}_{YYYYMMDD}_{HHMMSS}` (see hermes-agent `cron/scheduler.py`);
-  /// the job id itself may contain underscores (legacy/imported jobs), so we anchor on the
-  /// `cron_` prefix and strip the trailing datetime stamp rather than splitting on `_`.
-  /// Returns nil for anything that doesn't match (interactive sessions, odd ids).
-  public static func jobID(fromSessionID sessionID: String) -> String? {
-    guard sessionID.hasPrefix("cron_") else { return nil }
-    let rest = String(sessionID.dropFirst("cron_".count))
-    guard
-      let range = rest.range(of: #"_\d{8}_\d{6}$"#, options: .regularExpression),
-      range.lowerBound > rest.startIndex
-    else { return nil }
-    return String(rest[..<range.lowerBound])
-  }
-
   /// Coarse relative label for a run instant: "in 7 hr." / "5 min. ago" / "in 2 days".
   /// Hand-rolled (no `RelativeDateTimeFormatter`) so tests and snapshots are
   /// locale-deterministic; picks the coarsest sensible unit like the desktop sidebar.

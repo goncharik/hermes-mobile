@@ -253,15 +253,15 @@
 - Modify: `HermesMobile/Sources/Features/SessionListView.swift` (compile only: switch to
   `sortedCronJobs`, drop the badge reference; the visual rework is Task 6)
 
-- [ ] delete `CronJobGroup`, `unmatchedCronSessions` and `cronUnreadCount`; replace `cronJobGroups`
+- [x] delete `CronJobGroup`, `unmatchedCronSessions` and `cronUnreadCount`; replace `cronJobGroups`
       with `sortedCronJobs: [CronJob]` (`cronJobsSupported` gate, `cronJobOrder` sort); update
       `hasCronContent`
-- [ ] delete `CronJob.jobID(fromSessionID:)` and its tests; grep the whole repo (including
+- [x] delete `CronJob.jobID(fromSessionID:)` and its tests; grep the whole repo (including
       `HermesWidgets`, `DemoMode`, the snapshot tests) to confirm no remaining callers
-- [ ] update the view's references so the app target compiles
-- [ ] update tests: replace the grouping, unmatched and unread-count tests with `sortedCronJobs`
+- [x] update the view's references so the app target compiles
+- [x] update tests: replace the grouping, unmatched and unread-count tests with `sortedCronJobs`
       ordering + `hasCronContent` (jobs-only, runs-only, neither, jobs present but unsupported)
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 5: Add delete-job to the reducer
 

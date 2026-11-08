@@ -99,25 +99,6 @@ struct CronJobTests {
     #expect(!CronJob(id: "a", state: "running").isPaused)
   }
 
-  // MARK: Session-id → job-id parse
-
-  @Test func parsesJobIDFromRunSessionID() {
-    #expect(CronJob.jobID(fromSessionID: "cron_a1b2c3d4e5f6_20260702_090000") == "a1b2c3d4e5f6")
-  }
-
-  @Test func parsesJobIDContainingUnderscores() {
-    // Legacy/imported job ids can carry underscores — anchor on the datetime tail,
-    // not on splitting.
-    #expect(CronJob.jobID(fromSessionID: "cron_my_legacy_job_20260702_090000") == "my_legacy_job")
-  }
-
-  @Test func rejectsNonCronSessionIDs() {
-    #expect(CronJob.jobID(fromSessionID: "20260610_120231_afcca6") == nil)
-    #expect(CronJob.jobID(fromSessionID: "cron_missing_datetime_tail") == nil)
-    #expect(CronJob.jobID(fromSessionID: "cron_20260702_090000") == nil)  // no job id segment
-    #expect(CronJob.jobID(fromSessionID: "") == nil)
-  }
-
   // MARK: Relative run label
 
   @Test func relativeRunLabelFuture() {
