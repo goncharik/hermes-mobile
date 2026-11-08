@@ -227,21 +227,21 @@
 - Modify: `HermesKit/Sources/HermesKit/Features/SessionListFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SessionListCronTests.swift`
 
-- [ ] add `expandedCronRuns` / `expandedCronRunsFailed` state, `CancelID.cronRuns`, and the
+- [x] add `expandedCronRuns` / `expandedCronRunsFailed` state, `CancelID.cronRuns`, and the
       `cronRunsResponse(jobID:_:)` / `cronRunTapped(id:)` actions
-- [ ] `cronJobTapped`: expand → clear the slot and fetch (`limit = cronPeekLimit`, `scopedProfileName`);
+- [x] `cronJobTapped`: expand → clear the slot and fetch (`limit = cronPeekLimit`, `scopedProfileName`);
       collapse/switch → clear the slot and cancel; drop stale responses for another job; a first
       failure sets the failed flag; a refresh failure keeps the runs
-- [ ] merge the expanded-runs fetch into `load` (poll and pull-to-refresh) and into the trigger
+- [x] merge the expanded-runs fetch into `load` (poll and pull-to-refresh) and into the trigger
       success path; clear the slot at every existing `expandedCronJobID = nil` site
-- [ ] `cronRunTapped`: `isCron` only → `markLocallyRead` + `.delegate(.openSession(run))`; a
+- [x] `cronRunTapped`: `isCron` only → `markLocallyRead` + `.delegate(.openSession(run))`; a
       `cron_output` or unknown id → no-op
-- [ ] write tests: expanding fetches with the profile and shows the runs; collapsing and switching
+- [x] write tests: expanding fetches with the profile and shows the runs; collapsing and switching
       cancel and clear; a stale response is ignored; first-load failure vs refresh failure
-- [ ] write tests: a poll tick refetches only while a job is expanded; Run now success refetches the
+- [x] write tests: a poll tick refetches only while a job is expanded; Run now success refetches the
       runs; a profile switch and the 404 flip clear the slot; `cronRunTapped` opens a session run and
       ignores a `cron_output` row
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 4: Remove id-based grouping, unmatched runs and the cron unread count
 

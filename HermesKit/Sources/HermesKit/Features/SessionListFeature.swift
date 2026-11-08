@@ -120,6 +120,15 @@ public struct SessionListFeature {
     /// The job whose inline run-peek is expanded — single-open so the section stays
     /// scannable (mirrors the desktop sidebar's peek).
     public var expandedCronJobID: String?
+    /// The expanded job's recent runs, fetched from `GET /api/cron/jobs/{id}/runs` (newest
+    /// first, capped to `cronPeekLimit`): session rows (`isCron`, open a chat) plus
+    /// script-only `cron_output` rows (plain text). `nil` = not loaded yet (spinner), `[]` =
+    /// "No runs yet". One slot for the ONE expanded job — cleared whenever the expansion
+    /// changes, so a run list never shows under the wrong job.
+    public var expandedCronRuns: [Session]?
+    /// The expanded job's FIRST runs load failed ("Couldn't load runs"). A failed refresh
+    /// keeps the runs already shown and leaves this false.
+    public var expandedCronRunsFailed: Bool
     /// Job ids whose trigger/pause/resume RPC is IN FLIGHT. Transient double-fire guard
     /// (mirrors `archivingIDs`): added when the POST starts, removed on success/failure.
     public var cronActionInFlightIDs: Set<String>
@@ -192,6 +201,8 @@ public struct SessionListFeature {
       cronJobs: IdentifiedArrayOf<CronJob> = [],
       cronJobsSupported: Bool = true,
       expandedCronJobID: String? = nil,
+      expandedCronRuns: [Session]? = nil,
+      expandedCronRunsFailed: Bool = false,
       cronActionInFlightIDs: Set<String> = [],
       copiedIDToastToken: Int? = nil,
       settings: SettingsFeature.State? = nil,
@@ -226,6 +237,8 @@ public struct SessionListFeature {
       self.cronJobs = cronJobs
       self.cronJobsSupported = cronJobsSupported
       self.expandedCronJobID = expandedCronJobID
+      self.expandedCronRuns = expandedCronRuns
+      self.expandedCronRunsFailed = expandedCronRunsFailed
       self.cronActionInFlightIDs = cronActionInFlightIDs
       self.copiedIDToastToken = copiedIDToastToken
       self.settings = settings
@@ -569,7 +582,14 @@ public struct SessionListFeature {
     /// the previous jobs so the section doesn't flap.
     case cronJobsResponse(Result<[CronJob], RESTError>)
     /// Toggle a job's inline run-peek (single-open: expanding one collapses another).
+    /// Expanding fetches the job's runs from `/runs`; collapsing cancels that fetch.
     case cronJobTapped(id: String)
+    /// Result of the expanded job's `/runs` fetch. Dropped when `jobID` is no longer the
+    /// expanded job (a late response after a collapse or switch).
+    case cronRunsResponse(jobID: String, Result<[Session], RESTError>)
+    /// A run row under the expanded job was tapped: a session run (`isCron`) opens its chat;
+    /// a script-only `cron_output` row has no session and does nothing.
+    case cronRunTapped(id: Session.ID)
     /// "Run now" on a job row — `POST /api/cron/jobs/{id}/trigger`.
     case triggerCronJob(id: String)
     /// Pause a job — `POST /api/cron/jobs/{id}/pause`.
@@ -645,8 +665,10 @@ public struct SessionListFeature {
 
   // One id for BOTH the list fetch and the search fetch: any new fetch (list refresh, poll,
   // or search) cancels the previous in-flight one, so a late list response can't overwrite
-  // active search results (and vice versa). `poll` is the separate timer loop.
-  private enum CancelID { case fetch, poll, pushTokens, copyIDToast }
+  // active search results (and vice versa). `poll` is the separate timer loop. `cronRuns` is
+  // the expanded job's `/runs` fetch — its own id so it never cancels (or is cancelled by)
+  // the list load it rides alongside.
+  private enum CancelID { case fetch, poll, pushTokens, copyIDToast, cronRuns }
 
   /// How often the list auto-refreshes while visible, to keep `isActive` (working glow) fresh.
   private static let pollInterval: Duration = .seconds(10)
@@ -711,7 +733,8 @@ public struct SessionListFeature {
         return .merge(
           .cancel(id: CancelID.poll),
           .cancel(id: CancelID.fetch),
-          .cancel(id: CancelID.pushTokens)
+          .cancel(id: CancelID.pushTokens),
+          .cancel(id: CancelID.cronRuns)
         )
 
       case .pollTick:
@@ -768,13 +791,43 @@ public struct SessionListFeature {
         if error == .notFound {
           state.cronJobsSupported = false
           state.cronJobs = []
-          state.expandedCronJobID = nil
+          return collapseExpandedCronJob(&state)
         }
         return .none
 
       case let .cronJobTapped(id):
-        state.expandedCronJobID = state.expandedCronJobID == id ? nil : id
+        // Tapping the open job collapses it; any other job becomes the single open one.
+        // Either way the runs slot starts empty — never show one job's runs under another.
+        guard state.expandedCronJobID != id else { return collapseExpandedCronJob(&state) }
+        state.expandedCronJobID = id
+        state.expandedCronRuns = nil
+        state.expandedCronRunsFailed = false
+        // `cancelInFlight` drops the previous job's fetch on a switch.
+        return fetchExpandedCronRuns(state)
+
+      case let .cronRunsResponse(jobID, result):
+        // A late response for a job that is no longer expanded never lands.
+        guard jobID == state.expandedCronJobID else { return .none }
+        switch result {
+        case let .success(runs):
+          state.expandedCronRuns = runs
+          state.expandedCronRunsFailed = false
+        case .failure:
+          // Only a FIRST load failure shows "Couldn't load runs"; a failed refresh keeps
+          // the runs already on screen (the next poll retries).
+          if state.expandedCronRuns == nil { state.expandedCronRunsFailed = true }
+        }
         return .none
+
+      case let .cronRunTapped(id):
+        // Looked up in the runs slot, not `state.sessions`: an older run may be outside the
+        // list's 50-row cron slice. Script-only `cron_output` rows have no session to open.
+        guard let run = state.expandedCronRuns?.first(where: { $0.id == id }), run.isCron
+        else { return .none }
+        return .merge(
+          markLocallyRead(id, state: &state),
+          .send(.delegate(.openSession(run)))
+        )
 
       case let .triggerCronJob(id):
         return performCronAction(&state, id: id, refetchSessions: true) { rest, conn, jobID, profile in
@@ -1402,9 +1455,9 @@ public struct SessionListFeature {
         // Cron jobs are profile-scoped too: drop the old profile's jobs + peek so the
         // section can't show cross-profile rows while the scoped refetch is in flight.
         state.cronJobs = []
-        state.expandedCronJobID = nil
+        let collapse = collapseExpandedCronJob(&state)
         preferences.saveSelectedProfileID(name)
-        return load(&state)
+        return .merge(collapse, load(&state))
 
       case .addProfileTapped:
         state.addProfile = AddProfileFeature.State(connection: state.connection)
@@ -1505,9 +1558,9 @@ public struct SessionListFeature {
           state.selectedProfileName = Self.State.defaultProfileName
           state.searchQuery = ""
           state.cronJobs = []
-          state.expandedCronJobID = nil
+          let collapse = collapseExpandedCronJob(&state)
           preferences.saveSelectedProfileID(Self.State.defaultProfileName)
-          return load(&state)
+          return .merge(collapse, load(&state))
         }
         return .none
 
@@ -1598,7 +1651,16 @@ public struct SessionListFeature {
   private func load(_ state: inout State) -> Effect<Action> {
     reloadPrefs(&state)
     state.isLoading = true
-    return .run { [
+    // The open job's runs refresh with every list load (poll, pull-to-refresh, the Run now
+    // success), alongside — never inside — the shared-`fetch` list effect. Skipped while
+    // searching, like the jobs fetch (the Cron Jobs tab is hidden then).
+    let runs = state.isSearching ? .none : fetchExpandedCronRuns(state)
+    return .merge(runs, loadList(state))
+  }
+
+  /// The list (+ jobs) half of `load`, on the shared `fetch` id.
+  private func loadList(_ state: State) -> Effect<Action> {
+    .run { [
       rest, profiles, connection = state.connection, query = state.searchQuery,
       profile = state.scopedProfileName, cronJobsSupported = state.cronJobsSupported
     ] send in
@@ -1670,6 +1732,36 @@ public struct SessionListFeature {
   private func isPushPromptSnoozed() -> Bool {
     guard let snooze = preferences.loadPushPromptSnooze() else { return false }
     return now < snooze.until
+  }
+
+  /// Fetch the expanded job's recent runs (`GET /api/cron/jobs/{id}/runs`, capped to
+  /// `cronPeekLimit`, profile-scoped like the jobs fetch). A no-op with nothing expanded or
+  /// on an agent without the jobs API. `cancelInFlight` on its own id: a refresh or a switch
+  /// supersedes the previous fetch without touching the list load.
+  private func fetchExpandedCronRuns(_ state: State) -> Effect<Action> {
+    guard let jobID = state.expandedCronJobID, state.cronJobsSupported else { return .none }
+    return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
+      do {
+        let runs = try await rest.cronJobRuns(connection, jobID, profile, State.cronPeekLimit)
+        await send(.cronRunsResponse(jobID: jobID, .success(runs)))
+      } catch let error as RESTError {
+        await send(.cronRunsResponse(jobID: jobID, .failure(error)))
+      } catch is CancellationError {
+        // Superseded or collapsed — nothing to report.
+      } catch {
+        await send(.cronRunsResponse(jobID: jobID, .failure(.unreachable)))
+      }
+    }
+    .cancellable(id: CancelID.cronRuns, cancelInFlight: true)
+  }
+
+  /// Collapse the expanded job: clear the id and its runs slot, and cancel a runs fetch in
+  /// flight. THE one collapse path (tap, the jobs-API 404 flip, profile switches).
+  private func collapseExpandedCronJob(_ state: inout State) -> Effect<Action> {
+    state.expandedCronJobID = nil
+    state.expandedCronRuns = nil
+    state.expandedCronRunsFailed = false
+    return .cancel(id: CancelID.cronRuns)
   }
 
   /// Shared trigger/pause/resume flow: guard against a double-fire while the job's RPC is
