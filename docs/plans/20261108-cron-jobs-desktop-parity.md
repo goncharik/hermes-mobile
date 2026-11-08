@@ -321,14 +321,27 @@
 - [x] run `make snapshot` - must be fully clean before next task
 
 ### Task 8: Verify acceptance criteria
-- [ ] verify: with `local-*` run ids, an expanded job shows its runs (from `/runs`) and no flat
-      unmatched list appears
-- [ ] verify: paused jobs read "Paused", overdue jobs read "Overdue · …", active ones read "Next in …"
-- [ ] verify: Delete asks for confirmation, removes the job, and leaves the tab cleanly when it was
-      the last job
-- [ ] verify: an agent without the jobs API (404) still shows the flat run list
-- [ ] run full test suite: `make test`
-- [ ] run snapshot suite: `make snapshot`
+- [x] verify: with `local-*` run ids, an expanded job shows its runs (from `/runs`) and no flat
+      unmatched list appears (`cronJobTapped` → `fetchExpandedCronRuns`; tests
+      `expandingFetchesTheJobsRunsScopedToTheProfile`, `sortedCronJobsListsJobsOnlyNotRuns`,
+      `cronJobRunsDecodesSessionAndScriptRows`; snapshot `testSessionList_cronJobs_expandedRuns`;
+      `unmatchedCronSessions` / `CronJobGroup` / `jobID(fromSessionID:)` have no references left)
+- [x] verify: paused jobs read "Paused", overdue jobs read "Overdue · …", active ones read "Next in …"
+      (`CronJob.statusCaption(now:)`, used by `cronJobRow`; tests `statusCaptionNamesInactiveStates`,
+      `statusCaptionFlagsOverdueJustPastGrace`, `statusCaptionShowsUpcomingNextRun`; snapshot
+      `testSessionList_cronJobs_statuses` shows all three, overdue tinted orange)
+- [x] verify: Delete asks for confirmation, removes the job, and leaves the tab cleanly when it was
+      the last job (`deleteCronJobTapped` → `Dialog.confirmDeleteCronJob` via `.bottomActionSheet`;
+      tests `deleteTapPresentsTheConfirmationAndCancelSendsNothing`,
+      `confirmDeletesWithTheProfileRemovesTheJobCollapsesAndRefetches`, `aDelete404IsTreatedAsAlreadyGone`,
+      `deletingTheLastJobWithNoRunsLeavesTheCronTab`)
+- [x] verify: an agent without the jobs API (404) still shows the flat run list (`cronJobsResponse`
+      `.notFound` → `cronJobsSupported = false`, `sortedCronJobs` empty → view's `cronSessions`
+      fallback; tests `notFoundDisablesCronJobsAndSkipsLaterFetches`,
+      `sortedCronJobsEmptyWhenUnsupportedOrNoJobs`, `theJobsAPI404ClearsTheExpandedJobAndItsRuns`;
+      snapshot `testSessionList_cronJobsFallbackFlat`)
+- [x] run full test suite: `make test` (2696 tests in 107 suites passed, 2 known issues)
+- [x] run snapshot suite: `make snapshot` (365/365, 0 failures)
 
 ### Task 9: [Final] Update documentation
 - [ ] rewrite the "Cron sessions & the Cron Jobs tab (#24)" section of `docs/features/session-list.md`
