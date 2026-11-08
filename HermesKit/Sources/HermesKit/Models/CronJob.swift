@@ -105,17 +105,24 @@ public struct CronJob: Equatable, Sendable, Identifiable, Decodable {
 
   /// A cron run row's timestamp, "Jun 10, 07:00" (no year, no seconds), like the desktop's
   /// `formatRunTime` (`fmtDayTime`): sibling runs share a title, so the instant is what tells
-  /// them apart. A POSIX-locale formatter in `timeZone` (English month abbreviations, 24-hour
-  /// clock), so tests and snapshots never depend on the device locale; a missing instant
-  /// reads "—".
+  /// them apart. A POSIX-locale format style in `timeZone` (English month abbreviations,
+  /// 24-hour clock), so tests and snapshots never depend on the device locale; a missing
+  /// instant reads "—".
   public static func runTimestampLabel(for date: Date?, timeZone: TimeZone) -> String {
     guard let date else { return "—" }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = timeZone
-    formatter.dateFormat = "MMM d, HH:mm"
-    return formatter.string(from: date)
+    return date.formatted(Date.VerbatimFormatStyle(
+      format: """
+        \(month: .abbreviated) \(day: .defaultDigits), \
+        \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)
+        """,
+      locale: runTimestampLocale,
+      timeZone: timeZone,
+      calendar: runTimestampCalendar
+    ))
   }
+
+  private static let runTimestampLocale = Locale(identifier: "en_US_POSIX")
+  private static let runTimestampCalendar = Calendar(identifier: .gregorian)
 
   /// How long a stored `next_run_at` may sit in the past before an active job reads as
   /// overdue. Mirrors hermes-agent `_OVERDUE_GRACE_SECONDS` and the desktop's

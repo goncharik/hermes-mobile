@@ -826,7 +826,7 @@ public struct SessionListFeature {
           }
         } message: {
           TextState(
-            "The job and its schedule are removed from the agent. Its past runs are kept on the server but won't be listed here."
+            "The job and its schedule are removed from the agent. Its past runs are kept on the server but won’t be listed here."
           )
         }
         return .none
@@ -854,24 +854,23 @@ public struct SessionListFeature {
         // Success → reconcile from the server. A trigger just spawned a run session, so do
         // the full load (sessions + jobs + the expanded job's runs); pause/resume and delete
         // only changed the job, so a jobs-only refetch avoids churning the list.
-        let refetchJobs = Effect<Action>.run {
-          [rest, connection = state.connection, profile = state.scopedProfileName] send in
-          await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
-        }
         switch kind {
         case .trigger:
           return load(&state)
         case .pauseResume:
-          return refetchJobs
+          return refetchCronJobs(state)
         case .delete:
           // Drop the row now rather than waiting on the refetch; collapsing a deleted
           // expanded job also cancels its runs fetch.
           state.cronJobs.remove(id: id)
           let collapse = state.expandedCronJobID == id ? collapseExpandedCronJob(&state) : .none
           // A list load already in flight may carry a pre-DELETE jobs response that would
-          // bring the row back: supersede it (a restarted load refetches the jobs itself).
+          // bring the row back: supersede it. Decided BEFORE `cancelOrRestartFetch`, which
+          // restarts exactly when this holds; the restarted load refetches the jobs itself
+          // (a search load skips them, and the search's clear reloads them).
+          let restartsLoad = state.isLoading || state.isSearching
           let fetch = cancelOrRestartFetch(&state)
-          return .merge(collapse, fetch, state.isLoading ? .none : refetchJobs)
+          return .merge(collapse, fetch, restartsLoad ? .none : refetchCronJobs(state))
         }
 
       case .setupPush:
@@ -1759,6 +1758,13 @@ public struct SessionListFeature {
       await send(fetchCronRuns(rest: rest, connection: connection, jobID: jobID, profile: profile))
     }
     .cancellable(id: CancelID.cronRuns, cancelInFlight: true)
+  }
+
+  /// A jobs-only refetch, outside the list load (a cron action changed a job, not the list).
+  private func refetchCronJobs(_ state: State) -> Effect<Action> {
+    .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
+      await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
+    }
   }
 
   /// The banner for a confirmed delete that hits the job's in-flight guard.

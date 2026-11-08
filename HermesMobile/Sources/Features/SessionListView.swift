@@ -245,7 +245,7 @@ struct SessionListView: View {
   }
 
   /// The expanded job's runs, indented under it: a spinner until the first `/runs` load
-  /// lands, "Couldn't load runs" when it failed, "No runs yet" when empty, else one
+  /// lands, "Couldn’t load runs" when it failed, "No runs yet" when empty, else one
   /// timestamp row per run (a failed refresh keeps the last runs — reducer rule).
   @ViewBuilder
   private var expandedCronRuns: some View {
@@ -257,7 +257,7 @@ struct SessionListView: View {
         cronJobRunRow(run)
       }
     } else if store.expandedCronRunsFailed {
-      cronRunsPlaceholder("Couldn't load runs")
+      cronRunsPlaceholder("Couldn’t load runs")
     } else {
       ProgressView()
         .padding(.leading, Self.cronRunIndent)

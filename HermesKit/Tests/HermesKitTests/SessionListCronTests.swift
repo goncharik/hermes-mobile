@@ -10,12 +10,14 @@ struct SessionListCronTests {
   private let connection = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "tok")
   private let now = Date(timeIntervalSince1970: 1_749_600_000)
 
-  private func cronSession(
-    _ jobID: String, stamp: String, messageCount: Int = 1, updatedAt: TimeInterval = 0
+  /// A cron run session. The id is opaque: upstream mints `local-*` ids (`e2042c84`), so a
+  /// run's id never names its job.
+  private func cronRun(
+    _ id: String, messageCount: Int = 1, updatedAt: TimeInterval? = nil
   ) -> Session {
     Session(
-      id: "cron_\(jobID)_\(stamp)",
-      updatedAt: Date(timeIntervalSince1970: updatedAt),
+      id: id,
+      updatedAt: updatedAt.map(Date.init(timeIntervalSince1970:)),
       messageCount: messageCount,
       source: "cron"
     )
@@ -29,7 +31,7 @@ struct SessionListCronTests {
     let state = SessionListFeature.State(
       connection: connection,
       sessions: [
-        cronSession("job1", stamp: "20260701_090000", updatedAt: 100),
+        cronRun("cron_job1_20260701_090000", updatedAt: 100),
         Session(id: "local-abc123", updatedAt: Date(timeIntervalSince1970: 200), source: "cron"),
         Session(id: "interactive", title: "Chat"),
       ],
@@ -59,7 +61,7 @@ struct SessionListCronTests {
   @Test func sortedCronJobsEmptyWhenUnsupportedOrNoJobs() {
     let unsupported = SessionListFeature.State(
       connection: connection,
-      sessions: [cronSession("job1", stamp: "20260702_090000")],
+      sessions: [cronRun("local-1")],
       cronJobs: [CronJob(id: "job1")],
       cronJobsSupported: false
     )
@@ -68,7 +70,7 @@ struct SessionListCronTests {
 
     let noJobs = SessionListFeature.State(
       connection: connection,
-      sessions: [cronSession("job1", stamp: "20260702_090000")]
+      sessions: [cronRun("local-1")]
     )
     #expect(noJobs.sortedCronJobs.isEmpty)
   }
@@ -109,7 +111,7 @@ struct SessionListCronTests {
     // With the jobs API, runs alone (e.g. a deleted job's) never make a Cron Jobs tab.
     let runsOnly = SessionListFeature.State(
       connection: connection,
-      sessions: [cronSession("job1", stamp: "20260702_090000")]
+      sessions: [cronRun("local-1")]
     )
     #expect(!runsOnly.hasCronContent)
     #expect(runsOnly.showsEmptyPlaceholder)
@@ -118,7 +120,7 @@ struct SessionListCronTests {
     // Sessions-tab content.
     let flatRuns = SessionListFeature.State(
       connection: connection,
-      sessions: [cronSession("job1", stamp: "20260702_090000")],
+      sessions: [cronRun("local-1")],
       cronJobsSupported: false
     )
     #expect(flatRuns.hasCronContent)
@@ -141,7 +143,7 @@ struct SessionListCronTests {
   @Test func refreshFetchesCronJobsScopedToSelectedProfile() async {
     let requestedProfile = LockIsolated<String?>("unset")
     // Hoisted: the @Sendable dependency closure can't call the MainActor-isolated helper.
-    let run = cronSession("job1", stamp: "20260702_090000")
+    let run = cronRun("local-1")
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, selectedProfileName: "work", profilesSupported: true
@@ -164,10 +166,10 @@ struct SessionListCronTests {
     }
     // Only a cron run, no interactive session: still loading until the jobs decide the tab.
     await store.receive(\.sessionsResponse.success) {
-      $0.sessions = [self.cronSession("job1", stamp: "20260702_090000")]
+      $0.sessions = [self.cronRun("local-1")]
       // Cron rows ride along; the projection, not the source, excludes them.
-      $0.statusSessions = [self.cronSession("job1", stamp: "20260702_090000")]
-      $0.seenCounts = ["cron_job1_20260702_090000": 1]  // cron sessions ARE seeded (issue #24 gap 1)
+      $0.statusSessions = [self.cronRun("local-1")]
+      $0.seenCounts = ["local-1": 1]  // cron sessions ARE seeded (issue #24 gap 1)
     }
     await store.receive(\.cronJobsResponse.success) {
       $0.isLoading = false
@@ -182,7 +184,7 @@ struct SessionListCronTests {
   @Test func loadFetchesInteractiveAndCronRunsAsSeparateSlices() async {
     let requested = LockIsolated<[SessionSourceFilter]>([])
     let chat = Session(id: "chat", title: "Chat", updatedAt: now.addingTimeInterval(-3600))
-    let run = cronSession("job1", stamp: "20260702_090000")
+    let run = cronRun("local-1")
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
@@ -230,7 +232,7 @@ struct SessionListCronTests {
 
   @Test func mergeKeepsInteractiveOrderAndDropsRepeatedRows() {
     let a = Session(id: "a"), b = Session(id: "b")
-    let run = cronSession("job1", stamp: "20260702_090000")
+    let run = cronRun("local-1")
     #expect(mergeSessionSlices([a, b], [run]).map(\.id) == ["a", "b", run.id])
     // An agent that ignores the scoping returns the same page twice: it merges to one copy.
     #expect(mergeSessionSlices([a, run], [a, run]).map(\.id) == ["a", run.id])
@@ -382,7 +384,7 @@ struct SessionListCronTests {
     #expect(store.state.showsEmptyPlaceholder)
   }
 
-  // MARK: Inline peek + unread-on-open
+  // MARK: Expand / collapse
 
   @Test func cronJobTappedTogglesSingleOpenPeek() async {
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
@@ -414,16 +416,11 @@ struct SessionListCronTests {
 
   // MARK: Expanded job runs (`/runs`)
 
-  /// A `/runs` session row — a `local-*` id (upstream `e2042c84`), not `cron_{job}_…`.
-  private func runRow(_ id: String, messageCount: Int = 1) -> Session {
-    Session(id: id, messageCount: messageCount, source: "cron")
-  }
-
   private let scriptRow = Session(id: "cron_output:job1:20260702_090000", source: "cron_output")
 
   @Test func expandingFetchesTheJobsRunsScopedToTheProfile() async {
     let requested = LockIsolated<(id: String, profile: String?, limit: Int)?>(nil)
-    let runs = [runRow("local-2"), runRow("local-1"), scriptRow]
+    let runs = [cronRun("local-2"), cronRun("local-1"), scriptRow]
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, selectedProfileName: "work", profilesSupported: true,
@@ -487,7 +484,7 @@ struct SessionListCronTests {
   }
 
   @Test func switchingJobsCancelsTheOldFetchAndLoadsTheNewOne() async {
-    let job2Runs = [runRow("local-9")]
+    let job2Runs = [cronRun("local-9")]
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
@@ -513,21 +510,21 @@ struct SessionListCronTests {
   @Test func aStaleRunsResponseForAnotherJobIsIgnored() async {
     let store = TestStore(
       initialState: SessionListFeature.State(
-        connection: connection, expandedCronJobID: "job2", expandedCronRuns: [runRow("local-9")]
+        connection: connection, expandedCronJobID: "job2", expandedCronRuns: [cronRun("local-9")]
       )
     ) {
       SessionListFeature()
     }
 
     // job1's late success or failure never lands under job2.
-    await store.send(.cronRunsResponse(jobID: "job1", .success([runRow("local-1")])))
+    await store.send(.cronRunsResponse(jobID: "job1", .success([cronRun("local-1")])))
     await store.send(.cronRunsResponse(jobID: "job1", .failure(.unreachable)))
 
     // …nor after a collapse.
     let collapsed = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     }
-    await collapsed.send(.cronRunsResponse(jobID: "job2", .success([runRow("local-9")])))
+    await collapsed.send(.cronRunsResponse(jobID: "job2", .success([cronRun("local-9")])))
   }
 
   @Test func aFirstLoadFailureShowsTheFailedState() async {
@@ -544,8 +541,8 @@ struct SessionListCronTests {
       $0.expandedCronRunsFailed = true
     }
     // A later successful refresh replaces the failed state with the runs.
-    await store.send(.cronRunsResponse(jobID: "job1", .success([runRow("local-1")]))) {
-      $0.expandedCronRuns = [self.runRow("local-1")]
+    await store.send(.cronRunsResponse(jobID: "job1", .success([cronRun("local-1")]))) {
+      $0.expandedCronRuns = [self.cronRun("local-1")]
       $0.expandedCronRunsFailed = false
     }
   }
@@ -581,7 +578,7 @@ struct SessionListCronTests {
   }
 
   @Test func aRefreshFailureKeepsTheRunsOnScreen() async {
-    let shown = [runRow("local-1")]
+    let shown = [cronRun("local-1")]
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, expandedCronJobID: "job1", expandedCronRuns: shown
@@ -598,8 +595,8 @@ struct SessionListCronTests {
 
   @Test func aPollTickRefetchesRunsOnlyWhileAJobIsExpanded() async {
     let runsFetches = LockIsolated<[String]>([])
-    let first = [runRow("local-1")]
-    let fresh = [runRow("local-2"), runRow("local-1")]
+    let first = [cronRun("local-1")]
+    let fresh = [cronRun("local-2"), cronRun("local-1")]
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, selectedTab: .cron, cronJobs: [CronJob(id: "job1", name: "Digest")]
@@ -637,7 +634,7 @@ struct SessionListCronTests {
 
   @Test func runsArePolledOnlyOnTheCronTabAndRefreshOnReturn() async {
     let runsFetches = LockIsolated(0)
-    let runs = [runRow("local-1")]
+    let runs = [cronRun("local-1")]
     let chat = Session(id: "chat", title: "Chat")
     let store = TestStore(
       initialState: SessionListFeature.State(
@@ -696,11 +693,11 @@ struct SessionListCronTests {
   }
 
   @Test func runNowSuccessRefetchesTheExpandedJobsRuns() async {
-    let afterTrigger = [runRow("local-new"), runRow("local-1")]
+    let afterTrigger = [cronRun("local-new"), cronRun("local-1")]
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, selectedTab: .cron, cronJobs: [CronJob(id: "job1", name: "Digest")],
-        expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
+        expandedCronJobID: "job1", expandedCronRuns: [cronRun("local-1")]
       )
     ) {
       SessionListFeature()
@@ -727,7 +724,7 @@ struct SessionListCronTests {
       initialState: SessionListFeature.State(
         connection: connection, profilesSupported: true,
         cronJobs: [CronJob(id: "job1")], expandedCronJobID: "job1",
-        expandedCronRuns: [runRow("local-1")], expandedCronRunsFailed: false
+        expandedCronRuns: [cronRun("local-1")], expandedCronRunsFailed: false
       )
     ) {
       SessionListFeature()
@@ -772,7 +769,7 @@ struct SessionListCronTests {
       initialState: SessionListFeature.State(
         connection: connection, profiles: [Profile(name: "work")], selectedProfileName: "work",
         profilesSupported: true, cronJobs: [CronJob(id: "job1")], expandedCronJobID: "job1",
-        expandedCronRuns: [runRow("local-1")]
+        expandedCronRuns: [cronRun("local-1")]
       )
     ) {
       SessionListFeature()
@@ -814,7 +811,7 @@ struct SessionListCronTests {
       initialState: SessionListFeature.State(
         connection: connection, sessions: [Session(id: "chat", title: "Chat")], selectedTab: .cron,
         cronJobs: [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
-        expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
+        expandedCronJobID: "job1", expandedCronRuns: [cronRun("local-1")]
       )
     ) {
       SessionListFeature()
@@ -840,7 +837,7 @@ struct SessionListCronTests {
 
   @Test func cronRunTappedOpensASessionRunAndMarksItSeen() async {
     // The run is also in the list's cron slice (unread 5 > 2), so the open marks it seen.
-    let run = runRow("local-1", messageCount: 5)
+    let run = cronRun("local-1", messageCount: 5)
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, sessions: [run], seenCounts: [run.id: 2],
@@ -860,7 +857,7 @@ struct SessionListCronTests {
 
   @Test func cronRunTappedOpensARunOutsideTheListSlice() async {
     // An older run the 50-row cron slice no longer carries still opens (nothing to mark).
-    let run = runRow("local-old")
+    let run = cronRun("local-old")
     let store = TestStore(
       initialState: SessionListFeature.State(
         connection: connection, expandedCronJobID: "job1", expandedCronRuns: [run]
@@ -885,6 +882,28 @@ struct SessionListCronTests {
     // A `cron_output` row has no backing session; an id outside the slot is unknown.
     await store.send(.cronRunTapped(id: scriptRow.id))
     await store.send(.cronRunTapped(id: "local-missing"))
+  }
+
+  @Test func openingACronRunMarksItSeen() async {
+    let run = cronRun("local-1", messageCount: 5)
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection,
+        sessions: [run],
+        seenCounts: [run.id: 2]  // unread: 5 > 2
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = .inMemory()
+    }
+
+    #expect(store.state.unreadSessionIDs.contains(run.id))
+    await store.send(.sessionTapped(run.id)) {
+      $0.seenCounts[run.id] = 5
+    }
+    await store.receive(\.delegate.openSession)
+    #expect(!store.state.unreadSessionIDs.contains(run.id))
   }
 
   // MARK: Manage actions (trigger / pause / resume)
@@ -1043,7 +1062,7 @@ struct SessionListCronTests {
       }
     } message: {
       TextState(
-        "The job and its schedule are removed from the agent. Its past runs are kept on the server but won't be listed here."
+        "The job and its schedule are removed from the agent. Its past runs are kept on the server but won’t be listed here."
       )
     }
   }
@@ -1080,7 +1099,7 @@ struct SessionListCronTests {
       initialState: SessionListFeature.State(
         connection: connection, selectedProfileName: "work", profilesSupported: true,
         cronJobs: [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
-        expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
+        expandedCronJobID: "job1", expandedCronRuns: [cronRun("local-1")]
       )
     ) {
       SessionListFeature()
@@ -1228,7 +1247,7 @@ struct SessionListCronTests {
     // The deleted job's runs are still in the list's cron slice: they must not resurface.
     var initial = confirmingDelete(
       [CronJob(id: "job1", name: "Digest")],
-      sessions: [Session(id: "chat", title: "Chat"), runRow("local-1")]
+      sessions: [Session(id: "chat", title: "Chat"), cronRun("local-1")]
     )
     initial.selectedTab = .cron
     let store = TestStore(initialState: initial) {
@@ -1253,7 +1272,7 @@ struct SessionListCronTests {
   }
 
   @Test func deletingAnotherJobKeepsTheExpandedJobAndItsRuns() async {
-    let shown = [runRow("local-9")]
+    let shown = [cronRun("local-9")]
     let store = TestStore(
       initialState: confirmingDelete(
         [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
@@ -1316,27 +1335,5 @@ struct SessionListCronTests {
     await store.finish()
     await store.skipReceivedActions(strict: false)  // applies a late response, if one landed
     #expect(store.state.cronJobs.map(\.id) == ["job2"])
-  }
-
-  @Test func openingACronRunMarksItSeen() async {
-    let run = cronSession("job1", stamp: "20260702_090000", messageCount: 5)
-    let store = TestStore(
-      initialState: SessionListFeature.State(
-        connection: connection,
-        sessions: [run],
-        seenCounts: [run.id: 2]  // unread: 5 > 2
-      )
-    ) {
-      SessionListFeature()
-    } withDependencies: {
-      $0.preferences = .inMemory()
-    }
-
-    #expect(store.state.unreadSessionIDs.contains(run.id))
-    await store.send(.sessionTapped(run.id)) {
-      $0.seenCounts[run.id] = 5
-    }
-    await store.receive(\.delegate.openSession)
-    #expect(!store.state.unreadSessionIDs.contains(run.id))
   }
 }
