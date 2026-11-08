@@ -203,4 +203,28 @@ struct CronJobTests {
     let upcoming = CronJob(id: "a", state: "running", nextRunAt: captionNow.addingTimeInterval(600))
     #expect(upcoming.statusCaption(now: captionNow).text == "Next in 10 min.")
   }
+
+  // MARK: Run timestamp
+
+  @Test func runTimestampLabelIsFixedFormatInTheGivenTimeZone() throws {
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    // 2025-06-10 21:00:00 UTC.
+    let evening = Date(timeIntervalSince1970: 1_749_589_200)
+    #expect(CronJob.runTimestampLabel(for: evening, timeZone: utc) == "Jun 10, 21:00")
+    // Single-digit day, zero-padded clock, January.
+    let newYear = Date(timeIntervalSince1970: 1_735_689_600 + 5 * 60 + 7) // 2025-01-01 00:05:07
+    #expect(CronJob.runTimestampLabel(for: newYear, timeZone: utc) == "Jan 1, 00:05")
+  }
+
+  @Test func runTimestampLabelFollowsTheTimeZone() throws {
+    let tokyo = try #require(TimeZone(identifier: "Asia/Tokyo"))
+    // 2025-06-10 21:00 UTC is the next morning in Tokyo (UTC+9).
+    let evening = Date(timeIntervalSince1970: 1_749_589_200)
+    #expect(CronJob.runTimestampLabel(for: evening, timeZone: tokyo) == "Jun 11, 06:00")
+  }
+
+  @Test func runTimestampLabelWithoutAnInstantIsADash() throws {
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    #expect(CronJob.runTimestampLabel(for: nil, timeZone: utc) == "—")
+  }
 }

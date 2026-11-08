@@ -289,19 +289,22 @@
 - Modify: `HermesMobile/Sources/Features/SessionListView.swift`
 - Modify: `HermesMobile/Sources/DemoMode.swift`
 
-- [ ] `cronTabContent`: with jobs → `sortedCronJobs` rows; the expanded job renders
+- [x] `cronTabContent`: with jobs → `sortedCronJobs` rows; the expanded job renders
       spinner / "Couldn't load runs" / "No runs yet" / run rows (indented as today); without the jobs
       API the flat `cronSessions` fallback is unchanged
-- [ ] `cronJobRow`: the caption comes from `statusCaption(now: store.now)` (`.overdue` tinted orange);
+- [x] `cronJobRow`: the caption comes from `statusCaption(now: store.now)` (`.overdue` tinted orange);
       remove the trailing unread dot; the accessibility label includes the caption text
-- [ ] add a timestamp-only run row: session runs are a `Button` → `.cronRunTapped` with an unread dot;
+- [x] add a timestamp-only run row: session runs are a `Button` → `.cronRunTapped` with an unread dot;
       `cron_output` runs are plain secondary text; fixed-format timestamp helper
-- [ ] context menu: Divider + destructive Delete → `.deleteCronJobTapped`; remove the tab badge and
+- [x] context menu: Divider + destructive Delete → `.deleteCronJobTapped`; remove the tab badge and
       its unread accessibility strings
-- [ ] `DemoMode`: seed `rest.cronJobRuns` from the seeded runs (by job id), make one seeded job
+- [x] `DemoMode`: seed `rest.cronJobRuns` from the seeded runs (by job id), make one seeded job
       paused, and drop the reliance on `cron_{job}_…` grouping
-- [ ] build the app (`tuist generate` if needed, then an `xcodebuild` build) to confirm it compiles
-- [ ] run tests - must pass before next task
+- [x] build the app (`tuist generate` if needed, then an `xcodebuild` build) to confirm it compiles
+- [x] run tests - must pass before next task
+- ➕ restored the user-approved delete-dialog message ("The job and its schedule are removed from
+      the agent. Its past runs are kept on the server but won't be listed here."); Task 5 had
+      invented one
 
 ### Task 7: Update and add the cron snapshot tests
 

@@ -103,6 +103,27 @@ public struct CronJob: Equatable, Sendable, Identifiable, Decodable {
     return diff < 0 ? "\(amount) ago" : "in \(amount)"
   }
 
+  /// A cron run row's timestamp, "Jun 10, 07:00" (no year, no seconds), like the desktop's
+  /// `formatRunTime` (`fmtDayTime`): sibling runs share a title, so the instant is what tells
+  /// them apart. Hand-rolled over a Gregorian calendar in `timeZone` with fixed English month
+  /// abbreviations and a 24-hour clock, so tests and snapshots never depend on the device
+  /// locale; a missing instant reads "—".
+  public static func runTimestampLabel(for date: Date?, timeZone: TimeZone) -> String {
+    guard let date else { return "—" }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    let parts = calendar.dateComponents([.month, .day, .hour, .minute], from: date)
+    guard let month = parts.month, let day = parts.day, let hour = parts.hour,
+          let minute = parts.minute, monthAbbreviations.indices.contains(month - 1)
+    else { return "—" }
+    let clock = String(format: "%02d:%02d", hour, minute)
+    return "\(monthAbbreviations[month - 1]) \(day), \(clock)"
+  }
+
+  private static let monthAbbreviations = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ]
+
   /// What a job row's status caption is, so the view can style it (`.overdue` is tinted).
   public enum StatusCaptionKind: Equatable, Sendable {
     /// The job will not fire on its own: Paused / Error / Completed / Disabled.

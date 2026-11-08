@@ -63,8 +63,11 @@ enum DemoMode {
     deps.hermesProfiles.sessions = { _, _, _, _, _, _, _ in seededSessions }
     // The agent always exposes the default profile, so the "default" pill is always present.
     deps.hermesProfiles.list = { _ in [Profile(name: "default", isDefault: true)] }
-    // Keep the grouped Cron Jobs section frozen on the seeded jobs across polls.
+    // Keep the Cron Jobs tab frozen on the seeded jobs across polls, and serve each job's
+    // runs from the seed when its row is expanded (the real `/runs` endpoint binds runs by
+    // job, whatever their session ids look like).
     deps.hermesREST.cronJobs = { _, _ in seededCronJobs }
+    deps.hermesREST.cronJobRuns = { _, jobID, _, _ in seededCronRuns[jobID] ?? [] }
     // "notify" needs REAL notification permission (the panel captures a live banner from
     // `simctl push`), so report the plugin ready → the reducer runs the OS permission
     // prompt. Every other scenario reports unknown: no prompt, no sheet, no live REST.
@@ -97,10 +100,10 @@ enum DemoMode {
     client.loadPinnedIDs = { ["s0"] }
     client.loadSeenCounts = {
       // s1 and the newest digest run have unread activity (seen < messageCount) — the
-      // cron run lights the job row's dot AND the section header's badge.
+      // cron run lights its run row's dot under the expanded digest job.
       var seen = Dictionary(uniqueKeysWithValues: seededSessions.map { ($0.id, $0.messageCount ?? 0) })
       seen["s1"] = 6
-      seen["cron_digest01_20260610_070000"] = 1
+      seen[newestDigestRunID] = 1
       return seen
     }
     return client
@@ -169,48 +172,47 @@ enum DemoMode {
         isActive: row.isActive
       )
     }
-    // Cron run sessions → grouped under their jobs in the "Cron Jobs" section. The run
-    // id embeds the owning job id (`cron_{job_id}_{timestamp}`), exactly like the real
-    // scheduler names them. The digest has two runs (this morning + yesterday); the
-    // paused sweep has one.
-    sessions.append(contentsOf: [
-      Session(
-        id: "cron_digest01_20260610_070000",
-        title: "Morning news digest",
-        updatedAt: Date(timeIntervalSince1970: 1_749_589_200),  // this morning, unread
-        startedAt: Date(timeIntervalSince1970: 1_749_589_200),
-        messageCount: 3,
-        source: "cron"
-      ),
-      Session(
-        id: "cron_digest01_20260609_070000",
-        title: "Morning news digest",
-        updatedAt: Date(timeIntervalSince1970: 1_749_502_800),  // yesterday
-        startedAt: Date(timeIntervalSince1970: 1_749_502_800),
-        messageCount: 3,
-        source: "cron"
-      ),
-      Session(
-        id: "cron_sweep02_20260609_180000",
-        title: "Evening inbox sweep",
-        updatedAt: Date(timeIntervalSince1970: 1_749_542_400),
-        startedAt: Date(timeIntervalSince1970: 1_749_542_400),
-        messageCount: 2,
-        source: "cron"
-      ),
-    ])
+    // The cron run sessions also land in the list's `source=cron` slice (it keeps the Cron
+    // Jobs tab visible); the tab itself shows them only under their expanded job, served
+    // from `seededCronRuns`.
+    sessions.append(contentsOf: seededCronRuns.keys.sorted().flatMap { seededCronRuns[$0] ?? [] })
     return sessions
   }()
 
+  private static let newestDigestRunID = "local-7c41e2a9"
+
+  /// Each seeded job's runs, newest first, as `GET /api/cron/jobs/{id}/runs` returns them.
+  /// Opaque `local-*` session ids, like the unified runtime's scheduler gives them — the job
+  /// binding is the map key, never the id. Run times match the jobs' schedules (UTC): the
+  /// digest ran this morning (unread) and yesterday; the paused sweep ran once.
+  private static let seededCronRuns: [String: [Session]] = {
+    func run(_ id: String, _ title: String, at seconds: TimeInterval, messages: Int) -> Session {
+      let date = Date(timeIntervalSince1970: seconds)
+      return Session(
+        id: id, title: title, updatedAt: date, startedAt: date, messageCount: messages,
+        source: Session.cronSource
+      )
+    }
+    return [
+      "digest01": [
+        run(newestDigestRunID, "Morning news digest", at: 1_749_538_800, messages: 3), // Jun 10, 07:00
+        run("local-3f09b6d2", "Morning news digest", at: 1_749_452_400, messages: 3), // Jun 9, 07:00
+      ],
+      "sweep02": [
+        run("local-a8e5170c", "Evening inbox sweep", at: 1_749_492_000, messages: 2), // Jun 9, 18:00
+      ],
+    ]
+  }()
+
   /// The cron *jobs* the runs above belong to: the digest is live with a visible
-  /// next-run countdown; the sweep is paused (amber pip, schedule line).
+  /// next-run countdown; the sweep is paused (amber pip, "Paused" caption).
   private static let seededCronJobs: [CronJob] = [
     CronJob(
       id: "digest01",
       name: "Morning news digest",
       scheduleDisplay: "every day at 07:00",
       state: "scheduled",
-      nextRunAt: Date(timeIntervalSince1970: 1_749_600_000 + 21 * 3_600)  // "in 21 hr."
+      nextRunAt: Date(timeIntervalSince1970: 1_749_600_000 + 7 * 3_600)  // Jun 11, 07:00: "in 7 hr."
     ),
     CronJob(
       id: "sweep02",
@@ -228,8 +230,10 @@ enum DemoMode {
       calendar: calendar,
       pinnedIDs: ["s0"],
       cronJobs: IdentifiedArray(uniqueElements: seededCronJobs),
-      // The digest's peek starts open so the panel shows job → runs at a glance.
-      expandedCronJobID: "digest01"
+      // The digest starts expanded with its runs loaded, so the panel shows job → runs at a
+      // glance (the launch load refetches the same seed).
+      expandedCronJobID: "digest01",
+      expandedCronRuns: seededCronRuns["digest01"]
     )
   }
 

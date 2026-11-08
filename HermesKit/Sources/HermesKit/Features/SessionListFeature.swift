@@ -820,7 +820,9 @@ public struct SessionListFeature {
             TextState("Cancel")
           }
         } message: {
-          TextState("This permanently removes the job. It will stop running immediately.")
+          TextState(
+            "The job and its schedule are removed from the agent. Its past runs are kept on the server but won't be listed here."
+          )
         }
         return .none
 
