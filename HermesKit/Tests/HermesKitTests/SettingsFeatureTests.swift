@@ -118,10 +118,17 @@ struct SettingsFeatureTests {
     }
     await store.send(.saveTokenTapped) {
       $0.connection.token = "newtok"
-      $0.agentUpdate.connection.token = "newtok"
       $0.savedConfirmation = true
     }
     await store.receive(\.delegate.tokenSaved)
+    // The updater re-probes with the new token (the default stub lacks the endpoint).
+    await store.receive(\.agentUpdate.task) {
+      $0.agentUpdate.phase = .checking
+    }
+    await store.receive(\.agentUpdate.checked) {
+      $0.agentUpdate.phase = .hidden
+    }
+    #expect(store.state.agentUpdate.connection.token == "newtok")
     #expect(saved.value == "newtok")
   }
 

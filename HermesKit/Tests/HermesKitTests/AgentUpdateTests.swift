@@ -208,7 +208,10 @@ struct AgentUpdateTests {
     await store.finish()
   }
 
-  @Test(arguments: [RESTError.unreachable, .offline, .decoding])
+  @Test(arguments: [
+    RESTError.unreachable, .offline, .decoding,
+    .server(status: 500), .server(status: 502, detail: "Bad Gateway"), .server(status: 503), .server(status: 504),
+  ])
   func ambiguousPostFailureIsUncertainAndNeverRetried(error: RESTError) async {
     let posts = LockIsolated(0)
     let store = makeStore(start: { throw error }, posts: posts)
@@ -222,6 +225,64 @@ struct AgentUpdateTests {
     await store.skipReceivedActions()
     #expect(posts.value == 1)
     await store.finish()
+  }
+
+  /// A gateway error after the POST went out (a proxy timing out while the server spawns the
+  /// update): exhaustively, the phone lands in `.uncertain`, offers no Update button, and only
+  /// a read-only status check that finds the host idle brings the offer back.
+  @Test func gatewayErrorAfterSendIsUncertainExhaustively() async {
+    let posts = LockIsolated(0)
+    var initial = AgentUpdateFeature.State(connection: connection, phase: .ready, check: available)
+    initial.confirmationDialog = ConfirmationDialogState {
+      TextState("Update Hermes agent?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmUpdate) { TextState("Update") }
+    }
+    let store = TestStore(initialState: initial) {
+      AgentUpdateFeature()
+    } withDependencies: { [available, postedAt] in
+      $0.hermesREST.checkAgentUpdate = { _ in available }
+      $0.hermesREST.agentUpdateStatus = { _ in .init(running: false) }
+      $0.hermesREST.startAgentUpdate = { _ in
+        posts.withValue { $0 += 1 }
+        throw RESTError.server(status: 502, detail: "Bad Gateway")
+      }
+      $0.date.now = postedAt
+    }
+    await store.send(.confirmationDialog(.presented(.confirmUpdate))) {
+      $0.confirmationDialog = nil
+      $0.phase = .starting
+    }
+    await store.receive(\.started) {
+      $0.phase = .uncertain
+    }
+    #expect(!store.state.offersUpdate)
+    #expect(store.state.offersStatusRecheck)
+    await store.send(.updateTapped)            // no button, and the action is inert
+    await store.send(.recheckTapped) {
+      $0.isRechecking = true
+    }
+    await store.receive(\.observed) {
+      $0.phase = .checking
+    }
+    await store.receive(\.checked) {
+      $0.isRechecking = false
+      $0.phase = .ready
+    }
+    await store.receive(\.observed)
+    #expect(posts.value == 1)
+  }
+
+  /// Only a definitive refusal fails; anything the server might have acted on is ambiguous.
+  @Test func ambiguityAfterSend() {
+    for status in [500, 502, 503, 504, 599] {
+      #expect(RESTError.server(status: status).isAmbiguousAfterSend, "\(status)")
+    }
+    #expect(RESTError.serviceUnavailable.isAmbiguousAfterSend)
+    for error in [RESTError.server(status: 200, detail: "refused"), .server(status: 400), .server(status: 409),
+                  .unauthorized, .notFound, .rateLimited] {
+      #expect(!error.isAmbiguousAfterSend, "\(error)")
+    }
   }
 
   @Test func refusedPostIsAFailureWithTheServersReason() async {
@@ -256,7 +317,8 @@ struct AgentUpdateTests {
   // MARK: Fencing and ownership
 
   /// A slow recovery read taken before our start answers late with "another run in
-  /// progress": the generation fence drops it, and our run still settles.
+  /// progress": confirming cancelled it, so the answer is dropped and our run still settles.
+  /// (Delivered, it would relabel the settled phase `externalRunning`.)
   @Test func slowRecoveryCannotRelabelTheOwnedRun() async {
     let recoveryGate = Gate()
     let reads = LockIsolated(0)
@@ -278,9 +340,8 @@ struct AgentUpdateTests {
     await store.receive(\.observed)
     #expect(store.state.phase == .succeeded("1.1"))
     recoveryGate.open()
-    await store.receive(\.observed)   // stale: fenced out
-    #expect(store.state.phase == .succeeded("1.1"))
     await store.finish()
+    #expect(store.state.phase == .succeeded("1.1"))
   }
 
   /// A late availability answer can't reset an external observation to "ready".
@@ -291,7 +352,7 @@ struct AgentUpdateTests {
     await store.send(.task)
     await store.receive(\.observed)
     #expect(store.state.phase == .externalRunning)
-    await store.send(.checked(generation: store.state.generation, .success(available)))
+    await store.send(.checked(.success(available)))
     #expect(store.state.phase == .externalRunning)
     await store.send(.updateTapped)
     #expect(store.state.confirmationDialog == nil)
@@ -332,7 +393,7 @@ struct AgentUpdateTests {
   @Test func supersededStartStillAdoptsItsRun() async {
     let store = makeStore()
     let owned = OwnedAgentUpdate(scope: scope, actionID: "a-1", requestedAt: postedAt)
-    await store.send(.started(generation: 99, .success(.started(actionID: "a-1")), owned: owned))
+    await store.send(.started(.success(.started(actionID: "a-1")), owned: owned))
     #expect(store.state.owned == owned)
     #expect(store.state.phase == .uncertain)
     #expect(store.state.offersStatusRecheck)
@@ -581,9 +642,45 @@ struct AgentUpdateTests {
     await store.receive(\.agentUpdate.checked)
     #expect(store.state.agentUpdate.offersUpdate)
     await store.send(.agentUpdate(.delegate(.updated(version: "1.1"))))
-    await store.receive(\.agentStatusLoaded)
     #expect(store.state.agentVersion == "1.1")
     await store.finish()
+  }
+
+  /// Saving a token from empty re-runs the probe at once (exhaustive): the updater appears
+  /// without reopening Settings, and the probe carries the new credential.
+  @Test func savingATokenFromEmptyRerunsTheProbe() async {
+    let probedTokens = LockIsolated<[String?]>([])
+    let empty = ServerConnection(baseURL: connection.baseURL, token: "")
+    let store = TestStore(initialState: SettingsFeature.State(connection: empty)) {
+      SettingsFeature()
+    } withDependencies: { [available] in
+      $0.keychain.saveToken = { @Sendable _ in }
+      $0.hermesREST.checkAgentUpdate = { @Sendable conn in
+        probedTokens.withValue { $0.append(conn.token) }
+        return available
+      }
+      $0.hermesREST.agentUpdateStatus = { @Sendable _ in .init(running: false) }
+    }
+    #expect(store.state.agentUpdate.phase == .hidden)
+    await store.send(\.binding.token, "tok") {
+      $0.token = "tok"
+    }
+    await store.send(.saveTokenTapped) {
+      $0.connection.token = "tok"
+      $0.savedConfirmation = true
+    }
+    await store.receive(\.delegate.tokenSaved)
+    await store.receive(\.agentUpdate.task) {
+      $0.agentUpdate.phase = .checking
+    }
+    await store.receive(\.agentUpdate.checked) {
+      $0.agentUpdate.check = self.available
+      $0.agentUpdate.phase = .ready
+    }
+    await store.receive(\.agentUpdate.observed)
+    #expect(store.state.agentUpdate.offersUpdate)
+    #expect(store.state.agentUpdate.connection.token == "tok")
+    #expect(probedTokens.value == ["tok"])
   }
 
   @Test func signingOutForgetsTheOwnedRun() async {

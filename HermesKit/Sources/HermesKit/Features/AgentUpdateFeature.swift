@@ -5,14 +5,14 @@ import Foundation
 /// row and follows it to a verdict. The full contract is in `docs/features/agent-update.md`;
 /// the invariants this reducer enforces:
 ///
-/// - **One POST per confirmation, never retried.** A transport failure after sending is
-///   ambiguous (the server may have started), so it lands in `.uncertain`, not a retry.
+/// - **One POST per confirmation, never retried.** A transport failure or a 5xx after sending
+///   is ambiguous (the server may have started), so it lands in `.uncertain`, not a retry.
 /// - **Ownership.** The action id the POST returns is persisted (`OwnedAgentUpdate`, scoped to
 ///   server + account) BEFORE the result reaches the reducer, so dismissing Settings or a
 ///   relaunch re-observes the run read-only instead of losing it or starting another.
-/// - **Generation fencing.** Every check/status response carries the generation that asked;
-///   appearing, confirming, rechecking and settling bump it, so a slow response from an
-///   earlier phase can never relabel the current one.
+/// - **Read fencing.** Every check/status read runs under one cancel ID; appearing,
+///   confirming, rechecking and settling cancel whatever is still in flight, so a slow
+///   response from an earlier phase is dropped and can never relabel the current one.
 /// - **Only a correlated receipt settles.** Success needs a finished receipt that is
 ///   provably this phone's run; a reconnect, an exit code or another run's receipt never is.
 ///   Anything unprovable ends `.uncertain`, with a GET-only "Check update status".
@@ -22,7 +22,9 @@ import Foundation
 public struct AgentUpdateFeature {
   @ObservableState
   public struct State: Equatable {
-    public var connection: ServerConnection
+    /// Derived from `SettingsFeature.State.connection`. Not observed: no view reads it, and
+    /// the parent's getter writes it on every read.
+    @ObservationStateIgnored public var connection: ServerConnection
     public var phase: Phase
     /// The last availability check; drives the Update button and the install guidance.
     public var check: AgentUpdateCheck?
@@ -30,8 +32,6 @@ public struct AgentUpdateFeature {
     public var owned: OwnedAgentUpdate?
     /// A user-initiated (or reopen) GET is in flight — disables the recheck button.
     public var isRechecking: Bool
-    /// Fences every response; see the type doc.
-    public var generation: Int
     /// Consecutive idle statuses that couldn't settle the owned run. Bounded, so a run whose
     /// receipt can't be correlated releases ownership instead of blocking the updater.
     public var idleObservations: Int
@@ -67,7 +67,6 @@ public struct AgentUpdateFeature {
       self.check = check
       self.owned = owned
       self.isRechecking = false
-      self.generation = 0
       self.idleObservations = 0
     }
 
@@ -101,11 +100,11 @@ public struct AgentUpdateFeature {
     /// "Check update status" (unsettled) or "Check again" (settled). GET only.
     case recheckTapped
     case confirmationDialog(PresentationAction<Dialog>)
-    case checked(generation: Int, Result<AgentUpdateCheck, RESTError>)
+    case checked(Result<AgentUpdateCheck, RESTError>)
     /// The single POST's result. `owned` is what the effect already persisted.
-    case started(generation: Int, Result<AgentUpdateStart, RESTError>, owned: OwnedAgentUpdate?)
-    case observed(generation: Int, Observation, Result<AgentUpdateActionStatus, RESTError>)
-    case observationExpired(generation: Int)
+    case started(Result<AgentUpdateStart, RESTError>, owned: OwnedAgentUpdate?)
+    case observed(Observation, Result<AgentUpdateActionStatus, RESTError>)
+    case observationExpired
     case delegate(Delegate)
 
     @CasePathable
@@ -130,7 +129,11 @@ public struct AgentUpdateFeature {
   @Dependency(\.continuousClock) var clock
   @Dependency(\.date.now) var now
 
-  private enum CancelID { case poll }
+  /// Every read (availability check, status GET, poll) runs under `reads`. Starting a new
+  /// phase cancels it, and TCA drops what a cancelled effect sends, so a late answer from an
+  /// earlier phase never reaches the reducer. The POST is deliberately NOT under it: its
+  /// result must always land (see `.started`).
+  private enum CancelID { case reads }
 
   public init() {}
 
@@ -143,9 +146,8 @@ public struct AgentUpdateFeature {
         // Token mode with no token has no dashboard credential to send: nothing to offer.
         if case .token("") = state.connection.auth {
           state.phase = .hidden
-          return .none
+          return .cancel(id: CancelID.reads)
         }
-        state.generation &+= 1
         state.idleObservations = 0
         state.owned = preferences.loadOwnedAgentUpdate(state.connection.agentUpdateScope)
         if state.owned != nil {
@@ -158,8 +160,7 @@ public struct AgentUpdateFeature {
         state.phase = .checking
         return fetchCheck(state)
 
-      case let .checked(generation, result):
-        guard generation == state.generation else { return .none }
+      case let .checked(result):
         state.isRechecking = false
         switch result {
         case let .success(check):
@@ -168,7 +169,7 @@ public struct AgentUpdateFeature {
           guard state.owned == nil, state.phase == .checking else { return .none }
           state.phase = .ready
           // The endpoints exist: look for an update already running (started elsewhere).
-          // Same generation, so a confirmed start fences this read out.
+          // A read, so a confirmed start cancels it.
           return observe(state, .recovery)
         case let .failure(error):
           // Informational like the Agent row: hide rather than banner (an owned run keeps its
@@ -204,10 +205,9 @@ public struct AgentUpdateFeature {
         state.confirmationDialog = nil
         state.phase = .starting
         state.isRechecking = false
-        // Fence: recovery/availability responses still in flight are now stale.
-        state.generation &+= 1
         let requestedAt = now
-        return .run { [rest, preferences, connection = state.connection, generation = state.generation] send in
+        // Fence: recovery/availability reads still in flight are now stale.
+        return .merge(.cancel(id: CancelID.reads), .run { [rest, preferences, connection = state.connection] send in
           // Unstructured on purpose: dismissing Settings cancels this effect, but a POST
           // already on the wire must still deliver its action id to persistence — otherwise
           // reopening would find a running update it can't recognize as ours.
@@ -220,14 +220,14 @@ public struct AgentUpdateFeature {
             )
             preferences.saveOwnedAgentUpdate(owned!)
           }
-          await send(.started(generation: generation, result, owned: owned))
-        }
+          await send(.started(result, owned: owned))
+        })
 
       case .confirmationDialog:
         return .none
 
-      case let .started(generation, result, owned):
-        guard generation == state.generation, state.phase == .starting else {
+      case let .started(result, owned):
+        guard state.phase == .starting else {
           // Superseded locally, but an accepted run is still ours: adopt it for a read-only
           // status check.
           if let owned, state.owned == nil {
@@ -255,8 +255,7 @@ public struct AgentUpdateFeature {
           return poll(state)
         }
 
-      case let .observed(generation, source, result):
-        guard generation == state.generation else { return .none }
+      case let .observed(source, result):
         if source != .poll { state.isRechecking = false }
         guard case let .success(status) = result else {
           // A restart briefly cuts the connection: polling carries on. A failed explicit read
@@ -281,20 +280,17 @@ public struct AgentUpdateFeature {
         state.isRechecking = true
         return fetchCheck(state)
 
-      case let .observationExpired(generation):
-        guard generation == state.generation else { return .none }
+      case .observationExpired:
         if state.phase == .running { state.phase = .uncertain }
         return .none
 
       case .recheckTapped:
         guard !state.isRechecking else { return .none }
         if state.offersStatusRecheck {
-          state.generation &+= 1
           state.isRechecking = true
           return observe(state, .recheck)
         }
         guard state.offersCheckAgain else { return .none }
-        state.generation &+= 1
         state.phase = .checking
         state.isRechecking = true
         return fetchCheck(state)
@@ -373,55 +369,57 @@ public struct AgentUpdateFeature {
     return .none
   }
 
-  /// Drop ownership (persisted slot included) and fence out late polls.
+  /// Drop ownership (persisted slot included) and cancel late polls.
   private func release(_ state: inout State, _ owned: OwnedAgentUpdate) -> Effect<Action> {
     preferences.clearOwnedAgentUpdate(owned.actionID)
     state.owned = nil
     state.idleObservations = 0
-    state.generation &+= 1
-    return .cancel(id: CancelID.poll)
+    return .cancel(id: CancelID.reads)
   }
 
   // MARK: Effects
 
+  /// One availability check; replaces any read still in flight.
   private func fetchCheck(_ state: State) -> Effect<Action> {
-    .run { [rest, connection = state.connection, generation = state.generation] send in
+    .run { [rest, connection = state.connection] send in
       do {
-        await send(.checked(generation: generation, .success(try await rest.checkAgentUpdate(connection))))
+        await send(.checked(.success(try await rest.checkAgentUpdate(connection))))
       } catch {
-        await send(.checked(generation: generation, .failure(asRESTError(error))))
+        await send(.checked(.failure(asRESTError(error))))
       }
     }
+    .cancellable(id: CancelID.reads, cancelInFlight: true)
   }
 
-  /// One read-only status GET, tagged with the generation that asked.
+  /// One read-only status GET; replaces any read still in flight.
   private func observe(_ state: State, _ source: Action.Observation) -> Effect<Action> {
-    .run { [rest, connection = state.connection, generation = state.generation] send in
+    .run { [rest, connection = state.connection] send in
       do {
-        await send(.observed(generation: generation, source, .success(try await rest.agentUpdateStatus(connection))))
+        await send(.observed(source, .success(try await rest.agentUpdateStatus(connection))))
       } catch {
-        await send(.observed(generation: generation, source, .failure(asRESTError(error))))
+        await send(.observed(source, .failure(asRESTError(error))))
       }
     }
+    .cancellable(id: CancelID.reads, cancelInFlight: true)
   }
 
   /// Bounded (30 min) follow of the owned run while Settings is open. The server update
   /// carries on regardless; reopening Settings resumes the observation.
   private func poll(_ state: State) -> Effect<Action> {
-    .run { [rest, clock, connection = state.connection, generation = state.generation] send in
+    .run { [rest, clock, connection = state.connection] send in
       for _ in 0..<pollLimit {
         do {
-          await send(.observed(generation: generation, .poll, .success(try await rest.agentUpdateStatus(connection))))
+          await send(.observed(.poll, .success(try await rest.agentUpdateStatus(connection))))
         } catch is CancellationError {
           return
         } catch {
-          await send(.observed(generation: generation, .poll, .failure(asRESTError(error))))
+          await send(.observed(.poll, .failure(asRESTError(error))))
         }
         do { try await clock.sleep(for: pollInterval) } catch { return }
       }
-      await send(.observationExpired(generation: generation))
+      await send(.observationExpired)
     }
-    .cancellable(id: CancelID.poll, cancelInFlight: true)
+    .cancellable(id: CancelID.reads, cancelInFlight: true)
   }
 }
 
@@ -431,10 +429,12 @@ private let pollInterval: Duration = .seconds(5)
 private let pollLimit = 360
 
 extension RESTError {
-  /// The request may have reached the server before failing, so its effect is unknown.
+  /// The request may have reached the server before failing, so its effect is unknown. A
+  /// 5xx counts: a proxy's 502/503/504 or a handler crash can follow a spawned update.
   var isAmbiguousAfterSend: Bool {
     switch self {
-    case .unreachable, .offline, .decoding: true
+    case .unreachable, .offline, .decoding, .serviceUnavailable: true
+    case let .server(status, _): (500..<600).contains(status)
     default: false
     }
   }

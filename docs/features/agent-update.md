@@ -20,7 +20,9 @@ normal dashboard credential (token header, session cookie or bearer).
 
 A 404 (or 405 from an older agent's catch-all) on the check, or a 401/403, hides the whole
 feature silently. Token mode with an empty token has no dashboard credential and never
-probes. The recovery status read is sent only after the check proved the endpoints exist.
+probes. Saving a token in Settings re-runs the probe with it at once, so the updater can
+appear without reopening Settings. The recovery status read is sent only after the check
+proved the endpoints exist.
 
 **Authorization caveat:** the dashboard has no per-user admin role. Any credential the
 dashboard accepts can start an update, from the app or anywhere else. The app adds a
@@ -28,8 +30,9 @@ confirmation, not an authorization layer.
 
 ## Invariants
 
-- **One POST per confirmation, never retried.** A transport failure, offline error or
-  undecodable reply after sending is ambiguous: the server may have started. It becomes
+- **One POST per confirmation, never retried.** A transport failure, offline error,
+  undecodable reply or any 5xx (a proxy's 502/503/504 included) after sending is
+  ambiguous: the server may have started. It becomes
   `.uncertain`, which offers only the read-only "Check update status". There is no
   automatic retry and no second Update button until a status read settles it.
 - **Never treat a reconnect as success.** The update restarts the dashboard and gateways, so
@@ -48,10 +51,11 @@ confirmation, not an authorization layer.
   server origin plus account (`ServerConnection.agentUpdateScope`, a SHA-256, never the
   credential). A different scope drops it. Clearing is compare-and-clear by action id, so
   settling an old run can't erase a newer one. Logout clears it.
-- **Generation fencing.** Every check and status response carries the generation that
-  asked. Appearing, confirming, rechecking and settling bump it, so a slow response from an
+- **Read fencing.** Every check, status read and poll runs under one cancel ID.
+  Appearing, confirming, rechecking and settling cancel whatever read is still in flight,
+  and a cancelled effect's answer never reaches the reducer, so a slow response from an
   earlier phase (for example a recovery read that saw someone else's run) can't relabel
-  the current one.
+  the current one. The POST is outside that ID: its result always lands.
 - **Not ours is never ours.** `already_running`, a running action we don't own, or a status
   naming another action id shows "An update started elsewhere is running", never a
   success. If the server has moved on to another action, ours is released as unknown.
