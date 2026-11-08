@@ -559,10 +559,11 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: deviceImage())
   }
 
-  /// Fixtures for the GROUPED Cron Jobs section (#24): two jobs (one scheduled with a
-  /// 7-hour countdown, one paused) plus their run sessions; the newest backup run has
-  /// unseen output, so the job row shows the unread dot and the header badge reads 1.
-  private func cronGroupedFixtures() -> (sessions: [Session], jobs: [CronJob], seen: [String: Int]) {
+  /// Fixtures for the Cron Jobs tab (#24, desktop parity): four jobs, one per status caption
+  /// (active "Next in 7 hr.", "Paused", "Error", "Overdue · 2 hr. ago"), plus their run
+  /// sessions under upstream's `local-*` ids (the job binding is NOT in the id). The newest
+  /// backup run has unseen output, so its run row carries the unread dot when expanded.
+  private func cronFixtures() -> (sessions: [Session], jobs: [CronJob], seen: [String: Int]) {
     let interactive = Session(
       id: "m0", title: "Refactor the streaming parser",
       updatedAt: Date(timeIntervalSince1970: 1_749_556_800),
@@ -570,39 +571,53 @@ final class SessionSnapshotTests: SnapshotTestCase {
       startedAt: Date(timeIntervalSince1970: 1_749_556_800),
       messageCount: 10
     )
-    let backupRuns = (0..<2).map { i in
-      Session(id: "cron_backup01_2026060\(9 - i)_090000",
-              title: "Nightly backup",
-              updatedAt: Date(timeIntervalSince1970: 1_749_540_000 - Double(i) * 86_400),
-              startedAt: Date(timeIntervalSince1970: 1_749_540_000 - Double(i) * 86_400),
-              messageCount: 5, source: "cron")
-    }
-    let digestRun = Session(id: "cron_digest02_20260608_100000",
-                            title: "Weekly digest",
-                            updatedAt: Date(timeIntervalSince1970: 1_749_400_000),
-                            startedAt: Date(timeIntervalSince1970: 1_749_400_000),
-                            messageCount: 3, source: "cron")
+    let runs = cronBackupRuns() + [
+      Session(id: "local-20260608_100000_d1g3s7",
+              title: "Weekly digest",
+              updatedAt: Date(timeIntervalSince1970: 1_749_400_000),
+              startedAt: Date(timeIntervalSince1970: 1_749_400_000),
+              messageCount: 3, source: "cron"),
+    ]
     let jobs = [
       // now = 1_749_600_000 → next run in 7 hours ("Next in 7 hr.").
       CronJob(id: "backup01", name: "Nightly backup", state: "scheduled",
               nextRunAt: Date(timeIntervalSince1970: 1_749_600_000 + 7 * 3_600)),
       CronJob(id: "digest02", name: "Weekly digest", scheduleDisplay: "every Monday at 10:00",
-              state: "paused"),
+              state: "paused",
+              nextRunAt: Date(timeIntervalSince1970: 1_749_600_000 + 3_600)),
+      CronJob(id: "sync03", name: "Inbox sync", scheduleDisplay: "every 30 minutes",
+              state: "error"),
+      // Two hours past its next run — beyond the 15 min grace → "Overdue · 2 hr. ago".
+      CronJob(id: "report04", name: "Morning report", state: "scheduled",
+              nextRunAt: Date(timeIntervalSince1970: 1_749_600_000 - 2 * 3_600)),
     ]
     var seen = Dictionary(
-      uniqueKeysWithValues: ([interactive] + backupRuns + [digestRun]).map { ($0.id, $0.messageCount ?? 0) }
+      uniqueKeysWithValues: ([interactive] + runs).map { ($0.id, $0.messageCount ?? 0) }
     )
-    seen[backupRuns[0].id] = 2  // newest backup run has unseen output → unread dot + badge 1
-    return ([interactive] + backupRuns + [digestRun], jobs, seen)
+    seen[runs[0].id] = 2  // newest backup run has unseen output → unread dot on its run row
+    return ([interactive] + runs, jobs, seen)
   }
 
-  /// The Cron Jobs tab, grouped: job rows with state dots (accent scheduled, amber paused),
-  /// the 7-hour countdown, the paused job's schedule line, the unread dot on the backup job,
-  /// and the tab's aggregate unread badge.
-  func testSessionList_cronJobsGrouped() {
+  /// The backup job's two session runs, newest first (also in the list's cron slice).
+  private func cronBackupRuns() -> [Session] {
+    (0..<2).map { i in
+      Session(id: "local-2026060\(9 - i)_072000_b4ck\(i)p",
+              title: "Nightly backup",
+              updatedAt: Date(timeIntervalSince1970: 1_749_540_000 - Double(i) * 86_400),
+              startedAt: Date(timeIntervalSince1970: 1_749_540_000 - Double(i) * 86_400),
+              messageCount: 5, source: "cron")
+    }
+  }
+
+  /// The Cron Jobs tab hosted over `cronFixtures()` with the given cron state.
+  private func cronTabHost(
+    cronJobsSupported: Bool = true,
+    expandedCronJobID: String? = nil,
+    expandedCronRuns: [Session]? = nil
+  ) -> some View {
     let now = self.now
-    let (sessions, jobs, seen) = cronGroupedFixtures()
-    let view = NavigationStack {
+    let (sessions, jobs, seen) = cronFixtures()
+    return NavigationStack {
       SessionListView(
         store: Store(
           initialState: SessionListFeature.State(
@@ -612,80 +627,55 @@ final class SessionSnapshotTests: SnapshotTestCase {
             calendar: listCalendar,
             seenCounts: seen,
             selectedTab: .cron,
-            cronJobs: IdentifiedArray(uniqueElements: jobs)
+            cronJobs: cronJobsSupported ? IdentifiedArray(uniqueElements: jobs) : [],
+            cronJobsSupported: cronJobsSupported,
+            expandedCronJobID: expandedCronJobID,
+            expandedCronRuns: expandedCronRuns
           )
         ) {
           SessionListFeature().ignoring(\.task)
         } withDependencies: {
           $0.hermesREST.sessions = { _, _, _, _, _ in sessions }
           $0.hermesREST.cronJobs = { _, _ in jobs }
+          $0.hermesREST.cronJobRuns = { _, _, _, _ in expandedCronRuns ?? [] }
           $0.continuousClock = ImmediateClock()
           $0.date = .constant(now)
         }
       )
     }
-    assertSnapshot(of: view, as: deviceImage())
   }
 
-  /// Grouped Cron Jobs section with the backup job's inline peek expanded: its runs render
-  /// indented as compact one-line rows (never cards), the unread run keeps its dot, and the peek is
-  /// single-open (the paused job stays collapsed).
-  func testSessionList_cronJobsGrouped_expandedPeek() {
-    let now = self.now
-    let (sessions, jobs, seen) = cronGroupedFixtures()
-    let view = NavigationStack {
-      SessionListView(
-        store: Store(
-          initialState: SessionListFeature.State(
-            connection: connection,
-            sessions: IdentifiedArray(uniqueElements: sessions),
-            now: now,
-            calendar: listCalendar,
-            seenCounts: seen,
-            selectedTab: .cron,
-            cronJobs: IdentifiedArray(uniqueElements: jobs),
-            expandedCronJobID: "backup01"
-          )
-        ) {
-          SessionListFeature().ignoring(\.task)
-        } withDependencies: {
-          $0.hermesREST.sessions = { _, _, _, _, _ in sessions }
-          $0.hermesREST.cronJobs = { _, _ in jobs }
-          $0.continuousClock = ImmediateClock()
-          $0.date = .constant(now)
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+  /// The Cron Jobs tab lists job rows only (desktop parity): one per status — state dots
+  /// (green active, amber paused, red error), the captions "Next in 7 hr.",
+  /// "Paused", "Error" and the orange "Overdue · 2 hr. ago". No run rows, no unread dot on
+  /// any job, and no unread badge on the tab pill.
+  func testSessionList_cronJobs_statuses() {
+    assertSnapshot(of: cronTabHost(), as: deviceImage())
+  }
+
+  /// The backup job expanded: its runs (from `/runs`) render indented as timestamp-only rows —
+  /// the newest session run with the unread dot, the older one plain, and a script-only
+  /// `cron_output` run as secondary text. Single-open: the other jobs stay collapsed.
+  func testSessionList_cronJobs_expandedRuns() {
+    let scriptRun = Session(id: "cron_output:backup01:20260608_072000",
+                            updatedAt: Date(timeIntervalSince1970: 1_749_540_000 - 2 * 86_400),
+                            source: "cron_output")
+    assertSnapshot(
+      of: cronTabHost(expandedCronJobID: "backup01",
+                      expandedCronRuns: cronBackupRuns() + [scriptRun]),
+      as: deviceImage()
+    )
+  }
+
+  /// The backup job expanded before its first `/runs` load lands: a spinner under the job.
+  func testSessionList_cronJobs_expandedLoading() {
+    assertSnapshot(of: cronTabHost(expandedCronJobID: "backup01"), as: deviceImage())
   }
 
   /// Old agent (no `/api/cron/jobs` → `cronJobsSupported == false`): the Cron Jobs tab falls
-  /// back to flat run rows — but the tab's unread badge still works (one unread run).
-  func testSessionList_cronJobsFallbackFlatWithBadge() {
-    let now = self.now
-    let (sessions, _, seen) = cronGroupedFixtures()
-    let view = NavigationStack {
-      SessionListView(
-        store: Store(
-          initialState: SessionListFeature.State(
-            connection: connection,
-            sessions: IdentifiedArray(uniqueElements: sessions),
-            now: now,
-            calendar: listCalendar,
-            seenCounts: seen,
-            selectedTab: .cron,
-            cronJobsSupported: false
-          )
-        ) {
-          SessionListFeature().ignoring(\.task)
-        } withDependencies: {
-          $0.hermesREST.sessions = { _, _, _, _, _ in sessions }
-          $0.continuousClock = ImmediateClock()
-          $0.date = .constant(now)
-        }
-      )
-    }
-    assertSnapshot(of: view, as: deviceImage())
+  /// back to flat run rows, with no unread badge on the tab pill.
+  func testSessionList_cronJobsFallbackFlat() {
+    assertSnapshot(of: cronTabHost(cronJobsSupported: false), as: deviceImage())
   }
 
   // MARK: Search results
@@ -694,7 +684,7 @@ final class SessionSnapshotTests: SnapshotTestCase {
   /// glass search field and the round close button, and the tab pill hides.
   func testSessionList_searchOpen() {
     let now = self.now
-    let (sessions, jobs, seen) = cronGroupedFixtures()
+    let (sessions, jobs, seen) = cronFixtures()
     let view = NavigationStack {
       SessionListView(
         store: Store(

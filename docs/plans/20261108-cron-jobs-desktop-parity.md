@@ -312,13 +312,13 @@
 - Modify: `HermesMobileTests/SessionSnapshotTests.swift`
 - Modify: `HermesMobileTests/__Snapshots__/SessionSnapshotTests/*` (re-recorded cron baselines only)
 
-- [ ] update the existing Cron Jobs tab snapshot fixtures to the new state (`expandedCronRuns`
+- [x] update the existing Cron Jobs tab snapshot fixtures to the new state (`expandedCronRuns`
       instead of id-grouped runs; no badge)
-- [ ] add snapshots (`deviceImage()`): job rows covering active / paused / error / overdue; an
+- [x] add snapshots (`deviceImage()`): job rows covering active / paused / error / overdue; an
       expanded job with session runs and one `cron_output` row; an expanded job still loading
-- [ ] re-record only the affected cron baselines (delete the specific reference images and run
+- [x] re-record only the affected cron baselines (delete the specific reference images and run
       `make snapshot` twice, NOT `make snapshot-record`)
-- [ ] run `make snapshot` - must be fully clean before next task
+- [x] run `make snapshot` - must be fully clean before next task
 
 ### Task 8: Verify acceptance criteria
 - [ ] verify: with `local-*` run ids, an expanded job shows its runs (from `/runs`) and no flat
