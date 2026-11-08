@@ -543,11 +543,15 @@ public struct SessionListFeature {
     case pauseCronJob(id: String)
     /// Resume a paused job — `POST /api/cron/jobs/{id}/resume`.
     case resumeCronJob(id: String)
+    /// "Delete" on a job row: raise the confirmation dialog (`Dialog.confirmDeleteCronJob`).
+    /// Confirming sends `DELETE /api/cron/jobs/{id}`.
+    case deleteCronJobTapped(id: String)
     /// A cron action RPC finished: lift the in-flight guard; on success refetch from the
     /// server (the full load after a trigger so the new run session appears, jobs-only for
-    /// pause/resume); on failure surface the banner. No optimistic mutation — job state is
-    /// server-computed and the refetch/poll reconciles.
-    case cronJobActionFinished(id: String, refetchSessions: Bool, error: RESTError?)
+    /// pause/resume and delete); on failure surface the banner. No optimistic mutation — job
+    /// state is server-computed and the refetch/poll reconciles. A delete's success (or 404:
+    /// already gone) drops the job locally first so the row disappears at once.
+    case cronJobActionFinished(id: String, kind: CronJobActionKind, error: RESTError?)
     // MARK: Push notifications
     /// Kicks off contextual push setup once the list appears (right after login): first probe
     /// the `hermes-push` plugin readiness, then branch on the result. Fired from `.task`.
@@ -577,6 +581,17 @@ public struct SessionListFeature {
       case confirmArchive(id: Session.ID)
       case confirmDelete(id: Session.ID)
       case confirmDeleteProfile(name: String)
+      case confirmDeleteCronJob(id: String)
+    }
+
+    /// Which cron job action finished — decides the post-success reconcile.
+    public enum CronJobActionKind: Equatable, Sendable {
+      /// Run now: full load (a new run session) plus the expanded job's runs.
+      case trigger
+      /// Pause/resume: jobs-only refetch.
+      case pauseResume
+      /// Delete: drop the job (404 = already gone = success), then a jobs-only refetch.
+      case delete
     }
 
     @CasePathable
@@ -777,33 +792,71 @@ public struct SessionListFeature {
         )
 
       case let .triggerCronJob(id):
-        return performCronAction(&state, id: id, refetchSessions: true) { rest, conn, jobID, profile in
+        return performCronAction(&state, id: id, kind: .trigger) { rest, conn, jobID, profile in
           try await rest.triggerCronJob(conn, jobID, profile)
         }
 
       case let .pauseCronJob(id):
-        return performCronAction(&state, id: id, refetchSessions: false) { rest, conn, jobID, profile in
+        return performCronAction(&state, id: id, kind: .pauseResume) { rest, conn, jobID, profile in
           try await rest.pauseCronJob(conn, jobID, profile)
         }
 
       case let .resumeCronJob(id):
-        return performCronAction(&state, id: id, refetchSessions: false) { rest, conn, jobID, profile in
+        return performCronAction(&state, id: id, kind: .pauseResume) { rest, conn, jobID, profile in
           try await rest.resumeCronJob(conn, jobID, profile)
         }
 
-      case let .cronJobActionFinished(id, refetchSessions, error):
+      case let .deleteCronJobTapped(id):
+        // The title names the job, so a row whose job vanished (poll, profile switch) since
+        // the menu rendered has nothing to confirm.
+        guard state.cronJobsSupported, let job = state.cronJobs[id: id] else { return .none }
+        state.confirmationDialog = ConfirmationDialogState {
+          TextState("Delete “\(job.title)”?")
+        } actions: {
+          ButtonState(role: .destructive, action: .confirmDeleteCronJob(id: id)) {
+            TextState("Delete")
+          }
+          ButtonState(role: .cancel) {
+            TextState("Cancel")
+          }
+        } message: {
+          TextState("This permanently removes the job. It will stop running immediately.")
+        }
+        return .none
+
+      case let .confirmationDialog(.presented(.confirmDeleteCronJob(id))):
+        // Not optimistic: the row stays until the server confirms (`.cronJobActionFinished`).
+        guard state.cronJobsSupported else { return .none }
+        return performCronAction(&state, id: id, kind: .delete) { rest, conn, jobID, profile in
+          try await rest.deleteCronJob(conn, jobID, profile)
+        }
+
+      case let .cronJobActionFinished(id, kind, error):
         state.cronActionInFlightIDs.remove(id)
-        if let error {
+        // A delete's 404 means the job is already gone — the outcome the user asked for.
+        if let error, !(kind == .delete && error == .notFound) {
           // Surface the server's copy verbatim (e.g. a 400 detail) via the existing banner.
           state.loadError = error.message
           return .none
         }
         // Success → reconcile from the server. A trigger just spawned a run session, so do
-        // the full load (sessions + jobs); pause/resume only changed the job, so a
-        // jobs-only refetch avoids churning the list.
-        if refetchSessions { return load(&state) }
-        return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
+        // the full load (sessions + jobs + the expanded job's runs); pause/resume and delete
+        // only changed the job, so a jobs-only refetch avoids churning the list.
+        let refetchJobs = Effect<Action>.run {
+          [rest, connection = state.connection, profile = state.scopedProfileName] send in
           await send(fetchCronJobs(rest: rest, connection: connection, profile: profile))
+        }
+        switch kind {
+        case .trigger:
+          return load(&state)
+        case .pauseResume:
+          return refetchJobs
+        case .delete:
+          // Drop the row now rather than waiting on the refetch; collapsing a deleted
+          // expanded job also cancels its runs fetch.
+          state.cronJobs.remove(id: id)
+          let collapse = state.expandedCronJobID == id ? collapseExpandedCronJob(&state) : .none
+          return .merge(collapse, refetchJobs)
         }
 
       case .setupPush:
@@ -1711,13 +1764,13 @@ public struct SessionListFeature {
     return .cancel(id: CancelID.cronRuns)
   }
 
-  /// Shared trigger/pause/resume flow: guard against a double-fire while the job's RPC is
-  /// in flight, then run it and funnel the outcome through `.cronJobActionFinished`.
+  /// Shared trigger/pause/resume/delete flow: guard against a double-fire while the job's
+  /// RPC is in flight, then run it and funnel the outcome through `.cronJobActionFinished`.
   /// Threads the same profile scoping as the jobs fetch (`scopedProfileName`).
   private func performCronAction(
     _ state: inout State,
     id: String,
-    refetchSessions: Bool,
+    kind: Action.CronJobActionKind,
     rpc: @escaping @Sendable (HermesRESTClient, ServerConnection, String, String?) async throws -> Void
   ) -> Effect<Action> {
     guard !state.cronActionInFlightIDs.contains(id) else { return .none }
@@ -1725,11 +1778,11 @@ public struct SessionListFeature {
     return .run { [rest, connection = state.connection, profile = state.scopedProfileName] send in
       do {
         try await rpc(rest, connection, id, profile)
-        await send(.cronJobActionFinished(id: id, refetchSessions: refetchSessions, error: nil))
+        await send(.cronJobActionFinished(id: id, kind: kind, error: nil))
       } catch let error as RESTError {
-        await send(.cronJobActionFinished(id: id, refetchSessions: refetchSessions, error: error))
+        await send(.cronJobActionFinished(id: id, kind: kind, error: error))
       } catch {
-        await send(.cronJobActionFinished(id: id, refetchSessions: refetchSessions, error: .unreachable))
+        await send(.cronJobActionFinished(id: id, kind: kind, error: .unreachable))
       }
     }
   }

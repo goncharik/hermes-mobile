@@ -823,18 +823,228 @@ struct SessionListCronTests {
   }
 
   @Test func actionIsIgnoredWhileAlreadyInFlight() async {
-    let store = TestStore(
-      initialState: SessionListFeature.State(
-        connection: connection,
-        cronActionInFlightIDs: ["job1"]
-      )
-    ) {
+    var initial = SessionListFeature.State(
+      connection: connection,
+      cronJobs: [CronJob(id: "job1", name: "Digest")],
+      cronActionInFlightIDs: ["job1"]
+    )
+    initial.confirmationDialog = deleteDialog(title: "Digest", id: "job1")
+    let store = TestStore(initialState: initial) {
       SessionListFeature()
     }
     // No RPC stub: firing the request would fail on the unimplemented dependency.
     await store.send(.triggerCronJob(id: "job1"))
     await store.send(.pauseCronJob(id: "job1"))
     await store.send(.resumeCronJob(id: "job1"))
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+    }
+  }
+
+  // MARK: Delete
+
+  /// A state with the delete confirmation for `jobs.first` already up (the `ifLet` drops a
+  /// confirm sent without it).
+  private func confirmingDelete(
+    _ jobs: IdentifiedArrayOf<CronJob>, sessions: IdentifiedArrayOf<Session> = [],
+    expandedCronJobID: String? = nil, expandedCronRuns: [Session]? = nil
+  ) -> SessionListFeature.State {
+    var state = SessionListFeature.State(
+      connection: connection, sessions: sessions, cronJobs: jobs,
+      expandedCronJobID: expandedCronJobID, expandedCronRuns: expandedCronRuns
+    )
+    state.confirmationDialog = deleteDialog(title: jobs[0].title, id: jobs[0].id)
+    return state
+  }
+
+  private func deleteDialog(title: String, id: String) -> ConfirmationDialogState<SessionListFeature.Action.Dialog> {
+    ConfirmationDialogState {
+      TextState("Delete “\(title)”?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmDeleteCronJob(id: id)) {
+        TextState("Delete")
+      }
+      ButtonState(role: .cancel) {
+        TextState("Cancel")
+      }
+    } message: {
+      TextState("This permanently removes the job. It will stop running immediately.")
+    }
+  }
+
+  @Test func deleteTapPresentsTheConfirmationAndCancelSendsNothing() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, cronJobs: [CronJob(id: "job1", name: "Digest")]
+      )
+    ) {
+      SessionListFeature()
+    }
+    // No `deleteCronJob` stub: a DELETE on cancel would fail the unimplemented dependency.
+    await store.send(.deleteCronJobTapped(id: "job1")) {
+      $0.confirmationDialog = self.deleteDialog(title: "Digest", id: "job1")
+    }
+    await store.send(.confirmationDialog(.dismiss)) {
+      $0.confirmationDialog = nil
+    }
+    #expect(store.state.cronJobs.map(\.id) == ["job1"])
+  }
+
+  @Test func deleteTapForAnUnknownJobIsANoOp() async {
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    }
+    await store.send(.deleteCronJobTapped(id: "gone"))
+  }
+
+  @Test func confirmDeletesWithTheProfileRemovesTheJobCollapsesAndRefetches() async {
+    let deleted = LockIsolated<[String]>([])
+    let deleteProfile = LockIsolated<String?>("unset")
+    let store = TestStore(
+      initialState: SessionListFeature.State(
+        connection: connection, selectedProfileName: "work", profilesSupported: true,
+        cronJobs: [CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup")],
+        expandedCronJobID: "job1", expandedCronRuns: [runRow("local-1")]
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, id, profile in
+        deleted.withValue { $0.append(id) }
+        deleteProfile.setValue(profile)
+      }
+      // `hermesREST.sessions` deliberately unstubbed: a delete refetches jobs only.
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job2", name: "Backup")] }
+    }
+
+    await store.send(.deleteCronJobTapped(id: "job1")) {
+      $0.confirmationDialog = self.deleteDialog(title: "Digest", id: "job1")
+    }
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = [CronJob(id: "job2", name: "Backup")]
+      $0.expandedCronJobID = nil
+      $0.expandedCronRuns = nil
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(deleted.value == ["job1"])
+    #expect(deleteProfile.value == "work")
+  }
+
+  @Test func aSecondConfirmWhileTheDeleteIsInFlightIsGuarded() async {
+    let deletes = LockIsolated(0)
+    let gate = AsyncStream<Void>.makeStream()
+    let store = TestStore(initialState: confirmingDelete([CronJob(id: "job1", name: "Digest")])) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in
+        deletes.withValue { $0 += 1 }
+        for await _ in gate.stream { break }
+      }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [] }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    // Not optimistic: the row is still there, so the menu can raise the dialog again —
+    // but its confirm hits the in-flight guard.
+    await store.send(.deleteCronJobTapped(id: "job1")) {
+      $0.confirmationDialog = self.deleteDialog(title: "Digest", id: "job1")
+    }
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+    }
+    gate.continuation.yield()
+    gate.continuation.finish()
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = []
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(deletes.value == 1)
+  }
+
+  @Test func aDelete404IsTreatedAsAlreadyGone() async {
+    let store = TestStore(
+      initialState: confirmingDelete([
+        CronJob(id: "job1", name: "Digest"), CronJob(id: "job2", name: "Backup"),
+      ])
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in throw RESTError.notFound }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [CronJob(id: "job2", name: "Backup")] }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = [CronJob(id: "job2", name: "Backup")]  // no banner, no capability flip
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(store.state.cronJobsSupported)
+    #expect(store.state.loadError == nil)
+  }
+
+  @Test func aDelete400SurfacesTheBannerAndKeepsTheJob() async {
+    let error = RESTError.server(status: 400, detail: "Invalid job id")
+    let store = TestStore(
+      initialState: confirmingDelete(
+        [CronJob(id: "job1", name: "Digest")], expandedCronJobID: "job1", expandedCronRuns: []
+      )
+    ) {
+      SessionListFeature()
+    } withDependencies: {
+      // `cronJobs` deliberately unstubbed: a failed delete refetches nothing.
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in throw error }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.loadError = error.message
+    }
+    #expect(store.state.cronJobs.map(\.id) == ["job1"])
+    #expect(store.state.expandedCronJobID == "job1")
+  }
+
+  @Test func deletingTheLastJobWithNoRunsLeavesTheCronTab() async {
+    var initial = confirmingDelete(
+      [CronJob(id: "job1", name: "Digest")], sessions: [Session(id: "chat", title: "Chat")]
+    )
+    initial.selectedTab = .cron
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.deleteCronJob = { @Sendable _, _, _ in }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in [] }
+    }
+    #expect(store.state.effectiveTab == .cron)
+
+    await store.send(.confirmationDialog(.presented(.confirmDeleteCronJob(id: "job1")))) {
+      $0.confirmationDialog = nil
+      $0.cronActionInFlightIDs = ["job1"]
+    }
+    await store.receive(\.cronJobActionFinished) {
+      $0.cronActionInFlightIDs = []
+      $0.cronJobs = []
+    }
+    await store.receive(\.cronJobsResponse.success)
+    #expect(!store.state.hasCronContent)
+    #expect(!store.state.showsTabBar)
+    #expect(store.state.effectiveTab == .sessions)
   }
 
   @Test func openingACronRunMarksItSeen() async {

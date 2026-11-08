@@ -269,19 +269,19 @@
 - Modify: `HermesKit/Sources/HermesKit/Features/SessionListFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/SessionListCronTests.swift`
 
-- [ ] add `Dialog.confirmDeleteCronJob(id:)`, the `deleteCronJobTapped(id:)` action that presents
+- [x] add `Dialog.confirmDeleteCronJob(id:)`, the `deleteCronJobTapped(id:)` action that presents
       `ConfirmationDialogState` (title "Delete “<job title>”?", the message from Overview #3,
       destructive Delete + Cancel), and its confirm handling
-- [ ] replace `cronJobActionFinished`'s `refetchSessions: Bool` with a kind enum; route delete
+- [x] replace `cronJobActionFinished`'s `refetchSessions: Bool` with a kind enum; route delete
       through `performCronAction` (in-flight guard)
-- [ ] delete success or `.notFound` → remove the job, collapse and clear the slot if it was
+- [x] delete success or `.notFound` → remove the job, collapse and clear the slot if it was
       expanded, jobs-only refetch; other errors → `loadError`, no mutation
-- [ ] write tests: tap → dialog; cancel → nothing sent; confirm → DELETE with the profile; a double
+- [x] write tests: tap → dialog; cancel → nothing sent; confirm → DELETE with the profile; a double
       confirm is guarded; success removes the job, collapses it and refetches
-- [ ] write tests: 404 treated as success; 400 → banner and the job kept; deleting the last job
+- [x] write tests: 404 treated as success; 400 → banner and the job kept; deleting the last job
       (no cron runs) → `hasCronContent` false and `effectiveTab == .sessions`; trigger and
       pause/resume behaviour unchanged after the kind refactor
-- [ ] run tests - must pass before next task
+- [x] run tests - must pass before next task
 
 ### Task 6: Rework the Cron Jobs tab view
 
