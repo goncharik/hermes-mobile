@@ -286,13 +286,12 @@ bullets below are the compressed rules.
 - **Chat ⋯ menu Archive/Delete**: rules in `docs/features/session-list.md`.
 - **Date sections, inbox cards, cron jobs, and branch nesting are display-only** over one
   array fetched as TWO source slices (interactive + cron, never one shared page — cron runs
-  starve it): always-on update-date sections via pure `SessionDateBucket` /
-  `groupEntriesByDate` (no grouping pref); `SessionCardView` on every interactive row,
-  compact `SessionRowView` only for cron runs + the archived sheet; cron sessions sit in
-  a job-grouped Cron Jobs TAB (bottom-bar pill only with cron content; views read
-  `effectiveTab`; unread badge on the tab; search is Sessions-only, opened from the toolbar);
-  nesting via pure `flattenSessionsWithBranches` (orphans de-nest; search stays flat).
-  Details: `docs/features/session-list.md`.
+  starve it): update-date sections via pure `SessionDateBucket` / `groupEntriesByDate`;
+  `SessionCardView` on every interactive row, compact `SessionRowView` only for the flat cron
+  fallback + archived sheet; the Cron Jobs TAB lists jobs (pill only with cron content; views
+  read `effectiveTab`; no badge; search is Sessions-only). **Never group cron runs by session
+  id** (upstream runs are `local-*`) — an expanded job's runs come from `/runs`. Nesting via
+  pure `flattenSessionsWithBranches` (orphans de-nest). Details: `docs/features/session-list.md`.
 - **Row affordances**: trailing swipe = destructive default FIRST (full-swipe target),
   then Rename; context menu always offers both Archive and Delete (gated); Copy ID
   context-menu-only; rows are natural-height — NO min-height floor (a floor for

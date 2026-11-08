@@ -344,15 +344,15 @@
 - [x] run snapshot suite: `make snapshot` (365/365, 0 failures)
 
 ### Task 9: [Final] Update documentation
-- [ ] rewrite the "Cron sessions & the Cron Jobs tab (#24)" section of `docs/features/session-list.md`
+- [x] rewrite the "Cron sessions & the Cron Jobs tab (#24)" section of `docs/features/session-list.md`
       to the desktop-parity model: job rows only, runs from `/runs` while expanded, the poll and
       Run now refresh, timestamp-only rows, `cron_output` rows, status captions + overdue grace,
       delete flow + 404-as-success, no cron unread tracking, why id-grouping was dropped
       (upstream `e2042c84` `local-*` ids)
-- [ ] update the `CLAUDE.md` "Date sections, inbox cards, cron jobs…" bullet (remove the
+- [x] update the `CLAUDE.md` "Date sections, inbox cards, cron jobs…" bullet (remove the
       id-grouping and tab-badge mentions; keep it within the existing line budget)
-- [ ] update `README.md` if it mentions cron grouping or the badge
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `README.md` if it mentions cron grouping or the badge
+- [x] move this plan to `docs/plans/completed/` (done by the orchestrator at completion)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
