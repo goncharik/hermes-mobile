@@ -99,25 +99,6 @@ struct CronJobTests {
     #expect(!CronJob(id: "a", state: "running").isPaused)
   }
 
-  // MARK: Session-id → job-id parse
-
-  @Test func parsesJobIDFromRunSessionID() {
-    #expect(CronJob.jobID(fromSessionID: "cron_a1b2c3d4e5f6_20260702_090000") == "a1b2c3d4e5f6")
-  }
-
-  @Test func parsesJobIDContainingUnderscores() {
-    // Legacy/imported job ids can carry underscores — anchor on the datetime tail,
-    // not on splitting.
-    #expect(CronJob.jobID(fromSessionID: "cron_my_legacy_job_20260702_090000") == "my_legacy_job")
-  }
-
-  @Test func rejectsNonCronSessionIDs() {
-    #expect(CronJob.jobID(fromSessionID: "20260610_120231_afcca6") == nil)
-    #expect(CronJob.jobID(fromSessionID: "cron_missing_datetime_tail") == nil)
-    #expect(CronJob.jobID(fromSessionID: "cron_20260702_090000") == nil)  // no job id segment
-    #expect(CronJob.jobID(fromSessionID: "") == nil)
-  }
-
   // MARK: Relative run label
 
   @Test func relativeRunLabelFuture() {
@@ -139,5 +120,110 @@ struct CronJobTests {
   @Test func relativeRunLabelClampsSubSecondToOneSecond() {
     let now = Date(timeIntervalSince1970: 1_000_000)
     #expect(CronJob.relativeRunLabel(for: now, now: now) == "in 1 sec.")
+  }
+
+  // MARK: Status caption
+
+  private let captionNow = Date(timeIntervalSince1970: 1_000_000)
+
+  @Test func statusCaptionNamesInactiveStates() {
+    // A far-future next run must not leak into an inactive job's caption.
+    let next = captionNow.addingTimeInterval(3600)
+    for (state, word) in [
+      ("paused", "Paused"), ("error", "Error"), ("completed", "Completed"), ("disabled", "Disabled"),
+    ] {
+      let caption = CronJob(id: "a", state: state, nextRunAt: next).statusCaption(now: captionNow)
+      #expect(caption?.text == word)
+      #expect(caption?.isOverdue == false)
+    }
+  }
+
+  @Test func statusCaptionTreatsDisabledFlagWithoutStateAsDisabled() {
+    let job = CronJob(id: "a", enabled: false, nextRunAt: captionNow.addingTimeInterval(3600))
+    let caption = job.statusCaption(now: captionNow)
+    #expect(caption?.text == "Disabled")
+    #expect(caption?.isOverdue == false)
+  }
+
+  @Test func statusCaptionShowsUpcomingNextRun() {
+    let job = CronJob(id: "a", state: "scheduled", nextRunAt: captionNow.addingTimeInterval(3600))
+    let caption = job.statusCaption(now: captionNow)
+    #expect(caption?.text == "Next in 1 hr.")
+    #expect(caption?.isOverdue == false)
+  }
+
+  @Test func statusCaptionKeepsNextWithinOverdueGrace() {
+    let fiveMinAgo = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-5 * 60))
+    #expect(fiveMinAgo.statusCaption(now: captionNow)?.text == "Next 5 min. ago")
+    #expect(fiveMinAgo.statusCaption(now: captionNow)?.isOverdue == false)
+
+    // Exactly at the grace boundary is still "Next" (strictly greater flips to overdue).
+    let atGrace = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace))
+    #expect(atGrace.statusCaption(now: captionNow)?.text == "Next 15 min. ago")
+    #expect(atGrace.statusCaption(now: captionNow)?.isOverdue == false)
+  }
+
+  @Test func statusCaptionFlagsOverdueJustPastGrace() {
+    let justPast = CronJob(
+      id: "a", nextRunAt: captionNow.addingTimeInterval(-CronJob.overdueGrace - 1)
+    )
+    let caption = justPast.statusCaption(now: captionNow)
+    #expect(caption?.text == "Overdue · 15 min. ago")
+    #expect(caption?.isOverdue == true)
+
+    let twoHours = CronJob(id: "a", nextRunAt: captionNow.addingTimeInterval(-2 * 3600))
+    #expect(twoHours.statusCaption(now: captionNow)?.text == "Overdue · 2 hr. ago")
+  }
+
+  @Test func statusCaptionFallsBackToScheduleThenNone() {
+    let scheduled = CronJob(id: "a", scheduleDisplay: "every day at 09:00")
+    let caption = scheduled.statusCaption(now: captionNow)
+    #expect(caption?.text == "every day at 09:00")
+    #expect(caption?.isOverdue == false)
+
+    let blank = CronJob(id: "a", scheduleDisplay: "  ")
+    #expect(blank.statusCaption(now: captionNow) == nil)
+
+    let bare = CronJob(id: "a")
+    #expect(bare.statusCaption(now: captionNow) == nil)
+  }
+
+  @Test func statusCaptionCountsRunningEnabledAndUnknownStatesAsActive() {
+    let overdueAt = captionNow.addingTimeInterval(-2 * 3600)
+    let jobs = [
+      CronJob(id: "a", state: "running", nextRunAt: overdueAt),
+      CronJob(id: "a", enabled: true, nextRunAt: overdueAt),
+      CronJob(id: "a", state: "enabled", nextRunAt: overdueAt),
+      CronJob(id: "a", state: "hibernating", nextRunAt: overdueAt),
+    ]
+    for job in jobs {
+      #expect(job.statusCaption(now: captionNow)?.isOverdue == true)
+    }
+    let upcoming = CronJob(id: "a", state: "running", nextRunAt: captionNow.addingTimeInterval(600))
+    #expect(upcoming.statusCaption(now: captionNow)?.text == "Next in 10 min.")
+  }
+
+  // MARK: Run timestamp
+
+  @Test func runTimestampLabelIsFixedFormatInTheGivenTimeZone() throws {
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    // 2025-06-10 21:00:00 UTC.
+    let evening = Date(timeIntervalSince1970: 1_749_589_200)
+    #expect(CronJob.runTimestampLabel(for: evening, timeZone: utc) == "Jun 10, 21:00")
+    // Single-digit day, zero-padded clock, January.
+    let newYear = Date(timeIntervalSince1970: 1_735_689_600 + 5 * 60 + 7) // 2025-01-01 00:05:07
+    #expect(CronJob.runTimestampLabel(for: newYear, timeZone: utc) == "Jan 1, 00:05")
+  }
+
+  @Test func runTimestampLabelFollowsTheTimeZone() throws {
+    let tokyo = try #require(TimeZone(identifier: "Asia/Tokyo"))
+    // 2025-06-10 21:00 UTC is the next morning in Tokyo (UTC+9).
+    let evening = Date(timeIntervalSince1970: 1_749_589_200)
+    #expect(CronJob.runTimestampLabel(for: evening, timeZone: tokyo) == "Jun 11, 06:00")
+  }
+
+  @Test func runTimestampLabelWithoutAnInstantIsADash() throws {
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    #expect(CronJob.runTimestampLabel(for: nil, timeZone: utc) == "—")
   }
 }

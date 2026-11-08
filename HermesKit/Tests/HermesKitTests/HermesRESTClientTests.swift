@@ -1240,5 +1240,123 @@ struct HermesRESTClientTests {
       try await makeClient().triggerCronJob(connection, "gone", nil)
     }
   }
+
+  @Test func triggerStillPostsAnEmptyObjectBody() async throws {
+    // Regression for the method-aware `cronJobAction`: the POST actions keep their `{}` body.
+    MockURLProtocol.set(json: "{}")
+    try await makeClient().triggerCronJob(connection, "abc", "work")
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "POST")
+    #expect(req.url?.path == "/api/cron/jobs/abc/trigger")
+    #expect(req.url?.query == "profile=work")
+    #expect(mockRequestBody(req) == Data("{}".utf8))
+  }
+
+  // MARK: Cron job delete
+
+  @Test func deleteCronJobSendsDeleteWithoutBody() async throws {
+    MockURLProtocol.set(json: #"{"ok":true}"#)
+    try await makeClient().deleteCronJob(connection, "a1b2c3d4e5f6", nil)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "DELETE")
+    #expect(req.url?.path == "/api/cron/jobs/a1b2c3d4e5f6")
+    #expect(req.url?.query == nil)
+    #expect(mockRequestBody(req).isEmpty)
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+  }
+
+  @Test func deleteCronJobThreadsProfileInQuery() async throws {
+    MockURLProtocol.set(json: #"{"ok":true}"#)
+    try await makeClient().deleteCronJob(connection, "abc", "default")
+    #expect(MockURLProtocol.lastRequest?.url?.path == "/api/cron/jobs/abc")
+    #expect(MockURLProtocol.lastRequest?.url?.query == "profile=default")
+  }
+
+  @Test func deleteCronJobNotFoundThrows() async throws {
+    MockURLProtocol.set(status: 404, json: #"{"detail":"Job not found"}"#)
+    await #expect(throws: RESTError.notFound) {
+      try await makeClient().deleteCronJob(connection, "gone", nil)
+    }
+  }
+
+  @Test func deleteCronJobBadIDSurfacesDetail() async throws {
+    MockURLProtocol.set(status: 400, json: #"{"detail":"Invalid job id"}"#)
+    await #expect(throws: RESTError.server(status: 400, detail: "Invalid job id")) {
+      try await makeClient().deleteCronJob(connection, "../x", nil)
+    }
+  }
+
+  // MARK: Cron job runs
+
+  @Test func cronJobRunsRequestsRunsPathWithLimit() async throws {
+    MockURLProtocol.set(json: #"{"runs":[],"limit":5}"#)
+    let runs = try await makeClient().cronJobRuns(connection, "a1b2c3d4e5f6", nil, 5)
+    #expect(runs.isEmpty)
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.httpMethod == "GET")
+    #expect(req.url?.path == "/api/cron/jobs/a1b2c3d4e5f6/runs")
+    // nil profile → only `limit`, no `profile` param.
+    #expect(req.url?.query == "limit=5")
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+  }
+
+  @Test func cronJobRunsThreadsProfileAndLimit() async throws {
+    MockURLProtocol.set(json: #"{"runs":[],"limit":20}"#)
+    _ = try await makeClient().cronJobRuns(connection, "abc", "work", 20)
+    let items = URLComponents(
+      url: try #require(MockURLProtocol.lastRequest?.url), resolvingAgainstBaseURL: false
+    )?.queryItems ?? []
+    #expect(items.contains(URLQueryItem(name: "limit", value: "20")))
+    #expect(items.contains(URLQueryItem(name: "profile", value: "work")))
+    #expect(items.count == 2)
+  }
+
+  @Test func cronJobRunsDecodesSessionAndScriptRows() async throws {
+    MockURLProtocol.set(json: #"""
+    {"runs":[
+      {"id":"local-1a2b3c","title":"Morning digest","source":"cron","started_at":1762588800.0,"last_active":1762588860.0,"message_count":4,"unread":true},
+      {"id":"cron_output:abc:2026-11-08_08-00-00","title":"OK","preview":"done","source":"cron_output","started_at":1762502400.0,"last_active":1762502400.0,"message_count":0,"is_active":false,"model":null,"cwd":null}
+    ],"limit":5}
+    """#)
+    let runs = try await makeClient().cronJobRuns(connection, "abc", nil, 5)
+    #expect(runs.map(\.id) == ["local-1a2b3c", "cron_output:abc:2026-11-08_08-00-00"])
+    #expect(runs[0].isCron == true)
+    #expect(runs[0].unread == true)
+    #expect(runs[0].updatedAt == Date(timeIntervalSince1970: 1762588860))
+    #expect(runs[1].source == "cron_output")
+    #expect(runs[1].isCron == false)
+    #expect(runs[1].startedAt == Date(timeIntervalSince1970: 1762502400))
+  }
+
+  @Test func cronJobRunsDropsRowWithoutID() async throws {
+    MockURLProtocol.set(json: #"""
+    {"runs":[
+      {"id":"local-1","source":"cron","started_at":1762588800.0},
+      {"title":"OK","source":"cron_output","started_at":1762502400.0},
+      {"id":"local-2","source":"cron","started_at":1762416000.0}
+    ],"limit":5}
+    """#)
+    let runs = try await makeClient().cronJobRuns(connection, "abc", nil, 5)
+    #expect(runs.map(\.id) == ["local-1", "local-2"])
+  }
+
+  @Test func cronJobRunsMissingRunsKeyYieldsEmpty() async throws {
+    MockURLProtocol.set(json: #"{"limit":5}"#)
+    let runs = try await makeClient().cronJobRuns(connection, "abc", nil, 5)
+    #expect(runs.isEmpty)
+  }
+
+  @Test func cronJobRunsNullRunsYieldsEmpty() async throws {
+    MockURLProtocol.set(json: #"{"runs":null}"#)
+    let runs = try await makeClient().cronJobRuns(connection, "abc", nil, 5)
+    #expect(runs.isEmpty)
+  }
+
+  @Test func cronJobRunsNotFoundThrows() async throws {
+    MockURLProtocol.set(status: 404)
+    await #expect(throws: RESTError.notFound) {
+      _ = try await makeClient().cronJobRuns(connection, "gone", nil, 5)
+    }
+  }
 }
 } // extension RESTTransportSuite

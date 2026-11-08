@@ -42,7 +42,8 @@ away from your desk and still keep your agent moving.
   across all of them, pin the ones you care about, rename or archive them — or
   permanently delete the ones you're done with, from the main list or the archived
   view (a Settings option picks whether a full swipe archives or deletes) — and
-  resume or start a new one. Cron-job runs get their own collapsible section.
+  resume or start a new one. Cron jobs get their own tab: see each job's status and
+  recent runs, and run, pause, resume or delete it.
 - **Switch profiles.** Keep multiple Hermes profiles on one agent and switch between
   them from a Safari-style header pill — each profile has its own scoped session list,
   and new chats are created under the selected one. Create custom profiles (with an

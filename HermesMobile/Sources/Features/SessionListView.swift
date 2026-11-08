@@ -221,75 +221,130 @@ struct SessionListView: View {
       .accessibilityAddTraits(.isHeader)
   }
 
-  /// The Cron Jobs tab. When the agent exposes `/api/cron/jobs` the rows are the *jobs*
-  /// (state dot, next-run countdown, unread dot), desktop-style: tapping a job expands a
-  /// single-open inline peek of its recent *runs* (the compact `cronRunRow(_:)` — a dense
-  /// tree surface keeps the one-liner, like the desktop); a context menu offers Run now /
-  /// Pause / Resume. Older agents (or before the first jobs fetch) fall back to the flat run
-  /// list. The tab's own badge carries the aggregate unread count.
+  /// The Cron Jobs tab. When the agent exposes `/api/cron/jobs` the rows are the *jobs* only
+  /// (state dot, status caption), desktop-style: tapping a job expands a single-open inline
+  /// list of its recent *runs*, loaded from `/runs` into `expandedCronRuns` — one timestamp
+  /// row per run (`cronJobRunRow(_:)`); a context menu offers Run now / Pause / Resume /
+  /// Delete. Only agents without the jobs API fall back to the flat run list.
   @ViewBuilder
   private var cronTabContent: some View {
     tabTitleHeader("Cron Jobs")
-    if store.cronJobGroups.isEmpty {
-      // Flat fallback: agent without the jobs API, or the jobs fetch hasn't landed yet.
+    if !store.cronJobsSupported {
+      // Flat fallback: agent without the jobs API.
       ForEach(store.cronSessions) { session in
         cronRunRow(session)
       }
     } else {
-      ForEach(store.cronJobGroups) { group in
-        cronJobRow(group)
-        if store.expandedCronJobID == group.id {
-          if group.runs.isEmpty {
-            Text("No runs yet")
-              .font(.subheadline)
-              .foregroundStyle(.secondary)
-              .padding(.leading, 24)
-              .listRowSeparator(.hidden)
-          }
-          ForEach(group.runs) { run in
-            cronRunRow(run)
-              .padding(.leading, 24) // indented under the owning job
-          }
+      ForEach(store.sortedCronJobs) { job in
+        cronJobRow(job)
+        if store.expandedCronJobID == job.id {
+          expandedCronRuns
         }
-      }
-      // Runs whose job no longer exists (deleted job, legacy id) — never hide output.
-      ForEach(store.unmatchedCronSessions) { session in
-        cronRunRow(session)
       }
     }
   }
 
-  /// One cron *job* row: state dot, title, next-run countdown (relative, from the same
-  /// `now` the row timestamps use — refreshed by the poll, no per-second ticker), unread
-  /// dot when any of the job's runs is unread, and a disclosure chevron for the peek.
-  private func cronJobRow(_ group: CronJobGroup) -> some View {
-    let isExpanded = store.expandedCronJobID == group.id
+  /// The expanded job's runs, indented under it: a spinner until the first `/runs` load
+  /// lands, "Couldn’t load runs" when it failed, "No runs yet" when empty, else one
+  /// timestamp row per run (a failed refresh keeps the last runs — reducer rule).
+  @ViewBuilder
+  private var expandedCronRuns: some View {
+    if let runs = store.expandedCronRuns {
+      if runs.isEmpty {
+        cronRunsPlaceholder("No runs yet")
+      }
+      ForEach(runs) { run in
+        cronJobRunRow(run)
+      }
+    } else if store.expandedCronRunsFailed {
+      cronRunsPlaceholder("Couldn’t load runs")
+    } else {
+      ProgressView()
+        .padding(.leading, Self.cronRunIndent)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .listRowSeparator(.hidden)
+    }
+  }
+
+  /// Leading indent that sets a job's runs under the job's title.
+  private static let cronRunIndent: CGFloat = 24
+
+  private func cronRunsPlaceholder(_ text: String) -> some View {
+    Text(text)
+      .font(.subheadline)
+      .foregroundStyle(.secondary)
+      .padding(.leading, Self.cronRunIndent)
+      .listRowSeparator(.hidden)
+  }
+
+  /// One run under an expanded job: only its timestamp, like the desktop (sibling runs share
+  /// the job's title). A session run opens its chat on tap (unread dot while it has unseen
+  /// activity) — tap only, no swipe or context menu. A script-only `cron_output` run has no
+  /// session behind it, so it is plain secondary text.
+  @ViewBuilder
+  private func cronJobRunRow(_ run: Session) -> some View {
+    let label = CronJob.runTimestampLabel(
+      for: run.updatedAt ?? run.startedAt, timeZone: store.calendar.timeZone
+    )
+    if run.isCron {
+      let isUnread = store.unreadSessionIDs.contains(run.id)
+      Button {
+        store.send(.cronRunTapped(id: run.id))
+      } label: {
+        HStack(spacing: 8) {
+          if isUnread {
+            Circle().fill(Color.hermesAccent).frame(width: 8, height: 8)
+          }
+          Text(label)
+            .font(.subheadline)
+            .fontWeight(isUnread ? .semibold : .regular)
+            .monospacedDigit()
+          Spacer(minLength: 0)
+        }
+        .padding(.leading, Self.cronRunIndent)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .listRowSeparator(.hidden)
+      .listRowBackground(run.id == highlightedSessionID ? SelectedRowBackground() : nil)
+      .accessibilityLabel(isUnread ? "Run \(label), unread" : "Run \(label)")
+      .accessibilityAddTraits(run.id == highlightedSessionID ? [.isSelected] : [])
+    } else {
+      Text(label)
+        .font(.subheadline)
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .padding(.leading, Self.cronRunIndent)
+        .listRowSeparator(.hidden)
+        .accessibilityLabel("Script run \(label)")
+    }
+  }
+
+  /// One cron *job* row: state dot, title, the status caption (`CronJob.statusCaption` —
+  /// the state in words, or the next-run countdown from the same `now` the row timestamps
+  /// use, refreshed by the poll with no per-second ticker; overdue tinted orange), and a
+  /// disclosure chevron for the runs.
+  private func cronJobRow(_ job: CronJob) -> some View {
+    let isExpanded = store.expandedCronJobID == job.id
+    let caption = job.statusCaption(now: store.now)
     return Button {
-      store.send(.cronJobTapped(id: group.id), animation: reduceMotion ? nil : .snappy)
+      store.send(.cronJobTapped(id: job.id), animation: reduceMotion ? nil : .snappy)
     } label: {
       HStack(spacing: 10) {
         Circle()
-          .fill(cronStateColor(group.job.effectiveState))
+          .fill(cronStateColor(job.effectiveState))
           .frame(width: 8, height: 8)
         VStack(alignment: .leading, spacing: 2) {
-          Text(group.job.title)
-            .fontWeight(group.hasUnread ? .semibold : .regular)
+          Text(job.title)
             .lineLimit(1)
-          if let next = group.job.nextRunAt {
-            Text("Next \(CronJob.relativeRunLabel(for: next, now: store.now))")
+          if let caption {
+            Text(caption.text)
               .font(.caption)
-              .foregroundStyle(.secondary)
-          } else if let schedule = group.job.scheduleDisplay {
-            Text(schedule)
-              .font(.caption)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(caption.isOverdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
               .lineLimit(1)
           }
         }
         Spacer()
-        if group.hasUnread {
-          Circle().fill(Color.hermesAccent).frame(width: 8, height: 8)
-        }
         Image(systemName: "chevron.right")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.tertiary)
@@ -299,19 +354,24 @@ struct SessionListView: View {
     }
     .buttonStyle(.plain)
     .listRowSeparator(.hidden)
-    .accessibilityLabel(cronJobAccessibilityLabel(group, isExpanded: isExpanded))
+    .accessibilityLabel(cronJobAccessibilityLabel(job, caption: caption?.text, isExpanded: isExpanded))
     .contextMenu {
       Button("Run now", systemImage: "play") {
-        store.send(.triggerCronJob(id: group.id))
+        store.send(.triggerCronJob(id: job.id))
       }
-      if group.job.isPaused {
+      if job.isPaused {
         Button("Resume", systemImage: "play.circle") {
-          store.send(.resumeCronJob(id: group.id))
+          store.send(.resumeCronJob(id: job.id))
         }
       } else {
         Button("Pause", systemImage: "pause.circle") {
-          store.send(.pauseCronJob(id: group.id))
+          store.send(.pauseCronJob(id: job.id))
         }
+      }
+      Divider()
+      // Confirmed through the reducer's dialog (`.bottomActionSheet`), never sent directly.
+      Button("Delete", systemImage: "trash", role: .destructive) {
+        store.send(.deleteCronJobTapped(id: job.id))
       }
     }
   }
@@ -329,13 +389,11 @@ struct SessionListView: View {
     }
   }
 
-  private func cronJobAccessibilityLabel(_ group: CronJobGroup, isExpanded: Bool) -> String {
-    var parts = [group.job.title]
-    if group.job.isPaused { parts.append("paused") }
-    if let next = group.job.nextRunAt {
-      parts.append("next run \(CronJob.relativeRunLabel(for: next, now: store.now))")
-    }
-    if group.hasUnread { parts.append("unread runs") }
+  /// Title, the visible status caption ("Paused", "Next in 1 hr.", "Overdue · 2 hr. ago" —
+  /// so the state word is announced), and the disclosure state.
+  private func cronJobAccessibilityLabel(_ job: CronJob, caption: String?, isExpanded: Bool) -> String {
+    var parts = [job.title]
+    if let caption { parts.append(caption) }
     parts.append(isExpanded ? "expanded" : "collapsed")
     return parts.joined(separator: ", ")
   }
@@ -494,20 +552,19 @@ struct SessionListView: View {
   private var tabPill: some View {
     HStack(spacing: 0) {
       tabButton(.sessions, title: "Sessions", systemImage: "text.bubble.fill")
-      tabButton(.cron, title: "Cron Jobs", systemImage: "clock.fill", badge: store.cronUnreadCount)
+      tabButton(.cron, title: "Cron Jobs", systemImage: "clock.fill")
     }
     .padding(4)
     .frame(height: Self.barHeight)
     .modifier(GlassBackground(shape: Capsule(), fallbackShadowRadius: 6, fallbackShadowY: 3))
   }
 
-  /// One tab: icon over label, the selected one on an inner capsule in the accent color. The
-  /// Cron Jobs tab carries the aggregate unread-run badge (the desktop's `CRON JOBS 4`).
+  /// One tab: icon over label, the selected one on an inner capsule in the accent color. No
+  /// unread badge: unread shows only on an expanded job's run rows (desktop parity).
   private func tabButton(
     _ tab: SessionListTab,
     title: String,
-    systemImage: String,
-    badge: Int = 0
+    systemImage: String
   ) -> some View {
     let isSelected = store.effectiveTab == tab
     return Button {
@@ -516,17 +573,6 @@ struct SessionListView: View {
       VStack(spacing: 2) {
         Image(systemName: systemImage)
           .font(.title3)
-          .overlay(alignment: .topTrailing) {
-            if badge > 0 {
-              Text("\(badge)")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Color.hermesAccent, in: Capsule())
-                .offset(x: 12, y: -6)
-            }
-          }
         Text(title)
           .font(.caption.weight(.semibold))
       }
@@ -543,16 +589,8 @@ struct SessionListView: View {
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(tabAccessibilityLabel(title: title, badge: badge))
+    .accessibilityLabel(title)
     .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-  }
-
-  private func tabAccessibilityLabel(title: String, badge: Int) -> String {
-    switch badge {
-    case 0: title
-    case 1: "\(title), 1 unread cron run"
-    default: "\(title), \(badge) unread cron runs"
-    }
   }
 
   /// Stemmed-entry convenience: renders a lane's `SessionBranchEntry` — the card with the
@@ -587,8 +625,8 @@ struct SessionListView: View {
     .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
   }
 
-  /// A cron run (job peek, flat fallback, unmatched runs) as the compact one-line row — a
-  /// dense tree surface, like the desktop's cron section. Same affordances as a card.
+  /// A cron run in the flat fallback (agents without the jobs API) as the compact one-line
+  /// row. Same affordances as a card.
   private func cronRunRow(_ session: Session) -> some View {
     sessionRow(session) { isPinned in
       SessionRowView(

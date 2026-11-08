@@ -52,7 +52,7 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 ├─ ReauthFeature           // re-auth modal: fixed URL, prefilled identity, password/token field
 │                          //   or (.oauth) a single "Continue with …" button;
 │                          //   same-user resume vs different-user switch vs Quit→onboarding
-├─ SessionListFeature      // flat list: pinned + update-date sections + cron jobs section /
+├─ SessionListFeature      // flat list: pinned + update-date sections + Cron Jobs tab /
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
 │  │                       //   working-glow auto-poll; profile pill/switcher (per-call scoped) +
 │  │                       //   presents Settings + Archived + AddProfile sheets

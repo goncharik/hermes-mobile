@@ -85,21 +85,6 @@ public struct CronJob: Equatable, Sendable, Identifiable, Decodable {
 
   public var isPaused: Bool { effectiveState == "paused" }
 
-  /// Extracts the owning job id from a cron run-session id. The scheduler names run
-  /// sessions `cron_{job_id}_{YYYYMMDD}_{HHMMSS}` (see hermes-agent `cron/scheduler.py`);
-  /// the job id itself may contain underscores (legacy/imported jobs), so we anchor on the
-  /// `cron_` prefix and strip the trailing datetime stamp rather than splitting on `_`.
-  /// Returns nil for anything that doesn't match (interactive sessions, odd ids).
-  public static func jobID(fromSessionID sessionID: String) -> String? {
-    guard sessionID.hasPrefix("cron_") else { return nil }
-    let rest = String(sessionID.dropFirst("cron_".count))
-    guard
-      let range = rest.range(of: #"_\d{8}_\d{6}$"#, options: .regularExpression),
-      range.lowerBound > rest.startIndex
-    else { return nil }
-    return String(rest[..<range.lowerBound])
-  }
-
   /// Coarse relative label for a run instant: "in 7 hr." / "5 min. ago" / "in 2 days".
   /// Hand-rolled (no `RelativeDateTimeFormatter`) so tests and snapshots are
   /// locale-deterministic; picks the coarsest sensible unit like the desktop sidebar.
@@ -116,6 +101,58 @@ public struct CronJob: Equatable, Sendable, Identifiable, Decodable {
       amount = days == 1 ? "1 day" : "\(days) days"
     }
     return diff < 0 ? "\(amount) ago" : "in \(amount)"
+  }
+
+  /// A cron run row's timestamp, "Jun 10, 07:00" (no year, no seconds), like the desktop's
+  /// `formatRunTime` (`fmtDayTime`): sibling runs share a title, so the instant is what tells
+  /// them apart. A POSIX-locale format style in `timeZone` (English month abbreviations,
+  /// 24-hour clock), so tests and snapshots never depend on the device locale; a missing
+  /// instant reads "—".
+  public static func runTimestampLabel(for date: Date?, timeZone: TimeZone) -> String {
+    guard let date else { return "—" }
+    return date.formatted(Date.VerbatimFormatStyle(
+      format: """
+        \(month: .abbreviated) \(day: .defaultDigits), \
+        \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)
+        """,
+      locale: runTimestampLocale,
+      timeZone: timeZone,
+      calendar: runTimestampCalendar
+    ))
+  }
+
+  private static let runTimestampLocale = Locale(identifier: "en_US_POSIX")
+  private static let runTimestampCalendar = Calendar(identifier: .gregorian)
+
+  /// How long a stored `next_run_at` may sit in the past before an active job reads as
+  /// overdue. Mirrors hermes-agent `_OVERDUE_GRACE_SECONDS` and the desktop's
+  /// `NEXT_RUN_OVERDUE_GRACE_MS` (a busy scheduler tick can dispatch a few minutes late).
+  public static let overdueGrace: TimeInterval = 15 * 60
+
+  /// The job row's status in words. Inactive states (`paused` / `error` / `completed` /
+  /// `disabled`, incl. `enabled == false` without a `state`) replace the next-run caption
+  /// with their word, so a paused job never reads "Next in 1 hr.". An active job (any other
+  /// state, incl. `running` and unknown strings) shows "Next …", or "Overdue · … ago" once
+  /// `next_run_at` is past the grace: a slot parked in the past is the only visible trace of
+  /// a dead scheduler, so it must never read as an upcoming "Next" (desktop `job-state.ts`
+  /// `nextRunOverdueMs`). Without a next run the schedule stands in; `nil` when there is
+  /// nothing to show. `isOverdue` lets the view tint the overdue caption.
+  public func statusCaption(now: Date) -> (text: String, isOverdue: Bool)? {
+    switch effectiveState {
+    case "paused": return ("Paused", false)
+    case "error": return ("Error", false)
+    case "completed": return ("Completed", false)
+    case "disabled": return ("Disabled", false)
+    default: break
+    }
+    if let next = nextRunAt {
+      let label = Self.relativeRunLabel(for: next, now: now)
+      if now.timeIntervalSince(next) > Self.overdueGrace {
+        return ("Overdue · \(label)", true)
+      }
+      return ("Next \(label)", false)
+    }
+    return scheduleDisplay?.trimmedNonEmpty.map { ($0, false) }
   }
 
   private static func parseISODate(_ raw: String?) -> Date? {

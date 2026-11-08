@@ -1,8 +1,8 @@
 import HermesKit
 import SwiftUI
 
-/// The compact one-line session row for dense surfaces — cron run peeks, the flat cron
-/// fallback, unmatched cron runs, and the archived sheet (interactive rows are
+/// The compact one-line session row for dense surfaces — the flat cron-run fallback
+/// (agents without the jobs API) and the archived sheet (interactive rows are
 /// `SessionCardView` cards). Like the desktop sidebar: a human-readable name
 /// (`Session.displayName`: title → preview → id) + relative age + an unread dot.
 struct SessionRowView: View {

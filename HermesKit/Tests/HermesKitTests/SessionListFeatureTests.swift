@@ -2371,9 +2371,8 @@ struct SessionListFeatureTests {
   // MARK: - Bottom-bar tabs
 
   @Test func selectTabSwitchesTheRenderedTab() async {
-    let run = Session(id: "cron_job1_20260702_090000", source: "cron")
     let store = TestStore(
-      initialState: SessionListFeature.State(connection: connection, sessions: [run])
+      initialState: SessionListFeature.State(connection: connection, cronJobs: [CronJob(id: "job1")])
     ) {
       SessionListFeature()
     }
@@ -2395,7 +2394,7 @@ struct SessionListFeatureTests {
     #expect(!state.showsTabBar)
     #expect(state.effectiveTab == .sessions, "no cron content: no Cron Jobs tab")
 
-    state.sessions = [Session(id: "cron_job1_20260702_090000", source: "cron")]
+    state.cronJobs = [CronJob(id: "job1")]
     #expect(state.showsTabBar)
     #expect(state.effectiveTab == .cron)
 
