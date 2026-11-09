@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Shared measurements, colours and building blocks for the onboarding screens (#136):
-/// Welcome, Server and Sign in.
+/// Shared measurements and building blocks for the onboarding screens (#136): Welcome, Server
+/// and Sign in.
 enum OnboardingLayout {
   /// The readable column cap, applied on each screen's OUTER container only (the capped-width
   /// rule: never on rows or cells). Phone widths sit below it, so compact rendering is
@@ -12,20 +12,11 @@ enum OnboardingLayout {
   /// Side gutter of every onboarding screen.
   static let gutter: CGFloat = 20
 
-  /// Text and glyph colour drawn in the brand amber, darkened in light mode and lightened in
-  /// dark mode so it keeps its contrast against the grouped backgrounds (`Color.hermesAccent`
-  /// itself is too light for text on white). Also the stack's tint: links, the back button.
-  static let accentInk = Color(UIColor { traits in
-    traits.userInterfaceStyle == .dark
-      ? UIColor(red: 0xF7 / 255, green: 0xB5 / 255, blue: 0x49 / 255, alpha: 1)
-      : UIColor(red: 0x9A / 255, green: 0x5B / 255, blue: 0, alpha: 1)
-  })
-
-  /// Label colour on an amber fill: white on `hermesAccent` falls well short of legible.
-  static let onAccent = Color(red: 0x1F / 255, green: 0x14 / 255, blue: 0)
-
-  /// Corner radius of the cards and field groups.
+  /// Corner radius of the cards.
   static let cardCornerRadius: CGFloat = 16
+
+  /// Corner radius of the field groups and notices.
+  static let fieldCornerRadius: CGFloat = 12
 }
 
 /// One onboarding screen: a scrolling body over a pinned call-to-action footer.
@@ -102,22 +93,68 @@ extension View {
     buttonStyle(.borderedProminent)
       .controlSize(.large)
       .tint(.hermesAccent)
-      .foregroundStyle(OnboardingLayout.onAccent)
+      .foregroundStyle(Color.hermesOnAccent)
   }
 
   /// A secondary action inside the content (provider buttons under "or", "Sign in with
   /// token", a failure card's "Setup guide"): a soft amber fill.
   func onboardingTonalButton() -> some View {
     buttonStyle(.bordered)
-      .tint(OnboardingLayout.accentInk)
+      .tint(.hermesAccentInk)
   }
 
   /// A text-only footer action ("I don't have an agent yet", "Where do I find the address?").
   func onboardingPlainButton() -> some View {
     buttonStyle(.borderless)
       .font(.body.weight(.semibold))
-      .foregroundStyle(OnboardingLayout.accentInk)
+      .foregroundStyle(Color.hermesAccentInk)
       .frame(minHeight: 44)
+  }
+}
+
+/// An amber glyph on a tinted rounded square: the Welcome value rows (`.large`), the session
+/// list's push card and tips (`.regular`).
+struct OnboardingIconTile: View {
+  enum Size {
+    case regular, large
+  }
+
+  let systemImage: String
+  var size: Size = .regular
+
+  var body: some View {
+    Image(systemName: systemImage)
+      .font(size == .large ? .title3 : .body)
+      .foregroundStyle(Color.hermesAccentInk)
+      .frame(width: side, height: side)
+      .background(
+        Color.hermesAccent.opacity(0.16),
+        in: RoundedRectangle(cornerRadius: size == .large ? 12 : 10, style: .continuous)
+      )
+      .accessibilityHidden(true)
+  }
+
+  private var side: CGFloat { size == .large ? 40 : 34 }
+}
+
+/// Grouped input fields on the card surface, outlined red when `hasError` (the agent rejected
+/// what was typed, or the address doesn't parse).
+struct OnboardingFieldGroup<Content: View>: View {
+  let hasError: Bool
+  @ViewBuilder var content: Content
+
+  var body: some View {
+    VStack(spacing: 0) {
+      content
+    }
+    .background(
+      Color(.secondarySystemGroupedBackground),
+      in: RoundedRectangle(cornerRadius: OnboardingLayout.fieldCornerRadius, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: OnboardingLayout.fieldCornerRadius, style: .continuous)
+        .strokeBorder(hasError ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1)
+    }
   }
 }
 
@@ -146,7 +183,7 @@ struct OnboardingCard<Content: View>: View {
 /// Network hint on a failure card, the cleartext warning (tinted).
 struct OnboardingNotice<Message: View>: View {
   var systemImage = "info.circle"
-  var tint: Color = OnboardingLayout.accentInk
+  var tint: Color = .hermesAccentInk
   /// A warning gets a `tint`-tinted background instead of the plain card surface.
   var isWarning = false
   @ViewBuilder var message: Message
@@ -169,7 +206,7 @@ struct OnboardingNotice<Message: View>: View {
       isWarning
         ? AnyShapeStyle(tint.opacity(0.14))
         : AnyShapeStyle(Color(.secondarySystemGroupedBackground)),
-      in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      in: RoundedRectangle(cornerRadius: OnboardingLayout.fieldCornerRadius, style: .continuous)
     )
     .accessibilityElement(children: .combine)
   }

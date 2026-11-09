@@ -162,7 +162,7 @@ struct SignInStepTests {
       $0.keychain = .inMemory()
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
 
     await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
@@ -231,6 +231,36 @@ struct SignInStepTests {
     state.isShowingOtherWays = true
     #expect(state.showsTokenField)
     #expect(state.canSignInWithToken)
+  }
+
+  /// The reducer enforces its own submit rules: a tap the view's `.disabled` didn't catch (a
+  /// second tap before the button disables) starts nothing. The default `testValue` clients
+  /// fail the test if any request goes out.
+  @Test func passwordSignInIsANoOpWhenDisabled() async {
+    var inFlight = passwordState()
+    inFlight.status = .validating(.password)
+    var tokenLayout = SignInStep.State(probe: probe(.tokenOnly))
+    tokenLayout.username = "alice"
+    tokenLayout.password = "pw"
+    // Empty password; an attempt already in flight; not the password layout.
+    for state in [passwordState(password: ""), inFlight, tokenLayout] {
+      #expect(state.canSignInWithPassword == false)
+      let store = TestStore(initialState: state) { SignInStep() }
+      await store.send(.passwordSignInButtonTapped)
+    }
+  }
+
+  @Test func tokenSignInIsANoOpWhenDisabled() async {
+    var inFlight = SignInStep.State(probe: probe(.tokenOnly), prefilledToken: "tok")
+    inFlight.status = .validating(.token)
+    var hiddenField = passwordState()
+    hiddenField.token = "tok"
+    // No token typed; an attempt already in flight; the field still behind "Other ways".
+    for state in [SignInStep.State(probe: probe(.tokenOnly)), inFlight, hiddenField] {
+      #expect(state.canSignInWithToken == false)
+      let store = TestStore(initialState: state) { SignInStep() }
+      await store.send(.tokenSignInButtonTapped)
+    }
   }
 
   @Test func otherWaysTogglesTheTokenDisclosure() async {
@@ -382,7 +412,7 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.success)
     await store.receive(\.delegate.connected)
 
@@ -403,7 +433,7 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
 
     #expect(keychain.loadSession(.shared) == nil)
@@ -426,7 +456,7 @@ struct SignInStepTests {
       }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
     #expect(usedProvider.value == "pam")
   }
@@ -445,7 +475,7 @@ struct SignInStepTests {
       $0.keychain.saveSession = { @Sendable in try keychain.saveSession($0) }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
     #expect(keychain.loadSession(.shared) == nil)
   }
@@ -457,7 +487,7 @@ struct SignInStepTests {
       $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.rateLimited }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) {
       $0.status = .failed(RESTError.rateLimited.message)
     }
@@ -470,7 +500,7 @@ struct SignInStepTests {
       $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.serviceUnavailable }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.send(.passwordSignInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) {
       $0.status = .failed(RESTError.serviceUnavailable.message)
     }

@@ -239,7 +239,7 @@ enum Action: BindableAction {
   case oauthProviderButtonTapped(AuthProvider)
   case otherWaysButtonTapped
   case passwordLoginResponse(Result<ServerConnection, RESTError>)
-  case signInButtonTapped           // password
+  case passwordSignInButtonTapped
   case tokenSignInButtonTapped
   case tokenValidationResponse(Result<ServerConnection, RESTError>)
 }

@@ -32,7 +32,7 @@ struct ConnectionView: View {
     // The amber ink, not `hermesAccent` itself: the tint also colours the back button and
     // links, which need text contrast on the grouped background. Applied to the stack only,
     // so the guide sheet below keeps its own styling.
-    .tint(OnboardingLayout.accentInk)
+    .tint(.hermesAccentInk)
     .sheet(isPresented: $showsSetupGuide) {
       AgentSetupGuideView()
     }

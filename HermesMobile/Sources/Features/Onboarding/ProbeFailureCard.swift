@@ -89,7 +89,7 @@ struct ProbeFailureCard: View {
     .accessibilityElement(children: .contain)
   }
 
-  /// A numbered "try this" line. The copy is static and may carry inline `code` markdown.
+  /// A numbered "try this" line. The copy may carry inline `code` markdown.
   private struct FixRow: View {
     let number: Int
     let text: String
@@ -116,7 +116,7 @@ struct ProbeFailureCard: View {
     let systemImage: String
     let title: String
     let message: String
-    /// Static copy only (no interpolated host): rendered as markdown for inline `code`.
+    /// No interpolated host: rendered as markdown for inline `code`.
     let fixes: [String]
     let detail: String
     let tint: Color
@@ -124,6 +124,7 @@ struct ProbeFailureCard: View {
     init(_ failed: FailedServerProbe) {
       let address = failed.address
       let host = address.host
+      let port = ServerAddress.fallbackPort
       // The candidate whose failure this card reports (for a bare host, the :9119 fallback).
       let url = failed.reportedURL.absoluteString
       let tried = failed.triedDetail
@@ -162,7 +163,7 @@ struct ProbeFailureCard: View {
         fixes = [
           "Check that `hermes dashboard` is running.",
           "Start it with `--host 0.0.0.0`. A dashboard on 127.0.0.1 only answers on that computer.",
-          "Check the port. The dashboard uses 9119 unless you changed it.",
+          "Check the port. The dashboard uses \(port) unless you changed it.",
         ]
         detail = "\(tried)\nConnection refused"
         tint = .red
@@ -174,12 +175,12 @@ struct ProbeFailureCard: View {
         fixes = address.kind == .localNetwork
           ? [
             "Check that this phone is on the same Wi-Fi as the agent’s computer.",
-            "Check the computer’s firewall allows port 9119.",
+            "Check the computer’s firewall allows port \(port).",
           ]
           : [
             "Turn on Tailscale or your VPN on this phone.",
             "Check that the agent’s computer is awake and online.",
-            "Check its firewall allows port 9119.",
+            "Check its firewall allows port \(port).",
           ]
         detail = "\(tried)\nThe request timed out"
         tint = .red
@@ -226,7 +227,7 @@ struct ProbeFailureCard: View {
           ? "\(host) answered, but /api/status returned 404."
           : "\(host) answered, but /api/status didn’t return a Hermes status."
         fixes = [
-          "Check the port. The dashboard uses 9119 unless you changed it.",
+          "Check the port. The dashboard uses \(port) unless you changed it.",
           "Behind a reverse proxy, use the address that serves the dashboard itself.",
         ]
         detail = "\(tried)\nHTTP \(httpStatus) on /api/status"
@@ -250,10 +251,10 @@ struct ProbeFailureCard: View {
           `HERMES_DASHBOARD_PUBLIC_URL`) to this address.
           """,
         ]
-        detail = "HTTP 400 · \"\(serverDetail)\""
+        detail = "\(tried)\nHTTP 400 · \"\(serverDetail)\""
         tint = .orange
 
-      case let .other(text), let .requestFailed(text):
+      case let .httpError(text), let .requestFailed(text):
         systemImage = "exclamationmark.triangle"
         title = "Couldn’t connect to \(host)"
         message = ProbeFailure.headline(of: text)

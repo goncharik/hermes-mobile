@@ -118,3 +118,12 @@ extension ServerAddress {
     return withUnsafeBytes(of: &address) { Array($0) }
   }
 }
+
+/// Lenient URL parsing: accept `host:port` by defaulting to `http://`.
+func parseServerURL(_ string: String) -> URL? {
+  let trimmed = string.trimmingCharacters(in: .whitespaces)
+  guard !trimmed.isEmpty else { return nil }
+  let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
+  guard let url = URL(string: withScheme), url.host?.isEmpty == false else { return nil }
+  return url
+}

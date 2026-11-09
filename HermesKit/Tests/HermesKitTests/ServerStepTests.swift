@@ -212,7 +212,7 @@ struct ServerStepTests {
   /// A Hermes verdict (or a failure no other port changes) is final.
   @Test(arguments: [
     ProbeFailure.hostRejected(detail: "Invalid Host header. Dashboard requests must use the bound hostname."),
-    .other("Bad Request"),
+    .httpError("Bad Request"),
     .untrustedCertificate,
     .offline,
     .requestFailed("unsupported URL"),
@@ -304,7 +304,7 @@ struct ServerStepTests {
     .notHermes(httpStatus: 404),
     .notHermes(httpStatus: 200),
     .hostRejected(detail: "Invalid Host header"),
-    .other("HTTP 500"),
+    .httpError("HTTP 500"),
     .requestFailed("unsupported URL"),
   ])
   func eachFailureLandsInFailedWithItsAddress(failure: ProbeFailure) async {

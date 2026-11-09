@@ -19,7 +19,7 @@ struct SignInStepView: View {
       case .password:
         OnboardingScreen { content } footer: {
           submitButton("Sign in", isEnabled: store.canSignInWithPassword) {
-            store.send(.signInButtonTapped)
+            store.send(.passwordSignInButtonTapped)
           }
         }
       case .token:
@@ -91,7 +91,7 @@ struct SignInStepView: View {
     cleartextWarning(credential: "password")
     oauthNeedsNewerAgentNotice(fallback: "your password")
     VStack(alignment: .leading, spacing: 8) {
-      fieldGroup(hasError: store.status == .invalidCredentials(.password)) {
+      OnboardingFieldGroup(hasError: store.status == .invalidCredentials(.password)) {
         TextField("Username", text: $store.username)
           .textContentType(.username)
           .textInputAutocapitalization(.never)
@@ -206,7 +206,7 @@ struct SignInStepView: View {
       .fixedSize(horizontal: false, vertical: true)
       if store.status == .invalidCredentials(.oauth) {
         errorLine(
-          store.state.layout == .oauthOnly(providers)
+          prominent
             ? "The agent rejected that sign-in. Try again."
             : "The agent rejected that sign-in. Try again, or use your password."
         )
@@ -215,7 +215,7 @@ struct SignInStepView: View {
   }
 
   private var tokenField: some View {
-    fieldGroup(hasError: store.status == .invalidCredentials(.token)) {
+    OnboardingFieldGroup(hasError: store.status == .invalidCredentials(.token)) {
       RevealableSecureField("Session token", text: $store.token)
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
@@ -243,21 +243,6 @@ struct SignInStepView: View {
         or an https:// address.
         """)
       }
-    }
-  }
-
-  /// Grouped fields, outlined red when the agent rejected what was typed in them.
-  private func fieldGroup(hasError: Bool, @ViewBuilder _ content: () -> some View) -> some View {
-    VStack(spacing: 0) {
-      content()
-    }
-    .background(
-      Color(.secondarySystemGroupedBackground),
-      in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-    )
-    .overlay {
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(hasError ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1)
     }
   }
 
@@ -344,7 +329,7 @@ struct ServerCard: View {
       Button("Change", action: changeButtonTapped)
         .buttonStyle(.borderless)
         .font(.subheadline.weight(.semibold))
-        .foregroundStyle(OnboardingLayout.accentInk)
+        .foregroundStyle(Color.hermesAccentInk)
         .accessibilityHint("Goes back to the agent address")
     }
     .padding(.vertical, 12)

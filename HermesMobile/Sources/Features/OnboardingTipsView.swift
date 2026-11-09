@@ -49,7 +49,7 @@ struct OnboardingTipsView: View {
       Spacer()
       Button("Hide", action: hideButtonTapped)
         .font(.subheadline.weight(.semibold))
-        .foregroundStyle(OnboardingLayout.accentInk)
+        .foregroundStyle(Color.hermesAccentInk)
         // Borderless, so only the label (not the whole list row) is the tap target.
         .buttonStyle(.borderless)
         .accessibilityLabel("Hide tips")
@@ -64,15 +64,7 @@ struct OnboardingTipsView: View {
 
     var body: some View {
       HStack(alignment: .top, spacing: 10) {
-        Image(systemName: systemImage)
-          .font(.body)
-          .foregroundStyle(OnboardingLayout.accentInk)
-          .frame(width: 34, height: 34)
-          .background(
-            Color.hermesAccent.opacity(0.16),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-          )
-          .accessibilityHidden(true)
+        OnboardingIconTile(systemImage: systemImage)
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
             .font(.subheadline.weight(.semibold))

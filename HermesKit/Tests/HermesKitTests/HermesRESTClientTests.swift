@@ -270,7 +270,7 @@ struct HermesRESTClientTests {
 
   @Test func probeStatusOther400KeepsTheServerCopy() async {
     MockURLProtocol.set(status: 400, json: #"{"detail":"Bad request"}"#)
-    #expect(await makeClient().probeStatus(baseURL) == .failure(.other("Bad request")))
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.httpError("Bad request")))
   }
 
   @Test(arguments: [

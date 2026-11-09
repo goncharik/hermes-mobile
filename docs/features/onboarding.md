@@ -121,7 +121,7 @@ the phase to `.idle`, so Continue is usable after popping back from Sign in.
 response with `ProbeFailure.classify` before anything is flattened to `RESTError`. `RESTError`,
 `RESTError(transport:)` and their many references are untouched, and the launch path (#62)
 keeps `rest.status`. A 2xx that doesn't decode as `ServerStatus` is `.notHermes(httpStatus:)`
-with the real status; an unparseable base URL or a non-HTTP response is `.other`.
+with the real status; an unparseable base URL or a non-HTTP response is `.requestFailed`.
 
 | Case | Source | `isTransport` | Fails | Card |
 |---|---|---|---|---|
@@ -133,7 +133,8 @@ with the real status; an unparseable base URL or a non-HTTP response is `.other`
 | `untrustedCertificate` | `.serverCertificate*`, `.secureConnectionFailed`, `.clientCertificate*` | no | Reaching | "The certificate isn't trusted" |
 | `notHermes(httpStatus:)` | 404, or a 2xx that isn't Hermes status JSON | no | Hermes | "This isn't a Hermes agent" |
 | `hostRejected(detail:)` | 400 whose detail starts "Invalid Host header" | no | Hermes | "Your agent rejected this address" (`--host`, `dashboard.public_url` / `HERMES_DASHBOARD_PUBLIC_URL`) |
-| `other(String)` | any other status or `URLError`, or a non-`URLError` | no | Hermes | "Couldn't connect to \<host\>", server copy verbatim |
+| `httpError(String)` | any other HTTP status | no | Hermes | "Couldn't connect to \<host\>", server copy verbatim |
+| `requestFailed(String)` | any other `URLError`, or a non-`URLError` | no | Reaching | "Couldn't connect to \<host\>", system copy verbatim |
 
 - The Host-rejection text was checked against upstream `host_header_middleware`
   (`hermes_cli/web_server.py`). Hermes rejects a Host header that is neither the bound host nor
@@ -144,7 +145,7 @@ with the real status; an unparseable base URL or a non-HTTP response is `.other`
 - Each card has a "Setup guide" button and a Details disclosure listing the URLs actually tried:
   both candidates for a transport failure, only the first for an HTTP answer. `ProbeFailure`
   doesn't record which candidate answered, so the `notHermes` copy says "\<host\> answered"
-  without naming a URL. The `offline` and `other` copy isn't in the prototype and follows its
+  without naming a URL. The `offline` and `httpError` copy isn't in the prototype and follows its
   voice; `timedOut` doesn't promise a time limit (the probe uses the session's default timeout).
 
 ### The Local Network rule (TN3179)
@@ -230,7 +231,7 @@ declarative; the copy-deciding logic they need is in HermesKit (`status(of:)`,
   (`OnboardingScreen`: `.frame(maxWidth:)` then `.frame(maxWidth: .infinity)`), centred on iPad
   and uncapped on a phone. Measured in `OnboardingColumnLayoutTests` (Welcome through the real
   stack host, plus the pushed Server step).
-- **Colours**: `OnboardingLayout.accentInk` (#9A5B00 light / #F7B549 dark) tints the stack, the
+- **Colours**: `Color.hermesAccentInk` (#9A5B00 light / #F7B549 dark) tints the stack, the
   back button and links; primary buttons are `.borderedProminent` in `hermesAccent` with dark
   text (white on amber is illegible). No Liquid Glass, so no iOS 26 gate.
 - **Accessibility text sizes** (`dynamicTypeSize.isAccessibilitySize`):

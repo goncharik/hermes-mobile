@@ -159,8 +159,8 @@ public extension PushSetup {
 }
 
 /// Days to snooze the session-list push card after the N-th "Not now" / "Later" tap
-/// (1-indexed). A Fibonacci
-/// backoff capped at ~60 days so the nag spaces out quickly but never disappears entirely.
+/// (1-indexed). A Fibonacci backoff capped at ~60 days so the nag spaces out quickly but never
+/// disappears entirely.
 ///
 /// `1→1, 2→2, 3→3, 4→5, 5→8, 6→13, 7→21, 8→34, 9→55, 10+→60`. A `laterCount` below 1 is
 /// treated as 1 (first snooze).

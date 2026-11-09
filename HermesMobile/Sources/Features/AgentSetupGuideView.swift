@@ -139,37 +139,13 @@ struct AgentSetupGuideView: View {
   }
 
   private var portalLink: some View {
-    Link(destination: Self.portalURL) {
-      HStack(spacing: 14) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Self.brand)
-            .frame(width: 44, height: 44)
-          Image(systemName: "cloud.fill")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(.white)
-        }
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Open the Nous portal")
-            .font(.headline)
-            .foregroundStyle(.primary)
-          Text(verbatim: "portal.nousresearch.com")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        Spacer(minLength: 8)
-        Image(systemName: "arrow.up.forward")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.secondary)
-      }
-      .padding(16)
-      .frame(maxWidth: .infinity)
-      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
-      )
-    }
+    externalLinkRow(
+      url: Self.portalURL,
+      icon: "cloud.fill",
+      fill: Self.brand,
+      title: "Open the Nous portal",
+      subtitle: "portal.nousresearch.com"
+    )
   }
 
   // MARK: - On my computer
@@ -245,37 +221,13 @@ struct AgentSetupGuideView: View {
   }
 
   private var tailscaleLink: some View {
-    Link(destination: Self.tailscaleURL) {
-      HStack(spacing: 14) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Self.tailscaleBrand)
-            .frame(width: 44, height: 44)
-          Image(systemName: "network")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(.white)
-        }
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Set up Tailscale")
-            .font(.headline)
-            .foregroundStyle(.primary)
-          Text("Private addresses reachable only by your tailnet")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        Spacer(minLength: 8)
-        Image(systemName: "arrow.up.forward")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.secondary)
-      }
-      .padding(16)
-      .frame(maxWidth: .infinity)
-      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
-      )
-    }
+    externalLinkRow(
+      url: Self.tailscaleURL,
+      icon: "network",
+      fill: Self.tailscaleBrand,
+      title: "Set up Tailscale",
+      subtitle: "Private addresses reachable only by your tailnet"
+    )
   }
 
   private var portForwardWarning: some View {
@@ -370,6 +322,48 @@ struct AgentSetupGuideView: View {
     .padding(16)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+  }
+
+  /// A tappable card that opens `url` outside the app: a filled icon tile, a title and a
+  /// caption, and an outbound arrow.
+  private func externalLinkRow(
+    url: URL,
+    icon: String,
+    fill: LinearGradient,
+    title: String,
+    subtitle: String
+  ) -> some View {
+    Link(destination: url) {
+      HStack(spacing: 14) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(fill)
+            .frame(width: 44, height: 44)
+          Image(systemName: icon)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(verbatim: title)
+            .font(.headline)
+            .foregroundStyle(.primary)
+          Text(verbatim: subtitle)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 8)
+        Image(systemName: "arrow.up.forward")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.secondary)
+      }
+      .padding(16)
+      .frame(maxWidth: .infinity)
+      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
+      )
+    }
   }
 
   private func cardHeader(icon: String, title: String, tint: Color) -> some View {

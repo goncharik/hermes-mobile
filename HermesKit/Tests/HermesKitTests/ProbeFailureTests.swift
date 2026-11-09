@@ -84,29 +84,29 @@ struct ProbeFailureTests {
     )
   }
 
-  @Test func otherBadRequestDetailIsOther() {
+  @Test func otherBadRequestDetailIsHTTPError() {
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 400, contentType: "application/json", detail: "Bad profile name"),
-      .other("Bad profile name")
+      .httpError("Bad profile name")
     )
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 400, contentType: "application/json", detail: nil),
-      .other("HTTP 400")
+      .httpError("HTTP 400")
     )
   }
 
   @Test func otherStatusesCarryServerCopyVerbatim() {
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 503, contentType: "text/plain", detail: "Gateway starting"),
-      .other("Gateway starting")
+      .httpError("Gateway starting")
     )
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 500, contentType: nil, detail: nil),
-      .other("HTTP 500")
+      .httpError("HTTP 500")
     )
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 401, contentType: "application/json", detail: ""),
-      .other("HTTP 401")
+      .httpError("HTTP 401")
     )
   }
 
@@ -114,12 +114,12 @@ struct ProbeFailureTests {
     expectNoDifference(
       ProbeFailure.classify(
         httpStatus: 502, contentType: "text/html", detail: "<html><body>Bad Gateway</body></html>"),
-      .other("HTTP 502")
+      .httpError("HTTP 502")
     )
     // Even an HTML page that happens to start with the Host message is not Hermes' JSON reply.
     expectNoDifference(
       ProbeFailure.classify(httpStatus: 400, contentType: "TEXT/HTML", detail: "Invalid Host header"),
-      .other("HTTP 400")
+      .httpError("HTTP 400")
     )
   }
 
@@ -155,7 +155,7 @@ struct ProbeFailureTests {
     (.notHermes(httpStatus: 404), false, true),
     (.notHermes(httpStatus: 200), false, true),
     (.hostRejected(detail: "Invalid Host header."), false, false),
-    (.other("HTTP 500"), false, false),
+    (.httpError("HTTP 500"), false, false),
     (.requestFailed("unsupported URL"), false, false),
   ])
   func transportAndFallback(_ failure: ProbeFailure, isTransport: Bool, triesNext: Bool) {
@@ -175,7 +175,7 @@ struct ProbeFailureTests {
     (.untrustedCertificate, false),
     (.notHermes(httpStatus: 404), false),
     (.hostRejected(detail: "Invalid Host header."), false),
-    (.other("HTTP 500"), false),
+    (.httpError("HTTP 500"), false),
     (.requestFailed("unsupported URL"), false),
   ])
   func localNetworkHint(_ failure: ProbeFailure, onLocalNetwork: Bool) {
@@ -198,7 +198,7 @@ struct ProbeFailureTests {
     (.requestFailed("unsupported URL"), .reaching),
     (.notHermes(httpStatus: 404), .hermes),
     (.hostRejected(detail: "Invalid Host header."), .hermes),
-    (.other("HTTP 500"), .hermes),
+    (.httpError("HTTP 500"), .hermes),
   ])
   func failedCheck(_ failure: ProbeFailure, check: ServerStep.State.Check) {
     #expect(failure.failedCheck == check)

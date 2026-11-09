@@ -41,15 +41,7 @@ struct PushCardView: View {
 
   private var header: some View {
     HStack(spacing: 10) {
-      Image(systemName: "bell.fill")
-        .font(.body)
-        .foregroundStyle(OnboardingLayout.accentInk)
-        .frame(width: 34, height: 34)
-        .background(
-          Color.hermesAccent.opacity(0.16),
-          in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        .accessibilityHidden(true)
+      OnboardingIconTile(systemImage: "bell.fill")
       Text(title)
         .font(.headline)
         .fixedSize(horizontal: false, vertical: true)
@@ -96,7 +88,7 @@ struct PushCardView: View {
     }
     .buttonStyle(.borderedProminent)
     .tint(.hermesAccent)
-    .foregroundStyle(OnboardingLayout.onAccent)
+    .foregroundStyle(Color.hermesOnAccent)
   }
 
   private var title: String {

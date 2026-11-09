@@ -147,7 +147,7 @@ public struct SignInStep {
     case otherWaysButtonTapped
     /// Password login → cookie session validated → ready to connect.
     case passwordLoginResponse(Result<ServerConnection, RESTError>)
-    case signInButtonTapped
+    case passwordSignInButtonTapped
     case tokenSignInButtonTapped
     case tokenValidationResponse(Result<ServerConnection, RESTError>)
 
@@ -247,9 +247,10 @@ public struct SignInStep {
         }
         return .none
 
-      case .signInButtonTapped:
+      case .passwordSignInButtonTapped:
         // Password path: log in for cookies, validate them with one authenticated call,
         // then persist the cookie session + server URL and signal the parent.
+        guard state.canSignInWithPassword else { return .none }
         state.status = .validating(.password)
         let url = state.probe.baseURL
         let provider = state.probe.capability.passwordProviderName ?? "basic"
@@ -284,6 +285,7 @@ public struct SignInStep {
       case .tokenSignInButtonTapped:
         // Token path — byte-identical to the legacy one: validate with one authenticated
         // call, then persist the token + server URL and signal the parent.
+        guard state.canSignInWithToken else { return .none }
         state.status = .validating(.token)
         let connection = ServerConnection(baseURL: state.probe.baseURL, token: state.token)
         return .run { [keychain, preferences, rest] send in

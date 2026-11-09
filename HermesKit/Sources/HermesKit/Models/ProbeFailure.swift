@@ -24,7 +24,7 @@ public enum ProbeFailure: Error, Equatable, Sendable {
   /// another name): a 400 whose detail starts "Invalid Host header". Carries the server copy.
   case hostRejected(detail: String)
   /// Any other HTTP answer — the server's copy verbatim, or "HTTP <status>".
-  case other(String)
+  case httpError(String)
   /// The request failed before any HTTP answer for a reason not listed above (an unsupported
   /// scheme, a malformed response, …) — the system's description.
   case requestFailed(String)
@@ -37,13 +37,13 @@ public enum ProbeFailure: Error, Equatable, Sendable {
   public var isTransport: Bool {
     switch self {
     case .hostNotFound, .refused, .timedOut: true
-    case .offline, .untrustedCertificate, .notHermes, .hostRejected, .other, .requestFailed: false
+    case .offline, .untrustedCertificate, .notHermes, .hostRejected, .httpError, .requestFailed: false
     }
   }
 
   /// Whether the probe moves on to the next candidate URL (the `:9119` fallback): nothing
   /// answered, or something that is not Hermes answered (a NAS or web server on port 80).
-  /// A Hermes answer (`.hostRejected`, `.other`) is the server's verdict and stops the probe.
+  /// A Hermes answer (`.hostRejected`, `.httpError`) is the server's verdict and stops the probe.
   public var triesNextCandidate: Bool {
     if case .notHermes = self { return true }
     return isTransport
@@ -63,7 +63,7 @@ public enum ProbeFailure: Error, Equatable, Sendable {
     switch self {
     case .offline, .hostNotFound, .refused, .timedOut, .untrustedCertificate, .requestFailed:
       .reaching
-    case .notHermes, .hostRejected, .other:
+    case .notHermes, .hostRejected, .httpError:
       .hermes
     }
   }
@@ -105,9 +105,9 @@ public enum ProbeFailure: Error, Equatable, Sendable {
       if let detail, detail.hasPrefix(invalidHostDetailPrefix) {
         return .hostRejected(detail: detail)
       }
-      return .other(detail ?? "HTTP \(httpStatus)")
+      return .httpError(detail ?? "HTTP \(httpStatus)")
     default:
-      return .other(detail ?? "HTTP \(httpStatus)")
+      return .httpError(detail ?? "HTTP \(httpStatus)")
     }
   }
 

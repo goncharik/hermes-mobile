@@ -72,39 +72,30 @@ struct ServerStepView: View {
         .foregroundStyle(.secondary)
         .accessibilityHidden(true)
 
-      HStack(spacing: 8) {
-        TextField("mac-mini.tail4c2e.ts.net", text: $store.addressText)
-          .keyboardType(.URL)
-          .textContentType(.URL)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .submitLabel(.go)
-          .focused($isAddressFocused)
-          .onSubmit(continueButtonTapped)
-          .accessibilityLabel("Agent address")
-        if !store.addressText.isEmpty {
-          Button {
-            store.addressText = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-              .foregroundStyle(.tertiary)
+      OnboardingFieldGroup(hasError: store.showsInvalidAddressHint) {
+        HStack(spacing: 8) {
+          TextField("mac-mini.tail4c2e.ts.net", text: $store.addressText)
+            .keyboardType(.URL)
+            .textContentType(.URL)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .submitLabel(.go)
+            .focused($isAddressFocused)
+            .onSubmit(continueButtonTapped)
+            .accessibilityLabel("Agent address")
+          if !store.addressText.isEmpty {
+            Button {
+              store.addressText = ""
+            } label: {
+              Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Clear address")
           }
-          .buttonStyle(.borderless)
-          .accessibilityLabel("Clear address")
         }
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 13)
-      .background(
-        Color(.secondarySystemGroupedBackground),
-        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-      )
-      .overlay {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(
-            store.showsInvalidAddressHint ? Color.red.opacity(0.6) : Color.clear,
-            lineWidth: 1
-          )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
       }
 
       resolvedLine

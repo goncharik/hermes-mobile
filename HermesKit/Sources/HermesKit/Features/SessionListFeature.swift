@@ -689,7 +689,9 @@ public struct SessionListFeature {
   // or search) cancels the previous in-flight one, so a late list response can't overwrite
   // active search results (and vice versa). `poll` is the separate timer loop. `cronRuns` is
   // the expanded job's `/runs` fetch — its own id so it never cancels (or is cancelled by)
-  // the list load it rides alongside.
+  // the list load it rides alongside. `pushTokens` covers the whole push chain (plugin probe,
+  // permission read, token stream) on purpose: a Turn on tap during the permission read
+  // cancels it, so a stale `.notDetermined` can't bring the card back.
   private enum CancelID { case fetch, poll, pushTokens, copyIDToast, cronRuns }
 
   /// How often the list auto-refreshes while visible, to keep `isActive` (working glow) fresh.

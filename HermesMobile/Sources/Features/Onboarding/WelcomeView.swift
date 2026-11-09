@@ -46,7 +46,7 @@ struct WelcomeView: View {
         Text("HERMES AGENT")
           .font(.system(.footnote, design: .serif).weight(.semibold))
           .tracking(2.8)
-          .foregroundStyle(OnboardingLayout.accentInk)
+          .foregroundStyle(Color.hermesAccentInk)
           .accessibilityLabel("Hermes Agent")
         Text("Your agent, from anywhere.")
           .font(.largeTitle.weight(.bold))
@@ -105,15 +105,7 @@ struct WelcomeView: View {
 
     var body: some View {
       HStack(alignment: .top, spacing: 14) {
-        Image(systemName: systemImage)
-          .font(.title3)
-          .foregroundStyle(OnboardingLayout.accentInk)
-          .frame(width: 40, height: 40)
-          .background(
-            Color.hermesAccent.opacity(0.16),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-          )
-          .accessibilityHidden(true)
+        OnboardingIconTile(systemImage: systemImage, size: .large)
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
             .font(.headline)

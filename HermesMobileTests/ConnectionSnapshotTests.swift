@@ -133,7 +133,7 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   }
 
   func testServerFailure_other() {
-    assertFailure(.other("Bad gateway"), address: "https://agent.example.com")
+    assertFailure(.httpError("Bad gateway"), address: "https://agent.example.com")
   }
 
   // MARK: - Sign in step: one per layout row
@@ -316,7 +316,7 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
     NavigationStack {
       content.navigationBarBackButtonHidden()
     }
-    .tint(OnboardingLayout.accentInk)
+    .tint(.hermesAccentInk)
   }
 
   private func server(_ text: String, phase: ServerStep.State.Phase = .idle) -> some View {
