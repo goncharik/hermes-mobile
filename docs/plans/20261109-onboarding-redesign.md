@@ -309,10 +309,10 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Modify: `HermesKit/Sources/HermesKit/Clients/HermesRESTClient.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/HermesRESTClientTests.swift`
 
-- [ ] add `probeStatus` to the `@DependencyClient`. The live implementation calls `GET /api/status` on the injected session, decodes `ServerStatus` on 2xx (decode failure → `.notHermes(httpStatus: 200)`), and classifies non-2xx and transport errors with `ProbeFailure.classify`
-- [ ] leave `status`, `RESTError` and `RESTError(transport:)` untouched; the launch path keeps using them
-- [ ] `URLProtocol`-stub tests: 2xx decode, 2xx HTML, 404, 400 Host detail, transport errors (`.cannotFindHost`, `.cannotConnectToHost`, `.timedOut`, `.serverCertificateUntrusted`)
-- [ ] run `make test` and confirm it passes before task 4
+- [x] add `probeStatus` to the `@DependencyClient`. The live implementation calls `GET /api/status` on the injected session, decodes `ServerStatus` on 2xx (decode failure → `.notHermes(httpStatus: 200)`), and classifies non-2xx and transport errors with `ProbeFailure.classify`
+- [x] leave `status`, `RESTError` and `RESTError(transport:)` untouched; the launch path keeps using them
+- [x] `URLProtocol`-stub tests: 2xx decode, 2xx HTML, 404, 400 Host detail, transport errors (`.cannotFindHost`, `.cannotConnectToHost`, `.timedOut`, `.serverCertificateUntrusted`)
+- [x] run `make test` and confirm it passes before task 4
 
 ### Task 4: Build `SignInStep` (layout + auth effects moved from `ConnectionFeature`)
 

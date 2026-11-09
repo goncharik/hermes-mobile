@@ -206,6 +206,66 @@ struct HermesRESTClientTests {
     #expect(MockURLProtocol.lastRequest?.url?.path == "/api/status")
   }
 
+  // MARK: probeStatus (#136)
+
+  @Test func probeStatusDecodesA2xx() async throws {
+    MockURLProtocol.set(json: #"{"version":"0.16.0","auth_required":true,"auth_providers":["basic"]}"#)
+    let status = try await makeClient().probeStatus(baseURL).get()
+    #expect(status.version == "0.16.0")
+    #expect(status.authRequired == true)
+    #expect(status.authProviders == ["basic"])
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.url?.absoluteString == "http://test.local:9119/api/status")
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+  }
+
+  @Test func probeStatusHTMLOn2xxIsNotHermes() async {
+    MockURLProtocol.set(
+      json: "<!doctype html><html><body>Welcome to nginx!</body></html>",
+      headers: ["Content-Type": "text/html; charset=utf-8"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 200)))
+  }
+
+  @Test func probeStatus404IsNotHermes() async {
+    MockURLProtocol.set(
+      status: 404, json: #"{"detail":"Not Found"}"#, headers: ["Content-Type": "application/json"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 404)))
+  }
+
+  @Test func probeStatus400InvalidHostIsHostRejected() async {
+    let detail = "Invalid Host header. Dashboard requests must use the hostname the server was bound to."
+    MockURLProtocol.set(
+      status: 400, json: #"{"detail":"\#(detail)"}"#, headers: ["Content-Type": "application/json"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.hostRejected(detail: detail)))
+  }
+
+  @Test func probeStatusOther400KeepsTheServerCopy() async {
+    MockURLProtocol.set(status: 400, json: #"{"detail":"Bad request"}"#)
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.other("Bad request")))
+  }
+
+  @Test(arguments: [
+    (URLError.Code.cannotFindHost, ProbeFailure.hostNotFound(tailnetName: false)),
+    (.cannotConnectToHost, .refused),
+    (.timedOut, .timedOut),
+    (.serverCertificateUntrusted, .untrustedCertificate),
+    (.notConnectedToInternet, .offline),
+  ])
+  func probeStatusClassifiesTransportErrors(code: URLError.Code, expected: ProbeFailure) async {
+    MockURLProtocol.set(fail: true, failCode: code)
+    #expect(await makeClient().probeStatus(baseURL) == .failure(expected))
+  }
+
+  @Test func probeStatusHostNotFoundFlagsATailnetName() async {
+    MockURLProtocol.set(fail: true, failCode: .cannotFindHost)
+    let tailnet = URL(string: "http://mac-mini.tail1234.ts.net:9119")!
+    #expect(await makeClient().probeStatus(tailnet) == .failure(.hostNotFound(tailnetName: true)))
+  }
+
   @Test func sessionsMapsListToDomain() async throws {
     MockURLProtocol.set(json: #"""
     {"sessions":[{"id":"20260610_120231_afcca6","title":"My chat","preview":"hello there","last_active":1749556800.0,"started_at":1749550000.0,"message_count":4,"unread":true,"cwd":"/Users/me/dev/hermes-mobile","is_active":true,"archived":false}],"total":1,"limit":20,"offset":0}

@@ -201,6 +201,15 @@ public enum RESTError: Error, Equatable, Sendable {
 public struct HermesRESTClient: Sendable {
   /// Unauthenticated reachability/health probe.
   public var status: @Sendable (_ baseURL: URL) async throws -> ServerStatus
+  /// The onboarding Server step's probe (#136): the same unauthenticated `GET /api/status`
+  /// as `status`, but every failure is classified from the RAW `URLError` / HTTP response
+  /// into a typed `ProbeFailure` (a 2xx body that doesn't decode is `.notHermes`), so each
+  /// failure card can say what went wrong. Never throws. The launch path keeps `status`.
+  public var probeStatus: @Sendable (_ baseURL: URL) async -> Result<ServerStatus, ProbeFailure> = { _ in
+    // `@DependencyClient` needs a default for a non-throwing closure; an unstubbed call
+    // still reports an unimplemented issue in tests.
+    .failure(.other("probeStatus is unimplemented"))
+  }
   /// Public capability probe — `GET /api/auth/providers` → `[{name, display_name,
   /// supports_password}]`. Returns `nil` on older servers that 404 this endpoint (treat as
   /// token-only); other transport/HTTP errors still throw.
@@ -360,6 +369,9 @@ public extension HermesRESTClient {
     return HermesRESTClient(
       status: { baseURL in
         try await get(makeURL(baseURL, "/api/status"), auth: .none, session: session)
+      },
+      probeStatus: { baseURL in
+        await HermesKit.probeStatus(baseURL: baseURL, session: session)
       },
       authProviders: { baseURL in
         do {
@@ -862,6 +874,39 @@ func get<T: Decodable>(_ url: URL, auth: RequestAuth, session: URLSession) async
   } catch {
     throw RESTError.decoding
   }
+}
+
+/// `GET /api/status` for the onboarding probe, classifying every failure as a `ProbeFailure`
+/// instead of flattening it to `RESTError` (see `HermesRESTClient.probeStatus`).
+func probeStatus(baseURL: URL, session: URLSession) async -> Result<ServerStatus, ProbeFailure> {
+  guard let address = ServerAddress(baseURL.absoluteString),
+    let url = try? makeURL(baseURL, "/api/status")
+  else { return .failure(.other("“\(baseURL.absoluteString)” is not a valid server address.")) }
+
+  let data: Data
+  let response: URLResponse
+  do {
+    (data, response) = try await session.data(for: URLRequest(url: url))
+  } catch {
+    return .failure(ProbeFailure.classify(error, address: address))
+  }
+
+  guard let http = response as? HTTPURLResponse else {
+    return .failure(.other("The server sent a response that isn’t HTTP."))
+  }
+  if (200..<300).contains(http.statusCode),
+    let status = try? JSONDecoder().decode(ServerStatus.self, from: data)
+  {
+    return .success(status)
+  }
+  // A non-2xx, or a 2xx whose body isn't `/api/status` JSON (→ `.notHermes`).
+  return .failure(
+    ProbeFailure.classify(
+      httpStatus: http.statusCode,
+      contentType: http.value(forHTTPHeaderField: "Content-Type"),
+      detail: serverDetail(from: data)
+    )
+  )
 }
 
 /// Validate an HTTP response status, mapping non-success codes to `RESTError`. The
