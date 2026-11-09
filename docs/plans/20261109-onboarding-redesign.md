@@ -320,13 +320,13 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesKit/Sources/HermesKit/Features/Onboarding/SignInStep.swift`
 - Create: `HermesKit/Tests/HermesKitTests/SignInStepTests.swift`
 
-- [ ] implement `State` and `Layout` derivation (table in Technical Details); `token` initialised from `prefilledToken ?? ""`
-- [ ] move the token, password and OAuth effects from `ConnectionFeature.connectTapped` verbatim, using `probe.baseURL`. Token persistence stays byte-identical. Keep `CancelID.oauthLogin` with `cancelInFlight: true` for a second provider tap.
-- [ ] move the response handling verbatim (`.invalidToken`, `.invalidCredentials`, OAuth `.login(.cancelled)` → back to `.idle` with no copy, `.validation(.unauthorized)` → `.invalidCredentials`, else `.failed(message)`)
-- [ ] `changeServerButtonTapped` → `await dismiss()`; `otherWaysButtonTapped` toggles the token disclosure
-- [ ] port the relevant `ConnectionFeatureTests` cases: token success and 401, password success, 401 and 429, OAuth success, cancel, validation 401, superseding provider tap, Keychain/prefs writes
-- [ ] new tests: layout per capability row, prefilled token, `canSubmit` gating per layout, `dismiss` on Change
-- [ ] run `make test` and confirm it passes before task 5
+- [x] implement `State` and `Layout` derivation (table in Technical Details); `token` initialised from `prefilledToken ?? ""`
+- [x] move the token, password and OAuth effects from `ConnectionFeature.connectTapped` verbatim, using `probe.baseURL`. Token persistence stays byte-identical. Keep `CancelID.oauthLogin` with `cancelInFlight: true` for a second provider tap.
+- [x] move the response handling verbatim (`.invalidToken`, `.invalidCredentials`, OAuth `.login(.cancelled)` → back to `.idle` with no copy, `.validation(.unauthorized)` → `.invalidCredentials`, else `.failed(message)`)
+- [x] `changeServerButtonTapped` → `await dismiss()`; `otherWaysButtonTapped` toggles the token disclosure
+- [x] port the relevant `ConnectionFeatureTests` cases: token success and 401, password success, 401 and 429, OAuth success, cancel, validation 401, superseding provider tap, Keychain/prefs writes
+- [x] new tests: layout per capability row, prefilled token, `canSubmit` gating per layout, `dismiss` on Change
+- [x] run `make test` and confirm it passes before task 5
 
 ### Task 5: Build `ServerStep` (address, probe stages, fallback port, failures)
 
