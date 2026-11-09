@@ -767,8 +767,12 @@ public struct SessionListFeature {
   // the expanded job's `/runs` fetch — its own id so it never cancels (or is cancelled by)
   // the list load it rides alongside. `pushTokens` covers the whole push chain (plugin probe,
   // permission read, token stream) on purpose: a Turn on tap during the permission read
-  // cancels it, so a stale `.notDetermined` can't bring the card back.
-  private enum CancelID { case fetch, poll, pushTokens, copyIDToast, cronRuns }
+  // cancels it, so a stale `.notDetermined` can't bring the card back. `profilesProbe` is
+  // the `.task` profiles probe, NEVER `fetch`: a list load (the 10 s poll, pull-to-refresh,
+  // a search keystroke, archive/rename/delete) landing before a slow `/api/profiles` would
+  // cancel it silently, and only the next `.task` re-probes — meanwhile the seeded
+  // `profilesSupported` showed a profile menu with no profiles in it.
+  private enum CancelID { case fetch, poll, profilesProbe, pushTokens, copyIDToast, cronRuns }
 
   /// How often the list auto-refreshes while visible, to keep `isActive` (working glow) fresh.
   private static let pollInterval: Duration = .seconds(10)
@@ -814,7 +818,7 @@ public struct SessionListFeature {
               await send(.profilesResponse(.failure(.unreachable)))
             }
           }
-          .cancellable(id: CancelID.fetch, cancelInFlight: true),
+          .cancellable(id: CancelID.profilesProbe, cancelInFlight: true),
           .run { [clock, interval = Self.pollInterval] send in
             while true {
               try await clock.sleep(for: interval)
@@ -832,6 +836,7 @@ public struct SessionListFeature {
         // Stop the poll (and any in-flight fetch / search debounce) when the list goes away.
         return .merge(
           .cancel(id: CancelID.poll),
+          .cancel(id: CancelID.profilesProbe),
           .cancel(id: CancelID.fetch),
           .cancel(id: CancelID.pushTokens),
           .cancel(id: CancelID.cronRuns)

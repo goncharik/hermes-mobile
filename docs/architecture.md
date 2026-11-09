@@ -355,7 +355,10 @@ not assumed):
   dashboard` an omitted param would mutate/resume `work`'s sessions while the list shows
   `default`'s. The capability verdict is persisted (a selection saved on every successful
   profiles probe, cleared on its 404 and on logout) and seeds `profilesSupported` before the
-  probe answers (`SessionListFeature.State.persistedProfilesSupported`). Profiles compare by
+  probe answers (`SessionListFeature.State.persistedProfilesSupported`). So the probe runs on
+  its own cancel id, never the list's `fetch`: a list load (the 10 s poll, a refresh) landing
+  before a slow `/api/profiles` would kill it silently, leaving the pill with an empty menu
+  until the next `.task`. Profiles compare by
   wire value (reseat, reusable seat, rollback), so a seat dialled `nil` before the first probe
   after login is reseated under `"default"`; only the glow/unread row patches treat `nil` and
   `"default"` as the same profile (`AppFeature.isSameProfile`). Search is scoped like the

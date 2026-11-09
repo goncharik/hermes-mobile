@@ -5005,6 +5005,45 @@ struct SessionListFeatureTests {
     await store.send(.onDisappear)
   }
 
+  /// A slow `/api/profiles` must survive the list loads that land while it's in flight (here
+  /// the 10 s poll): they used to share its cancel id, so the probe died silently and the
+  /// seeded `profilesSupported` showed a profile menu with no profiles until the next `.task`.
+  @Test func slowProfilesProbeSurvivesAPollTick() async {
+    let prefs = PreferencesClient.inMemory()
+    prefs.saveSelectedProfileID("work")
+    let clock = TestClock()
+    var initial = SessionListFeature.State(connection: connection, selectedProfileName: "work")
+    initial.profilesSupported = true // seeded from the persisted verdict, as at launch
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = clock
+      $0.preferences = prefs
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesProfiles.list = { @Sendable _ in
+        try await clock.sleep(for: .seconds(15))
+        return [Profile(name: "default", isDefault: true), Profile(name: "work")]
+      }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _, _ in [] }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await clock.advance(by: .seconds(10))
+    await store.receive(\.pollTick)
+    await store.receive(\.pulledToRefresh)
+    #expect(store.state.profiles.isEmpty, "the probe is still in flight")
+
+    await clock.advance(by: .seconds(5))
+    await store.receive(\.profilesResponse.success) {
+      $0.profiles = [Profile(name: "default", isDefault: true), Profile(name: "work")]
+    }
+    #expect(store.state.selectedProfileName == "work")
+    await store.send(.onDisappear)
+  }
+
   @Test func notFoundFromProfilesListFallsBackToUnscopedFetch() async {
     let unscopedFetch = LockIsolated(0)
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
