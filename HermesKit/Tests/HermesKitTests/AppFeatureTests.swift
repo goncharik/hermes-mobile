@@ -4,6 +4,29 @@ import Testing
 
 @testable import HermesKit
 
+/// The credentials-verdict onboarding landing — `ConnectionFeature.State(recovering:token:)` —
+/// with its Server step pinned to stack id 0. Inside a `receive` assertion the TestStore's
+/// stack-ID generator runs one generation ahead of the reducer's, so the initializer would
+/// mint `#1`; placing the element by id keeps the expectation independent of that.
+private func recoveringOnboarding(
+  _ url: String = "http://mac.tailnet:9119", token: String?
+) -> ConnectionFeature.State {
+  var state = ConnectionFeature.State()
+  state.prefilledToken = token
+  state.prefilledTokenHost = ServerAddress(url)?.host
+  state.path[id: 0] = .server(ServerStep.State(addressText: url, autoProbe: true))
+  return state
+}
+
+/// The three logout paths `AppFeature` reduces: Settings "disconnect" (its prefs clearing is
+/// `SettingsFeature.clearTokenTapped`), "Quit to start" on the re-auth sheet, and the retry
+/// screen's confirmed "Log Out".
+enum LogoutPath: CaseIterable, Sendable {
+  case reauthQuit
+  case retryScreenLogOut
+  case settingsDisconnect
+}
+
 @MainActor
 struct AppFeatureTests {
   private let connection = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "tok")
@@ -73,11 +96,24 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "bad")
+      $0.onboarding = recoveringOnboarding(token: "bad")
     }
     // #62 guard: an AUTH rejection must never raise the retry screen — retrying can't fix
     // dead credentials, so this path stays byte-identical to pre-#62 behavior.
     #expect(store.state.connectionFailed == nil)
+    // The landing's shape, independent of stack ids: exactly ONE Server step over Welcome,
+    // auto-probing the stored URL, with the dead token waiting for the Sign in step.
+    let onboarding = store.state.onboarding
+    #expect(onboarding.path.count == 1)
+    guard case let .server(server)? = onboarding.path.first else {
+      Issue.record("expected the Server step on top of Welcome, got \(onboarding.path)")
+      return
+    }
+    #expect(server.addressText == "http://mac.tailnet:9119")
+    #expect(server.autoProbe)
+    #expect(server.phase == .idle)
+    #expect(onboarding.prefilledToken == "bad")
+    #expect(onboarding.lastProbedCapability == nil)
   }
 
   /// A dead **cookie** session falls back to onboarding with only the URL prefilled (the
@@ -98,7 +134,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "")
+      $0.onboarding = recoveringOnboarding(token: nil)
     }
   }
 
@@ -122,6 +158,22 @@ struct AppFeatureTests {
 
     await store.send(.onboarding(.delegate(.connected(connection)))) {
       $0.home = SessionListFeature.State(connection: self.connection)
+    }
+  }
+
+  /// The list is built with the tips row already hidden when the user dismissed it (#136),
+  /// so it never flashes before the list's `.task` re-reads the pref.
+  @Test func connectingSeedsHiddenOnboardingTips() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveOnboardingTipsDismissed(true)
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection, showsOnboardingTips: false)
     }
   }
 
@@ -1735,6 +1787,7 @@ struct AppFeatureTests {
     let collapsedCleared = LockIsolated(false)
     let favoritesCleared = LockIsolated(false)
     let liveActivityCleared = LockIsolated(false)
+    let tipsCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1761,6 +1814,7 @@ struct AppFeatureTests {
         if favorites.isEmpty { favoritesCleared.setValue(true) }
       }
       $0.preferences.clearLiveActivityPrefs = { @Sendable in liveActivityCleared.setValue(true) }
+      $0.preferences.clearOnboardingTipsDismissed = { @Sendable in tipsCleared.setValue(true) }
     }
     store.exhaustivity = .off
 
@@ -1778,6 +1832,7 @@ struct AppFeatureTests {
     #expect(collapsedCleared.value) // model picker collapse + favorites cleared too (#130)
     #expect(favoritesCleared.value)
     #expect(liveActivityCleared.value) // Live Activity toggles reset on the quit logout (#138)
+    #expect(tipsCleared.value) // session-list onboarding tips shown again (#136)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -3512,7 +3567,6 @@ struct AppFeatureTests {
   @Test func launchIntentDismissesListPresentations() async {
     var home = SessionListFeature.State(connection: connection)
     home.settings = SettingsFeature.State(connection: connection)
-    home.showPushSetupSheet = true
     home.renamingID = "s1"
     home.renameDraft = "draft"
     let store = TestStore(initialState: AppFeature.State(home: home)) {
@@ -3521,7 +3575,6 @@ struct AppFeatureTests {
 
     await store.send(.launchIntentReceived(.newChat)) {
       $0.home?.settings = nil
-      $0.home?.showPushSetupSheet = false
       $0.home?.renamingID = nil
       $0.home?.renameDraft = ""
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
@@ -3726,8 +3779,8 @@ struct AppFeatureTests {
     await store.send(.autoConnectFailed(connection, .unauthorized)) {
       $0.autoConnecting = false
       $0.onboarding = ConnectionFeature.State(
-        serverURL: self.connection.baseURL.absoluteString,
-        token: self.connection.auth.token ?? ""
+        recovering: self.connection.baseURL,
+        token: self.connection.auth.token
       )
     }
     await store.send(.onboarding(.delegate(.connected(connection)))) {
@@ -4194,8 +4247,19 @@ struct AppFeatureTests {
   /// ONLY a credentials verdict keeps the pre-#62 onboarding fallback: `.unauthorized` (401)
   /// and its untranslated sibling 403. Retrying can't repair dead credentials, so those two
   /// — and nothing else — still land on the prefilled credentials form.
-  @Test(arguments: [RESTError.unauthorized, .server(status: 403, detail: "forbidden")])
-  func autoConnectCredentialsVerdictStillFallsBackToOnboarding(error: RESTError) async {
+  ///
+  /// Two tests rather than one parameterized test: the onboarding landing mints a stack
+  /// element ID, and the test-value cache (hence the ID generator) is shared by every case of
+  /// one parameterized test, so the second case would see `#1` instead of `#0`.
+  @Test func autoConnectUnauthorizedStillFallsBackToOnboarding() async {
+    await assertCredentialsVerdictFallsBackToOnboarding(.unauthorized)
+  }
+
+  @Test func autoConnectForbiddenStillFallsBackToOnboarding() async {
+    await assertCredentialsVerdictFallsBackToOnboarding(.server(status: 403, detail: "forbidden"))
+  }
+
+  private func assertCredentialsVerdictFallsBackToOnboarding(_ error: RESTError) async {
     let store = TestStore(initialState: AppFeature.State()) {
       AppFeature()
     } withDependencies: {
@@ -4210,7 +4274,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "tok")
+      $0.onboarding = recoveringOnboarding(token: "tok")
     }
     #expect(store.state.connectionFailed == nil)
   }
@@ -4357,9 +4421,7 @@ struct AppFeatureTests {
 
     await store.send(.connectionFailed(.delegate(.credentialsRejected(connection)))) {
       $0.connectionFailed = nil
-      $0.onboarding = ConnectionFeature.State(
-        serverURL: "http://mac.tailnet:9119", token: "tok"
-      )
+      $0.onboarding = recoveringOnboarding(token: "tok")
     }
   }
 
@@ -4381,6 +4443,7 @@ struct AppFeatureTests {
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
     preferences.saveLiveActivityEnabled(false)
     preferences.saveLiveActivityShowsTitles(false)
+    preferences.saveOnboardingTipsDismissed(true)
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -4420,6 +4483,7 @@ struct AppFeatureTests {
     #expect(preferences.loadFavoriteModels() == [])
     #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
     #expect(preferences.loadLiveActivityShowsTitles())
+    #expect(preferences.loadOnboardingTipsDismissed() == false) // list tips shown again (#136)
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)
@@ -6911,7 +6975,7 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       // URL only — a browser leg is not prefillable, exactly like the cookie regime.
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "")
+      $0.onboarding = recoveringOnboarding(token: nil)
     }
     #expect(store.state.connectionFailed == nil) // #62: an auth verdict never raises Retry
     await store.finish()
@@ -6955,12 +7019,11 @@ struct AppFeatureTests {
     let session = bearerSession(userID: "user-42")
     let connection = bearerConnection(session)
     var onboarding = ConnectionFeature.State()
-    onboarding.capability = ServerAuthCapability(
+    onboarding.lastProbedCapability = ServerAuthCapability(
       oauthProviders: [
         AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
       ],
-      supportsNativeFlow: true,
-      isGated: true
+      supportsNativeFlow: true
     )
     let store = TestStore(
       initialState: AppFeature.State(
@@ -7006,6 +7069,94 @@ struct AppFeatureTests {
     #expect(store.state.reauth?.providerDisplayName == "")
     #expect(store.state.reauth?.providerLabel == "nous")
     #expect(store.state.reauth?.previousUserID == "user-7")
+  }
+
+  /// The re-sign-in label end to end (#136): the capability the onboarding Server step
+  /// probed — recorded by the flow parent, NOT seeded into state by the test — outlives the
+  /// sign-in, and a later session expiry reads its display name for the "Continue with …"
+  /// button.
+  @Test func reauthLabelComesFromTheOnboardingProbe() async {
+    let session = bearerSession(userID: "user-42")
+    let connection = bearerConnection(session)
+    let capability = ServerAuthCapability(
+      oauthProviders: [
+        AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+      ],
+      supportsNativeFlow: true
+    )
+    let probe = ServerProbe(
+      address: ServerAddress("http://mac.tailnet:9119")!,
+      baseURL: URL(string: "http://mac.tailnet:9119")!,
+      capability: capability,
+      version: "0.17.0"
+    )
+    var onboarding = ConnectionFeature.State()
+    onboarding.path[id: 0] = .server(ServerStep.State(addressText: "http://mac.tailnet:9119"))
+    let store = TestStore(initialState: AppFeature.State(onboarding: onboarding)) {
+      AppFeature()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.onboarding(.path(.element(id: 0, action: .server(.delegate(.probeSucceeded(probe)))))))
+    #expect(store.state.onboarding.lastProbedCapability == capability)
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    #expect(store.state.liveChat != nil)
+
+    await store.send(.liveChat(.delegate(.sessionExpired)))
+    #expect(store.state.reauth?.method == .oauth)
+    #expect(store.state.reauth?.providerDisplayName == "Nous Research")
+    #expect(store.state.reauth?.previousUserID == "user-42")
+  }
+
+  /// Every logout lands on WELCOME (#136), whatever the onboarding flow last held: a
+  /// completed Welcome → Server → Sign in stack, its probed capability and a prefilled token
+  /// are all dropped, so the next sign-in starts at the stack root with no stale server.
+  @Test(arguments: LogoutPath.allCases)
+  func everyLogoutLandsOnWelcome(_ logout: LogoutPath) async {
+    let capability = ServerAuthCapability(oauthProviders: [], supportsNativeFlow: false)
+    var finishedFlow = ConnectionFeature.State()
+    finishedFlow.prefilledToken = "tok"
+    finishedFlow.lastProbedCapability = capability
+    finishedFlow.path[id: 0] = .server(ServerStep.State(addressText: "http://mac.tailnet:9119"))
+    finishedFlow.path[id: 1] = .signIn(SignInStep.State(
+      probe: ServerProbe(
+        address: ServerAddress("http://mac.tailnet:9119")!,
+        baseURL: URL(string: "http://mac.tailnet:9119")!,
+        capability: capability,
+        version: nil
+      ),
+      prefilledToken: "tok"
+    ))
+
+    var initial = AppFeature.State(onboarding: finishedFlow)
+    switch logout {
+    case .settingsDisconnect:
+      initial.home = SessionListFeature.State(connection: connection)
+    case .reauthQuit:
+      initial.home = SessionListFeature.State(connection: connection)
+      initial.reauth = ReauthFeature.State(serverURL: connection.baseURL, method: .token)
+    case .retryScreenLogOut:
+      initial.connectionFailed = ConnectionFailedFeature.State(connection: connection, reason: .offline)
+    }
+    let store = TestStore(initialState: initial) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.deleteSession = { @Sendable in }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    let action: AppFeature.Action = switch logout {
+    case .settingsDisconnect: .home(.delegate(.disconnect))
+    case .reauthQuit: .reauth(.presented(.delegate(.quit)))
+    case .retryScreenLogOut: .connectionFailed(.delegate(.logoutConfirmed))
+    }
+    await store.send(action) {
+      $0.onboarding = .init()
+    }
+    #expect(store.state.onboarding.path.isEmpty) // Welcome is the stack root
+    #expect(store.state.onboarding.lastProbedCapability == nil)
+    #expect(store.state.onboarding.prefilledToken == nil)
   }
 
   /// The token store owns the freshly re-authenticated pair — `performNativeOAuthLogin`

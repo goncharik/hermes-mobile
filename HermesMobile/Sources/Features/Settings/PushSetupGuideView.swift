@@ -2,18 +2,18 @@ import HermesKit
 import SwiftUI
 
 /// Presentation-only info sheet explaining how push notifications work and offering to ask
-/// the agent to install — or update — the `hermes-push` plugin (pre-fills a new chat), plus a
-/// "Later" snooze on the not-installed path. A small text link opens the plugin's GitHub page.
+/// the agent to install — or update — the `hermes-push` plugin (pre-fills a new chat). A small
+/// text link opens the plugin's GitHub page.
 ///
 /// It deliberately talks about the **plugin only** — the relay/gateway is publisher infra
-/// the user never has to know about. The actions are surfaced as closures so both call
-/// sites (the sessions-list auto-present and Settings) reuse the same view.
+/// the user never has to know about. The actions are surfaced as closures; Settings is the
+/// only call site (the session list shows an inline `PushCardView` instead of auto-presenting
+/// this sheet).
 struct PushSetupGuideView: View {
   @Environment(\.dismiss) private var dismiss
 
   /// Whether the plugin is already installed and enabled on the agent. It switches the action
-  /// from install to UPDATE and drops the "Later" snooze (there is no nag to snooze once the
-  /// plugin is running).
+  /// from install to UPDATE.
   ///
   /// The action is deliberately NOT hidden in this case: `PushSetup.installPrompt` covers
   /// install-or-update, and an installed-but-outdated plugin is precisely the situation where
@@ -22,8 +22,6 @@ struct PushSetupGuideView: View {
   let pluginInstalled: Bool
   /// Open a new chat with the install/update prompt pre-filled (the caller dismisses + routes).
   let onAskAgent: () -> Void
-  /// Snooze the prompt (the caller dismisses + persists the backoff). Not-installed path only.
-  let onLater: () -> Void
 
   private static let pluginURL = URL(string: PushSetup.pluginURLString)!
 
@@ -45,28 +43,17 @@ struct PushSetupGuideView: View {
             text: "Notifications come from a small plugin on your own Hermes agent, relayed to Apple. Only a generic alert (e.g. “Approval needed”) leaves your server — your messages and data never do."
           )
 
-          VStack(spacing: 12) {
-            Button {
-              onAskAgent()
-            } label: {
-              Label(
-                pluginInstalled ? "Ask agent to update plugin" : "Ask agent to install plugin",
-                systemImage: "sparkles"
-              )
-              .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-
-            // "Later" snoozes the not-installed nag. Once the plugin is running there is no
-            // nag to snooze — the sheet is opened deliberately from Settings.
-            if !pluginInstalled {
-              Button("Later") { onLater() }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .frame(maxWidth: .infinity)
-            }
+          Button {
+            onAskAgent()
+          } label: {
+            Label(
+              pluginInstalled ? "Ask agent to update plugin" : "Ask agent to install plugin",
+              systemImage: "sparkles"
+            )
+            .frame(maxWidth: .infinity)
           }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.large)
           .padding(.top, 4)
 
           Link("View the plugin on GitHub", destination: Self.pluginURL)
@@ -107,9 +94,9 @@ struct PushSetupGuideView: View {
 }
 
 #Preview("Not installed") {
-  PushSetupGuideView(pluginInstalled: false, onAskAgent: {}, onLater: {})
+  PushSetupGuideView(pluginInstalled: false, onAskAgent: {})
 }
 
 #Preview("Installed") {
-  PushSetupGuideView(pluginInstalled: true, onAskAgent: {}, onLater: {})
+  PushSetupGuideView(pluginInstalled: true, onAskAgent: {})
 }

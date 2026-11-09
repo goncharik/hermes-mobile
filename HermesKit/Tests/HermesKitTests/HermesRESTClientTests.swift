@@ -95,6 +95,21 @@ final class MockURLProtocol: URLProtocol {
   }
 }
 
+/// Answers every request with a plain `URLResponse` (not HTTP) and an empty body.
+private final class NonHTTPURLProtocol: URLProtocol {
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  override func stopLoading() {}
+
+  override func startLoading() {
+    let response = URLResponse(
+      url: request.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil
+    )
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocolDidFinishLoading(self)
+  }
+}
+
 /// Read a (possibly streamed) request body back as `Data` — `URLProtocol` turns `httpBody`
 /// into a stream. Shared by the REST/profile/native-flow suites.
 func mockRequestBody(_ req: URLRequest) -> Data {
@@ -204,6 +219,80 @@ struct HermesRESTClientTests {
     _ = try await makeClient().status(baseURL)
     #expect(MockURLProtocol.lastRequest?.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
     #expect(MockURLProtocol.lastRequest?.url?.path == "/api/status")
+  }
+
+  // MARK: probeStatus (#136)
+
+  @Test func probeStatusDecodesA2xx() async throws {
+    MockURLProtocol.set(json: #"{"version":"0.16.0","auth_required":true,"auth_providers":["basic"]}"#)
+    let status = try await makeClient().probeStatus(baseURL).get()
+    #expect(status.version == "0.16.0")
+    #expect(status.authRequired == true)
+    #expect(status.authProviders == ["basic"])
+    let req = try #require(MockURLProtocol.lastRequest)
+    #expect(req.url?.absoluteString == "http://test.local:9119/api/status")
+    #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
+    #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+    // Short, so an unreachable host fails per candidate in seconds, not the default minute.
+    #expect(req.timeoutInterval == 10)
+  }
+
+  /// Every Hermes `/api/status` reports its `version`; another service's JSON (an empty
+  /// object, a generic health check) is not Hermes.
+  @Test(arguments: ["{}", #"{"status":"ok"}"#, #"{"gateway_running":true}"#])
+  func probeStatusJSONWithoutAVersionIsNotHermes(body: String) async {
+    MockURLProtocol.set(json: body, headers: ["Content-Type": "application/json"])
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 200)))
+  }
+
+  @Test func probeStatusHTMLOn2xxIsNotHermes() async {
+    MockURLProtocol.set(
+      json: "<!doctype html><html><body>Welcome to nginx!</body></html>",
+      headers: ["Content-Type": "text/html; charset=utf-8"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 200)))
+  }
+
+  @Test func probeStatus404IsNotHermes() async {
+    MockURLProtocol.set(
+      status: 404, json: #"{"detail":"Not Found"}"#, headers: ["Content-Type": "application/json"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 404)))
+  }
+
+  @Test func probeStatus400InvalidHostIsHostRejected() async {
+    let detail = "Invalid Host header. Dashboard requests must use the hostname the server was bound to."
+    MockURLProtocol.set(
+      status: 400, json: #"{"detail":"\#(detail)"}"#, headers: ["Content-Type": "application/json"]
+    )
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.hostRejected(detail: detail)))
+  }
+
+  @Test func probeStatusOther400KeepsTheServerCopy() async {
+    MockURLProtocol.set(status: 400, json: #"{"detail":"Bad request"}"#)
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.httpError("Bad request")))
+  }
+
+  @Test(arguments: [
+    (URLError.Code.cannotFindHost, ProbeFailure.hostNotFound),
+    (.cannotConnectToHost, .refused),
+    (.timedOut, .timedOut),
+    (.serverCertificateUntrusted, .untrustedCertificate),
+    (.notConnectedToInternet, .offline),
+  ])
+  func probeStatusClassifiesTransportErrors(code: URLError.Code, expected: ProbeFailure) async {
+    MockURLProtocol.set(fail: true, failCode: code)
+    #expect(await makeClient().probeStatus(baseURL) == .failure(expected))
+  }
+
+  @Test func probeStatusNonHTTPResponseIsRequestFailed() async {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [NonHTTPURLProtocol.self]
+    let client = HermesRESTClient.live(session: URLSession(configuration: config))
+    #expect(
+      await client.probeStatus(baseURL)
+        == .failure(.requestFailed("The server sent a response that isn’t HTTP."))
+    )
   }
 
   @Test func sessionsMapsListToDomain() async throws {

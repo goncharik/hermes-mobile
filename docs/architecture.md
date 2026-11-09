@@ -39,8 +39,12 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │                          //   AppFeature policy, never a view event; owns the layout regime
 │                          //   (.compact stack | .regular split view, reported by the shell)
 │                          //   and isChatDetached = compact && empty path (#80)
-├─ ConnectionFeature       // auto-validating URL + capability-aware auth toggle
-│                          //   (Password | Token | <OAuth provider>)
+├─ ConnectionFeature       // onboarding flow parent (#136): Welcome root + a ConnectionPath
+│  │                       //   stack; records lastProbedCapability, re-emits .connected
+│  ├─ ServerStep           // ServerAddress → probeStatus over the candidates (:9119 fallback)
+│  │                       //   → typed ProbeFailure cards, or .probeSucceeded(ServerProbe)
+│  └─ SignInStep           // capability-derived layout (password / OAuth-only / token) +
+│                          //   the token, password and OAuth effects (docs/features/onboarding.md)
 ├─ ConnectionFailedFeature // launch-only "can't reach the server" retry screen (ifLet slot):
 │                          //   raised when the launch probe fails for a reason that isn't a
 │                          //   verdict on the credentials — i.e. EVERYTHING except 401/403
@@ -52,7 +56,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 ├─ ReauthFeature           // re-auth modal: fixed URL, prefilled identity, password/token field
 │                          //   or (.oauth) a single "Continue with …" button;
 │                          //   same-user resume vs different-user switch vs Quit→onboarding
-├─ SessionListFeature      // flat list: pinned + update-date sections + Cron Jobs tab /
+├─ SessionListFeature      // flat list: push card + tips row (docs/features/onboarding.md) +
+│  │                       //   pinned + update-date sections + Cron Jobs tab /
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
 │  │                       //   working-glow auto-poll; profile pill/switcher (per-call scoped) +
 │  │                       //   presents Settings + Archived + AddProfile sheets
@@ -85,7 +90,8 @@ a `testValue`/`.inMemory()` variant):
   archive/rename (`PATCH /api/sessions/{id}`), delete (`DELETE /api/sessions/{id}`), voice
   (`POST /api/audio/transcribe`; `POST /api/audio/speak`, the read-aloud synthesis, with a
   per-request timeout scaled by text length, #74), plus the auth endpoints: `passwordLogin`,
-  `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`), and a best-effort `logout` —
+  `nativeTokenExchange`/`nativeRefresh` (`/auth/native/…`), the onboarding `probeStatus`
+  (`/api/status` classified into a typed `ProbeFailure`, #136), and a best-effort `logout` —
   this client's one deliberate exception to "surface RPC failures", since it fires after the
   app has already discarded its credentials (the logout's push unregister swallows on the
   same reasoning). Session-scoped
@@ -139,8 +145,9 @@ a `testValue`/`.inMemory()` variant):
   the whole store is wiped on logout. `.inMemory()` test variant.
 - **`PreferencesClient`** — non-secret prefs: server URL (for auto-login), per-session
   seen counts, client-side pinned session ids, the default swipe action, the read-aloud
-  toggle (`hermes.auto-speak-replies`, #74), and the selected profile name
-  (`hermes.selected-profile-id`). All cleared/reset on logout.
+  toggle (`hermes.auto-speak-replies`, #74), the selected profile name
+  (`hermes.selected-profile-id`), the push-card snooze, and the hidden onboarding tips
+  (`hermes.onboarding-tips-dismissed`, #136). All cleared/reset on logout.
 - **`TTSClient`** — read-aloud playback (#74): `play(data, mimeType)` plays one
   `AVAudioPlayer` clip on a `.playback` session (15 s stall watchdog; an audio-session
   interruption throws `.interrupted`), `stop()` is idempotent and returns after the session
@@ -243,12 +250,22 @@ with the tokens intact so backoff can retry. **Ordering contract:** `rest.logout
 
 **Capability probe.** `ServerAuthCapability(from: status, providers:)` is a pure mapper over
 `/api/status` (`auth_required` / `auth_flows`) + `GET /api/auth/providers` into a struct:
-`passwordProvider`, `oauthProviders`, `supportsNativeFlow`, `isGated`. It drives the onboarding
-screen's capability-aware **Password | Token | \<provider\>** segmented toggle. A providers 404 /
-unreachable endpoint (older servers) falls back to `.tokenOnly`. The OAuth segment needs
-positive evidence on BOTH halves — an OAuth provider *and* `native_pkce` in `auth_flows`. Full
-contract, including the footer hint a provider-advertising gateway without `native_pkce` now
-gets: `docs/features/oauth-sign-in.md`.
+`passwordProvider`, `oauthProviders`, `supportsNativeFlow`. It drives the onboarding
+Sign in step's layout (`SignInStep.State.Layout`: password first with provider buttons under
+"or", OAuth-only, or token). A gated server with no providers (a providers 404 / unreachable
+endpoint on older servers, or an empty list) falls back to `.tokenOnly`. A provider button needs positive evidence on BOTH halves — an OAuth provider
+*and* `native_pkce` in `auth_flows`. Full contract, including the notice a provider-advertising
+gateway without `native_pkce` gets: `docs/features/oauth-sign-in.md`.
+
+**Onboarding (#136)** is a three-step stack, Welcome → Server → Sign in, over
+`ConnectionFeature`'s `ConnectionPath`. The Server step parses the typed text into a pure
+`ServerAddress` (network kind, candidate URLs with the `:9119` fallback for http without a
+port) and probes it with `HermesRESTClient.probeStatus`, which classifies the raw
+`URLError`/HTTP answer into a typed `ProbeFailure` (one card per case) instead of flattening it
+to `RESTError`. The success is a `ServerProbe` carrying the URL that answered, and Sign in
+connects to and saves that URL. Popping Sign in cancels its effects, including an OAuth
+attempt. The launch path keeps `rest.status`/`RESTError`. Entry points, the failure table, the
+Local Network hint, the push card and the tips: `docs/features/onboarding.md`.
 
 **Persistence + re-auth.** The `AuthSession` (cookies + username + provider, the bearer pair, or
 the bare token) is stored in `KeychainClient` and rehydrated on launch — a `.bearer` restore
@@ -278,7 +295,7 @@ own `500`, a vanished route's `404`, a `429`, a captive portal's HTML (`.decodin
 network or the server changed, not the saved sign-in. The screen offers Retry, a foreground
 auto-retry (`.sceneBecameActive`, which SUPERSEDES an in-flight probe rather than being
 swallowed by `isRetrying` — a probe whose result never lands would latch the spinner), the
-`AgentSetupGuideView` help sheet (a tertiary link, view-local `@State` as on the login screen)
+`AgentSetupGuideView` help sheet (a tertiary link, view-local `@State` as in onboarding)
 and a confirmed Log Out (the clearing itself lives in `AppFeature`). Its reason line splits a
 `.server` status three ways — a 5xx (`500..<600`) and the transient refusals 408/425/429 may
 clear on their own, every *other* 4xx repeats identically and so surfaces the server's own
@@ -286,8 +303,10 @@ clear on their own, every *other* 4xx repeats identically and so surfaces the se
 back to the whole body), which is what makes the agent's host-header `400` actionable instead
 of a futile retry loop. The launch probe is **once per process**
 (`AppFeature.State.didRunLaunchProbe`), and scope is the launch path only: manual login keeps
-`ConnectionFeature`'s inline footer (where `.offline` shares `.unreachable`'s status so the
-help link still shows) and a post-login drop keeps the chat reconnect banner.
+the onboarding Server step's typed failure cards (`ProbeFailure`, each with a setup-guide
+button) and a post-login drop keeps the chat reconnect banner. The credentials-verdict
+fallback lands on the Server step for the stored URL, which probes on its own and then opens
+Sign in with the token prefilled (`ConnectionFeature.State(recovering:token:)`).
 
 A few protocol facts that shape the reducer (verified against the real Hermes source,
 not assumed):
@@ -461,6 +480,8 @@ ever transit the gateway; real message content is fetched in-app over the privat
 `/unregister`. **The app never signs pushes**, so registration returns nothing the app must
 persist (no secret). A `404` from the register route means the plugin isn't installed → the app
 sets `pushAvailable = false` and hides the toggle (same capability-gating as attach/profiles).
+The system permission prompt fires only from the session list's "Turn on" card (#136); an
+already-granted permission registers silently (`docs/features/onboarding.md`).
 The plugin POSTs `{device_token, apns_env, type, session_id, title, body, thread_id, capability}`
 to the gateway's `POST /push`; the gateway mints an ES256 JWT from the `.p8`, picks the APNs host
 from `apns_env` (`api.push.apple.com` vs `api.sandbox.push.apple.com`), and forwards.

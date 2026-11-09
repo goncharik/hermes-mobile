@@ -3,24 +3,41 @@ import UIKit
 
 /// Sheet-presented onboarding guide teaching the blessed remote-access recipe for a Hermes
 /// Agent: **password ("basic") auth over Tailscale/LAN**, with `--insecure` + token demoted
-/// to a collapsed last-resort advanced section. Presented from `ConnectionView` (three entry
-/// points, one local `@State` flag) — a reference card you consult and dismiss, not a
+/// to a collapsed last-resort advanced section. Presented from the onboarding flow (Welcome,
+/// the Server step and its failure cards share one local `@State` flag in `ConnectionView`)
+/// and from `ConnectionFailedView` — a reference card you consult and dismiss, not a
 /// navigation destination.
 ///
-/// Scope: static copy, copy affordances on the commands, and two external `Link`s. No
-/// network detection, no reducer involvement. The card stack is the visual language carried
-/// over from the old `SecureConnectionInfoView` (which this guide replaces).
+/// Two tabs on a segmented control: **On my computer** (the self-hosted recipe below) and
+/// **Hermes Cloud** (desktop's terms — open the agent in the Nous portal, paste its
+/// address). The Cloud copy is kept verbatim with the README quick-start.
+///
+/// Scope: static copy, copy affordances on the commands, and external `Link`s. No
+/// network detection, no reducer involvement — the selected tab is view-local `@State`.
+/// The card stack is the visual language carried over from the old
+/// `SecureConnectionInfoView` (which this guide replaces).
 struct AgentSetupGuideView: View {
+  enum Tab: Hashable {
+    case cloud
+    case computer
+  }
+
   @Environment(\.dismiss) private var dismiss
 
   /// Whether the "Advanced: token mode" disclosure starts open. Defaults to collapsed;
   /// seeded only so snapshot tests can capture the expanded variant.
   @State private var advancedExpanded: Bool
+  /// The selected tab. Defaults to "On my computer"; seeded only so snapshot tests can
+  /// capture the Hermes Cloud tab.
+  @State private var tab: Tab
 
-  init(advancedExpanded: Bool = false) {
+  init(advancedExpanded: Bool = false, tab: Tab = .computer) {
     _advancedExpanded = State(initialValue: advancedExpanded)
+    _tab = State(initialValue: tab)
   }
 
+  /// Desktop's `FALLBACK_PORTAL_URL` — where Hermes Cloud agents are created and opened.
+  private static let portalURL = URL(string: "https://portal.nousresearch.com")!
   private static let tailscaleURL = URL(string: "https://tailscale.com")!
   private static let docsURL = URL(
     string: "https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard"
@@ -62,20 +79,36 @@ struct AgentSetupGuideView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(spacing: 20) {
-          hero
-          loginCard
-          dashboardCard
-          reachCard
-          tailscaleLink
-          portForwardWarning
-          verifyCard
-          advancedCard
-          docsLink
+      VStack(spacing: 0) {
+        Picker("Where the agent runs", selection: $tab) {
+          Text("On my computer").tag(Tab.computer)
+          Text("Hermes Cloud").tag(Tab.cloud)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity)
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        ScrollView {
+          VStack(spacing: 20) {
+            switch tab {
+            case .cloud:
+              cloudCard
+              portalLink
+            case .computer:
+              hero
+              loginCard
+              dashboardCard
+              reachCard
+              tailscaleLink
+              portForwardWarning
+              verifyCard
+              advancedCard
+              docsLink
+            }
+          }
+          .padding(20)
+          .frame(maxWidth: .infinity)
+        }
       }
       .background(Color(.systemGroupedBackground))
       .navigationTitle("Set Up Your Agent")
@@ -88,7 +121,34 @@ struct AgentSetupGuideView: View {
     }
   }
 
-  // MARK: - Sections
+  // MARK: - Hermes Cloud
+
+  // Copy kept verbatim with the README quick-start's Hermes Cloud line.
+  private var cloudCard: some View {
+    card {
+      cardHeader(icon: "cloud.fill", title: "Hermes Cloud runs your agent for you.", tint: .blue)
+      Text("""
+      Open your agent in the Nous portal, copy its address, and paste it into Hermes Mobile's \
+      agent address field. You'll sign in with your Nous Research account.
+      """)
+      .font(.subheadline)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      footnote("No agent yet? Create one in the Nous portal.")
+    }
+  }
+
+  private var portalLink: some View {
+    externalLinkRow(
+      url: Self.portalURL,
+      icon: "cloud.fill",
+      fill: Self.brand,
+      title: "Open the Nous portal",
+      subtitle: "portal.nousresearch.com"
+    )
+  }
+
+  // MARK: - On my computer
 
   private var hero: some View {
     VStack(spacing: 14) {
@@ -161,37 +221,13 @@ struct AgentSetupGuideView: View {
   }
 
   private var tailscaleLink: some View {
-    Link(destination: Self.tailscaleURL) {
-      HStack(spacing: 14) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Self.tailscaleBrand)
-            .frame(width: 44, height: 44)
-          Image(systemName: "network")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundStyle(.white)
-        }
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Set up Tailscale")
-            .font(.headline)
-            .foregroundStyle(.primary)
-          Text("Private addresses reachable only by your tailnet")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        Spacer(minLength: 8)
-        Image(systemName: "arrow.up.forward")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.secondary)
-      }
-      .padding(16)
-      .frame(maxWidth: .infinity)
-      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
-      )
-    }
+    externalLinkRow(
+      url: Self.tailscaleURL,
+      icon: "network",
+      fill: Self.tailscaleBrand,
+      title: "Set up Tailscale",
+      subtitle: "Private addresses reachable only by your tailnet"
+    )
   }
 
   private var portForwardWarning: some View {
@@ -215,7 +251,7 @@ struct AgentSetupGuideView: View {
       """)
       CommandCard(command: Self.verifyCommand)
       footnote("You should see auth_required: true.")
-      footnote("Then enter the URL and your username and password back on the sign-in screen.")
+      footnote("Then enter the address and sign in with your username and password.")
     }
   }
 
@@ -232,7 +268,8 @@ struct AgentSetupGuideView: View {
           // The dashboard reads the token once at launch — export must come first.
           stepRow(number: 1, text: """
           Generate the shared token the dashboard and this app will use — the echo line \
-          prints it so you can paste it into the Token field on the sign-in screen:
+          prints it so you can paste it into the token field when you sign in (under "Other \
+          ways to sign in" when the agent also offers a password):
           """)
           CommandCard(command: Self.tokenExportCommand, showsPrompt: false)
           stepRow(number: 2, text: """
@@ -285,6 +322,48 @@ struct AgentSetupGuideView: View {
     .padding(16)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+  }
+
+  /// A tappable card that opens `url` outside the app: a filled icon tile, a title and a
+  /// caption, and an outbound arrow.
+  private func externalLinkRow(
+    url: URL,
+    icon: String,
+    fill: LinearGradient,
+    title: String,
+    subtitle: String
+  ) -> some View {
+    Link(destination: url) {
+      HStack(spacing: 14) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(fill)
+            .frame(width: 44, height: 44)
+          Image(systemName: icon)
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(verbatim: title)
+            .font(.headline)
+            .foregroundStyle(.primary)
+          Text(verbatim: subtitle)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 8)
+        Image(systemName: "arrow.up.forward")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.secondary)
+      }
+      .padding(16)
+      .frame(maxWidth: .infinity)
+      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
+      )
+    }
   }
 
   private func cardHeader(icon: String, title: String, tint: Color) -> some View {
@@ -407,4 +486,8 @@ struct AgentSetupGuideView: View {
 
 #Preview("Advanced expanded") {
   AgentSetupGuideView(advancedExpanded: true)
+}
+
+#Preview("Hermes Cloud") {
+  AgentSetupGuideView(tab: .cloud)
 }
