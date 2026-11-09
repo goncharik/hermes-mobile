@@ -179,9 +179,11 @@ import Testing
     )
     do {
       try kc.saveSession(.bearer(bearer))
-    } catch KeychainError.unhandled(errSecMissingEntitlement) {
-      // The macOS `swift test` host runs unsigned, so the data-protection keychain refuses
-      // writes. The encoding path is covered by the in-memory + Codable tests above.
+    } catch let KeychainError.unhandled(status)
+      where status == errSecMissingEntitlement || status == errSecInteractionNotAllowed {
+      // The macOS `swift test` host runs unsigned or without keychain interaction
+      // permission, so the data-protection keychain refuses writes. The encoding path is
+      // covered by the in-memory + Codable tests above.
       return
     }
     defer { try? kc.deleteSession() }

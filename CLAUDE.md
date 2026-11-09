@@ -269,7 +269,8 @@ bullets below are the compressed rules.
   pins, swipe default, read-aloud toggle, profile, model-picker favorites/collapsed
   providers) → `PreferencesClient`. Clients over `@Shared` for test isolation; both have
   `.inMemory()`. **Logout must clear every prefs entry.**
-- **Pins are device-local; archive, rename, and delete are server-side**, optimistic
+- **Pin membership syncs with the server; pin order stays device-local.** Details in `docs/features/session-list.md`.
+- **Archive, rename, and delete are server-side**, optimistic
   with rollback (list → REST `PATCH`/`DELETE`; chat rename → `session.title`).
 - **Delete (#73) mirrors archive** (`deletingIDs` guard, rollback) with a
   `deleteSupported` flip on 404 **or 405** (older agents serve the path for

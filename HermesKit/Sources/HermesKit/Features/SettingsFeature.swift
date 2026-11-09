@@ -573,6 +573,7 @@ public struct SettingsFeature {
         preferences.saveSeenCounts([:]) // unread state is per-server; drop it too
         preferences.saveDefaultSessionSwipeAction(.default) // reset the swipe-action pref on logout
         preferences.clearSelectedProfileID() // selected profile is per-server — clear on logout
+        preferences.clearPinMigrations()
         preferences.clearAutoSpeakReplies() // read-aloud toggle back to off on logout
         preferences.clearModelPickerPrefs() // model picker collapse + favorites (#130)
         preferences.clearLiveActivityPrefs() // Live Activity toggles back to on (#138)

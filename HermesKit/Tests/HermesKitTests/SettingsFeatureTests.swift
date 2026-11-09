@@ -16,6 +16,8 @@ struct SettingsFeatureTests {
     preferences.saveSeenCounts(["s1": 4])
     preferences.saveDefaultSessionSwipeAction(.delete)
     preferences.saveSelectedProfileID("staging")
+    preferences.savePinMigration("https://first", PinMigration(pendingIDs: ["legacy"]))
+    preferences.savePinMigration("https://second", PinMigration(pendingIDs: []))
     preferences.saveAutoSpeakReplies(true)
     preferences.saveCollapsedModelProviders(["openrouter"])
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
@@ -38,6 +40,8 @@ struct SettingsFeatureTests {
     #expect(preferences.loadSeenCounts() == [:]) // unread state cleared too
     #expect(preferences.loadDefaultSessionSwipeAction() == .archive) // swipe pref reset on logout
     #expect(preferences.loadSelectedProfileID() == nil) // selected profile cleared on logout
+    #expect(preferences.loadPinMigration("https://first") == nil)
+    #expect(preferences.loadPinMigration("https://second") == nil)
     #expect(preferences.loadAutoSpeakReplies() == false) // read-aloud toggle off after logout
     #expect(preferences.loadCollapsedModelProviders() == []) // model picker prefs (#130)
     #expect(preferences.loadFavoriteModels() == [])
