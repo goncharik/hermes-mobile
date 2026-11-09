@@ -2,8 +2,8 @@ import HermesWidgetKit
 import SwiftUI
 import WidgetKit
 
-/// The aggregate Live Activity's lock-screen banner (#138), after T3 Code's: the Hermes mark on
-/// the left and a centred header ("1 active agent", "· Needs input", "Agent work completed");
+/// The aggregate Live Activity's lock-screen banner (#138), after T3 Code's: the Hermes mark and
+/// name on the left and a centred header ("1 active agent", "· Needs input", "Agent work completed");
 /// below it the headline session's title (truncated) and its tinted status. No workspace label.
 /// With "Show session titles" off the row shows only the status. The expanded Dynamic Island
 /// shows the same layout.
@@ -40,30 +40,55 @@ struct AgentsActivityView: View {
   }
 
   private var header: some View {
-    ZStack {
-      HStack(spacing: 0) {
-        HermesGlyph()
-          .frame(width: 20, height: 13)
-          .foregroundStyle(.primary)
+    // The brand leads. The status header is centred on the banner — balanced against an
+    // invisible copy of the brand, so it never runs under "Hermes" — when it fits there;
+    // a longer one ("Agent status out of date", "2 active agents · Needs input") trails
+    // instead, with the whole width after the brand.
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 8) {
+        brand
         Spacer(minLength: 0)
+        headerStatus
+        Spacer(minLength: 0)
+        brand
+          .hidden()
+          .accessibilityHidden(true)
       }
-      HStack(spacing: 6) {
-        Text(content.headerTitle(isStale: isStale))
-          .foregroundStyle(status == .done ? statusTint : AnyShapeStyle(.primary))
-        if let attention = content.headerAttention(isStale: isStale) {
-          Text(verbatim: "·")
-            .foregroundStyle(.secondary)
-            .accessibilityHidden(true)
-          Text(attention)
-            .foregroundStyle(statusTint)
-        }
+      HStack(spacing: 8) {
+        brand
+        Spacer(minLength: 0)
+        headerStatus
       }
-      .font(.system(size: 13, weight: .semibold))
-      .lineLimit(1)
-      // Clear of the mark on either side, so a long header never runs under it.
-      .padding(.horizontal, 24)
     }
+    .font(.system(size: 13, weight: .semibold))
     .accessibilityElement(children: .combine)
+  }
+
+  /// The header's status text: the count or outcome, plus the tinted attention suffix.
+  private var headerStatus: some View {
+    HStack(spacing: 6) {
+      Text(content.headerTitle(isStale: isStale))
+        .foregroundStyle(status == .done ? statusTint : AnyShapeStyle(.primary))
+      if let attention = content.headerAttention(isStale: isStale) {
+        Text(verbatim: "·")
+          .foregroundStyle(.secondary)
+          .accessibilityHidden(true)
+        Text(attention)
+          .foregroundStyle(statusTint)
+      }
+    }
+    .lineLimit(1)
+  }
+
+  /// The Hermes mark with its name, top leading.
+  private var brand: some View {
+    HStack(spacing: 5) {
+      HermesGlyph()
+        .frame(width: 20, height: 13)
+      Text("Hermes")
+        .fixedSize()
+    }
+    .foregroundStyle(.primary)
   }
 
   private var headline: some View {

@@ -43,7 +43,9 @@ All six live in one `WidgetBundle` (`HermesWidgets/Sources/HermesWidgetsBundle.s
 - **Live Activity, lock screen** — T3 Code's banner: on iOS 26 a clear
   `activityBackgroundTint` reveals the Liquid Glass platter (earlier iOS keeps the standard
   surface); 13 pt semibold text in hierarchical `.primary` / `.secondary` (the system's
-  vibrancy), 11 pt for the status, 14 pt padding. The glyph on the left and a centred header:
+  vibrancy), 11 pt for the status, 14 pt padding. The glyph and "Hermes" top leading, and a
+  header centred on the banner when it fits there (balanced against a hidden copy of the brand,
+  so it never runs under it), else trailing (`ViewThatFits`):
   "N active agent(s)", with "· Needs input" tinted while the headline waits on the user;
   "Agent work completed" (green) when Done; "Agent status out of date" when stale. Below it the
   headline title (truncating first) and a trailing status: Working (sky), Needs input (amber),
