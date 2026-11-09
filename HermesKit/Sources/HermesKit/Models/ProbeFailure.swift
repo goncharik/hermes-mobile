@@ -41,6 +41,24 @@ public enum ProbeFailure: Error, Equatable, Sendable {
     }
   }
 
+  /// Whether the failure card for `address` adds the Local Network hint line ("If iOS asked
+  /// about Local Network access, allow it and try again…"): a same-network address that
+  /// nothing answered. Covers both the first request failing behind the iOS alert and a
+  /// denied permission, without device-only detection (TN3179).
+  public func showsLocalNetworkHint(for address: ServerAddress) -> Bool {
+    address.kind == .localNetwork && isTransport
+  }
+
+  /// Which onboarding probe check this failure fails: no answer at all fails "Reaching",
+  /// an HTTP answer that is not a usable `/api/status` fails "Checking it's a Hermes agent".
+  /// `.other` counts as an answer — it is mostly an HTTP status the server sent.
+  public var failedCheck: ServerStep.State.Check {
+    switch self {
+    case .offline, .hostNotFound, .refused, .timedOut, .untrustedCertificate: .reaching
+    case .notHermes, .hostRejected, .other: .hermes
+    }
+  }
+
   /// Classifies a transport failure thrown by `URLSession` while probing `address`. An
   /// already-classified `ProbeFailure` passes through unchanged; a non-`URLError` is `.other`.
   public static func classify(_ error: any Error, address: ServerAddress) -> ProbeFailure {

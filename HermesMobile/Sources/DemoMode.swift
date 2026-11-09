@@ -122,13 +122,11 @@ enum DemoMode {
     case "voice":
       return chatScenario(voiceChat)
     case "connect":
-      return AppFeature.State(
-        onboarding: ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••••••",
-          status: .reachable(version: "0.16.0")
-        )
-      )
+      // The Server step with the demo address typed in (no auto-probe: the demo REST client
+      // has no `probeStatus`).
+      var onboarding = ConnectionFeature.State()
+      onboarding.path.append(.server(ServerStep.State(addressText: "mac.tailnet:9119")))
+      return AppFeature.State(onboarding: onboarding)
     default: // "chat"
       return chatScenario(heroChat)
     }

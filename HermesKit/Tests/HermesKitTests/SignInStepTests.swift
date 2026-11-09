@@ -127,6 +127,59 @@ struct SignInStepTests {
     #expect(SignInStep.State(probe: probe(.tokenOnly)).oauthProviders.isEmpty)
   }
 
+  /// The server card's method summary, one row per layout shape (prototype `methodSummary`).
+  @Test(arguments: [
+    (passwordCapability(oauthProviders: [nousProvider], supportsNativeFlow: true),
+     "Password or Nous Research"),
+    (passwordCapability(oauthProviders: [nousProvider], supportsNativeFlow: false), "Password"),
+    (passwordCapability(), "Password"),
+    (oauthCapability(providers: [nousProvider, keycloakProvider]), "Nous Research, Keycloak"),
+    (oauthCapability(supportsNativeFlow: false), "Session token"),
+    (.tokenOnly, "Session token"),
+  ] as [(ServerAuthCapability, String)])
+  func methodSummaryFollowsTheLayout(capability: ServerAuthCapability, summary: String) {
+    #expect(SignInStep.State(probe: probe(capability)).methodSummary == summary)
+  }
+
+  @Test func oauthProviderNamesJoinTheOfferedProviders() {
+    #expect(oauthState(providers: [nousProvider, keycloakProvider]).oauthProviderNames == "Nous Research or Keycloak")
+    #expect(SignInStep.State(probe: probe(.tokenOnly)).oauthProviderNames.isEmpty)
+  }
+
+  /// A password or token attempt clears the last provider tap, so an `.invalidCredentials`
+  /// verdict is attributed to the leg that produced it (the view picks its copy off this).
+  @Test func aPasswordOrTokenAttemptClearsTheSelectedProvider() async {
+    var state = SignInStep.State(
+      probe: probe(passwordCapability(oauthProviders: [nousProvider], supportsNativeFlow: true))
+    )
+    state.username = "alice"
+    state.password = "wrong"
+    state.selectedOAuthProviderName = "nous"
+    state.isShowingOtherWays = true
+    state.token = "tok"
+    let store = TestStore(initialState: state) {
+      SignInStep()
+    } withDependencies: {
+      $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+    }
+
+    await store.send(.signInButtonTapped) {
+      $0.selectedOAuthProviderName = nil
+      $0.status = .validating
+    }
+    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials }
+
+    await store.send(.binding(.set(\.selectedOAuthProviderName, "nous"))) {
+      $0.selectedOAuthProviderName = "nous"
+    }
+    await store.send(.tokenSignInButtonTapped) {
+      $0.selectedOAuthProviderName = nil
+      $0.status = .validating
+    }
+    await store.receive(\.tokenValidationResponse.failure) { $0.status = .invalidToken }
+  }
+
   @Test func prefilledTokenSeedsTheTokenField() {
     #expect(SignInStep.State(probe: probe(.tokenOnly), prefilledToken: "tok").token == "tok")
     #expect(SignInStep.State(probe: probe(.tokenOnly), prefilledToken: nil).token.isEmpty)

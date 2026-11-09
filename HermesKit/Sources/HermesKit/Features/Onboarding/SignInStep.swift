@@ -23,7 +23,9 @@ public struct SignInStep {
     public var isShowingOtherWays = false
     public var password = ""
     public let probe: ServerProbe
-    /// Which OAuth provider button the user tapped last (servers may advertise several).
+    /// Which OAuth provider button started the latest attempt (servers may advertise
+    /// several). Cleared when a password or token attempt starts, so a non-nil value also
+    /// tells the view an `.invalidCredentials` verdict came from the OAuth leg.
     public var selectedOAuthProviderName: String?
     public var status: Status = .idle
     public var token: String
@@ -81,6 +83,26 @@ public struct SignInStep {
       let capability = probe.capability
       guard !capability.oauthProviders.isEmpty, !capability.supportsNativeFlow else { return nil }
       return capability.oauthProviders.map(\.displayName).joined(separator: " or ")
+    }
+
+    /// The server card's one-line summary of how this agent signs in: "Session token", or
+    /// "Password" and/or the offered providers' display names (prototype `methodSummary`).
+    public var methodSummary: String {
+      switch layout {
+      case .token:
+        return "Session token"
+      case let .oauthOnly(providers):
+        return providers.map(\.displayName).joined(separator: ", ")
+      case let .password(providers):
+        guard !providers.isEmpty else { return "Password" }
+        return "Password or " + providers.map(\.displayName).joined(separator: ", ")
+      }
+    }
+
+    /// The offered providers' display names joined with " or " — the Sign in subtitle's
+    /// "This agent uses your … account."
+    public var oauthProviderNames: String {
+      oauthProviders.map(\.displayName).joined(separator: " or ")
     }
 
     /// The OAuth providers this step offers buttons for (empty without positive evidence).
@@ -237,6 +259,7 @@ public struct SignInStep {
       case .signInButtonTapped:
         // Password path: log in for cookies, validate them with one authenticated call,
         // then persist the cookie session + server URL and signal the parent.
+        state.selectedOAuthProviderName = nil
         state.status = .validating
         let url = state.probe.baseURL
         let provider = state.probe.capability.passwordProviderName ?? "basic"
@@ -268,6 +291,7 @@ public struct SignInStep {
       case .tokenSignInButtonTapped:
         // Token path — byte-identical to the legacy one: validate with one authenticated
         // call, then persist the token + server URL and signal the parent.
+        state.selectedOAuthProviderName = nil
         state.status = .validating
         let connection = ServerConnection(baseURL: state.probe.baseURL, token: state.token)
         return .run { [keychain, preferences, rest] send in

@@ -39,6 +39,26 @@ struct ServerStepTests {
     #expect(state("http://").address == nil)
   }
 
+  @Test func checklistFollowsThePhase() {
+    var step = state("mac")
+    let checks = ServerStep.State.Check.allCases
+    #expect(checks == [.reaching, .hermes, .signInOptions])
+    #expect(checks.map { step.status(of: $0) } == [nil, nil, nil])
+
+    step.phase = .probing(.reaching)
+    #expect(checks.map { step.status(of: $0) } == [.running, .pending, .pending])
+
+    step.phase = .probing(.readingSignInOptions)
+    #expect(checks.map { step.status(of: $0) } == [.passed, .passed, .running])
+
+    let address = ServerAddress("mac")!
+    step.phase = .failed(.refused, address)
+    #expect(checks.map { step.status(of: $0) } == [.failed, .pending, .pending])
+
+    step.phase = .failed(.notHermes(httpStatus: 404), address)
+    #expect(checks.map { step.status(of: $0) } == [.passed, .failed, .pending])
+  }
+
   // MARK: - Continue
 
   @Test func invalidAddressStaysIdleWithoutProbing() async {

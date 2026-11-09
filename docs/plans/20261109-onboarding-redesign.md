@@ -363,7 +363,7 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
   - [x] the recovering initializer auto-probes and passes the token
   - [x] `lastProbedCapability` survives a pop
 - [x] run `make test` and confirm it passes before task 7
-- ⚠️ the HermesMobile app target (`ConnectionView`, `DemoMode`, `ConnectionSnapshotTests`, `AuthSnapshotTests`, `ConnectionColumnLayoutTests`) still uses the removed one-screen API and does not compile until task 8 (views) / task 12 (demo mode)
+- ⚠️ the HermesMobile app target (`ConnectionView`, `DemoMode`, `ConnectionSnapshotTests`, `AuthSnapshotTests`, `ConnectionColumnLayoutTests`) still uses the removed one-screen API and does not compile until task 8 (views) / task 12 (demo mode) — resolved in task 8
 
 ### Task 7: Wire `AppFeature` to the new onboarding state
 
@@ -390,17 +390,19 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Modify: `HermesMobile/Sources/AppView.swift`
 - Modify: `HermesMobileTests/ConnectionSnapshotTests.swift`, replace `HermesMobileTests/ConnectionColumnLayoutTests.swift`
 
-- [ ] `ConnectionView`: `NavigationStack(path:)` + `destination` switch over `ConnectionPath` cases; `AppView` drops its wrapper; run `tuist generate`
-- [ ] Welcome copy, three value rows and two CTAs from the prototype; the guide sheet stays view-local `@State`
-- [ ] Server step:
-  - [ ] field with `.keyboardType(.URL)` and the live "Connects to …" line from `ServerAddress` (with "then :9119 if nothing answers")
-  - [ ] a checklist driven by `phase`
-  - [ ] a `ProbeFailureCard` per `ProbeFailure`: copy from the prototype, `--host`/`dashboard.public_url` wording, the Local Network hint line for local-network addresses on transport failures, a Details disclosure
-- [ ] Sign in step: `ServerCard` (host, version, method summary, Change), the layout from `SignInStep.State.Layout`, plain-text provider buttons (5.2.1 rule kept), the cleartext warning, error copy naming `HERMES_DASHBOARD_BASIC_AUTH_*` / `HERMES_DASHBOARD_SESSION_TOKEN`
-- [ ] respect Dynamic Type (scrolls), VoiceOver labels on checklist rows and cards, reduce motion (no custom transitions beyond the stack's), `OnboardingLayout.maxWidth = 480` on the outer container only
-- [ ] snapshots: Welcome; Server idle, probing and each failure card (plus one with the Local Network hint); Sign in for each layout row, the cleartext warning, invalid credentials, invalid token; dark variants for Welcome and one failure card
-- [ ] measured test: the column is capped at 480 and centred in a wide window, and is uncapped on a phone
-- [ ] run `make snapshot` (twice for new tests) and `make test`, both clean, before task 9
+- [x] `ConnectionView`: `NavigationStack(path:)` + `destination` switch over `ConnectionPath` cases; `AppView` drops its wrapper; run `tuist generate`
+- [x] Welcome copy, three value rows and two CTAs from the prototype; the guide sheet stays view-local `@State`
+- [x] Server step:
+  - [x] field with `.keyboardType(.URL)` and the live "Connects to …" line from `ServerAddress` (with "then :9119 if nothing answers")
+  - [x] a checklist driven by `phase`
+  - [x] a `ProbeFailureCard` per `ProbeFailure`: copy from the prototype, `--host`/`dashboard.public_url` wording, the Local Network hint line for local-network addresses on transport failures, a Details disclosure
+- [x] Sign in step: `ServerCard` (host, version, method summary, Change), the layout from `SignInStep.State.Layout`, plain-text provider buttons (5.2.1 rule kept), the cleartext warning, error copy naming `HERMES_DASHBOARD_BASIC_AUTH_*` / `HERMES_DASHBOARD_SESSION_TOKEN`
+- [x] respect Dynamic Type (scrolls), VoiceOver labels on checklist rows and cards, reduce motion (no custom transitions beyond the stack's), `OnboardingLayout.maxWidth = 480` on the outer container only
+- [x] snapshots: Welcome; Server idle, probing and each failure card (plus one with the Local Network hint); Sign in for each layout row, the cleartext warning, invalid credentials, invalid token; dark variants for Welcome and one failure card
+- [x] measured test: the column is capped at 480 and centred in a wide window, and is uncapped on a phone
+- [x] run `make snapshot` (twice for new tests) and `make test`, both clean, before task 9
+- ➕ pure view-support logic added to HermesKit (unit-tested): `ServerStep.State.status(of:)` checklist, `ProbeFailure.failedCheck` / `showsLocalNetworkHint(for:)`, `SignInStep.State.methodSummary` / `oauthProviderNames`; `SignInStep` clears `selectedOAuthProviderName` on a password/token attempt so the view can attribute an `.invalidCredentials` verdict
+- ➕ `DemoMode` "connect" minimally fixed to compile (Server step prefilled); task 12 reshapes it to the Sign in step
 
 ### Task 9: Add the Hermes Cloud tab to the setup guide and sync the README
 

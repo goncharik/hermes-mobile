@@ -59,6 +59,43 @@ public struct ServerStep {
       return false
     }
 
+    /// The three rows of the probe checklist, in display order.
+    public enum Check: CaseIterable, Equatable, Sendable {
+      /// "Reaching <host>" — some candidate answered over HTTP.
+      case reaching
+      /// "Checking it's a Hermes agent" — the answer decoded as `/api/status`.
+      case hermes
+      /// "Reading sign-in options" — the providers fetch.
+      case signInOptions
+    }
+
+    public enum CheckStatus: Equatable, Sendable {
+      case failed
+      case passed
+      case pending
+      case running
+    }
+
+    /// The status of one checklist row for the current phase; `nil` while idle, when no
+    /// checklist is shown. `/api/status` answering is what moves the probe to
+    /// `.readingSignInOptions`, so that stage has both reaching and the Hermes check passed.
+    public func status(of check: Check) -> CheckStatus? {
+      let order = Check.allCases
+      let index = order.firstIndex(of: check)!
+      switch phase {
+      case .idle:
+        return nil
+      case .probing(.reaching):
+        return index == 0 ? .running : .pending
+      case .probing(.readingSignInOptions):
+        return check == .signInOptions ? .running : .passed
+      case let .failed(failure, _):
+        let failedIndex = order.firstIndex(of: failure.failedCheck)!
+        if index < failedIndex { return .passed }
+        return index == failedIndex ? .failed : .pending
+      }
+    }
+
     /// Something is typed but it does not parse as an address.
     public var showsInvalidAddressHint: Bool {
       !addressText.trimmingCharacters(in: .whitespaces).isEmpty && address == nil

@@ -167,6 +167,45 @@ struct ProbeFailureTests {
     #expect(failure.isTransport == expected)
   }
 
+  // MARK: - Local Network hint
+
+  /// The hint line rides only on a transport failure to a same-network address: the iOS
+  /// Local Network alert (or its denial) can only be what stopped THAT request.
+  @Test(arguments: [
+    (ProbeFailure.hostNotFound(tailnetName: false), true),
+    (.refused, true),
+    (.timedOut, true),
+    (.offline, false),
+    (.untrustedCertificate, false),
+    (.notHermes(httpStatus: 404), false),
+    (.hostRejected(detail: "Invalid Host header."), false),
+    (.other("HTTP 500"), false),
+  ])
+  func localNetworkHintNeedsATransportFailure(_ failure: ProbeFailure, onLocalNetwork: Bool) {
+    #expect(failure.showsLocalNetworkHint(for: Self.localAddress) == onLocalNetwork)
+    #expect(failure.showsLocalNetworkHint(for: ServerAddress("mac.local")!) == onLocalNetwork)
+    // Tailscale, public and loopback addresses never trigger the iOS alert (TN3179).
+    for address in [Self.tailnetAddress, Self.shortNameAddress, Self.publicAddress, ServerAddress("localhost")!] {
+      #expect(failure.showsLocalNetworkHint(for: address) == false)
+    }
+  }
+
+  // MARK: - Failed check
+
+  @Test(arguments: [
+    (ProbeFailure.offline, ServerStep.State.Check.reaching),
+    (.hostNotFound(tailnetName: true), .reaching),
+    (.refused, .reaching),
+    (.timedOut, .reaching),
+    (.untrustedCertificate, .reaching),
+    (.notHermes(httpStatus: 404), .hermes),
+    (.hostRejected(detail: "Invalid Host header."), .hermes),
+    (.other("HTTP 500"), .hermes),
+  ])
+  func failedCheck(_ failure: ProbeFailure, check: ServerStep.State.Check) {
+    #expect(failure.failedCheck == check)
+  }
+
   // MARK: - ServerProbe
 
   @Test func serverProbeKeepsTheAnsweringCandidate() throws {

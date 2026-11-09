@@ -3,8 +3,9 @@ import UIKit
 
 /// Sheet-presented onboarding guide teaching the blessed remote-access recipe for a Hermes
 /// Agent: **password ("basic") auth over Tailscale/LAN**, with `--insecure` + token demoted
-/// to a collapsed last-resort advanced section. Presented from `ConnectionView` (three entry
-/// points, one local `@State` flag) — a reference card you consult and dismiss, not a
+/// to a collapsed last-resort advanced section. Presented from the onboarding flow (Welcome,
+/// the Server step and its failure cards share one local `@State` flag in `ConnectionView`)
+/// and from `ConnectionFailedView` — a reference card you consult and dismiss, not a
 /// navigation destination.
 ///
 /// Scope: static copy, copy affordances on the commands, and two external `Link`s. No
