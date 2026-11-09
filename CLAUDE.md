@@ -320,7 +320,7 @@ bullets below are the compressed rules.
   persists the choice, logout never touches it. `DiagnosticsReport` takes no `AuthSession`
   (no-secrets invariant). Gates, icon table, links: `docs/features/settings.md`.
 - **The agent updater (Settings → Server, under Agent) POSTs `/api/hermes/update` at most
-  once per confirmation and never retries it**; a send-side failure is `.uncertain`. Only a
+  once per confirmation and never retries it**; a send-side failure or 5xx is `.uncertain`. Only a
   finished receipt proven to be this phone's run (its action id) reports success; a
   reconnect never does. Contract: `docs/features/agent-update.md`.
 

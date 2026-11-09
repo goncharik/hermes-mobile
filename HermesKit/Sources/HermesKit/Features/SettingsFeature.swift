@@ -25,8 +25,25 @@ public struct SettingsFeature {
     /// The agent's `/api/status` version, read on appearance; `nil` until it lands (and left
     /// `nil` on failure), which hides the Agent row.
     public var agentVersion: String?
-    /// The agent updater beside the Agent row (`docs/features/agent-update.md`).
-    public var agentUpdate: AgentUpdateFeature.State
+    /// The agent updater beside the Agent row (`docs/features/agent-update.md`). Its
+    /// `connection` is derived from this state's on every read, so a saved token reaches it
+    /// without a hand-kept copy.
+    public var agentUpdate: AgentUpdateFeature.State {
+      get {
+        var child = agentUpdateStorage
+        child.connection = connection
+        return child
+      }
+      set {
+        // The stored copy's `connection` is never read (the getter overrides it); keeping it
+        // fixed means it can't drift into `State` equality.
+        var child = newValue
+        child.connection = agentUpdateStorage.connection
+        agentUpdateStorage = child
+      }
+    }
+    /// Everything of `agentUpdate` but its connection; read it only through `agentUpdate`.
+    var agentUpdateStorage: AgentUpdateFeature.State
     /// Build + device facts (version row, feedback links), read on appearance.
     public var bundleInfo: BundleInfo?
     /// The icons this build can switch between, read on appearance (labels the App Icon row
@@ -118,7 +135,7 @@ public struct SettingsFeature {
       self.path = path
       self.profileName = profileName
       self.agentVersion = agentVersion
-      self.agentUpdate = AgentUpdateFeature.State(connection: connection)
+      self.agentUpdateStorage = AgentUpdateFeature.State(connection: connection)
       self.bundleInfo = bundleInfo
       self.appIconCatalog = appIconCatalog
       self.selectedAppIcon = selectedAppIcon
@@ -196,6 +213,15 @@ public struct SettingsFeature {
     public var canSaveToken: Bool {
       !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         && token != connection.token
+    }
+
+    /// The Agent row's version, from the `/api/status` probe or a finished update's receipt.
+    /// A Diagnostics screen pushed before it landed reports the version too.
+    mutating func applyAgentVersion(_ version: String?) {
+      agentVersion = version
+      for id in path.ids {
+        path[id: id, case: \.diagnostics]?.agentVersion = version
+      }
     }
   }
 
@@ -454,11 +480,7 @@ public struct SettingsFeature {
         )
 
       case let .agentStatusLoaded(version):
-        state.agentVersion = version
-        // A Diagnostics screen pushed before the probe landed reports the version too.
-        for id in state.path.ids {
-          state.path[id: id, case: \.diagnostics]?.agentVersion = version
-        }
+        state.applyAgentVersion(version)
         return .none
 
       case let .currentAppIconLoaded(name):
@@ -512,8 +534,8 @@ public struct SettingsFeature {
 
       case let .agentUpdate(.delegate(.updated(version))):
         // Our update's receipt names the new version; the Agent row follows it.
-        guard let version else { return .none }
-        return .send(.agentStatusLoaded(version))
+        if let version { state.applyAgentVersion(version) }
+        return .none
 
       case .agentUpdate:
         return .none
@@ -529,10 +551,14 @@ public struct SettingsFeature {
         guard state.canSaveToken else { return .none }
         let token = state.token
         state.connection.token = token
-        state.agentUpdate.connection = state.connection
         state.savedConfirmation = true
         try? keychain.saveToken(token)
-        return .send(.delegate(.tokenSaved(token)))
+        // The updater probes with the dashboard credential: a token saved from empty (or a
+        // replaced one) can change its verdict, so re-run the probe now rather than on reopen.
+        return .merge(
+          .send(.delegate(.tokenSaved(token))),
+          .send(.agentUpdate(.task))
+        )
 
       case .clearTokenTapped:
         // Clear the full session (token + any gated cookies in the shared jar), not just the
