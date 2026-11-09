@@ -33,19 +33,31 @@ enum OnboardingLayout {
 /// The column cap and the full-width background sit on this OUTER container, so the scroll
 /// view itself is the capped column (what `OnboardingColumnLayoutTests` measures). The body
 /// scrolls at every Dynamic Type size; the footer rides above the keyboard.
+///
+/// At an accessibility text size the footer is NOT pinned: the buttons alone would fill most
+/// of a phone screen and squeeze the body to a sliver, so they scroll as the content's last
+/// block instead.
 struct OnboardingScreen<Content: View, Footer: View>: View {
   private let content: Content
   private let footer: Footer?
+
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   init(@ViewBuilder content: () -> Content, @ViewBuilder footer: () -> Footer) {
     self.content = content()
     self.footer = footer()
   }
 
+  private var pinsFooter: Bool { !dynamicTypeSize.isAccessibilitySize }
+
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {
         content
+        if !pinsFooter, let footer {
+          footerStack(footer)
+            .padding(.top, 24)
+        }
       }
       .padding(.horizontal, OnboardingLayout.gutter)
       .padding(.top, 8)
@@ -55,19 +67,23 @@ struct OnboardingScreen<Content: View, Footer: View>: View {
     .scrollBounceBehavior(.basedOnSize)
     .scrollDismissesKeyboard(.interactively)
     .safeAreaInset(edge: .bottom, spacing: 0) {
-      if let footer {
-        VStack(spacing: 4) {
-          footer
-        }
-        .padding(.horizontal, OnboardingLayout.gutter)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-        .background(Color(.systemGroupedBackground))
+      if pinsFooter, let footer {
+        footerStack(footer)
+          .padding(.horizontal, OnboardingLayout.gutter)
+          .padding(.top, 12)
+          .padding(.bottom, 8)
+          .background(Color(.systemGroupedBackground))
       }
     }
     .frame(maxWidth: OnboardingLayout.maxWidth)
     .frame(maxWidth: .infinity)
     .background(Color(.systemGroupedBackground))
+  }
+
+  private func footerStack(_ footer: Footer) -> some View {
+    VStack(spacing: 4) {
+      footer
+    }
   }
 }
 
@@ -207,12 +223,17 @@ struct OnboardingLabeledDivider: View {
 
 /// Lays its subviews out left to right, wrapping onto a new line when the next one would not
 /// fit — the Server step's example chips, which do not fit one line at phone width.
+///
+/// A subview wider than the whole line (a chip at an accessibility text size) is re-measured
+/// at the line width so its label wraps; the layout never reports more width than it was
+/// offered, or the onboarding column would grow past the screen and clip on both sides.
 struct OnboardingFlowLayout: Layout {
   var spacing: CGFloat = 8
 
   func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-    let rows = rows(for: subviews, width: proposal.width ?? .infinity)
-    let width = rows.map(\.width).max() ?? 0
+    let lineWidth = proposal.width ?? .infinity
+    let rows = rows(for: subviews, width: lineWidth)
+    let width = min(rows.map(\.width).max() ?? 0, lineWidth)
     let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
     return CGSize(width: width, height: height)
   }
@@ -222,7 +243,7 @@ struct OnboardingFlowLayout: Layout {
     for row in rows(for: subviews, width: bounds.width) {
       var x = bounds.minX
       for index in row.indices {
-        let size = subviews[index].sizeThatFits(.unspecified)
+        let size = size(of: subviews[index], lineWidth: bounds.width)
         subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
         x += size.width + spacing
       }
@@ -236,11 +257,20 @@ struct OnboardingFlowLayout: Layout {
     var height: CGFloat = 0
   }
 
+  /// The subview's ideal size, or — when that is wider than the line — its size at the line
+  /// width (the label wraps).
+  private func size(of subview: LayoutSubview, lineWidth: CGFloat) -> CGSize {
+    let ideal = subview.sizeThatFits(.unspecified)
+    guard ideal.width > lineWidth, lineWidth.isFinite else { return ideal }
+    let fitted = subview.sizeThatFits(ProposedViewSize(width: lineWidth, height: nil))
+    return CGSize(width: min(fitted.width, lineWidth), height: fitted.height)
+  }
+
   private func rows(for subviews: Subviews, width: CGFloat) -> [Row] {
     var rows: [Row] = []
     var current = Row()
     for index in subviews.indices {
-      let size = subviews[index].sizeThatFits(.unspecified)
+      let size = size(of: subviews[index], lineWidth: width)
       let needed = current.indices.isEmpty ? size.width : current.width + spacing + size.width
       if needed > width, !current.indices.isEmpty {
         rows.append(current)

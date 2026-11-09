@@ -322,34 +322,36 @@ struct ServerCard: View {
   let summary: String
   let changeButtonTapped: () -> Void
 
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  /// At an accessibility text size one row leaves the host a few letters wide (words break
+  /// mid-word), so the card stacks: the details full width, "Change" under them.
+  private var stacks: Bool { dynamicTypeSize.isAccessibilitySize }
+
   var body: some View {
-    HStack(spacing: 12) {
-      Image(systemName: "server.rack")
-        .font(.body)
-        .foregroundStyle(.secondary)
-        .frame(width: 38, height: 38)
-        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(alignment: .bottomTrailing) {
-          Circle()
-            .fill(.green)
-            .frame(width: 11, height: 11)
-            .overlay(Circle().strokeBorder(Color(.secondarySystemGroupedBackground), lineWidth: 2))
-            .offset(x: 2, y: 2)
-        }
-        .accessibilityHidden(true)
+    let layout = stacks
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+      : AnyLayout(HStackLayout(spacing: 12))
+    layout {
+      if !stacks {
+        serverIcon
+      }
       VStack(alignment: .leading, spacing: 2) {
         Text(verbatim: host)
           .font(.headline)
-          .lineLimit(2)
+          .lineLimit(stacks ? nil : 2)
           .truncationMode(.middle)
         Text(verbatim: summary)
           .font(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
+      .frame(maxWidth: stacks ? .infinity : nil, alignment: .leading)
       .accessibilityElement(children: .combine)
       .accessibilityLabel("Agent \(host), \(summary)")
-      Spacer(minLength: 8)
+      if !stacks {
+        Spacer(minLength: 8)
+      }
       Button("Change", action: changeButtonTapped)
         .buttonStyle(.borderless)
         .font(.subheadline.weight(.semibold))
@@ -363,6 +365,22 @@ struct ServerCard: View {
       Color(.secondarySystemGroupedBackground),
       in: RoundedRectangle(cornerRadius: OnboardingLayout.cardCornerRadius, style: .continuous)
     )
+  }
+
+  private var serverIcon: some View {
+    Image(systemName: "server.rack")
+      .font(.body)
+      .foregroundStyle(.secondary)
+      .frame(width: 38, height: 38)
+      .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(alignment: .bottomTrailing) {
+        Circle()
+          .fill(.green)
+          .frame(width: 11, height: 11)
+          .overlay(Circle().strokeBorder(Color(.secondarySystemGroupedBackground), lineWidth: 2))
+          .offset(x: 2, y: 2)
+      }
+      .accessibilityHidden(true)
   }
 }
 

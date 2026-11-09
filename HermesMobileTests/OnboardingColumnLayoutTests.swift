@@ -73,6 +73,31 @@ final class OnboardingColumnLayoutTests: XCTestCase {
     }
   }
 
+  /// The Server step's example chips at an accessibility text size: a chip wider than the
+  /// line wraps its label instead of widening the layout. Before the fix the flow layout
+  /// reported the widest chip's ideal width, the onboarding column grew past the phone and its
+  /// copy clipped on both edges.
+  @MainActor
+  func testFlowLayoutNeverReportsMoreWidthThanItIsOffered() {
+    let lineWidth: CGFloat = 350
+    let chips = OnboardingFlowLayout(spacing: 8) {
+      ForEach(["Tailscale name", "Local IP", "https:// address"], id: \.self) { label in
+        Button {} label: {
+          Label(label, systemImage: "cloud").font(.subheadline)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+      }
+    }
+    for size: DynamicTypeSize in [.large, .accessibility5] {
+      let controller = UIHostingController(rootView: chips.dynamicTypeSize(size))
+      let fitted = controller.sizeThatFits(
+        in: CGSize(width: lineWidth, height: .greatestFiniteMagnitude)
+      )
+      XCTAssertLessThanOrEqual(fitted.width, lineWidth + 0.5, "\(size): chips overflow the line")
+    }
+  }
+
   // MARK: - Helpers
 
   private func assertCappedAndCentered(

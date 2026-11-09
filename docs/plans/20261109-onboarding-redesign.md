@@ -465,12 +465,14 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - ➕ the demo address is the tailnet name `mac-mini.tail4c2e.ts.net` (answered on the `:9119` fallback), not the scenarios' `mac.tailnet`, which classifies as a public host and would show the cleartext warning in the capture
 
 ### Task 13: Verify acceptance criteria
-- [ ] every row of the #136 gap-analysis table marked "adjust app" is implemented, except the rows this plan defers or drops: the connected beat, the Local Network explainer/detection, starter prompts
-- [ ] token mode is byte-identical: the token tests ported in task 4 assert the same Keychain/prefs writes as before
-- [ ] OAuth: provider button only with positive evidence; cancel is silent; popping Sign in cancels the attempt
-- [ ] iPad regular width, Dynamic Type (accessibility sizes scroll), VoiceOver order, reduce motion checked in the simulator
-- [ ] run the full suite: `make test`
-- [ ] run snapshots: `make snapshot` (expect the new total; zero failures)
+- [x] every row of the #136 gap-analysis table marked "adjust app" is implemented, except the rows this plan defers or drops: the connected beat, the Local Network explainer/detection, starter prompts
+- [x] token mode is byte-identical: the token tests ported in task 4 assert the same Keychain/prefs writes as before
+- [x] OAuth: provider button only with positive evidence; cancel is silent; popping Sign in cancels the attempt
+- [x] iPad regular width, Dynamic Type (accessibility sizes scroll), VoiceOver order, reduce motion checked in the simulator (VoiceOver listening order partly skipped: the AXe element order was read top to bottom, but listening needs a human; reduce motion verified by reading the code: the onboarding screens have no custom animations, and the push card and tips animate only with reduce motion off)
+- [x] run the full suite: `make test`
+- [x] run snapshots: `make snapshot` (expect the new total; zero failures)
+- ➕ fixed three layout bugs found at accessibility text sizes (AX5 on the iPhone simulator): `OnboardingFlowLayout` reported a chip's ideal width past its proposal, so the Server step's column grew past the screen and clipped both edges; the pinned footer filled most of the phone and squeezed the Welcome body to a sliver (it now scrolls as the content's last block at accessibility sizes); `ServerCard` kept one row, breaking words mid-word (it now stacks). Covered by a measured flow-layout test and three AX3 snapshots
+- ➕ the earlier `ac7e42d` re-record is legitimate drift: same 1170×8100 size, one pixel differing by 1/255
 
 ### Task 14: [Final] Update documentation
 - [ ] create `docs/features/onboarding.md`: flow, entry points table, `ProbeFailure` table, the Local Network rule (TN3179, hint line instead of an explainer), port fallback, push card, tips, pointer to #160

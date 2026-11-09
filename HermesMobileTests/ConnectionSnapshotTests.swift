@@ -17,6 +17,8 @@ import XCTest
 final class ConnectionSnapshotTests: SnapshotTestCase {
   /// Tall canvas for a screen whose card or fields run past one phone screen.
   private static let tallHeight: CGFloat = 1100
+  /// Canvas for a whole screen at an accessibility text size (scrolling, so pinned).
+  private static let accessibilityHeight: CGFloat = 2400
 
   private let basic = AuthProvider(name: "basic", displayName: "Password", supportsPassword: true)
   private let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
@@ -204,6 +206,37 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
     state.selectedOAuthProviderName = "nous"
     state.status = .failed("Too many sign-in attempts. Wait a minute, then try again.")
     assertSignIn(state)
+  }
+
+  // MARK: - Accessibility text sizes
+
+  /// At an accessibility size the footer scrolls as the content's last block instead of
+  /// being pinned (pinned, it filled most of the phone and squeezed the body to a sliver).
+  func testWelcome_accessibilitySize() {
+    assertSnapshot(
+      of: onboarding([]).dynamicTypeSize(.accessibility3),
+      as: deviceImage(appearance: .light, height: Self.accessibilityHeight)
+    )
+  }
+
+  /// The example chips wrap inside the column instead of widening it past the screen.
+  func testServer_accessibilitySize() {
+    assertSnapshot(
+      of: server("mac-mini.tail4c2e.ts.net").dynamicTypeSize(.accessibility3),
+      as: deviceImage(appearance: .light, height: Self.accessibilityHeight)
+    )
+  }
+
+  /// The server card stacks: the host and summary full width, "Change" under them.
+  func testSignIn_accessibilitySize() {
+    let state = SignInStep.State(probe: probe(
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+    ))
+    assertSnapshot(
+      of: step(SignInStepView(store: Store(initialState: state) { SignInStep() }))
+        .dynamicTypeSize(.accessibility3),
+      as: deviceImage(appearance: .light, height: Self.accessibilityHeight)
+    )
   }
 
   // MARK: - Helpers
