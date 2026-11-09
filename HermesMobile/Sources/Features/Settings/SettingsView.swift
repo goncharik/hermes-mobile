@@ -3,11 +3,15 @@ import HermesKit
 import SwiftUI
 import UIKit
 
-/// Settings sheet: one `Form` in six groups (Server, App, Notifications, Feedback, About,
+/// The Settings tab: one `Form` in six groups (Server, App, Notifications, Feedback, About,
 /// Sign out). Three rows push sub-screens through the reducer-owned `path` — the view owns
-/// the `NavigationStack`, so the presenting sheet must not wrap it in another one.
-struct SettingsView: View {
+/// the `NavigationStack`, so its host (`AppView`, which layers it over the session list's
+/// stack — never inside it) must not wrap it in another one.
+struct SettingsView<BottomBar: View>: View {
   @Bindable var store: StoreOf<SettingsFeature>
+  /// The home tab bar, inset at the bottom of the Form ROOT only — so a pushed sub-screen
+  /// covers it, like the session list's bar under a pushed chat.
+  @ViewBuilder var bottomBar: () -> BottomBar
   /// Presentation-only: the "how push works / install the plugin" info sheet. Pure view
   /// state — there's no reducer behavior behind it.
   @State private var showingPushGuide = false
@@ -54,10 +58,8 @@ struct SettingsView: View {
     }
     .navigationTitle("Settings")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .confirmationAction) {
-        Button("Done") { store.send(.doneTapped) }
-      }
+    .safeAreaInset(edge: .bottom) {
+      bottomBar()
     }
   }
 
@@ -309,5 +311,12 @@ struct SettingsView: View {
       return "Update to \(latest). \(reason)"
     }
     return "Installed \(installed), latest \(latest). \(reason)"
+  }
+}
+
+extension SettingsView where BottomBar == EmptyView {
+  /// Settings with no bottom bar (the snapshot tests render the Form on its own).
+  init(store: StoreOf<SettingsFeature>) {
+    self.init(store: store, bottomBar: { EmptyView() })
   }
 }

@@ -5,7 +5,7 @@ history: `docs/plans/completed/` (settings overhaul + app icons).
 
 ## Shape: one Form, a three-row stack
 
-Settings is ONE `Form` in a sheet, in six groups. Inline groups have no child reducers; only
+Settings is ONE `Form` on the home screen's Settings TAB, in six groups. Inline groups have no child reducers; only
 three rows push a sub-screen, and they push through a TCA stack:
 
 - **`SettingsPath`** is a top-level `@Reducer enum` (not nested in `SettingsFeature`) with
@@ -18,14 +18,18 @@ three rows push a sub-screen, and they push through a TCA stack:
   `.tint(.primary)`, since a Form button resolves `.primary` to the tint), never a
   `NavigationLink`.
 - **`SettingsView` owns the `NavigationStack(path:)`**, with the `Form` as root and
-  `switch pathStore.case` as the destination. The session list presents `SettingsView` bare:
-  wrapping the sheet in another `NavigationStack` would nest two stacks.
+  `switch pathStore.case` as the destination. `AppView` layers it OVER the whole split view
+  (never inside a column: that would nest two stacks) while `effectiveTab == .settings`, and
+  passes the `HomeTabBar` as `bottomBar`, inset on the Form root only so a pushed sub-screen
+  covers it. There is no Done button; tab lifecycle rules are in
+  `docs/features/session-list.md` ("The Settings tab").
 - **`.task` and the push-guide `.sheet` sit on the `NavigationStack`, not the Form root.** A
   root `.task` re-fires on every pop back from a sub-screen and would re-probe `/api/status`.
 
 ## Seeding and `.task`
 
-`SessionListFeature.settingsButtonTapped` seeds `connection`, `pushAvailable`,
+`SessionListFeature.selectTab(.settings)` (`seedSettings`, fresh on every visit — the state is
+dropped when the tab is left) seeds `connection`, `pushAvailable`,
 `defaultSwipeAction`, `deleteSupported`, `profileName: scopedProfileName`, and the two Live
 Activity prefs (`liveActivityEnabled`, `liveActivityShowsTitles`, read synchronously from
 `PreferencesClient`). The auth session

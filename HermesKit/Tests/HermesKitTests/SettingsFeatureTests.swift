@@ -177,7 +177,6 @@ struct SettingsFeatureTests {
     #expect(store.state.versionLabel == "Version 1.0 (79)")
     #expect(store.state.selectedAppIconLabel == "Hermes Neo")
     #expect(store.state.selectedAppIconOption?.previewAsset == "AppIconPreview-AppIconHermesNeo")
-    await store.send(.doneTapped)
   }
 
   /// A failed `/api/status` probe leaves the version `nil` (Agent row hidden) — no banner,
@@ -199,7 +198,6 @@ struct SettingsFeatureTests {
     #expect(store.state.agentVersion == nil)
     #expect(debugLog.snapshot().map(\.type) == ["api.status"])
     #expect(debugLog.snapshot().map(\.summary) == [RESTError.unreachable.message])
-    await store.send(.doneTapped)
   }
 
   /// An agent that answers `/api/status` without a version also leaves the row hidden.
@@ -217,7 +215,6 @@ struct SettingsFeatureTests {
 
     await store.send(.task)
     await store.receive(\.agentStatusLoaded) { $0.agentVersion = nil }
-    await store.send(.doneTapped)
   }
 
   // MARK: Derived labels (#137)
@@ -495,7 +492,6 @@ struct SettingsFeatureTests {
       $0.notificationsEnabled = true
       $0.notificationsDenied = false
     }
-    await store.send(.doneTapped)
   }
 
   @Test func toggleOnWhenGrantedEnablesAndRegisters() async {
@@ -668,7 +664,6 @@ struct SettingsFeatureTests {
     }
     #expect(store.state.pluginUpdateAvailable)
     #expect(!store.state.pluginUpdateNeedsManualSteps)
-    await store.send(.doneTapped)
   }
 
   /// Outdated but NOT a git checkout → no button (it would only 400); route to the guide.
@@ -687,7 +682,6 @@ struct SettingsFeatureTests {
     await store.receive(\.pushPluginInfoLoaded)
     #expect(!store.state.pluginUpdateAvailable)
     #expect(store.state.pluginUpdateNeedsManualSteps)
-    await store.send(.doneTapped)
   }
 
   /// A current plugin — and an agent that reports no version at all — offer nothing.
@@ -709,7 +703,6 @@ struct SettingsFeatureTests {
       await store.receive(\.pushPluginInfoLoaded)
       #expect(!store.state.pluginUpdateAvailable)
       #expect(!store.state.pluginUpdateNeedsManualSteps)
-      await store.send(.doneTapped)
     }
   }
 
@@ -914,7 +907,6 @@ struct SettingsFeatureTests {
       await store.send(.task) {
         $0.liveActivitiesAllowedBySystem = allowed
       }
-      await store.send(.doneTapped)
     }
   }
 }

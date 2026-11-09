@@ -1312,6 +1312,22 @@ public struct AppFeature {
         )
       }
     }
+    // Every route that opens a chat leaves the Settings tab: `AppView` layers Settings over
+    // the WHOLE split view, so the chat (a compact marker, or the regular detail seat — even
+    // an in-place hydrate of the seated session) would otherwise land hidden under it. Sent
+    // as a list ACTION, never a direct nil-out, so the list's `ifLet` cancels Settings'
+    // effects. Evaluated after the routing itself; a route that stashes (no home yet) or
+    // finds nothing to open still just lands on Sessions.
+    Reduce { state, action in
+      switch action {
+      case .pushTapped, .launchIntentReceived,
+           .home(.delegate(.openSession)), .home(.delegate(.createSession)):
+        guard state.home?.effectiveTab == .settings else { return .none }
+        return .send(.home(.selectTab(.sessions)))
+      default:
+        return .none
+      }
+    }
   }
 
   /// How long the surfaces may vouch for the projection: `backgroundFreshUntil` while

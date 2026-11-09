@@ -223,7 +223,7 @@ struct WidgetLaunchRoutingTests {
   /// The open can arrive over a list sheet: presentations are dismissed first, like the #93
   /// new-chat intents.
   @Test func openSessionDismissesListPresentations() async {
-    var home = SessionListFeature.State(connection: connection)
+    var home = SessionListFeature.State(connection: connection, selectedTab: .settings)
     home.settings = SettingsFeature.State(connection: connection)
     home.renamingID = "s1"
     let store = TestStore(initialState: AppFeature.State(home: home)) {
@@ -234,11 +234,14 @@ struct WidgetLaunchRoutingTests {
     store.exhaustivity = .off
 
     await store.send(.launchIntentReceived(.openSession(id: "s1", profile: nil))) {
-      $0.home?.settings = nil
       $0.home?.renamingID = nil
     }
     await store.receive(\.home.delegate.openSession)
     #expect(store.state.liveChat?.storedSessionID == "s1")
+    // The Settings tab is left by the path rule once the chat's marker lands.
+    await store.receive(\.home.selectTab, .sessions)
+    #expect(store.state.home?.settings == nil)
+    #expect(store.state.home?.effectiveTab == .sessions)
   }
 
   /// A row from ANOTHER profile than the list shows resumes under that profile, without

@@ -8,11 +8,11 @@ import XCTest
 
 final class SettingsSnapshotTests: SnapshotTestCase {
   /// The six-group Form runs well past one phone screen; every Form fixture renders at this
-  /// height so the whole sheet — Sign out included — is in frame and the groups below the fold
+  /// height so the whole Form — Sign out included — is in frame and the groups below the fold
   /// (Feedback, About) are proven too, not just the Server block.
   private let formHeight: CGFloat = 1_800
 
-  /// A fully loaded token-regime sheet: the post-`.task` facts (bundle info, icon catalog,
+  /// A fully loaded token-regime Settings: the post-`.task` facts (bundle info, icon catalog,
   /// agent version) are SEEDED, because the fixtures swallow `.task` (see `ignoring`).
   private func loadedState(
     auth: AuthSession? = nil,

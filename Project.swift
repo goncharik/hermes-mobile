@@ -17,7 +17,7 @@ let developmentTeam = Environment.developmentTeam.getString(default: "")
 // validation rejects an embedded extension whose CFBundleVersion differs) — bump the build
 // number here, once, for both targets.
 let marketingVersion: SettingValue = "1.0"
-let currentProjectVersion: SettingValue = "90"
+let currentProjectVersion: SettingValue = "92"
 
 // Shared by the app and the widget extension (#138): the app writes the widget mirror into
 // this container, the extension only reads it. Must match `AppGroup.identifier` in

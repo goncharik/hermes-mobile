@@ -1,7 +1,7 @@
 import ComposableArchitecture
 import Foundation
 
-/// Settings sheet, in six groups: Server, App, Notifications, Feedback, About, Sign out.
+/// The Settings tab, in six groups: Server, App, Notifications, Feedback, About, Sign out.
 /// The Server group's Agent row hosts the agent updater (`AgentUpdateFeature`). Three rows push sub-screens through `path` (`SettingsPath`: App Icon, Diagnostics,
 /// Acknowledgements). The live debug log lives in `DiagnosticsFeature`, subscribed only while
 /// that screen is on screen.
@@ -244,7 +244,6 @@ public struct SettingsFeature {
     case saveTokenTapped
     case clearTokenTapped
     case reconnectTapped
-    case doneTapped
     /// The current OS authorization status, read on appearance (drives the toggle).
     case authorizationStatusLoaded(PushAuthorizationStatus)
     /// User flipped the "Notify me about approvals" toggle.
@@ -292,7 +291,7 @@ public struct SettingsFeature {
       /// the install prompt pre-filled (handled up the chain by `AppFeature`).
       case installPushPlugin
       /// The default swipe action changed — the session list mirrors it immediately so the
-      /// rows are right the moment the sheet dismisses.
+      /// rows are right the moment the tab is left.
       case defaultSwipeActionChanged(SessionSwipeAction)
       /// The Live Activity toggle changed (already persisted) — `AppFeature` ends the
       /// activity on off and starts one on on when agents are active.
@@ -591,9 +590,6 @@ public struct SettingsFeature {
           .send(.delegate(.reconnect)),
           .run { [dismiss] _ in await dismiss() }
         )
-
-      case .doneTapped:
-        return .run { [dismiss] _ in await dismiss() }
 
       case .delegate:
         return .none

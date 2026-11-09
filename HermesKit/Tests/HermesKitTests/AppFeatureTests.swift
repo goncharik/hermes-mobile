@@ -248,6 +248,44 @@ struct AppFeatureTests {
     }
   }
 
+  /// A chat pushed while the Settings tab is up (here a new session from the tab bar; a push
+  /// tap or intent alike) leaves Settings through the list's own action, so the chat isn't
+  /// hidden under the Settings layer and popping back lands on Sessions.
+  @Test func pushingAChatLeavesTheSettingsTab() async {
+    var home = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    home.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: AppFeature.State(home: home)) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil)))) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path.append(ChatScreen.State(sessionKey: nil))
+    }
+    await store.receive(\.home.selectTab, .sessions) {
+      $0.home?.selectedTab = .sessions
+      $0.home?.settings = nil
+    }
+  }
+
+  /// Regular width too: the chat seats in the detail column with no marker, but Settings is
+  /// layered over the WHOLE split view, so the route must still leave the tab.
+  @Test func routingAChatInRegularLeavesTheSettingsTab() async {
+    var home = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    home.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: AppFeature.State(home: home, layout: .regular)) {
+      AppFeature()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    #expect(store.state.path.isEmpty, "regular holds no marker")
+    await store.receive(\.home.selectTab, .sessions) {
+      $0.home?.selectedTab = .sessions
+      $0.home?.settings = nil
+    }
+  }
+
   @Test func openingSessionUnderCustomProfilePassesProfileToChat() async {
     let store = TestStore(
       initialState: AppFeature.State(
@@ -3563,9 +3601,10 @@ struct AppFeatureTests {
   }
 
   /// Unlike the button, an intent can arrive over a list sheet: every list presentation is
-  /// dismissed so the new chat isn't seated (and dictating) out of sight.
+  /// dismissed so the new chat isn't seated (and dictating) out of sight. The Settings TAB is
+  /// left through the path rule instead (a list action, so its effects are cancelled).
   @Test func launchIntentDismissesListPresentations() async {
-    var home = SessionListFeature.State(connection: connection)
+    var home = SessionListFeature.State(connection: connection, selectedTab: .settings)
     home.settings = SettingsFeature.State(connection: connection)
     home.renamingID = "s1"
     home.renameDraft = "draft"
@@ -3574,11 +3613,14 @@ struct AppFeatureTests {
     }
 
     await store.send(.launchIntentReceived(.newChat)) {
-      $0.home?.settings = nil
       $0.home?.renamingID = nil
       $0.home?.renameDraft = ""
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
       $0.path = StackState([ChatScreen.State(sessionKey: nil)])
+    }
+    await store.receive(\.home.selectTab, .sessions) {
+      $0.home?.settings = nil
+      $0.home?.selectedTab = .sessions
     }
   }
 

@@ -18,20 +18,55 @@ trailing edge, centred on the title; `defaultMinListHeaderHeight` 0, `listSectio
 the header's own top inset as the only gap), and tighter card row insets than the plain
 default.
 
-**The bottom bar** (`.safeAreaInset(edge: .bottom)` — a `.bottomBar` toolbar renders blank in
-the snapshot host) holds a glass `Sessions | Cron Jobs` tab pill on the leading side (icon over
-label; the selected tab on an inner capsule in the accent, slid by `matchedGeometryEffect`; no
-unread badge on either tab) and the round glass New chat button
-trailing (`GlassBackground`, material fallback below iOS 26). The pill shows only while
-`showsTabBar` holds — cron content exists (`hasCronContent`), the search field is closed, and
-no query is active (search is a Sessions-only mode) — else the bar is just New chat.
-`selectedTab` is in-memory (a launch
-starts on Sessions); views render `effectiveTab`, which falls back to Sessions whenever the pill
-is hidden, so a poll or profile switch that drops every cron row never strands an empty tab.
+**The bottom bar** (`HomeTabBar`, a `.safeAreaInset(edge: .bottom)` — a `.bottomBar` toolbar
+renders blank in the snapshot host) holds a glass tab pill filling the leading space —
+`availableTabs`: Sessions, Cron Jobs only with cron content (`hasCronContent`), then Settings
+(icon over label, equal widths; the selected tab on an inner capsule in the accent, slid by
+`matchedGeometryEffect`; no unread badge on any tab) — and the round glass New session button
+trailing (`GlassBackground`, material fallback below iOS 26), offered on every tab. The pill
+shows while `showsTabBar` holds — the search field is closed and no query is active (search is
+a Sessions-only mode) — else the bar is just New session. `selectedTab` is in-memory (a launch
+starts on Sessions); views render `effectiveTab`, which falls back to Sessions whenever the
+selected tab is unavailable, so a poll or profile switch that drops every cron row never
+strands an empty tab.
 
-**Search is opened from the toolbar** (Sessions tab only): a search button sits beside Archive
-in one trailing `ToolbarItemGroup` (one glass pill on iOS 26). `searchButtonTapped` sets
-`isSearchPresented`, which hides the nav bar row (settings, profile pill, Archive) and shows a
+**The Settings tab** (`docs/features/settings.md`) is its own `NavigationStack`
+(`SettingsView` owns the `SettingsPath` pushes), so `AppView` LAYERS it over the WHOLE
+`NavigationSplitView` — never inside the sidebar column, whose navigation controller would nest
+it (tried: on device the list's bar covered Settings and its root title vanished). On iPad it
+therefore spans the window, like any tab. The split stays mounted underneath (opacity 0, no hit
+testing, `.accessibilityHidden`; the Settings layer also carries the `.isModal` trait, since the
+hidden modifier does not reach the list's UIKit-backed rows — and toggling it on the `List`
+itself broke the tab switch on device) so the list's `.task` poll, its sheets and the live chat are not
+torn down per switch. `selectTab(.settings)` seeds `settings` fresh (the
+old `settingsButtonTapped` seeding); re-tapping keeps it; any other tab, a child `dismiss()`
+(Reconnect, Sign out, "Ask agent") and the disconnect / install delegates all go through
+`closeSettingsTab()` (state dropped → child effects cancelled, tab back to Sessions). While the
+tab is open, a trailing reducer (`syncSettingsSeed()`) mirrors the list-owned seed facts —
+`connection`, `pushAvailable`, `deleteSupported`, the scoped profile — so a long-lived tab
+never shows a stale capability or a deleted profile. `dismissPresentations()` (App Intents)
+deliberately leaves the tab alone: it runs in `AppFeature`, outside the list's `ifLet`, so a
+nil-out there would orphan Settings' effects. Instead `AppFeature` leaves the tab
+(`.home(.selectTab(.sessions))`, an action so the `ifLet` cancels) on every chat route —
+`pushTapped`, `launchIntentReceived` (widgets too), the list's `openSession` / `createSession`
+delegates — in both layouts, since the chat (compact marker or regular seat, even an in-place
+hydrate) would otherwise land hidden under the Settings layer. Under the Settings layer the
+list keeps rendering the Sessions rows (the tab Settings always returns to), so their scroll
+position survives.
+
+**The nav bar**: Archive on the leading side; the profile pill as the centered title (when
+`profilesSupported`); trailing, in one `ToolbarItemGroup` (one glass pill on iOS 26), Search
+(Sessions tab only) and the profile Edit menu. **The pill's menu selects in ONE tap**: every
+profile as a plain button (no checkmarks, Safari-style — a house for the default, a person
+glyph for custom ones; the pill title names the active one), a divider, then Add profile. No
+nested per-profile submenu. **Rename and Delete live in the trailing pencil menu**,
+for the SELECTED profile only, shown while `canEditSelectedProfile` — a known custom profile
+(never the default one, never a selection the profiles list hasn't loaded, never without the
+profiles API). Both route through the existing rename alert and `.bottomActionSheet` delete
+confirmation.
+
+**Search is opened from the toolbar** (Sessions tab only). `searchButtonTapped` sets
+`isSearchPresented`, which hides the nav bar row (Archive, profile pill, Search, Edit) and shows a
 glass capsule field — focused on open — beside a round glass close button in a top
 `safeAreaInset`. `searchCloseTapped` hides it and clears the query, reloading the normal list
 at once when a query was live (the same immediate `load` a cleared query gets through the
@@ -149,7 +184,7 @@ placeholder follows `showsEmptyPlaceholder`: the Sessions tab with no search hit
 search, no interactive session), not loading or failed; under the push card or tips row it
 flows as a row (`showsInlineEmptyPlaceholder`, `docs/features/onboarding.md`). A non-search list with no interactive
 session and no jobs known holds `isLoading` until the load's cron-jobs response lands
-(`awaitsCronJobs`), so the placeholder and the tab pill appear together; a transient cron
+(`awaitsCronJobs`), so the placeholder and the Cron Jobs tab appear together; a transient cron
 failure there settles on the placeholder.
 
 **The Cron Jobs tab lists *jobs* only, desktop-style** (`State.sortedCronJobs`: soonest next

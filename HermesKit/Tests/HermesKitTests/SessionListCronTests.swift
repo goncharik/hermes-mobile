@@ -86,7 +86,7 @@ struct SessionListCronTests {
     #expect(jobsOnly.cronSessions.isEmpty)
     #expect(jobsOnly.sortedCronJobs.map(\.id) == ["job1"])
     #expect(jobsOnly.hasCronContent)
-    #expect(jobsOnly.showsTabBar)
+    #expect(jobsOnly.availableTabs.contains(.cron))
     #expect(jobsOnly.showsEmptyPlaceholder)
     jobsOnly.selectedTab = .cron
     #expect(jobsOnly.effectiveTab == .cron)
@@ -345,17 +345,17 @@ struct SessionListCronTests {
       $0.isLoading = true
     }
     // An empty list is still loading until the sequential cron fetch lands, so neither the
-    // placeholder nor the tab bar appears ahead of the other.
+    // placeholder nor the Cron Jobs tab appears ahead of the other.
     await store.receive(\.sessionsResponse.success) {
       $0.statusSessions = $0.sessions  // unfiltered: the widgets' source follows
     }
     #expect(!store.state.showsEmptyPlaceholder)
-    #expect(!store.state.showsTabBar)
+    #expect(store.state.availableTabs == [.sessions, .settings])
     await store.receive(\.cronJobsResponse.success) {
       $0.isLoading = false
       $0.cronJobs = [CronJob(id: "job1", name: "Digest")]
     }
-    #expect(store.state.showsTabBar)
+    #expect(store.state.availableTabs == [.sessions, .cron, .settings])
     #expect(store.state.showsEmptyPlaceholder, "the Sessions tab really is empty")
   }
 
@@ -1239,7 +1239,7 @@ struct SessionListCronTests {
     }
     await store.receive(\.cronJobsResponse.success)
     #expect(!store.state.hasCronContent)
-    #expect(!store.state.showsTabBar)
+    #expect(!store.state.availableTabs.contains(.cron))
     #expect(store.state.effectiveTab == .sessions)
   }
 

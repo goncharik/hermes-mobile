@@ -46,39 +46,62 @@ struct AppView: View {
     switch store.rootScreen {
     case .home:
       if let homeStore = store.scope(state: \.home, action: \.home) {
-        // ONE split view for both widths. In compact the split collapses to its sidebar
-        // column, so the stack below is the whole screen — the iPhone layout, byte-identical
-        // to the pre-#80 root. In regular the sidebar shows the list and the detail column
-        // shows the live-chat slot directly: the path holds no marker there
-        // (`AppFeature.isChatDetached`), so the chat is never rendered twice.
-        NavigationSplitView {
-          NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
-            // Which row is highlighted is `AppFeature.State.highlightedSessionID` (nil in
-            // compact — unit-tested there). A plain optional, deliberately NOT
-            // `List(selection:)`: selection would become a second source of truth for which
-            // session is open, racing the reducer-owned slot on push taps, archive refills,
-            // and layout changes.
-            SessionListView(
-              store: homeStore,
-              highlightedSessionID: store.highlightedSessionID,
-              needsInputSessionIDs: store.needsInputSessionIDs
-            )
-          } destination: { _ in
-            // The path holds only thin session-key markers — the REAL chat state lives in
-            // the app-level live-chat slot, so a running turn's socket survives pops.
-            chatDetail
+        // The Settings tab is its OWN stack (`SettingsView` owns the `SettingsPath` pushes), so
+        // it is layered OVER the whole split view — a sibling, never inside a column: the
+        // column's navigation controller would nest it (unsupported; on device its root title
+        // vanished under the list's bar). The split stays mounted underneath (hidden, inert),
+        // so the list's `.task` poll, its sheets and the live chat aren't torn down per switch.
+        // `AppFeature` leaves the tab whenever a chat is routed (a compact marker or a regular
+        // seat), so a chat never lands hidden under it.
+        let settingsStore = homeStore.effectiveTab == .settings
+          ? homeStore.scope(state: \.settings, action: \.settings.presented)
+          : nil
+        ZStack {
+          // ONE split view for both widths. In compact the split collapses to its sidebar
+          // column, so the stack below is the whole screen — the iPhone layout, byte-identical
+          // to the pre-#80 root. In regular the sidebar shows the list and the detail column
+          // shows the live-chat slot directly: the path holds no marker there
+          // (`AppFeature.isChatDetached`), so the chat is never rendered twice.
+          NavigationSplitView {
+            NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+              // Which row is highlighted is `AppFeature.State.highlightedSessionID` (nil in
+              // compact — unit-tested there). A plain optional, deliberately NOT
+              // `List(selection:)`: selection would become a second source of truth for which
+              // session is open, racing the reducer-owned slot on push taps, archive refills,
+              // and layout changes.
+              SessionListView(
+                store: homeStore,
+                highlightedSessionID: store.highlightedSessionID,
+                needsInputSessionIDs: store.needsInputSessionIDs
+              )
+            } destination: { _ in
+              // The path holds only thin session-key markers — the REAL chat state lives in
+              // the app-level live-chat slot, so a running turn's socket survives pops.
+              chatDetail
+            }
+            .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
+          } detail: {
+            // Empty in compact, where the collapsed split view renders the sidebar's stack
+            // alone: leaving the detail column with no content is what stops the collapsed
+            // split from pushing a SECOND copy of the chat over the marker's destination.
+            if store.layout == .regular {
+              chatDetail
+                // A slot replacement in regular has no new marker to give the chat a new view,
+                // so key it on the fill counter: without it the incoming session inherits the
+                // outgoing one's transcript scroll offset and composer focus.
+                .id(store.slotGeneration)
+            }
           }
-          .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
-        } detail: {
-          // Empty in compact, where the collapsed split view renders the sidebar's stack
-          // alone: leaving the detail column with no content is what stops the collapsed
-          // split from pushing a SECOND copy of the chat over the marker's destination.
-          if store.layout == .regular {
-            chatDetail
-              // A slot replacement in regular has no new marker to give the chat a new view,
-              // so key it on the fill counter: without it the incoming session inherits the
-              // outgoing one's transcript scroll offset and composer focus.
-              .id(store.slotGeneration)
+          .opacity(settingsStore == nil ? 1 : 0)
+          .allowsHitTesting(settingsStore == nil)
+          .accessibilityHidden(settingsStore != nil)
+          if let settingsStore {
+            SettingsView(store: settingsStore) {
+              HomeTabBar(store: homeStore)
+            }
+            // Modal for VoiceOver: the split view stays mounted underneath, and
+            // `.accessibilityHidden` on it doesn't reach the list's UIKit-backed rows.
+            .accessibilityAddTraits(.isModal)
           }
         }
       }
