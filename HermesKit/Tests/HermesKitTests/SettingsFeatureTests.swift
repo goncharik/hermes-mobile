@@ -21,6 +21,7 @@ struct SettingsFeatureTests {
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
     preferences.saveLiveActivityEnabled(false)
     preferences.saveLiveActivityShowsTitles(false)
+    preferences.saveOnboardingTipsDismissed(true)
     let store = TestStore(initialState: SettingsFeature.State(connection: connection)) {
       SettingsFeature()
     } withDependencies: {
@@ -43,6 +44,7 @@ struct SettingsFeatureTests {
     #expect(preferences.loadFavoriteModels() == [])
     #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
     #expect(preferences.loadLiveActivityShowsTitles())
+    #expect(preferences.loadOnboardingTipsDismissed() == false) // list tips shown again (#136)
   }
 
   /// The gateway event log belongs to the old server: sign out empties it, so a later

@@ -17,6 +17,15 @@ private func recoveringOnboarding(
   return state
 }
 
+/// The three logout paths `AppFeature` reduces: Settings "disconnect" (its prefs clearing is
+/// `SettingsFeature.clearTokenTapped`), "Quit to start" on the re-auth sheet, and the retry
+/// screen's confirmed "Log Out".
+enum LogoutPath: CaseIterable, Sendable {
+  case reauthQuit
+  case retryScreenLogOut
+  case settingsDisconnect
+}
+
 @MainActor
 struct AppFeatureTests {
   private let connection = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "tok")
@@ -91,6 +100,19 @@ struct AppFeatureTests {
     // #62 guard: an AUTH rejection must never raise the retry screen — retrying can't fix
     // dead credentials, so this path stays byte-identical to pre-#62 behavior.
     #expect(store.state.connectionFailed == nil)
+    // The landing's shape, independent of stack ids: exactly ONE Server step over Welcome,
+    // auto-probing the stored URL, with the dead token waiting for the Sign in step.
+    let onboarding = store.state.onboarding
+    #expect(onboarding.path.count == 1)
+    guard case let .server(server)? = onboarding.path.first else {
+      Issue.record("expected the Server step on top of Welcome, got \(onboarding.path)")
+      return
+    }
+    #expect(server.addressText == "http://mac.tailnet:9119")
+    #expect(server.autoProbe)
+    #expect(server.phase == .idle)
+    #expect(onboarding.prefilledToken == "bad")
+    #expect(onboarding.lastProbedCapability == nil)
   }
 
   /// A dead **cookie** session falls back to onboarding with only the URL prefilled (the
@@ -1748,6 +1770,7 @@ struct AppFeatureTests {
     let collapsedCleared = LockIsolated(false)
     let favoritesCleared = LockIsolated(false)
     let liveActivityCleared = LockIsolated(false)
+    let tipsCleared = LockIsolated(false)
     let store = TestStore(
       initialState: AppFeature.State(
         home: SessionListFeature.State(connection: cookieConnection),
@@ -1774,6 +1797,7 @@ struct AppFeatureTests {
         if favorites.isEmpty { favoritesCleared.setValue(true) }
       }
       $0.preferences.clearLiveActivityPrefs = { @Sendable in liveActivityCleared.setValue(true) }
+      $0.preferences.clearOnboardingTipsDismissed = { @Sendable in tipsCleared.setValue(true) }
     }
     store.exhaustivity = .off
 
@@ -1791,6 +1815,7 @@ struct AppFeatureTests {
     #expect(collapsedCleared.value) // model picker collapse + favorites cleared too (#130)
     #expect(favoritesCleared.value)
     #expect(liveActivityCleared.value) // Live Activity toggles reset on the quit logout (#138)
+    #expect(tipsCleared.value) // session-list onboarding tips shown again (#136)
   }
 
   // MARK: Push cleanup on logout (Task C4)
@@ -4403,6 +4428,7 @@ struct AppFeatureTests {
     preferences.saveFavoriteModels([FavoriteModel(providerID: "anthropic", model: "claude-opus-4-6")])
     preferences.saveLiveActivityEnabled(false)
     preferences.saveLiveActivityShowsTitles(false)
+    preferences.saveOnboardingTipsDismissed(true)
     let push = PushClient.inMemory()
 
     var initial = AppFeature.State(
@@ -4442,6 +4468,7 @@ struct AppFeatureTests {
     #expect(preferences.loadFavoriteModels() == [])
     #expect(preferences.loadLiveActivityEnabled()) // Live Activity toggles back on (#138)
     #expect(preferences.loadLiveActivityShowsTitles())
+    #expect(preferences.loadOnboardingTipsDismissed() == false) // list tips shown again (#136)
     #expect(preferences.loadPushDeviceToken() == nil)
     #expect(unregistered.value == "cafef00d") // best-effort unregister with the stored token
     #expect(push.badgeCount == 0)
@@ -7028,6 +7055,95 @@ struct AppFeatureTests {
     #expect(store.state.reauth?.providerDisplayName == "")
     #expect(store.state.reauth?.providerLabel == "nous")
     #expect(store.state.reauth?.previousUserID == "user-7")
+  }
+
+  /// The re-sign-in label end to end (#136): the capability the onboarding Server step
+  /// probed — recorded by the flow parent, NOT seeded into state by the test — outlives the
+  /// sign-in, and a later session expiry reads its display name for the "Continue with …"
+  /// button.
+  @Test func reauthLabelComesFromTheOnboardingProbe() async {
+    let session = bearerSession(userID: "user-42")
+    let connection = bearerConnection(session)
+    let capability = ServerAuthCapability(
+      oauthProviders: [
+        AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
+      ],
+      supportsNativeFlow: true,
+      isGated: true
+    )
+    let probe = ServerProbe(
+      address: ServerAddress("http://mac.tailnet:9119")!,
+      baseURL: URL(string: "http://mac.tailnet:9119")!,
+      capability: capability,
+      version: "0.17.0"
+    )
+    var onboarding = ConnectionFeature.State()
+    onboarding.path[id: 0] = .server(ServerStep.State(addressText: "http://mac.tailnet:9119"))
+    let store = TestStore(initialState: AppFeature.State(onboarding: onboarding)) {
+      AppFeature()
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.onboarding(.path(.element(id: 0, action: .server(.delegate(.probeSucceeded(probe)))))))
+    #expect(store.state.onboarding.lastProbedCapability == capability)
+    await store.send(.onboarding(.delegate(.connected(connection))))
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil))))
+    #expect(store.state.liveChat != nil)
+
+    await store.send(.liveChat(.delegate(.sessionExpired)))
+    #expect(store.state.reauth?.method == .oauth)
+    #expect(store.state.reauth?.providerDisplayName == "Nous Research")
+    #expect(store.state.reauth?.previousUserID == "user-42")
+  }
+
+  /// Every logout lands on WELCOME (#136), whatever the onboarding flow last held: a
+  /// completed Welcome → Server → Sign in stack, its probed capability and a prefilled token
+  /// are all dropped, so the next sign-in starts at the stack root with no stale server.
+  @Test(arguments: LogoutPath.allCases)
+  func everyLogoutLandsOnWelcome(_ logout: LogoutPath) async {
+    let capability = ServerAuthCapability(oauthProviders: [], supportsNativeFlow: false, isGated: false)
+    var finishedFlow = ConnectionFeature.State()
+    finishedFlow.prefilledToken = "tok"
+    finishedFlow.lastProbedCapability = capability
+    finishedFlow.path[id: 0] = .server(ServerStep.State(addressText: "http://mac.tailnet:9119"))
+    finishedFlow.path[id: 1] = .signIn(SignInStep.State(
+      probe: ServerProbe(
+        address: ServerAddress("http://mac.tailnet:9119")!,
+        baseURL: URL(string: "http://mac.tailnet:9119")!,
+        capability: capability,
+        version: nil
+      ),
+      prefilledToken: "tok"
+    ))
+
+    var initial = AppFeature.State(onboarding: finishedFlow)
+    switch logout {
+    case .settingsDisconnect:
+      initial.home = SessionListFeature.State(connection: connection)
+    case .reauthQuit:
+      initial.home = SessionListFeature.State(connection: connection)
+      initial.reauth = ReauthFeature.State(serverURL: connection.baseURL, method: .token)
+    case .retryScreenLogOut:
+      initial.connectionFailed = ConnectionFailedFeature.State(connection: connection, reason: .offline)
+    }
+    let store = TestStore(initialState: initial) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.deleteSession = { @Sendable in }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    let action: AppFeature.Action = switch logout {
+    case .settingsDisconnect: .home(.delegate(.disconnect))
+    case .reauthQuit: .reauth(.presented(.delegate(.quit)))
+    case .retryScreenLogOut: .connectionFailed(.delegate(.logoutConfirmed))
+    }
+    await store.send(action) {
+      $0.onboarding = .init()
+    }
+    #expect(store.state.onboarding.path.isEmpty) // Welcome is the stack root
+    #expect(store.state.onboarding.lastProbedCapability == nil)
+    #expect(store.state.onboarding.prefilledToken == nil)
   }
 
   /// The token store owns the freshly re-authenticated pair — `performNativeOAuthLogin`

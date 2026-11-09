@@ -610,6 +610,7 @@ public struct AppFeature {
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
         preferences.clearOwnedAgentUpdate(nil)
+        preferences.clearOnboardingTipsDismissed() // the next sign-in shows the tips again (#136)
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -988,6 +989,7 @@ public struct AppFeature {
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
         preferences.clearOwnedAgentUpdate(nil)
+        preferences.clearOnboardingTipsDismissed() // the next sign-in shows the tips again (#136)
         debugLog.clear()
         state.reauth = nil
         state.path = .init()

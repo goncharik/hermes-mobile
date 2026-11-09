@@ -371,11 +371,12 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Modify: `HermesKit/Sources/HermesKit/AppFeature.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift` (and any other suite constructing `ConnectionFeature.State`)
 
-- [ ] `fallBackToOnboarding` builds `ConnectionFeature.State(recovering:token:)`; the bearer drain stays as is
-- [ ] the re-sign-in provider label reads `state.onboarding.lastProbedCapability?.oauthProviders ?? []`
-- [ ] every logout/disconnect branch keeps `state.onboarding = .init()` (Welcome) and clears the new tips pref
-- [ ] update tests: credentials-verdict landing (path shape + token), logout landing on Welcome, logout clears the new pref, the re-sign-in label from the last probe
-- [ ] run `make test` and confirm it passes before task 8
+- [x] `fallBackToOnboarding` builds `ConnectionFeature.State(recovering:token:)`; the bearer drain stays as is
+- [x] the re-sign-in provider label reads `state.onboarding.lastProbedCapability?.oauthProviders ?? []`
+- [x] every logout/disconnect branch keeps `state.onboarding = .init()` (Welcome) and clears the new tips pref
+- [x] update tests: credentials-verdict landing (path shape + token), logout landing on Welcome, logout clears the new pref, the re-sign-in label from the last probe
+- [x] run `make test` and confirm it passes before task 8
+- ➕ `PreferencesClient.load/save/clearOnboardingTipsDismissed` added here (live + in-memory) so the logout clearing is testable now; task 11 only reads/saves it
 
 ### Task 8: Build the onboarding views and replace `ConnectionView`
 
