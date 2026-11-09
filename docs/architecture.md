@@ -705,7 +705,13 @@ slash pipeline: exec → directive / `command.dispatch` fallback / alias hop) th
 `HealCursor` through its RPCs, so it heals at most once and every later RPC targets the healed id.
 
 On a canonical session-authority host (`session_authority: true` on the ready, v0.22.3+),
-`config.set model` is refused with `use_session_mutation_model` (#157). The pick there is
+`prompt.submit` must carry a `submission_id` or it is refused with `invalid_params` (#158). The
+reducer mints one per user send (`mintSubmissionID`) and threads it through that send's heal
+replay and slash `send`/`skill` directive, so a retried send keeps its identity and the gateway
+can de-duplicate it. A legacy host rejects the key as an unknown param, so it is sent only to an
+authority host.
+
+On the same hosts, `config.set model` is refused with `use_session_mutation_model` (#157). The pick there is
 `session.mutate {operation: "model", payload: {model, provider}}`, fenced by
 `expected_revision` / `expected_generation` (`State.sessionFences`, adopted monotonically from
 the hydrate snapshot, `session.info` and mutation receipts; read with a message-less
