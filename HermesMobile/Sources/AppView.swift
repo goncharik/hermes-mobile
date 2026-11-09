@@ -52,21 +52,40 @@ struct AppView: View {
         // shows the live-chat slot directly: the path holds no marker there
         // (`AppFeature.isChatDetached`), so the chat is never rendered twice.
         NavigationSplitView {
-          NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
-            // Which row is highlighted is `AppFeature.State.highlightedSessionID` (nil in
-            // compact — unit-tested there). A plain optional, deliberately NOT
-            // `List(selection:)`: selection would become a second source of truth for which
-            // session is open, racing the reducer-owned slot on push taps, archive refills,
-            // and layout changes.
-            SessionListView(
-              store: homeStore,
-              highlightedSessionID: store.highlightedSessionID,
-              needsInputSessionIDs: store.needsInputSessionIDs
-            )
-          } destination: { _ in
-            // The path holds only thin session-key markers — the REAL chat state lives in
-            // the app-level live-chat slot, so a running turn's socket survives pops.
-            chatDetail
+          // The Settings tab is its OWN stack (`SettingsView` owns the `SettingsPath` pushes),
+          // layered OVER the list's stack rather than nested inside it — nesting two stacks
+          // is unsupported. The list stays mounted underneath (hidden, inert) so its `.task`
+          // poll and sheets aren't torn down and re-fired on every tab switch.
+          // `AppFeature` leaves the Settings tab whenever a chat marker is pushed, so a chat
+          // never lands hidden under it.
+          let settingsStore = homeStore.effectiveTab == .settings
+            ? homeStore.scope(state: \.settings, action: \.settings.presented)
+            : nil
+          ZStack {
+            NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
+              // Which row is highlighted is `AppFeature.State.highlightedSessionID` (nil in
+              // compact — unit-tested there). A plain optional, deliberately NOT
+              // `List(selection:)`: selection would become a second source of truth for which
+              // session is open, racing the reducer-owned slot on push taps, archive refills,
+              // and layout changes.
+              SessionListView(
+                store: homeStore,
+                highlightedSessionID: store.highlightedSessionID,
+                needsInputSessionIDs: store.needsInputSessionIDs
+              )
+            } destination: { _ in
+              // The path holds only thin session-key markers — the REAL chat state lives in
+              // the app-level live-chat slot, so a running turn's socket survives pops.
+              chatDetail
+            }
+            .opacity(settingsStore == nil ? 1 : 0)
+            .allowsHitTesting(settingsStore == nil)
+            .accessibilityHidden(settingsStore != nil)
+            if let settingsStore {
+              SettingsView(store: settingsStore) {
+                HomeTabBar(store: homeStore)
+              }
+            }
           }
           .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 400)
         } detail: {

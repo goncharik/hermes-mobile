@@ -1258,6 +1258,18 @@ public struct AppFeature {
     .onChange(of: \.profileReseatSignal) { _, _ in
       Reduce { state, _ in reduceProfileReseat(&state) }
     }
+    // A chat marker landing on the stack (push tap, intent, widget, "Ask agent", a narrowing
+    // reseat) leaves the Settings tab: the Settings stack is layered OVER the list's stack in
+    // `AppView`, so a chat pushed under it would stay hidden, and popping back should land on
+    // Sessions — the tab the chat belongs to. Sent as a list ACTION (never a direct nil-out)
+    // so the list's `ifLet` cancels Settings' effects. Compact only in practice: regular
+    // never holds a marker.
+    .onChange(of: \.path.isEmpty) { _, isEmpty in
+      Reduce { state, _ in
+        guard !isEmpty, state.home?.effectiveTab == .settings else { return .none }
+        return .send(.home(.selectTab(.sessions)))
+      }
+    }
     // Home Screen quick actions only while signed in (#93): every sign-in lands on a
     // non-onboarding root and every logout or credentials verdict lands on onboarding, so this
     // one edge covers all of them. iOS persists the items, so a fresh process starting on

@@ -49,7 +49,7 @@ away from your desk and still keep your agent moving.
   resume or start a new one. Cron jobs get their own tab: see each job's status and
   recent runs, and run, pause, resume or delete it.
 - **Switch profiles.** Keep multiple Hermes profiles on one agent and switch between
-  them from a Safari-style header pill — each profile has its own scoped session list,
+  them with one tap from a Safari-style header pill — each profile has its own scoped session list,
   and new chats are created under the selected one. Create custom profiles (with an
   optional SOUL.md) right from the app.
 - **Watch it work.** Streaming responses render as native Markdown. A running turn shows

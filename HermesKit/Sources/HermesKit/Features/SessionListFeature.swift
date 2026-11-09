@@ -70,7 +70,8 @@ public struct SessionListFeature {
     /// this to `.archive` while the agent lacks the DELETE capability.
     public var defaultSwipeAction: SessionSwipeAction
     /// The bottom bar's selected tab. In-memory only (a launch starts on Sessions); views
-    /// read `effectiveTab`, which falls back to Sessions while there is no cron content.
+    /// read `effectiveTab`, which falls back to Sessions while there is no cron content (or,
+    /// for Settings, no seeded `settings` state).
     public var selectedTab: SessionListTab
     /// Whether the Sessions tab's search field is open — opened from the toolbar's search
     /// button, it replaces the nav bar row; closing clears the query.
@@ -140,6 +141,10 @@ public struct SessionListFeature {
     /// observable change — that's what re-announces the copy to VoiceOver (a `Bool` would
     /// stay `true` and the announcement would be swallowed).
     public var copiedIDToastToken: Int?
+    /// The Settings TAB's state: seeded fresh when the tab is selected and dropped when it is
+    /// left (`closeSettingsTab()`), so it carries the old sheet's open/close semantics — a
+    /// re-seed on every visit, child effects cancelled on leave. `@Presents` so a child
+    /// `dismiss()` (Sign out, Reconnect, "Ask agent") still closes it.
     @Presents public var settings: SettingsFeature.State?
     @Presents public var archived: ArchivedSessionsFeature.State?
     /// Monotonic count of `archived` sheet presentations, bumped each time the sheet is
@@ -275,6 +280,14 @@ public struct SessionListFeature {
       profilesSupported ? selectedProfileName : nil
     }
 
+    /// Whether the header offers the profile Edit menu (Rename / Delete): only for a KNOWN
+    /// custom profile — never the default one, and not before the profiles list has loaded
+    /// the selection (the rename/delete actions would no-op on an unknown name).
+    public var canEditSelectedProfile: Bool {
+      guard profilesSupported, let profile = profiles[id: selectedProfileName] else { return false }
+      return !profile.isDefault
+    }
+
     /// The destructive action the trailing swipe actually offers: the persisted
     /// preference, clamped back to `.archive` while the agent lacks the DELETE
     /// capability (a stale `.delete` pref must never surface a dead button).
@@ -286,7 +299,7 @@ public struct SessionListFeature {
     /// for routing that can arrive while one is up (an App Intent, #93), so the chat it opens
     /// isn't left behind a sheet.
     mutating func dismissPresentations() {
-      settings = nil
+      closeSettingsTab()
       archived = nil
       addProfile = nil
       confirmationDialog = nil
@@ -294,6 +307,15 @@ public struct SessionListFeature {
       renameDraft = ""
       renamingProfileName = nil
       profileRenameDraft = ""
+    }
+
+    /// Leave the Settings tab: drop its state and fall back to Sessions. Every path that
+    /// clears `settings` goes through here, so `selectedTab == .settings` never outlives it.
+    mutating func closeSettingsTab() {
+      settings = nil
+      if selectedTab == .settings {
+        selectedTab = .sessions
+      }
     }
 
     /// True while a search query is active — the list shows flat results, not date
@@ -340,17 +362,27 @@ public struct SessionListFeature {
       cronJobsSupported ? !cronJobs.isEmpty : !cronSessions.isEmpty
     }
 
-    /// Whether the bottom bar shows the Sessions | Cron Jobs tabs: only with cron content,
-    /// and not while the search field is open or a query is active (search is a
-    /// Sessions-only mode).
+    /// Whether the bottom bar shows the tab pill: always (Settings is always a tab), except
+    /// while the search field is open or a query is active (search is a Sessions-only mode).
     public var showsTabBar: Bool {
-      hasCronContent && !isSearchPresented && !isSearching
+      !isSearchPresented && !isSearching
     }
 
-    /// The tab the list actually renders: `selectedTab` while the tab bar shows, else
-    /// Sessions — so a profile or poll that drops every cron row never strands an empty tab.
+    /// The tabs the pill offers: Sessions, Cron Jobs only with cron content, then Settings.
+    public var availableTabs: [SessionListTab] {
+      hasCronContent ? [.sessions, .cron, .settings] : [.sessions, .settings]
+    }
+
+    /// The tab the home screen actually renders: `selectedTab` while the tab bar shows and
+    /// that tab exists, else Sessions — so a profile or poll that drops every cron row never
+    /// strands an empty tab, and a Settings selection without seeded state never renders.
     public var effectiveTab: SessionListTab {
-      showsTabBar ? selectedTab : .sessions
+      guard showsTabBar else { return .sessions }
+      switch selectedTab {
+      case .sessions: return .sessions
+      case .cron: return hasCronContent ? .cron : .sessions
+      case .settings: return settings != nil ? .settings : .sessions
+      }
     }
 
     /// Whether the Sessions tab shows the "No sessions" placeholder: no search hit (or, outside
@@ -478,7 +510,7 @@ public struct SessionListFeature {
     case copyIDButtonTapped(id: Session.ID)
     /// The copy toast's dwell time elapsed — hide it.
     case copiedIDToastExpired
-    /// A bottom-bar tab was tapped.
+    /// A bottom-bar tab was tapped. Selecting Settings seeds its state; leaving it drops it.
     case selectTab(SessionListTab)
     /// The toolbar's search button: open the search field.
     case searchButtonTapped
@@ -540,7 +572,6 @@ public struct SessionListFeature {
     /// Dismiss the rename alert without applying changes.
     case cancelRename
     case confirmationDialog(PresentationAction<Dialog>)
-    case settingsButtonTapped
     case settings(PresentationAction<SettingsFeature.Action>)
     /// Open the Archived sessions sheet (from the top-trailing menu).
     case archivedButtonTapped
@@ -1183,6 +1214,15 @@ public struct SessionListFeature {
         return .none
 
       case let .selectTab(tab):
+        if tab == .settings {
+          state.selectedTab = .settings
+          // Re-tapping the open tab keeps its state (and any sub-screen) as is.
+          if state.settings == nil {
+            seedSettings(&state)
+          }
+          return .none
+        }
+        state.closeSettingsTab()
         state.selectedTab = tab
         // Runs aren't polled while the Cron Jobs tab is hidden (see `load`): catch up on return.
         return state.effectiveTab == .cron ? fetchExpandedCronRuns(state) : .none
@@ -1452,19 +1492,6 @@ public struct SessionListFeature {
       case .newSessionButtonTapped:
         return .send(.delegate(.createSession(initialComposerText: nil)))
 
-      case .settingsButtonTapped:
-        // `connection` carries the auth session (the Auth row / token-field gate read it).
-        state.settings = SettingsFeature.State(
-          connection: state.connection,
-          pushAvailable: state.pushAvailable,
-          defaultSwipeAction: state.defaultSwipeAction,
-          deleteSupported: state.deleteSupported,
-          liveActivityEnabled: preferences.loadLiveActivityEnabled(),
-          liveActivityShowsTitles: preferences.loadLiveActivityShowsTitles(),
-          profileName: state.scopedProfileName
-        )
-        return .none
-
       case .archivedButtonTapped:
         // New presentation → new generation: outcomes of DELETEs initiated under an
         // earlier presentation must not be re-injected into this one (see
@@ -1713,7 +1740,7 @@ public struct SessionListFeature {
         return .none
 
       case .settings(.presented(.delegate(.disconnect))):
-        state.settings = nil
+        state.closeSettingsTab()
         return .send(.delegate(.disconnect))
 
       case .settings(.presented(.delegate(.reconnect))):
@@ -1735,8 +1762,14 @@ public struct SessionListFeature {
       case .settings(.presented(.delegate(.installPushPlugin))):
         // The Settings push guide's "Ask agent" → dismiss Settings (Settings already requested
         // its own dismissal) and open a new chat with the install prompt pre-filled.
-        state.settings = nil
+        state.closeSettingsTab()
         return .send(.delegate(.createSession(initialComposerText: PushSetup.installPrompt)))
+
+      case .settings(.dismiss):
+        // A child `dismiss()` (Reconnect, Sign out, "Ask agent") closes the tab: the
+        // presentation reducer nils `settings` after this runs, so fall back to Sessions here.
+        state.closeSettingsTab()
+        return .none
 
       case .settings:
         return .none
@@ -1995,6 +2028,22 @@ public struct SessionListFeature {
   private func isPushPromptSnoozed() -> Bool {
     guard let snooze = preferences.loadPushPromptSnooze() else { return false }
     return now < snooze.until
+  }
+
+  /// Seed the Settings tab from the list's current facts. Fresh on every visit (the tab's
+  /// state is dropped on leave), so a profile switch, capability flip or pref change since
+  /// the last visit is always reflected. `connection` carries the auth session (the Auth row
+  /// / token-field gate read it).
+  private func seedSettings(_ state: inout State) {
+    state.settings = SettingsFeature.State(
+      connection: state.connection,
+      pushAvailable: state.pushAvailable,
+      defaultSwipeAction: state.defaultSwipeAction,
+      deleteSupported: state.deleteSupported,
+      liveActivityEnabled: preferences.loadLiveActivityEnabled(),
+      liveActivityShowsTitles: preferences.loadLiveActivityShowsTitles(),
+      profileName: state.scopedProfileName
+    )
   }
 
   /// Fetch the expanded job's recent runs (`GET /api/cron/jobs/{id}/runs`, capped to

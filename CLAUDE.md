@@ -297,7 +297,7 @@ bullets below are the compressed rules.
   array fetched as TWO source slices (interactive + cron, never one shared page — cron runs
   starve it): update-date sections via pure `SessionDateBucket` / `groupEntriesByDate`;
   `SessionCardView` on every interactive row, compact `SessionRowView` only for the flat cron
-  fallback + archived sheet; the Cron Jobs TAB lists jobs (pill only with cron content; views
+  fallback + archived sheet; the Cron Jobs TAB lists jobs (tab only with cron content; views
   read `effectiveTab`; no badge; search is Sessions-only). **Never group cron runs by session
   id** — an expanded job's runs come from `/runs` (its 404 flips no flag). Nesting via
   pure `flattenSessionsWithBranches` (orphans de-nest). Details: `docs/features/session-list.md`.
@@ -322,8 +322,10 @@ bullets below are the compressed rules.
   duplicated per feature. Attach the overlay where nothing can swallow it (before a
   bottom `.safeAreaInset`; on the transcript, not the outer `VStack`); announce every
   copy to VoiceOver off the token.
-- **Settings is ONE `Form` (six groups) + a `SettingsPath` stack** owned by `SettingsView`
-  (the sheet adds no `NavigationStack`); rows push by reducer append, never `NavigationLink`.
+- **Settings is a home TAB: ONE `Form` (six groups) + a `SettingsPath` stack** owned by
+  `SettingsView`, layered over (never nested in) the list's stack in `AppView`; state seeded on
+  select, dropped on leave (`closeSettingsTab()`); a pushed chat marker leaves the tab. Rows
+  push by reducer append, never `NavigationLink`.
   App icons: every set is an alternate in `Project.swift` (primary included — it differs
   per build); `AppIconCatalog.parse` filters the primary, which is always `set(nil)`; iOS
   persists the choice, logout never touches it. `DiagnosticsReport` takes no `AuthSession`

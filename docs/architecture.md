@@ -60,7 +60,7 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │  │                       //   pinned + update-date sections + Cron Jobs tab /
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
 │  │                       //   working-glow auto-poll; profile pill/switcher (per-call scoped) +
-│  │                       //   presents Settings + Archived + AddProfile sheets
+│  │                       //   the Settings tab + Archived + AddProfile sheets
 │  ├─ SettingsFeature      // six-group Form; SettingsPath stack → AppIconPickerFeature /
 │  │                       //   DiagnosticsFeature (live debug log + copy report) /
 │  │                       //   AcknowledgementsFeature (docs/features/settings.md)

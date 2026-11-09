@@ -248,6 +248,26 @@ struct AppFeatureTests {
     }
   }
 
+  /// A chat pushed while the Settings tab is up (here a new session from the tab bar; a push
+  /// tap or intent alike) leaves Settings through the list's own action, so the chat isn't
+  /// hidden under the Settings layer and popping back lands on Sessions.
+  @Test func pushingAChatLeavesTheSettingsTab() async {
+    var home = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    home.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: AppFeature.State(home: home)) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.createSession(initialComposerText: nil)))) {
+      $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
+      $0.path.append(ChatScreen.State(sessionKey: nil))
+    }
+    await store.receive(\.home.selectTab, .sessions) {
+      $0.home?.selectedTab = .sessions
+      $0.home?.settings = nil
+    }
+  }
+
   @Test func openingSessionUnderCustomProfilePassesProfileToChat() async {
     let store = TestStore(
       initialState: AppFeature.State(

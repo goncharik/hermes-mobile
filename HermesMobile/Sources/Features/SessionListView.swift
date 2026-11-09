@@ -3,8 +3,9 @@ import HermesKit
 import SwiftUI
 
 /// The session list: searchable, pull-to-refresh, inbox-style cards sectioned by update date
-/// (Today, Yesterday, …). The top-trailing button opens the Archived sessions sheet. "New
-/// chat" lives in the bottom bar (alongside the iOS 26 bottom search field).
+/// (Today, Yesterday, …). The top-leading button opens the Archived sessions sheet; Search and
+/// the selected profile's Edit menu sit top-trailing. The tabs and New session live in the
+/// bottom bar (`HomeTabBar`).
 struct SessionListView: View {
   @Bindable var store: StoreOf<SessionListFeature>
   /// The session shown in the split view's detail column (#80), whose row gets the
@@ -16,8 +17,6 @@ struct SessionListView: View {
   /// .needsInputSessionIDs`, passed in by `AppView` like the highlight.
   var needsInputSessionIDs: Set<String> = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  /// Slides the selected-tab capsule between the bottom bar's tabs.
-  @Namespace private var tabSelection
   /// Keyboard focus for the search field, raised as soon as the field opens.
   @FocusState private var isSearchFieldFocused: Bool
 
@@ -42,6 +41,9 @@ struct SessionListView: View {
         }
       case .cron:
         cronTabContent
+      case .settings:
+        // Settings is its own stack, layered over this list by `AppView`; nothing renders here.
+        EmptyView()
       }
     }
     .listStyle(.plain)
@@ -76,8 +78,10 @@ struct SessionListView: View {
     .refreshable { store.send(.pulledToRefresh) }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
-        Button("Settings", systemImage: "gearshape") {
-          store.send(.settingsButtonTapped)
+        Button {
+          store.send(.archivedButtonTapped)
+        } label: {
+          Label("Archived sessions", systemImage: "archivebox")
         }
       }
       if store.profilesSupported {
@@ -85,13 +89,8 @@ struct SessionListView: View {
           profilePill
         }
       }
-      // One trailing group, so iOS 26 draws Archive + Search in a single glass pill.
+      // One trailing group, so iOS 26 draws Search + Edit profile in a single glass pill.
       ToolbarItemGroup(placement: .topBarTrailing) {
-        Button {
-          store.send(.archivedButtonTapped)
-        } label: {
-          Label("Archived sessions", systemImage: "archivebox")
-        }
         if store.effectiveTab == .sessions {
           Button {
             store.send(.searchButtonTapped, animation: reduceMotion ? nil : .snappy)
@@ -99,12 +98,16 @@ struct SessionListView: View {
             Label("Search sessions", systemImage: "magnifyingglass")
           }
         }
+        if store.canEditSelectedProfile {
+          profileEditMenu
+        }
       }
     }
-    // The bottom bar: the Sessions | Cron Jobs tabs (only with cron content) and New chat.
-    // A `safeAreaInset` keeps it in the normal view hierarchy, above the home indicator.
+    // The bottom bar: the tab pill (Sessions, Cron Jobs with cron content, Settings) and New
+    // session. A `safeAreaInset` keeps it in the normal view hierarchy, above the home
+    // indicator.
     .safeAreaInset(edge: .bottom) {
-      bottomBar
+      HomeTabBar(store: store)
     }
     // `bottomActionSheet`, not `.confirmationDialog`: on iOS 26 the SwiftUI modifier
     // renders as a floating popover (dropping the title and Cancel) wherever it's
@@ -138,10 +141,6 @@ struct SessionListView: View {
       Button("Cancel", role: .cancel) { store.send(.cancelRenameProfile) }
     } message: {
       Text(ProfileName.hint)
-    }
-    // No `NavigationStack` wrapper: `SettingsView` owns its stack (the `SettingsPath` pushes).
-    .sheet(item: $store.scope(state: \.settings, action: \.settings)) { settingsStore in
-      SettingsView(store: settingsStore)
     }
     .sheet(item: $store.scope(state: \.archived, action: \.archived)) { archivedStore in
       NavigationStack {
@@ -442,8 +441,8 @@ struct SessionListView: View {
 
   /// Safari-style centered pill in the navigation bar: the active profile's icon (a house
   /// for the default profile; none for custom ones), its name, and a chevron. Tapping it
-  /// opens the profile `Menu`. Rendered only when the agent supports profiles
-  /// (`profilesSupported`); otherwise the static "Sessions" title is shown instead.
+  /// opens the profile `Menu`, where ONE tap on any profile switches to it. Rendered only
+  /// when the agent supports profiles (`profilesSupported`).
   private var profilePill: some View {
     Menu {
       profileMenuContent
@@ -468,39 +467,17 @@ struct SessionListView: View {
     .accessibilityLabel("Profile: \(store.selectedProfileName)")
   }
 
-  /// The profile `Menu`'s contents: each profile (checkmark on the active one; custom
-  /// profiles offer rename/delete in a nested menu), a divider, then "Add profile".
+  /// The profile `Menu`'s contents: every profile as a plain button — ONE tap selects it — a
+  /// divider, then "Add profile". No checkmarks (Safari-style): the default profile shows a
+  /// house, custom ones a person glyph, and the pill title names the active one. Rename and
+  /// Delete live in the trailing Edit menu (`profileEditMenu`), for the selected profile only.
   @ViewBuilder
   private var profileMenuContent: some View {
     ForEach(store.profiles) { profile in
-      if profile.isDefault {
-        Button {
-          store.send(.selectProfile(name: profile.name))
-        } label: {
-          Label(profile.name, systemImage: "house")
-        }
-      } else {
-        // Custom profiles: select on tap, with a nested menu for rename/delete.
-        Menu {
-          Button {
-            store.send(.selectProfile(name: profile.name))
-          } label: {
-            Label("Switch to this profile", systemImage: "arrow.right.circle")
-          }
-          Divider()
-          Button {
-            store.send(.renameProfileTapped(name: profile.name))
-          } label: {
-            Label("Rename", systemImage: "pencil")
-          }
-          Button(role: .destructive) {
-            store.send(.deleteProfileButtonTapped(name: profile.name))
-          } label: {
-            Label("Delete", systemImage: "trash")
-          }
-        } label: {
-          Label(profile.name, systemImage: "person.crop.circle")
-        }
+      Button {
+        store.send(.selectProfile(name: profile.name))
+      } label: {
+        Label(profile.name, systemImage: profile.isDefault ? "house" : "person.crop.circle")
       }
     }
 
@@ -513,43 +490,30 @@ struct SessionListView: View {
     }
   }
 
+  /// The trailing pencil: Rename / Delete for the SELECTED custom profile. Shown only while
+  /// `canEditSelectedProfile` (never for the default profile). Both go through the reducer —
+  /// the rename alert and the `.bottomActionSheet` delete confirmation.
+  private var profileEditMenu: some View {
+    Menu {
+      Button {
+        store.send(.renameProfileTapped(name: store.selectedProfileName))
+      } label: {
+        Label("Rename profile", systemImage: "pencil")
+      }
+      Button(role: .destructive) {
+        store.send(.deleteProfileButtonTapped(name: store.selectedProfileName))
+      } label: {
+        Label("Delete profile", systemImage: "trash")
+      }
+    } label: {
+      Label("Edit profile", systemImage: "pencil")
+    }
+  }
+
   private var isSelectedDefault: Bool {
     store.profiles[id: store.selectedProfileName]?.isDefault
       ?? (store.selectedProfileName == SessionListFeature.State.defaultProfileName)
   }
-
-  /// The bottom "new session" button — a trailing circular FAB in the Hermes accent
-  /// (icon-only: it starts a new session, not a chat). Rendered via `safeAreaInset` so the
-  /// list content scrolls clear of it.
-  /// The bottom bar: a glass Sessions | Cron Jobs tab pill on the leading side (only while
-  /// there is cron content — `showsTabBar`) and the round glass New chat button trailing.
-  private var bottomBar: some View {
-    HStack(alignment: .center) {
-      if store.showsTabBar {
-        tabPill
-      }
-      Spacer(minLength: 0)
-      Button {
-        store.send(.newSessionButtonTapped)
-      } label: {
-        Image(systemName: "square.and.pencil")
-          .font(.title2.weight(.semibold))
-          .foregroundStyle(.primary)
-          .frame(width: Self.barHeight, height: Self.barHeight)
-          .contentShape(Circle())
-          .modifier(GlassBackground(
-            shape: Circle(), isInteractive: true, fallbackShadowRadius: 6, fallbackShadowY: 3
-          ))
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("New session")
-    }
-    .padding(.horizontal)
-    .padding(.vertical, 8)
-  }
-
-  /// The bar's shared height: the tab pill and the New chat circle line up.
-  private static let barHeight: CGFloat = 64
 
   /// The open search field in place of the nav bar row: a glass capsule field (focused on
   /// open) beside a round glass close button that hides it and clears the query.
@@ -588,50 +552,6 @@ struct SessionListView: View {
   }
 
   private static let searchBarHeight: CGFloat = 48
-
-  private var tabPill: some View {
-    HStack(spacing: 0) {
-      tabButton(.sessions, title: "Sessions", systemImage: "text.bubble.fill")
-      tabButton(.cron, title: "Cron Jobs", systemImage: "clock.fill")
-    }
-    .padding(4)
-    .frame(height: Self.barHeight)
-    .modifier(GlassBackground(shape: Capsule(), fallbackShadowRadius: 6, fallbackShadowY: 3))
-  }
-
-  /// One tab: icon over label, the selected one on an inner capsule in the accent color. No
-  /// unread badge: unread shows only on an expanded job's run rows (desktop parity).
-  private func tabButton(
-    _ tab: SessionListTab,
-    title: String,
-    systemImage: String
-  ) -> some View {
-    let isSelected = store.effectiveTab == tab
-    return Button {
-      store.send(.selectTab(tab), animation: reduceMotion ? nil : .snappy)
-    } label: {
-      VStack(spacing: 2) {
-        Image(systemName: systemImage)
-          .font(.title3)
-        Text(title)
-          .font(.caption.weight(.semibold))
-      }
-      .foregroundStyle(isSelected ? Color.hermesAccent : Color.primary)
-      .padding(.horizontal, 18)
-      .frame(maxHeight: .infinity)
-      .background {
-        if isSelected {
-          Capsule()
-            .fill(Color(.systemBackground).opacity(0.55))
-            .matchedGeometryEffect(id: "selectedTab", in: tabSelection)
-        }
-      }
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(title)
-    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-  }
 
   /// Stemmed-entry convenience: renders a lane's `SessionBranchEntry` — the card with the
   /// branch elbow stem (`└─`/`├─`) in its header and a leading indent when nested.

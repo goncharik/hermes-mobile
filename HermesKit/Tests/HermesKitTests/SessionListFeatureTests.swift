@@ -3973,26 +3973,76 @@ struct SessionListFeatureTests {
   }
 
   @Test func settingsInstallPushPluginOpensPrefilledChat() async {
-    var initial = SessionListFeature.State(connection: connection)
+    var initial = SessionListFeature.State(connection: connection, selectedTab: .settings)
     initial.settings = SettingsFeature.State(connection: connection)
     let store = TestStore(initialState: initial) { SessionListFeature() }
 
     await store.send(.settings(.presented(.delegate(.installPushPlugin)))) {
       $0.settings = nil
+      $0.selectedTab = .sessions
     }
     await store.receive(\.delegate.createSession)
   }
 
-  // MARK: Settings presentation (Task 12)
+  // MARK: Settings tab
 
-  @Test func settingsButtonPresentsSettings() async {
-    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+  /// Selecting the Settings tab seeds its state; re-tapping it keeps that state (and any
+  /// pushed sub-screen); leaving for another tab drops it, cancelling its effects.
+  @Test func settingsTabSeedsOnSelectAndDropsOnLeave() async {
+    let store = TestStore(
+      initialState: SessionListFeature.State(connection: connection, cronJobs: [CronJob(id: "job1")])
+    ) {
       SessionListFeature()
     }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(connection: self.connection)
     }
+    #expect(store.state.effectiveTab == .settings)
+
+    await store.send(.settings(.presented(.acknowledgementsRowTapped))) {
+      $0.settings?.path.append(.acknowledgements(AcknowledgementsFeature.State()))
+    }
+    await store.send(.selectTab(.settings)) // re-tap: no reseed, the sub-screen survives
+
+    await store.send(.selectTab(.cron)) {
+      $0.selectedTab = .cron
+      $0.settings = nil
+    }
+    #expect(store.state.effectiveTab == .cron)
+  }
+
+  /// A child `dismiss()` (Reconnect, Sign out, "Ask agent") closes the tab back to Sessions.
+  @Test func settingsChildDismissFallsBackToSessions() async {
+    var initial = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    initial.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: initial) { SessionListFeature() }
+
+    await store.send(.settings(.dismiss)) {
+      $0.settings = nil
+      $0.selectedTab = .sessions
+    }
+    #expect(store.state.effectiveTab == .sessions)
+  }
+
+  /// An App Intent dismissing the list's presentations leaves the Settings tab too.
+  @Test func dismissPresentationsLeavesTheSettingsTab() {
+    var state = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    state.settings = SettingsFeature.State(connection: connection)
+    state.dismissPresentations()
+    #expect(state.settings == nil)
+    #expect(state.selectedTab == .sessions)
+  }
+
+  /// The Settings tab renders only with seeded state, and never while searching.
+  @Test func settingsTabRendersOnlyWithStateOutsideSearch() {
+    var state = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    #expect(state.effectiveTab == .sessions, "no seeded state: nothing to render")
+    state.settings = SettingsFeature.State(connection: connection)
+    #expect(state.effectiveTab == .settings)
+    state.isSearchPresented = true
+    #expect(state.effectiveTab == .sessions)
   }
 
   @Test func settingsPresentationThreadsPushAvailability() async {
@@ -4000,7 +4050,8 @@ struct SessionListFeatureTests {
     initial.pushAvailable = false // a 404 earlier flipped push off
     let store = TestStore(initialState: initial) { SessionListFeature() }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(connection: self.connection, pushAvailable: false)
     }
   }
@@ -4011,7 +4062,8 @@ struct SessionListFeatureTests {
     initial.deleteSupported = false // an earlier 404/405 flipped delete off
     let store = TestStore(initialState: initial) { SessionListFeature() }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(
         connection: self.connection, defaultSwipeAction: .delete, deleteSupported: false
       )
@@ -4026,7 +4078,8 @@ struct SessionListFeatureTests {
     initial.selectedProfileName = "work"
     let store = TestStore(initialState: initial) { SessionListFeature() }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(connection: self.connection, profileName: "work")
     }
 
@@ -4036,7 +4089,8 @@ struct SessionListFeatureTests {
     unsupported.selectedProfileName = "work"
     let unsupportedStore = TestStore(initialState: unsupported) { SessionListFeature() }
 
-    await unsupportedStore.send(.settingsButtonTapped) {
+    await unsupportedStore.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(connection: self.connection)
     }
     #expect(unsupportedStore.state.settings?.profileName == nil)
@@ -4053,7 +4107,8 @@ struct SessionListFeatureTests {
       initialState: SessionListFeature.State(connection: cookieConnection)
     ) { SessionListFeature() }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(connection: cookieConnection)
     }
     #expect(store.state.settings?.authLabel == "Password · alice")
@@ -4082,15 +4137,20 @@ struct SessionListFeatureTests {
       $0.preferences = preferences
     }
 
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(
         connection: self.connection, liveActivityEnabled: true, liveActivityShowsTitles: false
       )
     }
 
     preferences.saveLiveActivityEnabled(false)
-    await store.send(.settings(.dismiss)) { $0.settings = nil }
-    await store.send(.settingsButtonTapped) {
+    await store.send(.selectTab(.sessions)) {
+      $0.selectedTab = .sessions
+      $0.settings = nil
+    }
+    await store.send(.selectTab(.settings)) {
+      $0.selectedTab = .settings
       $0.settings = SettingsFeature.State(
         connection: self.connection, liveActivityEnabled: false, liveActivityShowsTitles: false
       )
@@ -4207,12 +4267,13 @@ struct SessionListFeatureTests {
   }
 
   @Test func settingsDisconnectDismissesAndBubblesUp() async {
-    var initial = SessionListFeature.State(connection: connection)
+    var initial = SessionListFeature.State(connection: connection, selectedTab: .settings)
     initial.settings = SettingsFeature.State(connection: connection)
     let store = TestStore(initialState: initial) { SessionListFeature() }
 
     await store.send(.settings(.presented(.delegate(.disconnect)))) {
       $0.settings = nil
+      $0.selectedTab = .sessions
     }
     await store.receive(\.delegate.disconnect)
   }
@@ -4402,11 +4463,12 @@ struct SessionListFeatureTests {
   /// falls back to Sessions without forgetting the selection.
   @Test func cronTabFallsBackToSessionsWithoutCronContentOrWhileSearching() {
     var state = SessionListFeature.State(connection: connection, selectedTab: .cron)
-    #expect(!state.showsTabBar)
+    #expect(state.showsTabBar, "Settings is always a tab, so the pill always shows")
+    #expect(state.availableTabs == [.sessions, .settings])
     #expect(state.effectiveTab == .sessions, "no cron content: no Cron Jobs tab")
 
     state.cronJobs = [CronJob(id: "job1")]
-    #expect(state.showsTabBar)
+    #expect(state.availableTabs == [.sessions, .cron, .settings])
     #expect(state.effectiveTab == .cron)
 
     state.searchQuery = "deploy"
@@ -5274,6 +5336,29 @@ struct SessionListFeatureTests {
     #expect(renamed.value.first?.0 == "work")
     #expect(renamed.value.first?.1 == "work-renamed")
     #expect(prefs.loadSelectedProfileID() == "work-renamed")
+  }
+
+  /// The header's Edit menu (Rename / Delete) shows only for a KNOWN custom profile: never
+  /// the default one, never before the profiles list holds the selection, and never on an
+  /// agent without the profiles API.
+  @Test func canEditSelectedProfileOnlyForAKnownCustomProfile() {
+    var state = SessionListFeature.State(
+      connection: connection,
+      profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+      selectedProfileName: "work",
+      profilesSupported: true
+    )
+    #expect(state.canEditSelectedProfile)
+
+    state.selectedProfileName = "default"
+    #expect(!state.canEditSelectedProfile, "the default profile is never editable")
+
+    state.selectedProfileName = "personal"
+    #expect(!state.canEditSelectedProfile, "a selection the list hasn't loaded yet")
+
+    state.selectedProfileName = "work"
+    state.profilesSupported = false
+    #expect(!state.canEditSelectedProfile, "no profiles API")
   }
 
   // The rename ALERT flow: open seeds the draft, confirm forwards the entered name.
