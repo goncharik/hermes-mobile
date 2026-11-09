@@ -429,8 +429,8 @@ struct WidgetLaunchRoutingTests {
     await store.send(.autoConnectFailed(connection, .unauthorized)) {
       $0.autoConnecting = false
       $0.onboarding = ConnectionFeature.State(
-        serverURL: self.connection.baseURL.absoluteString,
-        token: self.connection.auth.token ?? ""
+        recovering: self.connection.baseURL,
+        token: self.connection.auth.token
       )
     }
     await store.send(.onboarding(.delegate(.connected(connection)))) {

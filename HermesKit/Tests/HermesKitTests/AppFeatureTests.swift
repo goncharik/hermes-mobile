@@ -4,6 +4,19 @@ import Testing
 
 @testable import HermesKit
 
+/// The credentials-verdict onboarding landing — `ConnectionFeature.State(recovering:token:)` —
+/// with its Server step pinned to stack id 0. Inside a `receive` assertion the TestStore's
+/// stack-ID generator runs one generation ahead of the reducer's, so the initializer would
+/// mint `#1`; placing the element by id keeps the expectation independent of that.
+private func recoveringOnboarding(
+  _ url: String = "http://mac.tailnet:9119", token: String?
+) -> ConnectionFeature.State {
+  var state = ConnectionFeature.State()
+  state.prefilledToken = token
+  state.path[id: 0] = .server(ServerStep.State(addressText: url, autoProbe: true))
+  return state
+}
+
 @MainActor
 struct AppFeatureTests {
   private let connection = ServerConnection(baseURL: URL(string: "http://mac.tailnet:9119")!, token: "tok")
@@ -73,7 +86,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "bad")
+      $0.onboarding = recoveringOnboarding(token: "bad")
     }
     // #62 guard: an AUTH rejection must never raise the retry screen — retrying can't fix
     // dead credentials, so this path stays byte-identical to pre-#62 behavior.
@@ -98,7 +111,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "")
+      $0.onboarding = recoveringOnboarding(token: nil)
     }
   }
 
@@ -3726,8 +3739,8 @@ struct AppFeatureTests {
     await store.send(.autoConnectFailed(connection, .unauthorized)) {
       $0.autoConnecting = false
       $0.onboarding = ConnectionFeature.State(
-        serverURL: self.connection.baseURL.absoluteString,
-        token: self.connection.auth.token ?? ""
+        recovering: self.connection.baseURL,
+        token: self.connection.auth.token
       )
     }
     await store.send(.onboarding(.delegate(.connected(connection)))) {
@@ -4194,8 +4207,19 @@ struct AppFeatureTests {
   /// ONLY a credentials verdict keeps the pre-#62 onboarding fallback: `.unauthorized` (401)
   /// and its untranslated sibling 403. Retrying can't repair dead credentials, so those two
   /// — and nothing else — still land on the prefilled credentials form.
-  @Test(arguments: [RESTError.unauthorized, .server(status: 403, detail: "forbidden")])
-  func autoConnectCredentialsVerdictStillFallsBackToOnboarding(error: RESTError) async {
+  ///
+  /// Two tests rather than one parameterized test: the onboarding landing mints a stack
+  /// element ID, and the test-value cache (hence the ID generator) is shared by every case of
+  /// one parameterized test, so the second case would see `#1` instead of `#0`.
+  @Test func autoConnectUnauthorizedStillFallsBackToOnboarding() async {
+    await assertCredentialsVerdictFallsBackToOnboarding(.unauthorized)
+  }
+
+  @Test func autoConnectForbiddenStillFallsBackToOnboarding() async {
+    await assertCredentialsVerdictFallsBackToOnboarding(.server(status: 403, detail: "forbidden"))
+  }
+
+  private func assertCredentialsVerdictFallsBackToOnboarding(_ error: RESTError) async {
     let store = TestStore(initialState: AppFeature.State()) {
       AppFeature()
     } withDependencies: {
@@ -4210,7 +4234,7 @@ struct AppFeatureTests {
     }
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "tok")
+      $0.onboarding = recoveringOnboarding(token: "tok")
     }
     #expect(store.state.connectionFailed == nil)
   }
@@ -4357,9 +4381,7 @@ struct AppFeatureTests {
 
     await store.send(.connectionFailed(.delegate(.credentialsRejected(connection)))) {
       $0.connectionFailed = nil
-      $0.onboarding = ConnectionFeature.State(
-        serverURL: "http://mac.tailnet:9119", token: "tok"
-      )
+      $0.onboarding = recoveringOnboarding(token: "tok")
     }
   }
 
@@ -6911,7 +6933,7 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       // URL only — a browser leg is not prefillable, exactly like the cookie regime.
-      $0.onboarding = ConnectionFeature.State(serverURL: "http://mac.tailnet:9119", token: "")
+      $0.onboarding = recoveringOnboarding(token: nil)
     }
     #expect(store.state.connectionFailed == nil) // #62: an auth verdict never raises Retry
     await store.finish()
@@ -6955,7 +6977,7 @@ struct AppFeatureTests {
     let session = bearerSession(userID: "user-42")
     let connection = bearerConnection(session)
     var onboarding = ConnectionFeature.State()
-    onboarding.capability = ServerAuthCapability(
+    onboarding.lastProbedCapability = ServerAuthCapability(
       oauthProviders: [
         AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
       ],

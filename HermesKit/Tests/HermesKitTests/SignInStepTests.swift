@@ -667,6 +667,68 @@ struct SignInStepTests {
     #expect(tokenStore.current == rotated)
   }
 
+  /// A rotation during the validating call may only reach the Keychain once that call has
+  /// SUCCEEDED: a rejected sign-in must not leave a restorable bearer session behind.
+  @Test func aRotationBeforeARejectedValidationIsNeverPersisted() async {
+    let keychain = KeychainClient.inMemory()
+    let minted = BearerSession(
+      accessToken: "access-1", refreshToken: "refresh-1",
+      // Inside the store's 120 s leeway, so the validating call rotates it first.
+      expiresAt: Date().timeIntervalSince1970 + 10, provider: "nous", userID: "user-42"
+    )
+    let rotated = BearerSession(
+      accessToken: "access-2", refreshToken: "refresh-2",
+      expiresAt: 4_000_000_000, provider: "nous", userID: "user-42"
+    )
+    let tokenStore = BearerTokenStore()
+    let store = TestStore(initialState: oauthState()) {
+      SignInStep()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in minted }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+        // The live transport resolves `Authorization` through the store — which rotates —
+        // and only then does the server reject the identity.
+        _ = try await tokenStore.validAccessToken { _, _ in rotated }
+        throw RESTError.unauthorized
+      }
+      $0.bearerTokens = tokenStore
+      $0.keychain = keychain
+      $0.preferences = PreferencesClient.inMemory()
+    }
+
+    await store.send(.oauthProviderButtonTapped(nousProvider)) {
+      $0.selectedOAuthProviderName = "nous"
+      $0.status = .validating
+    }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
+
+    #expect(
+      keychain.loadSession(.shared) == nil,
+      "a rejected sign-in left a restorable bearer session in the Keychain"
+    )
+    #expect(tokenStore.current == nil)
+  }
+
+  /// An unclassified throw from the browser leg still reads like every other transport
+  /// failure — `asOAuthLoginError`'s fallback is the copy a user would actually see.
+  @Test func anUnclassifiedSignInFailureFallsBackToTheRESTCopy() async {
+    struct Unexpected: Error {}
+    let store = TestStore(initialState: oauthState()) {
+      SignInStep()
+    } withDependencies: {
+      $0.oauthLogin.signIn = { @Sendable _, _ in throw Unexpected() }
+      $0.bearerTokens = BearerTokenStore()
+    }
+
+    await store.send(.oauthProviderButtonTapped(nousProvider)) {
+      $0.selectedOAuthProviderName = "nous"
+      $0.status = .validating
+    }
+    await store.receive(\.oauthLoginResponse.failure) {
+      $0.status = .failed(OAuthLoginError.tokenExchange(RESTError(transport: Unexpected())).message)
+    }
+  }
+
   /// Signing in against the `:9119` fallback runs the browser leg there and saves that URL.
   @Test func oauthRunsAgainstTheURLThatAnswered() async {
     let preferences = PreferencesClient.inMemory()

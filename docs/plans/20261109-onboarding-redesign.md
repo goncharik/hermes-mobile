@@ -353,16 +353,17 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesKit/Sources/HermesKit/Features/Onboarding/ConnectionPath.swift`
 - Modify: `HermesKit/Tests/HermesKitTests/ConnectionFeatureTests.swift` (reduce to flow tests; per-step cases moved in tasks 4–5)
 
-- [ ] `@Reducer enum ConnectionPath { case server(ServerStep); case signIn(SignInStep) }` at top level
-- [ ] parent `State` (`path`, `prefilledToken`, `lastProbedCapability`), `init()` (Welcome) and `init(recovering url: URL, token: String?)` (path `[.server(autoProbe: true)]`)
-- [ ] `connectButtonTapped` → append `.server`; `.path(.element(_, .server(.delegate(.probeSucceeded(probe)))))` → record `lastProbedCapability`, append `.signIn(probe:, prefilledToken:)`; `.signIn(.delegate(.connected))` → `.delegate(.connected)`
-- [ ] keep `performNativeOAuthLogin`, `isCancellation`, `OAuthFlowError`, `asRESTError` where `ReauthFeature` and `AppFeature` import them; delete `AuthMethod`, `Status`, `MethodHint` and the URL `onChange` once nothing references them
-- [ ] flow tests:
-  - [ ] Welcome → Server → probe → Sign in → connected delegate
-  - [ ] popping Sign in mid-OAuth cancels the effect (no delegate, store not drained, verified via `BearerTokenStore` test double)
-  - [ ] the recovering initializer auto-probes and passes the token
-  - [ ] `lastProbedCapability` survives a pop
-- [ ] run `make test` and confirm it passes before task 7
+- [x] `@Reducer enum ConnectionPath { case server(ServerStep); case signIn(SignInStep) }` at top level
+- [x] parent `State` (`path`, `prefilledToken`, `lastProbedCapability`), `init()` (Welcome) and `init(recovering url: URL, token: String?)` (path `[.server(autoProbe: true)]`)
+- [x] `connectButtonTapped` → append `.server`; `.path(.element(_, .server(.delegate(.probeSucceeded(probe)))))` → record `lastProbedCapability`, append `.signIn(probe:, prefilledToken:)`; `.signIn(.delegate(.connected))` → `.delegate(.connected)`
+- [x] keep `performNativeOAuthLogin`, `isCancellation`, `OAuthFlowError`, `asRESTError` where `ReauthFeature` and `AppFeature` import them; delete `AuthMethod`, `Status`, `MethodHint` and the URL `onChange` once nothing references them (`AuthMethod` kept: `ReauthFeature` still uses it)
+- [x] flow tests:
+  - [x] Welcome → Server → probe → Sign in → connected delegate
+  - [x] popping Sign in mid-OAuth cancels the effect (no delegate, store not drained, verified via `BearerTokenStore` test double)
+  - [x] the recovering initializer auto-probes and passes the token
+  - [x] `lastProbedCapability` survives a pop
+- [x] run `make test` and confirm it passes before task 7
+- ⚠️ the HermesMobile app target (`ConnectionView`, `DemoMode`, `ConnectionSnapshotTests`, `AuthSnapshotTests`, `ConnectionColumnLayoutTests`) still uses the removed one-screen API and does not compile until task 8 (views) / task 12 (demo mode)
 
 ### Task 7: Wire `AppFeature` to the new onboarding state
 

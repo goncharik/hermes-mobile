@@ -920,7 +920,7 @@ public struct AppFeature {
           for: chat.connection,
           // Whatever the onboarding screen last probed — empty after a launch auto-restore,
           // which `providerLabel` handles by falling back to the wire provider name.
-          oauthProviders: state.onboarding.capability?.oauthProviders ?? []
+          oauthProviders: state.onboarding.lastProbedCapability?.oauthProviders ?? []
         )
         return .none
 
@@ -2081,8 +2081,8 @@ public struct AppFeature {
     _ state: inout State, connection: ServerConnection
   ) -> Effect<Action> {
     state.onboarding = ConnectionFeature.State(
-      serverURL: connection.baseURL.absoluteString,
-      token: connection.auth.token ?? ""
+      recovering: connection.baseURL,
+      token: connection.auth.token
     )
     guard case .bearer = connection.auth else { return .none }
     let claim = bearerTokens.claimOwnership() // minted here, applied on the next tick
