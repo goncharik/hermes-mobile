@@ -250,7 +250,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             sessions: IdentifiedArray(uniqueElements: sessions),
             now: now,
             calendar: listCalendar,
-            seenCounts: seen
+            seenCounts: seen,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -288,6 +289,7 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
+            showsOnboardingTips: false,
             copiedIDToastToken: 1
           )
         ) {
@@ -306,6 +308,17 @@ final class SessionSnapshotTests: SnapshotTestCase {
 
   /// The list with the push card leading it, above three dated sessions (or none).
   private func pushCardHost(_ card: SessionListFeature.PushCard, sessionCount: Int = 3) -> some View {
+    leadingCardsHost(pushCard: card, showsTips: false, sessionCount: sessionCount)
+  }
+
+  /// The list's leading cards (#136) — the optional push card and the tips row — above three
+  /// dated sessions (or none). `profilesSupported` brings the profile pill and the profiles tip.
+  private func leadingCardsHost(
+    pushCard: SessionListFeature.PushCard?,
+    showsTips: Bool,
+    profilesSupported: Bool = false,
+    sessionCount: Int = 3
+  ) -> some View {
     let now = self.now
     let sessions: [Session] = (0..<sessionCount).map { i in
       Session(id: "m\(i)",
@@ -325,7 +338,10 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
-            pushCard: card
+            profiles: profilesSupported ? IdentifiedArray(uniqueElements: profileFixtures()) : [],
+            profilesSupported: profilesSupported,
+            pushCard: pushCard,
+            showsOnboardingTips: showsTips
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -363,6 +379,37 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: pushCardHost(.enableNotifications, sessionCount: 0), as: deviceImage())
   }
 
+  // MARK: Onboarding tips (#136)
+
+  /// The tips row with all three tips (the agent has the profiles API): a paging row whose
+  /// second card peeks in from the trailing edge.
+  func testSessionList_onboardingTips() {
+    assertSnapshot(
+      of: leadingCardsHost(pushCard: nil, showsTips: true, profilesSupported: true),
+      as: deviceImage()
+    )
+  }
+
+  func testSessionList_onboardingTips_light() {
+    assertSnapshot(
+      of: leadingCardsHost(pushCard: nil, showsTips: true, profilesSupported: true),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
+  /// No profiles API: the profiles tip is dropped and the row leads with the voice tip.
+  func testSessionList_onboardingTips_withoutProfiles() {
+    assertSnapshot(of: leadingCardsHost(pushCard: nil, showsTips: true), as: deviceImage())
+  }
+
+  /// First run: the push card, then the tips, then the "No sessions" placeholder as a row.
+  func testSessionList_onboardingTips_underPushCard_emptyList() {
+    assertSnapshot(
+      of: leadingCardsHost(pushCard: .enableNotifications, showsTips: true, sessionCount: 0),
+      as: deviceImage(appearance: .light)
+    )
+  }
+
   func testSessionList_pinnedSection() {
     let now = self.now
     let mobile = "/Users/me/dev/hermes-mobile"
@@ -386,7 +433,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
-            pinnedIDs: ["m1"] // "Plan the iOS MVP" floats to the top Pinned section
+            pinnedIDs: ["m1"], // "Plan the iOS MVP" floats to the top Pinned section
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -442,7 +490,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             sessions: IdentifiedArray(uniqueElements: sessions),
             now: now,
             calendar: listCalendar,
-            seenCounts: seen
+            seenCounts: seen,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -499,7 +548,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
-            pinnedIDs: ["p0"]
+            pinnedIDs: ["p0"],
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -545,7 +595,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             sessions: IdentifiedArray(uniqueElements: sessions),
             now: now,
             calendar: listCalendar,
-            seenCounts: seen
+            seenCounts: seen,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -609,6 +660,7 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
+            showsOnboardingTips: false,
             cronJobs: IdentifiedArray(uniqueElements: jobs)
           )
         ) {
@@ -778,6 +830,7 @@ final class SessionSnapshotTests: SnapshotTestCase {
             calendar: listCalendar,
             seenCounts: seen,
             isSearchPresented: true,
+            showsOnboardingTips: false,
             cronJobs: IdentifiedArray(uniqueElements: jobs)
           )
         ) {
@@ -872,7 +925,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             seenCounts: seen,
             profiles: IdentifiedArray(uniqueElements: profileFixtures()),
             selectedProfileName: "default",
-            profilesSupported: true
+            profilesSupported: true,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -911,7 +965,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             seenCounts: seen,
             profiles: IdentifiedArray(uniqueElements: profileFixtures()),
             selectedProfileName: "work",
-            profilesSupported: true
+            profilesSupported: true,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)
@@ -974,7 +1029,8 @@ final class SessionSnapshotTests: SnapshotTestCase {
             now: now,
             calendar: listCalendar,
             seenCounts: seen,
-            profilesSupported: false
+            profilesSupported: false,
+            showsOnboardingTips: false
           )
         ) {
           SessionListFeature().ignoring(\.task)

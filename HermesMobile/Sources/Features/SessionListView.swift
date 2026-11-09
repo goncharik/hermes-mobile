@@ -51,8 +51,8 @@ struct SessionListView: View {
     .environment(\.defaultMinListHeaderHeight, 0)
     .listSectionSpacing(0)
     .overlay {
-      // With the push card up, the placeholder is a row under it instead (`showsPushCard`).
-      if store.showsEmptyPlaceholder, !store.showsPushCard {
+      // Under the push card / tips the placeholder is a row instead (`showsInlineEmptyPlaceholder`).
+      if store.showsEmptyPlaceholder, !store.showsInlineEmptyPlaceholder {
         emptyPlaceholder
       }
     }
@@ -163,16 +163,19 @@ struct SessionListView: View {
   private var sessionListContent: some View {
     // Top-level "Sessions" header, scoped to the active profile pill.
     tabTitleHeader("Sessions")
-    // The push card (#136) leads the list, above Pinned and the date sections; never while
-    // searching. With no sessions the placeholder follows it as a row.
+    // The push card and the tips row (#136) lead the list, above Pinned and the date
+    // sections; never while searching. With no sessions the placeholder follows them as a row.
     if store.showsPushCard, let card = store.pushCard {
       pushCardRow(card)
-      if store.showsEmptyPlaceholder {
-        emptyPlaceholder
-          .padding(.top, 24)
-          .listRowSeparator(.hidden)
-          .listRowBackground(Color.clear)
-      }
+    }
+    if store.showsOnboardingTipsRow {
+      onboardingTipsRow
+    }
+    if store.showsInlineEmptyPlaceholder {
+      emptyPlaceholder
+        .padding(.top, 24)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
     // Pinned sessions float to the top — as cards too, so the column never mixes card and
     // one-line geometry (desktop parity).
@@ -213,6 +216,21 @@ struct SessionListView: View {
       notNowButtonTapped: { store.send(.pushCardNotNowButtonTapped, animation: animation) }
     )
     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+    .listRowSeparator(.hidden)
+    .listRowBackground(Color.clear)
+  }
+
+  /// The tips row as a plain list row. Zero side insets: the row's own header and scroll
+  /// content margins supply the 16pt inset, so the paging cards run to the trailing edge.
+  private var onboardingTipsRow: some View {
+    OnboardingTipsView(
+      tips: store.onboardingTips,
+      swipeAction: store.effectiveSwipeAction,
+      hideButtonTapped: {
+        store.send(.onboardingTipsHideButtonTapped, animation: reduceMotion ? nil : .snappy)
+      }
+    )
+    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
     .listRowSeparator(.hidden)
     .listRowBackground(Color.clear)
   }

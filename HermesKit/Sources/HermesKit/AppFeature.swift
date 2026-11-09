@@ -1856,7 +1856,9 @@ public struct AppFeature {
     SessionListFeature.State(
       connection: connection,
       selectedProfileName: SessionListFeature.State.persistedProfileName(preferences),
-      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences)
+      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences),
+      // Seeded here too (not only on the list's `.task`) so hidden tips never flash.
+      showsOnboardingTips: !preferences.loadOnboardingTipsDismissed()
     )
   }
 

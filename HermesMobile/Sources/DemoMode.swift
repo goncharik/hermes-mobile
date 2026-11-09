@@ -106,6 +106,8 @@ enum DemoMode {
       seen[newestDigestRunID] = 1
       return seen
     }
+    // The App Store captures show the list itself, not the first-run tips row (#136).
+    client.loadOnboardingTipsDismissed = { true }
     return client
   }
 
@@ -227,6 +229,7 @@ enum DemoMode {
       now: now,
       calendar: calendar,
       pinnedIDs: ["s0"],
+      showsOnboardingTips: false, // matches `demoPreferences`: no tips row in the captures
       cronJobs: IdentifiedArray(uniqueElements: seededCronJobs),
       // The digest starts expanded with its runs loaded, so the panel shows job → runs at a
       // glance (the launch load refetches the same seed).

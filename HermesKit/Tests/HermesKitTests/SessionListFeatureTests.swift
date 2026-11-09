@@ -4029,4 +4029,87 @@ struct SessionListFeatureTests {
       $0.loadError = "Couldn’t archive the session."
     }
   }
+
+  // MARK: - Onboarding tips (#136)
+
+  /// Hide hides the row at once and persists the dismissal.
+  @Test func onboardingTipsHidePersists() async {
+    let prefs = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = prefs
+    }
+
+    #expect(store.state.showsOnboardingTipsRow) // shown until dismissed
+    await store.send(.onboardingTipsHideButtonTapped) {
+      $0.showsOnboardingTips = false
+    }
+    #expect(prefs.loadOnboardingTipsDismissed())
+  }
+
+  /// A dismissal persisted earlier keeps the row hidden when the list re-reads its prefs.
+  @Test func onboardingTipsStayHiddenAfterReload() async {
+    let prefs = PreferencesClient.inMemory()
+    prefs.saveOnboardingTipsDismissed(true)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = prefs
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+    }
+
+    await store.send(.task) {
+      $0.now = now
+      $0.isLoading = true
+      $0.showsOnboardingTips = false
+    }
+    await store.receive(\.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.profilesResponse.failure)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = [] // an empty list holds `isLoading` for the cron fetch
+    }
+    await store.receive(\.cronJobsResponse.failure) {
+      $0.cronJobsSupported = false
+      $0.isLoading = false
+    }
+    #expect(!store.state.showsOnboardingTipsRow)
+    #expect(!store.state.showsInlineEmptyPlaceholder) // no leading cards → centred overlay
+    await store.send(.onDisappear)
+  }
+
+  /// The profiles tip needs the profiles API (it points at the pill, hidden without it).
+  @Test func onboardingTipsGateTheProfilesTip() {
+    var state = SessionListFeature.State(connection: connection)
+    #expect(state.onboardingTips == [.voice, .swipeActions])
+    state.profilesSupported = true
+    #expect(state.onboardingTips == [.profiles, .voice, .swipeActions])
+  }
+
+  /// The row renders only on the Sessions tab with no query, and pulls the empty placeholder
+  /// under it like the push card does.
+  @Test func onboardingTipsRowHidesWhileSearchingAndOnTheCronTab() {
+    var state = SessionListFeature.State(connection: connection)
+    #expect(state.showsOnboardingTipsRow)
+    #expect(state.showsInlineEmptyPlaceholder) // empty list + tips → placeholder row under them
+    state.isLoading = true
+    #expect(!state.showsInlineEmptyPlaceholder) // still loading → no placeholder at all
+    state.isLoading = false
+    state.searchQuery = "parser"
+    #expect(!state.showsOnboardingTipsRow)
+    state.searchQuery = ""
+    state.cronJobs = [CronJob(id: "j1", name: "Nightly")]
+    state.selectedTab = .cron
+    #expect(!state.showsOnboardingTipsRow)
+    state.selectedTab = .sessions
+    state.showsOnboardingTips = false
+    #expect(!state.showsOnboardingTipsRow)
+    #expect(!state.showsInlineEmptyPlaceholder) // no tips, no card → the centred overlay
+  }
 }

@@ -160,6 +160,22 @@ struct AppFeatureTests {
     }
   }
 
+  /// The list is built with the tips row already hidden when the user dismissed it (#136),
+  /// so it never flashes before the list's `.task` re-reads the pref.
+  @Test func connectingSeedsHiddenOnboardingTips() async {
+    let preferences = PreferencesClient.inMemory()
+    preferences.saveOnboardingTipsDismissed(true)
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.preferences = preferences
+    }
+
+    await store.send(.onboarding(.delegate(.connected(connection)))) {
+      $0.home = SessionListFeature.State(connection: self.connection, showsOnboardingTips: false)
+    }
+  }
+
   /// Hardening, mirroring `.autoConnectSucceeded`: a retry screen and a live list must never
   /// coexist. If they ever did, `AppView` would render `home` while the `ifLet` child stayed
   /// alive and re-probed on every foreground for the process lifetime.

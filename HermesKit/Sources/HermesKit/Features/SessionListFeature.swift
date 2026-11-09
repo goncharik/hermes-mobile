@@ -93,6 +93,11 @@ public struct SessionListFeature {
     /// the prompt isn't snoozed. Every card button clears it. The system permission prompt
     /// fires only from the card's Turn on button, never on list appearance.
     public var pushCard: SessionListFeature.PushCard?
+    /// Whether the dismissible tips row (#136) is on: `true` until the user taps Hide, which
+    /// persists `onboardingTipsDismissed` (cleared on logout, so the next sign-in shows them
+    /// again). Seeded from the pref when the list is built and re-read with the other prefs.
+    /// Views read `showsOnboardingTipsRow`, which also hides it while searching / on Cron Jobs.
+    public var showsOnboardingTips: Bool
     /// Cron jobs fetched from `GET /api/cron/jobs` — the Cron Jobs tab's rows. Empty until
     /// the first fetch lands.
     public var cronJobs: IdentifiedArrayOf<CronJob>
@@ -181,6 +186,7 @@ public struct SessionListFeature {
       profileRenameDraft: String = "",
       pushAvailable: Bool = true,
       pushCard: SessionListFeature.PushCard? = nil,
+      showsOnboardingTips: Bool = true,
       cronJobs: IdentifiedArrayOf<CronJob> = [],
       cronJobsSupported: Bool = true,
       expandedCronJobID: String? = nil,
@@ -217,6 +223,7 @@ public struct SessionListFeature {
       self.profileRenameDraft = profileRenameDraft
       self.pushAvailable = pushAvailable
       self.pushCard = pushCard
+      self.showsOnboardingTips = showsOnboardingTips
       self.cronJobs = cronJobs
       self.cronJobsSupported = cronJobsSupported
       self.expandedCronJobID = expandedCronJobID
@@ -330,6 +337,24 @@ public struct SessionListFeature {
     /// it instead of floating centred over the list (where a tall card would collide with it).
     public var showsPushCard: Bool {
       pushCard != nil && effectiveTab == .sessions && !isSearching
+    }
+
+    /// Whether the tips row renders under the push card: not hidden by the user, on the
+    /// Sessions tab, and never with a search query active (like `showsPushCard`).
+    public var showsOnboardingTipsRow: Bool {
+      showsOnboardingTips && effectiveTab == .sessions && !isSearching
+    }
+
+    /// The tips the row offers, in order. The profiles tip needs the profiles API (the pill it
+    /// points at is hidden without it); voice and swipe actions are always available.
+    public var onboardingTips: [SessionListFeature.OnboardingTip] {
+      (profilesSupported ? [.profiles] : []) + [.voice, .swipeActions]
+    }
+
+    /// Whether the "No sessions" placeholder flows as a row under the leading cards (push card,
+    /// tips) instead of floating centred over the list, where it would collide with them.
+    public var showsInlineEmptyPlaceholder: Bool {
+      showsEmptyPlaceholder && (showsPushCard || showsOnboardingTipsRow)
     }
 
     /// A non-search list with no interactive session and no jobs known yet: the load's
@@ -581,6 +606,8 @@ public struct SessionListFeature {
     case pushCardEnableButtonTapped
     /// Either card's "Not now" / "Later" — hide + snooze (Fibonacci backoff on the count).
     case pushCardNotNowButtonTapped
+    /// The tips row's "Hide" — hide the row and persist the choice until the next logout.
+    case onboardingTipsHideButtonTapped
     /// A device token arrived from `PushClient.register()` (initial registration OR an OS
     /// rotation) — (re-)register it with the agent. Carries the lowercase-hex token.
     case pushTokenReceived(String)
@@ -646,6 +673,16 @@ public struct SessionListFeature {
     case enableNotifications
     /// The plugin isn't installed / enabled: "Ask my agent to install it".
     case installPlugin
+  }
+
+  /// One card in the dismissible tips row (`State.onboardingTips`). The copy lives in the view.
+  public enum OnboardingTip: Equatable, Sendable {
+    /// Switch profiles from the pill at the top (only with the profiles API).
+    case profiles
+    /// Swipe a session to archive/delete or rename it.
+    case swipeActions
+    /// Dictate with the mic in a chat.
+    case voice
   }
 
   // One id for BOTH the list fetch and the search fetch: any new fetch (list refresh, poll,
@@ -980,6 +1017,11 @@ public struct SessionListFeature {
         let count = (preferences.loadPushPromptSnooze()?.count ?? 0) + 1
         let until = now.addingTimeInterval(Double(pushPromptSnoozeDays(laterCount: count)) * 86_400)
         preferences.savePushPromptSnooze(count, until)
+        return .none
+
+      case .onboardingTipsHideButtonTapped:
+        state.showsOnboardingTips = false
+        preferences.saveOnboardingTipsDismissed(true)
         return .none
 
       case let .pushTokenReceived(token):
@@ -1698,7 +1740,7 @@ public struct SessionListFeature {
   }
 
   /// Refresh "now" + the section calendar, clear errors, and reload the non-secret persisted
-  /// prefs (seen counts, pins, swipe action). Shared by `.task` and `load()`
+  /// prefs (seen counts, pins, swipe action, tips dismissal). Shared by `.task` and `load()`
   /// — `.task` additionally reloads the selected profile before probing the profiles
   /// capability.
   private func reloadPrefs(_ state: inout State) {
@@ -1708,6 +1750,7 @@ public struct SessionListFeature {
     state.seenCounts = preferences.loadSeenCounts()
     state.pinnedIDs = preferences.loadPinnedIDs()
     state.defaultSwipeAction = preferences.loadDefaultSessionSwipeAction()
+    state.showsOnboardingTips = !preferences.loadOnboardingTipsDismissed()
   }
 
   /// Refresh "now", clear errors, reload persisted prefs, and fetch the session list

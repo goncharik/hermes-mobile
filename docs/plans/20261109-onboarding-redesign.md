@@ -445,11 +445,12 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesMobile/Sources/Features/OnboardingTipsView.swift`
 - Modify: tests as above
 
-- [ ] `showsOnboardingTips` seeded from `preferences.loadOnboardingTipsDismissed()`; `onboardingTipsHideButtonTapped` saves and hides; cleared by logout
-- [ ] three tips (profiles only when `profilesSupported`, voice, swipe actions) in a horizontal paging row under the push card; respect reduce motion
-- [ ] tests: hide persists; profiles tip gating; logout clears the flag (AppFeature logout test)
-- [ ] snapshots: tips row with and without the profiles tip
-- [ ] run `make test` and `make snapshot` and confirm both are clean before task 12
+- [x] `showsOnboardingTips` seeded from `preferences.loadOnboardingTipsDismissed()`; `onboardingTipsHideButtonTapped` saves and hides; cleared by logout
+- [x] three tips (profiles only when `profilesSupported`, voice, swipe actions) in a horizontal paging row under the push card; respect reduce motion
+- [x] tests: hide persists; profiles tip gating; logout clears the flag (AppFeature logout test)
+- [x] snapshots: tips row with and without the profiles tip
+- [x] run `make test` and `make snapshot` and confirm both are clean before task 12
+- ➕ `PreferencesClient` needed no change (task 7 added the pref); seeded both in `AppFeature.makeHomeState` (no flash of hidden tips) and the list's `reloadPrefs`; `State.showsOnboardingTipsRow` / `onboardingTips` / `showsInlineEmptyPlaceholder` (the "No sessions" placeholder flows under the tips like under the push card); demo mode keeps its captures tip-free
 
 ### Task 12: Update demo mode and the Local Network plist comment
 
