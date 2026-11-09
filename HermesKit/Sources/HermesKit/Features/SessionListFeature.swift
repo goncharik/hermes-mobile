@@ -948,9 +948,9 @@ public struct SessionListFeature {
         case .ready:
           // Plugin is live → push is available. Read the permission WITHOUT prompting: it
           // decides between a silent register and the Turn on card. An install card from an
-          // earlier probe is stale now.
+          // earlier probe is stale now; a Turn on card stays until that read decides.
           state.pushAvailable = true
-          state.pushCard = nil
+          if state.pushCard == .installPlugin { state.pushCard = nil }
           return .run { [push] send in
             await send(.pushAuthorizationStatusLoaded(push.authorizationStatus()))
           }

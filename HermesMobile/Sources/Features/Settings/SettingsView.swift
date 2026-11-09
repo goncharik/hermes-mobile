@@ -27,15 +27,14 @@ struct SettingsView: View {
     }
     .sheet(isPresented: $showingPushGuide) {
       PushSetupGuideView(
-        // Installed → the sheet drops the "Later" snooze and asks the agent to UPDATE rather
-        // than install. It is never purely informational: an installed-but-outdated plugin is
-        // exactly the case that needs an action here.
+        // Installed → the sheet asks the agent to UPDATE rather than install. It is never
+        // purely informational: an installed-but-outdated plugin is exactly the case that
+        // needs an action here.
         pluginInstalled: store.pushAvailable,
         onAskAgent: {
           showingPushGuide = false
           store.send(.askAgentToInstallTapped)
-        },
-        onLater: { showingPushGuide = false }
+        }
       )
     }
     // On the stack, not the Form: the root's `.task` would re-fire on every pop back from a

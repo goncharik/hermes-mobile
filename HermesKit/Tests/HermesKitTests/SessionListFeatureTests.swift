@@ -1991,6 +1991,26 @@ struct SessionListFeatureTests {
     }
   }
 
+  /// Every pop back to the list re-runs `setupPush`; a Turn on card already showing stays put
+  /// through the ready probe instead of being removed and re-inserted a beat later.
+  @Test func setupPushReadyKeepsAShowingTurnOnCard() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.pushAvailable = true
+    initial.pushCard = .enableNotifications
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      $0.push.authorizationStatus = { .notDetermined }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .ready }
+    }
+
+    await store.send(.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.pushAuthorizationStatusLoaded)
+  }
+
   /// An elapsed snooze no longer hides the card.
   @Test func setupPushShowsTheCardOnceTheSnoozeElapses() async {
     let prefs = PreferencesClient.inMemory()

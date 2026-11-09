@@ -402,6 +402,28 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: leadingCardsHost(pushCard: nil, showsTips: true), as: deviceImage())
   }
 
+  /// The swipe tip names what the list's trailing swipe offers: archive by default, delete
+  /// when that is the chosen default.
+  func testOnboardingTips_swipeTip_archive() {
+    assertSwipeTip(.archive)
+  }
+
+  func testOnboardingTips_swipeTip_delete() {
+    assertSwipeTip(.delete)
+  }
+
+  private func assertSwipeTip(
+    _ action: SessionSwipeAction,
+    file: StaticString = #filePath,
+    testName: String = #function,
+    line: UInt = #line
+  ) {
+    let view = OnboardingTipsView(tips: [.swipeActions], swipeAction: action, hideButtonTapped: {})
+      .frame(width: 390, height: 140, alignment: .top)
+      .background(Color(.systemBackground))
+    assertSnapshot(of: view, as: componentImage(), file: file, testName: testName, line: line)
+  }
+
   /// First run: the push card, then the tips, then the "No sessions" placeholder as a row.
   func testSessionList_onboardingTips_underPushCard_emptyList() {
     assertSnapshot(
