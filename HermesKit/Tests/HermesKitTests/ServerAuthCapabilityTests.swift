@@ -25,7 +25,6 @@ struct ServerAuthCapabilityTests {
       providers: [Self.basic, Self.nous]
     )
     #expect(capability == .tokenOnly)
-    #expect(!capability.isGated)
     #expect(!capability.isPasswordAvailable)
     #expect(!capability.isOAuthAvailable)
   }
@@ -45,7 +44,6 @@ struct ServerAuthCapabilityTests {
     #expect(capability.oauthProviders.isEmpty)
     #expect(capability.isPasswordAvailable)
     #expect(!capability.isOAuthAvailable)
-    #expect(capability.isGated)
   }
 
   @Test func gatedWithOAuthOnlyPopulatesOAuthProviders() {
@@ -58,7 +56,6 @@ struct ServerAuthCapabilityTests {
     #expect(capability.oauthProviders == [Self.nous, Self.selfHosted]) // server order preserved
     #expect(!capability.isPasswordAvailable)
     #expect(capability.isOAuthAvailable)
-    #expect(capability.isGated)
   }
 
   @Test func gatedMixedOffersBothWithPasswordPreferred() {
@@ -84,14 +81,12 @@ struct ServerAuthCapabilityTests {
   }
 
   @Test func gatedWithNoProvidersFallsBackToTokenOnly() {
-    // Gated but providers endpoint 404'd (nil) — give the user a way in via token, and
-    // don't de-emphasize it (`isGated` stays false): it's the only path there is.
+    // Gated but providers endpoint 404'd (nil) — give the user a way in via token: it's the
+    // only path there is.
     let missing = ServerAuthCapability(from: status(authRequired: true), providers: nil)
     let empty = ServerAuthCapability(from: status(authRequired: true, authFlows: ["native_pkce"]), providers: [])
     #expect(missing == .tokenOnly)
     #expect(empty == .tokenOnly)
-    #expect(!missing.isGated)
-    #expect(!empty.isGated)
   }
 
   // MARK: Native-flow gate
@@ -138,7 +133,6 @@ struct ServerAuthCapabilityTests {
     #expect(tokenOnly.passwordProvider == nil)
     #expect(tokenOnly.oauthProviders.isEmpty)
     #expect(!tokenOnly.supportsNativeFlow)
-    #expect(!tokenOnly.isGated)
   }
 
   // MARK: AuthProvider decoding leniency

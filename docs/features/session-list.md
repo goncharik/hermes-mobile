@@ -9,7 +9,8 @@ Normative invariants moved out of `CLAUDE.md` (2026-08-14 restructure). The shor
 The list is the desktop's **Inbox style**, always on and the only list UI — there is no
 grouping pref or picker (the workspace/chronological `SessionGroupingMode` was removed; the
 card header names the workspace instead). The Sessions tab, top to bottom: the "Sessions"
-header, a **Pinned** section (pin order), then the **update-date sections**. Cron jobs and
+header, the push card and the tips row (`docs/features/onboarding.md`), a **Pinned** section
+(pin order), then the **update-date sections**. Cron jobs and
 their runs live in the **Cron Jobs tab** (below). All of it
 is display-only over the one `sessions` array. The list is a flat `.listStyle(.plain)` with no
 row or section separators, compact section headers (leading title + a hairline to the
@@ -145,7 +146,8 @@ with the jobs API, any fetched job (a job with no runs stays reachable; runs alo
 deleted job's, never bring the tab back); without it, any cron run (the flat fallback). It
 renders a "Cron Jobs" title row and the jobs, and is never searched. The "No sessions"
 placeholder follows `showsEmptyPlaceholder`: the Sessions tab with no search hit (or, outside
-search, no interactive session), not loading or failed. A non-search list with no interactive
+search, no interactive session), not loading or failed; under the push card or tips row it
+flows as a row (`showsInlineEmptyPlaceholder`, `docs/features/onboarding.md`). A non-search list with no interactive
 session and no jobs known holds `isLoading` until the load's cron-jobs response lands
 (`awaitsCronJobs`), so the placeholder and the tab pill appear together; a transient cron
 failure there settles on the placeholder.

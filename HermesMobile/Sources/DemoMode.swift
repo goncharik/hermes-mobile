@@ -40,6 +40,23 @@ enum DemoMode {
     token: "demo-token"
   )
 
+  /// The "connect" scenario's typed address: a bare Tailscale name (tailnet, so the Sign in
+  /// step shows no public-cleartext warning).
+  private static let connectAddress = ServerAddress("mac-mini.tail4c2e.ts.net")!
+
+  /// What the "connect" scenario's Server step found: the `:9119` fallback answered, offering
+  /// a password and Nous Research sign-in (native PKCE advertised, so the provider shows).
+  private static let connectProbe = ServerProbe(
+    address: connectAddress,
+    baseURL: connectAddress.candidates.last!,
+    capability: ServerAuthCapability(
+      passwordProvider: AuthProvider(name: "basic", displayName: "Password", supportsPassword: true),
+      oauthProviders: [AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)],
+      supportsNativeFlow: true
+    ),
+    version: "0.19.2"
+  )
+
   /// Build the root store for the active scenario.
   static func makeStore() -> StoreOf<AppFeature> {
     let scenario = self.scenario ?? "chat"
@@ -69,10 +86,15 @@ enum DemoMode {
     deps.hermesREST.cronJobs = { _, _ in seededCronJobs }
     deps.hermesREST.cronJobRuns = { _, jobID, _, _ in seededCronRuns[jobID] ?? [] }
     // "notify" needs REAL notification permission (the panel captures a live banner from
-    // `simctl push`), so report the plugin ready → the reducer runs the OS permission
-    // prompt. Every other scenario reports unknown: no prompt, no sheet, no live REST.
+    // `simctl push`), so report the plugin ready and the permission as granted → the reducer
+    // registers "silently", which on a fresh simulator runs the OS permission prompt with no
+    // Turn on card in the backdrop. Every other scenario reports unknown: no prompt, no card,
+    // no live REST.
     let pushStatus: PushPluginStatus = scenario == "notify" ? .ready : .unknown
     deps.hermesREST.pushPluginStatus = { _ in pushStatus }
+    if scenario == "notify" {
+      deps.push.authorizationStatus = { .authorized }
+    }
     // Settings probes the same hub for the plugin's version. Report no version so the demo
     // never renders the "plugin update available" row in a screenshot.
     deps.hermesREST.pushPluginInfo = { _ in PushPluginInfo(status: pushStatus) }
@@ -106,6 +128,8 @@ enum DemoMode {
       seen[newestDigestRunID] = 1
       return seen
     }
+    // The App Store captures show the list itself, not the first-run tips row (#136).
+    client.loadOnboardingTipsDismissed = { true }
     return client
   }
 
@@ -122,13 +146,14 @@ enum DemoMode {
     case "voice":
       return chatScenario(voiceChat)
     case "connect":
-      return AppFeature.State(
-        onboarding: ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••••••",
-          status: .reachable(version: "0.16.0")
-        )
-      )
+      // The Sign in step (#136) over an already-answered Server step, as the flow leaves it
+      // after a probe: a password + Nous Research agent. Seeded rather than probed, so no
+      // live REST call runs (the Server step below it has no auto-probe).
+      var onboarding = ConnectionFeature.State()
+      onboarding.path.append(.server(ServerStep.State(addressText: connectAddress.typed)))
+      onboarding.path.append(.signIn(SignInStep.State(probe: connectProbe)))
+      onboarding.lastProbedCapability = connectProbe.capability
+      return AppFeature.State(onboarding: onboarding)
     default: // "chat"
       return chatScenario(heroChat)
     }
@@ -229,6 +254,7 @@ enum DemoMode {
       now: now,
       calendar: calendar,
       pinnedIDs: ["s0"],
+      showsOnboardingTips: false, // matches `demoPreferences`: no tips row in the captures
       cronJobs: IdentifiedArray(uniqueElements: seededCronJobs),
       // The digest starts expanded with its runs loaded, so the panel shows job → runs at a
       // glance (the launch load refetches the same seed).

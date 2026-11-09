@@ -87,6 +87,12 @@ public struct PreferencesClient: Sendable {
   /// Compare-and-clear: drops the slot only while it still names `actionID`, so settling an
   /// old run can't erase a newer one; `nil` clears whatever is stored (logout).
   public var clearOwnedAgentUpdate: @Sendable (_ actionID: String?) -> Void
+  /// Whether the user hid the session list's onboarding tips row (#136). Device-local UI pref,
+  /// default `false` (tips shown). Cleared on logout, so the next sign-in shows them again;
+  /// deliberately NOT identity-scoped — a re-auth user switch keeps it.
+  public var loadOnboardingTipsDismissed: @Sendable () -> Bool = { false }
+  public var saveOnboardingTipsDismissed: @Sendable (_ dismissed: Bool) -> Void
+  public var clearOnboardingTipsDismissed: @Sendable () -> Void
 }
 
 public extension PreferencesClient {
@@ -130,6 +136,7 @@ public extension PreferencesClient {
     let liveActivityKey = "hermes.live-activity-enabled"
     let liveActivityTitlesKey = "hermes.live-activity-shows-titles"
     let ownedUpdateKey = "hermes.agent-update-owned"
+    let onboardingTipsDismissedKey = "hermes.onboarding-tips-dismissed"
     // UserDefaults is documented thread-safe but not Sendable.
     nonisolated(unsafe) let store = defaults
 
@@ -246,7 +253,10 @@ public extension PreferencesClient {
           }
           store.removeObject(forKey: ownedUpdateKey)
         }
-      }
+      },
+      loadOnboardingTipsDismissed: { store.bool(forKey: onboardingTipsDismissedKey) }, // unset → false
+      saveOnboardingTipsDismissed: { store.set($0, forKey: onboardingTipsDismissedKey) },
+      clearOnboardingTipsDismissed: { store.removeObject(forKey: onboardingTipsDismissedKey) }
     )
   }
 
@@ -266,6 +276,7 @@ public extension PreferencesClient {
     let liveActivity = LockIsolated(true)
     let liveActivityTitles = LockIsolated(true)
     let ownedUpdate = LockIsolated<OwnedAgentUpdate?>(nil)
+    let onboardingTipsDismissed = LockIsolated(false)
     return PreferencesClient(
       loadServerURL: { box.value },
       saveServerURL: { url in box.setValue(url) },
@@ -315,7 +326,10 @@ public extension PreferencesClient {
         ownedUpdate.withValue { value in
           if actionID == nil || value?.actionID == actionID { value = nil }
         }
-      }
+      },
+      loadOnboardingTipsDismissed: { onboardingTipsDismissed.value },
+      saveOnboardingTipsDismissed: { onboardingTipsDismissed.setValue($0) },
+      clearOnboardingTipsDismissed: { onboardingTipsDismissed.setValue(false) }
     )
   }
 }

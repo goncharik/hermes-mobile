@@ -610,6 +610,7 @@ public struct AppFeature {
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
         preferences.clearOwnedAgentUpdate(nil)
+        preferences.clearOnboardingTipsDismissed() // the next sign-in shows the tips again (#136)
         debugLog.clear()
         state.connectionFailed = nil
         state.path = .init()
@@ -920,7 +921,7 @@ public struct AppFeature {
           for: chat.connection,
           // Whatever the onboarding screen last probed — empty after a launch auto-restore,
           // which `providerLabel` handles by falling back to the wire provider name.
-          oauthProviders: state.onboarding.capability?.oauthProviders ?? []
+          oauthProviders: state.onboarding.lastProbedCapability?.oauthProviders ?? []
         )
         return .none
 
@@ -988,6 +989,7 @@ public struct AppFeature {
         preferences.clearModelPickerPrefs()
         preferences.clearLiveActivityPrefs()
         preferences.clearOwnedAgentUpdate(nil)
+        preferences.clearOnboardingTipsDismissed() // the next sign-in shows the tips again (#136)
         debugLog.clear()
         state.reauth = nil
         state.path = .init()
@@ -1854,7 +1856,9 @@ public struct AppFeature {
     SessionListFeature.State(
       connection: connection,
       selectedProfileName: SessionListFeature.State.persistedProfileName(preferences),
-      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences)
+      profilesSupported: SessionListFeature.State.persistedProfilesSupported(preferences),
+      // Seeded here too (not only on the list's `.task`) so hidden tips never flash.
+      showsOnboardingTips: !preferences.loadOnboardingTipsDismissed()
     )
   }
 
@@ -2068,9 +2072,9 @@ public struct AppFeature {
   }
 
   /// The prefilled-onboarding landing for a connection that needs *editing* rather than
-  /// retrying: token mode prefills both fields so the user can fix them; cookie and bearer
-  /// mode prefill only the URL (neither a password nor a browser leg is persistable), so the
-  /// user re-authenticates. Shared by the launch auth-failure fallback and the retry screen's
+  /// retrying: the Server step auto-probes the stored URL, and token mode prefills the token
+  /// into the Sign in step it pushes; cookie and bearer mode prefill nothing more (neither a
+  /// password nor a browser leg is persistable), so the user re-authenticates. Shared by the launch auth-failure fallback and the retry screen's
   /// `.credentialsRejected` delegate, so onboarding is constructed in exactly one place.
   ///
   /// Only the bearer regime has an effect: this is a verdict that the stored pair is DEAD, so
@@ -2081,8 +2085,8 @@ public struct AppFeature {
     _ state: inout State, connection: ServerConnection
   ) -> Effect<Action> {
     state.onboarding = ConnectionFeature.State(
-      serverURL: connection.baseURL.absoluteString,
-      token: connection.auth.token ?? ""
+      recovering: connection.baseURL,
+      token: connection.auth.token
     )
     guard case .bearer = connection.auth else { return .none }
     let claim = bearerTokens.claimOwnership() // minted here, applied on the next tick

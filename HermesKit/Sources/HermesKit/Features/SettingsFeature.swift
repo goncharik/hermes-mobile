@@ -578,6 +578,7 @@ public struct SettingsFeature {
         preferences.clearModelPickerPrefs() // model picker collapse + favorites (#130)
         preferences.clearLiveActivityPrefs() // Live Activity toggles back to on (#138)
         preferences.clearOwnedAgentUpdate(nil) // the updater's owned run is per-server
+        preferences.clearOnboardingTipsDismissed() // session-list tips show again (#136)
         chatSnapshot.wipeAll() // snapshots + turn anchors are per-server — wipe on logout
         debugLog.clear() // the gateway event log is per-server too (diagnostics report)
         return .merge(

@@ -81,61 +81,51 @@ over `/api/status` + `/api/auth/providers`:
 passwordProvider: AuthProvider?   // first supports_password == true
 oauthProviders:   [AuthProvider]  // supports_password == false, in server order
 supportsNativeFlow: Bool          // auth_flows contains "native_pkce"
-isGated: Bool                     // gated AND advertising providers
 ```
 
 Two rules carry the weight:
 
 - **`isOAuthAvailable` needs BOTH halves** — an OAuth provider *and* `native_pkce`. A gateway
   that lists `nous` but doesn't advertise the flow is too old to serve
-  `/auth/native/authorize`, so the segment stays hidden. This is the project's usual
+  `/auth/native/authorize`, so no provider button appears. This is the project's usual
   gate-by-capability idiom inverted on purpose: `?? true` is right for a field that describes
   an *existing* affordance, but a NEW one appears only on positive evidence (the desktop
-  does the same).
-- **`isGated` is NOT a bare `authRequired == true`.** A gated server whose providers endpoint
-  404s (or answers `[]`) still maps to `.tokenOnly`, because token is then the user's only way
-  in and must not be nudged away from. Defining `isGated` off the raw flag would have flipped
-  `isTokenDeemphasized` on and changed the footer copy for those servers. Guarded by
-  `gatedServerWithNoProvidersKeepsTokenUndeemphasized`.
+  does the same). `SignInStep` enforces it twice: the layout offers only those providers, and
+  `oauthProviderButtonTapped` ignores a provider outside that list.
+- **A gated server with no providers maps to `.tokenOnly`.** When its providers endpoint 404s
+  (or answers `[]`), token is the user's only way in and must not be nudged away from, so it
+  gets the token layout (`.tokenOnlyServer`).
 
-A gateway with no `auth_flows` and no OAuth providers therefore renders **exactly** the pre-#19
-UI. One case does change: a gated server that advertises OAuth providers *without* `native_pkce`
-gets a new footer hint (`MethodHint.oauthNeedsNewerAgent`, "… sign-in needs a newer Hermes agent")
-in place of the old "This server only supports token sign-in" — which was never true of the
-server, only of what this app can drive. Baseline
-`testAuthScreen_oauthProviderWithoutNativeFlow.1.png`.
+### Where the capability lands: the Sign in layout (#136)
 
-### The Password segment is omitted, not disabled
+The segmented Password | Token | \<provider\> toggle is gone. Onboarding's Sign in step derives
+one layout from the probed capability (`SignInStep.State.Layout`, table in
+`docs/features/onboarding.md`), with the same preference order, **password → OAuth → token**:
+password fields first with provider buttons under "or", provider buttons only, or the token
+field. Under the first two the token field sits behind "Other ways to sign in". Pinned by
+`SignInStepTests.layoutFollowsTheCapability` and the `testSignIn_*` baselines.
 
-The pre-existing rule expressed "you may not pick Password" by disabling the WHOLE segmented
-control — SwiftUI cannot disable one segment. With a third segment that becomes a trap: on a
-gated OAuth-only server the user lands on `.oauth`, taps Token, and the control locks with no
-way back to the provider. So the `.disabled` condition gained `&& !isOAuthEnabled`
-(byte-identical for every server without OAuth) and the Password segment is dropped from the
-picker in exactly the case the lock no longer covers.
+A gated server that advertises OAuth providers *without* `native_pkce` gets the notice
+"\<names\> sign-in needs a newer Hermes agent" (`oauthNeedsNewerAgentFor`): above the password
+fields when password is offered, otherwise as the token layout's reason
+(`.oauthNeedsNewerAgent`). It replaced the old "This server only supports token sign-in", which
+was never true of the server, only of what this app can drive.
 
-Segments render **Password | Token | \<provider\>**; the OAuth segment is labelled with the
-server's display name when exactly one provider is advertised ("Nous Research") and the neutral
-literal "OAuth" only when several would not fit. PRESELECTION is a different order —
-**password → oauth → token**. The OAuth segment renders one
-`Button("Continue with <displayName>")` per provider — plain text, default tint, **no logos and
-no brand colours** (App Store guideline 5.2.1: shipping a provider's mark is a trademark claim
-we have no licence for). The provider button IS the connect action, so the primary Connect
-button is hidden for that segment. Its footnote reads "Opens your identity provider in Safari.
-Nothing is stored until sign-in completes." The reauth sheet deliberately omits that footnote:
-a user who reaches it has already completed this browser leg at least once.
+Each provider is one `Button("Continue with <displayName>")`: plain text, **no logos and no
+brand colours** (App Store guideline 5.2.1: shipping a provider's mark is a trademark claim we
+have no licence for). The provider button IS the sign-in action. Its note reads "Opens
+\<provider\> in a secure browser. Nothing is saved until sign-in completes." The reauth sheet
+deliberately omits that note: a user who reaches it has already completed this browser leg at
+least once.
 
-**`canConnect` has a `.failed where method == .oauth` arm.** Password and Token reach `.failed`
-only on wait-it-out verdicts and each has a field whose edit is the obvious next move; the
-OAuth segment has nothing to type, so without the arm a failed sign-in disabled the provider
-button permanently under a footer that said "Try again." A failed *probe* still blocks
-everything (it nils `capability`, so `isOAuthEnabled` is false). Pinned by
-`onlyTheOAuthSegmentRetriesFromAFailedStatus`.
+A failed OAuth sign-in leaves the provider button usable (`canSignInWithOAuth`; the retry rule
+is in `docs/features/onboarding.md`). A failed *probe* never reaches Sign in: the Server step
+shows its failure card instead.
 
 ## Sign-in flow
 
 `OAuthLoginClient.signIn(baseURL, provider)` is one call, one sign-in — every transport- and
-UI-shaped step lives behind it so `ConnectionFeature`/`ReauthFeature` stay pure reducers.
+UI-shaped step lives behind it so `SignInStep`/`ReauthFeature` stay pure reducers.
 
 1. `PKCEPair.generate()` (32 random bytes → 43-char base64url verifier; challenge =
    base64url(SHA256(ascii(verifier))), method `S256`) and `generateOAuthState()`.
@@ -311,7 +301,7 @@ indistinguishable from a token-exchange 401.
 
 | Failure | Verdict |
 | --- | --- |
-| User dismissed the sheet | `.login(.cancelled)` → back to `.reachable` / `.idle`, **silently** — no banner |
+| User dismissed the sheet | `.login(.cancelled)` → back to `.idle`, **silently** — no banner |
 | Gateway `error=` on the callback | `.gatewayRejected(reason)` → `.failed(reason)` |
 | `state` mismatch | `.stateMismatch`, thrown **before** the code is ever redeemed |
 | Authorization code expired (120 s TTL) | token exchange 400 → `.failed` with the server's copy |
@@ -323,7 +313,7 @@ indistinguishable from a token-exchange 401.
 
 Every failure path clears the seeded store, so a half-finished sign-in never leaves credentials
 behind — with ONE deliberate exception: an **abandoned** attempt (superseded by a second
-provider tap, dropped by an edited server URL, or torn down by a logout) touches neither the
+provider tap, dropped by popping the Sign in step, or torn down by a logout) touches neither the
 store nor the Keychain — it does not seed, drain or persist. Cancellation is not a verdict on
 the credentials, and both are process-wide: writing there would write over whatever superseded
 it, or drain the store the logout's own hops still need. That is enforced by ownership, not by
@@ -413,9 +403,10 @@ Probe/LoopbackSpike/run.sh <simulator-udid>             # build + install + laun
 
 ## Known limitations
 
-- **The gateway must advertise `native_pkce`.** No `auth_flows` entry, no OAuth segment — the
+- **The gateway must advertise `native_pkce`.** No `auth_flows` entry, no provider button — the
   app cannot probe for the endpoints and will not guess. Such a server is signed into with a
-  token, and if it advertises OAuth providers the footer says so (see the capability gate).
+  password or token, and if it advertises OAuth providers the Sign in step says so (see the
+  capability gate).
 - **Refresh is PROACTIVE ONLY** — driven by `expiresAt` minus the 120 s leeway, never by a
   rejection. A 401 from an authenticated call does not force-expire the store's copy and retry
   through `validAccessToken`; it surfaces as `RESTError.unauthorized` / `GatewayError.authExpired`
@@ -436,9 +427,9 @@ Probe/LoopbackSpike/run.sh <simulator-udid>             # build + install + laun
   `ASWebAuthenticationSession(callbackURLScheme:)` used directly — a follow-up, not this
   feature.
 - **No `WKWebView` fallback.** A failed native login does not silently degrade to anything
-  (the desktop behaves the same); the user retries or picks another segment.
-- **Per-provider branding is deliberately absent.** Plain text labels only — see the segment
-  section above.
+  (the desktop behaves the same); the user retries or picks another way to sign in.
+- **Per-provider branding is deliberately absent.** Plain text labels only — see the Sign in
+  layout section above.
 - **These legs are deferred to manual verification**, not covered by any automated suite: a
   physical device on iOS 18 and 26 (listener reached, page renders, `cancel()` dismisses
   without a completion callback), the Local Network prompt on device, and a real Nous-configured

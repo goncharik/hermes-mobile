@@ -205,16 +205,15 @@ final class SettingsSnapshotTests: SnapshotTestCase {
 
   // MARK: Push guide
 
-  /// The "how push works" info sheet, plugin NOT installed — install action + Later snooze.
+  /// The "how push works" info sheet, plugin NOT installed — the install action.
   func testPushSetupGuideView() {
-    let view = PushSetupGuideView(pluginInstalled: false, onAskAgent: {}, onLater: {})
+    let view = PushSetupGuideView(pluginInstalled: false, onAskAgent: {})
     assertSnapshot(of: view, as: deviceImage())
   }
 
-  /// Plugin already installed — the action becomes "update" and the Later snooze drops away
-  /// (there is no nag to snooze; the sheet was opened deliberately from Settings).
+  /// Plugin already installed — the action becomes "update".
   func testPushSetupGuideView_installed() {
-    let view = PushSetupGuideView(pluginInstalled: true, onAskAgent: {}, onLater: {})
+    let view = PushSetupGuideView(pluginInstalled: true, onAskAgent: {})
     assertSnapshot(of: view, as: deviceImage())
   }
 

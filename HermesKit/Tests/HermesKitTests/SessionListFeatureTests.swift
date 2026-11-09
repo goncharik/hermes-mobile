@@ -3600,10 +3600,111 @@ struct SessionListFeatureTests {
     await store.receive(\.delegate.createSession)
   }
 
-  // MARK: Push onboarding (plugin readiness + info sheet + snooze)
+  // MARK: Push onboarding (plugin readiness + permission + the inline card + snooze)
 
-  @Test func setupPushReadyClearsSnoozeAndRequestsAuthorization() async {
-    let push = PushClient.inMemory(granted: true)
+  /// A `PushClient` that reports `status` without prompting and counts the reads and the
+  /// system prompts, so a test can prove the prompt never fires before the Turn on tap.
+  private func spyPush(
+    status: PushAuthorizationStatus,
+    statusReads: LockIsolated<Int>,
+    prompts: LockIsolated<Int>
+  ) -> PushClient {
+    var client = PushClient.testValue
+    client.authorizationStatus = {
+      statusReads.withValue { $0 += 1 }
+      return status
+    }
+    client.requestAuthorization = {
+      prompts.withValue { $0 += 1 }
+      return status == .authorized || status == .provisional
+    }
+    return client
+  }
+
+  /// Every `(plugin status × authorization status × snoozed)` combination of the setup verdict.
+  /// The permission is only READ (never requested) on list appearance; a ready plugin with
+  /// permission already granted registers silently, with no card.
+  @Test(
+    arguments: [PushPluginStatus.ready, .notReady, .unknown],
+    [PushAuthorizationStatus.notDetermined, .denied, .authorized, .provisional]
+  )
+  func setupPushVerdictMatrix(
+    plugin: PushPluginStatus,
+    authorization: PushAuthorizationStatus
+  ) async {
+    for snoozed in [false, true] {
+      let statusReads = LockIsolated(0)
+      let prompts = LockIsolated(0)
+      let prefs = PreferencesClient.inMemory()
+      let snoozeUntil = now.addingTimeInterval(86_400)
+      if snoozed { prefs.savePushPromptSnooze(1, snoozeUntil) }
+      let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+        SessionListFeature()
+      } withDependencies: {
+        $0.date = .constant(now)
+        $0.preferences = prefs
+        $0.push = spyPush(status: authorization, statusReads: statusReads, prompts: prompts)
+        $0.hermesREST.pushPluginStatus = { @Sendable _ in plugin }
+      }
+
+      await store.send(.setupPush)
+      switch plugin {
+      case .ready:
+        await store.receive(\.pushPluginStatusLoaded)
+        if authorization == .notDetermined, !snoozed {
+          await store.receive(\.pushAuthorizationStatusLoaded) {
+            $0.pushCard = .enableNotifications
+          }
+        } else {
+          await store.receive(\.pushAuthorizationStatusLoaded) // no card
+        }
+        if authorization == .authorized || authorization == .provisional {
+          // Silent register: `requestAuthorization` resolves without a prompt when already
+          // granted, and a granted verdict clears the snooze.
+          await store.receive(\.requestPushAuthorization)
+          await store.finish()
+          #expect(prompts.value == 1)
+          #expect(prefs.loadPushPromptSnooze() == nil)
+        } else {
+          #expect(prompts.value == 0)
+          #expect(prefs.loadPushPromptSnooze()?.until == (snoozed ? snoozeUntil : nil))
+        }
+        #expect(statusReads.value == 1)
+      case .notReady:
+        await store.receive(\.pushPluginStatusLoaded) {
+          $0.pushAvailable = false
+          if !snoozed { $0.pushCard = .installPlugin }
+        }
+        #expect(statusReads.value == 0)
+        #expect(prompts.value == 0)
+      case .unknown:
+        await store.receive(\.pushPluginStatusLoaded) // can't tell → no card, no change
+        #expect(statusReads.value == 0)
+        #expect(prompts.value == 0)
+      }
+      await store.finish()
+    }
+  }
+
+  /// The card renders only on the Sessions tab with no query; a search hides it.
+  @Test func pushCardIsHiddenWhileSearchingAndOnTheCronTab() {
+    var state = SessionListFeature.State(connection: connection)
+    #expect(!state.showsPushCard) // no verdict yet
+    state.pushCard = .enableNotifications
+    #expect(state.showsPushCard)
+    state.isSearchPresented = true
+    #expect(state.showsPushCard) // an open, empty search field still shows the list body
+    state.searchQuery = "parser"
+    #expect(!state.showsPushCard)
+    state.searchQuery = ""
+    state.isSearchPresented = false
+    state.cronJobs = [CronJob(id: "j1", name: "Nightly")]
+    state.selectedTab = .cron
+    #expect(!state.showsPushCard)
+  }
+
+  @Test func setupPushReadyAndAuthorizedRegistersSilently() async {
+    let push = PushClient.inMemory(granted: true, status: .authorized)
     let prefs = PreferencesClient.inMemory()
     prefs.savePushPromptSnooze(2, now.addingTimeInterval(86_400)) // a stale snooze to be cleared
     let registered = LockIsolated<String?>(nil)
@@ -3623,7 +3724,8 @@ struct SessionListFeatureTests {
     await store.receive(\.pushPluginStatusLoaded) {
       $0.pushAvailable = true // ready → push available
     }
-    #expect(prefs.loadPushPromptSnooze() == nil) // snooze cleared on ready
+    await store.receive(\.pushAuthorizationStatusLoaded)
+    #expect(prefs.loadPushPromptSnooze() == nil) // snooze cleared once granted
     await store.receive(\.requestPushAuthorization)
     push.emit(token: "deadbeef")
     await store.receive(\.pushTokenReceived)
@@ -3632,26 +3734,54 @@ struct SessionListFeatureTests {
     await store.send(.onDisappear)
   }
 
-  @Test func setupPushNotReadyAndNotSnoozedRaisesSheet() async {
-    let prefs = PreferencesClient.inMemory()
-    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+  /// A ready probe replaces a stale install card from an earlier `notReady` verdict.
+  @Test func setupPushReadyReplacesAStaleInstallCard() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.pushAvailable = false
+    initial.pushCard = .installPlugin
+    let store = TestStore(initialState: initial) {
       SessionListFeature()
     } withDependencies: {
       $0.date = .constant(now)
-      $0.preferences = prefs
-      $0.hermesREST.pushPluginStatus = { @Sendable _ in .notReady }
+      $0.preferences = .inMemory()
+      $0.push.authorizationStatus = { .notDetermined }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .ready }
     }
 
     await store.send(.setupPush)
     await store.receive(\.pushPluginStatusLoaded) {
-      $0.pushAvailable = false // plugin not enabled → not available
-      $0.showPushSetupSheet = true // not snoozed → raise the sheet
+      $0.pushAvailable = true
+      $0.pushCard = nil
+    }
+    await store.receive(\.pushAuthorizationStatusLoaded) {
+      $0.pushCard = .enableNotifications
     }
   }
 
-  @Test func setupPushNotReadyButSnoozedDoesNotRaiseSheet() async {
+  /// Every pop back to the list re-runs `setupPush`; a Turn on card already showing stays put
+  /// through the ready probe instead of being removed and re-inserted a beat later.
+  @Test func setupPushReadyKeepsAShowingTurnOnCard() async {
+    var initial = SessionListFeature.State(connection: connection)
+    initial.pushAvailable = true
+    initial.pushCard = .enableNotifications
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      $0.push.authorizationStatus = { .notDetermined }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .ready }
+    }
+
+    await store.send(.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.pushAuthorizationStatusLoaded)
+  }
+
+  /// An elapsed snooze no longer hides the card.
+  @Test func setupPushShowsTheCardOnceTheSnoozeElapses() async {
     let prefs = PreferencesClient.inMemory()
-    prefs.savePushPromptSnooze(1, now.addingTimeInterval(86_400)) // snoozed until tomorrow
+    prefs.savePushPromptSnooze(3, now.addingTimeInterval(-1))
     let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
@@ -3663,31 +3793,88 @@ struct SessionListFeatureTests {
     await store.send(.setupPush)
     await store.receive(\.pushPluginStatusLoaded) {
       $0.pushAvailable = false
-      // showPushSetupSheet stays false — still snoozed.
+      $0.pushCard = .installPlugin
     }
   }
 
-  @Test func setupPushUnknownLeavesCapabilityUnchanged() async {
-    var initial = SessionListFeature.State(connection: connection)
-    initial.pushAvailable = true // optimistic default
-    let store = TestStore(initialState: initial) {
+  /// The system prompt fires only from the card's Turn on: the card goes away, permission is
+  /// requested, and a grant registers the device token.
+  @Test func pushCardEnableRequestsAuthorizationAndRegisters() async {
+    let push = PushClient.inMemory(granted: true, status: .notDetermined)
+    let registered = LockIsolated<String?>(nil)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.push = push.client
+      $0.preferences = .inMemory()
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .ready }
+      $0.hermesREST.registerPush = { @Sendable _, token, _, _ in registered.setValue(token) }
+    }
+
+    await store.send(.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.pushAuthorizationStatusLoaded) {
+      $0.pushCard = .enableNotifications
+    }
+    await store.send(.pushCardEnableButtonTapped) {
+      $0.pushCard = nil
+    }
+    await store.receive(\.requestPushAuthorization)
+    push.emit(token: "deadbeef")
+    await store.receive(\.pushTokenReceived)
+    await store.receive(\.pushRegistered)
+    #expect(registered.value == "deadbeef")
+    await store.send(.onDisappear)
+  }
+
+  /// Turn on → Don't Allow: no register, and the next appearance shows no card (denied).
+  @Test func pushCardEnableDeniedShowsNoCardNextTime() async {
+    let prompts = LockIsolated(0)
+    let statusReads = LockIsolated(0)
+    let status = LockIsolated(PushAuthorizationStatus.notDetermined)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
       SessionListFeature()
     } withDependencies: {
       $0.date = .constant(now)
       $0.preferences = .inMemory()
-      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.push.authorizationStatus = {
+        statusReads.withValue { $0 += 1 }
+        return status.value
+      }
+      $0.push.requestAuthorization = {
+        prompts.withValue { $0 += 1 }
+        status.setValue(.denied)
+        return false
+      }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .ready }
     }
 
     await store.send(.setupPush)
-    await store.receive(\.pushPluginStatusLoaded) // unknown → no state change, no sheet
-    #expect(store.state.pushAvailable == true)
-    #expect(store.state.showPushSetupSheet == false)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.pushAuthorizationStatusLoaded) {
+      $0.pushCard = .enableNotifications
+    }
+    #expect(prompts.value == 0) // nothing asked before the tap
+    await store.send(.pushCardEnableButtonTapped) {
+      $0.pushCard = nil
+    }
+    await store.receive(\.requestPushAuthorization)
+    await store.finish()
+    #expect(prompts.value == 1)
+
+    await store.send(.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.pushAuthorizationStatusLoaded) // denied → no card
+    #expect(statusReads.value == 2)
+    #expect(prompts.value == 1)
   }
 
-  @Test func pushSetupLaterSnoozesOneDayOnFirstTap() async {
+  @Test(arguments: [SessionListFeature.PushCard.enableNotifications, .installPlugin])
+  func pushCardNotNowSnoozesOneDayOnFirstTap(card: SessionListFeature.PushCard) async {
     let prefs = PreferencesClient.inMemory()
     var initial = SessionListFeature.State(connection: connection)
-    initial.showPushSetupSheet = true
+    initial.pushCard = card
     let store = TestStore(initialState: initial) {
       SessionListFeature()
     } withDependencies: {
@@ -3695,21 +3882,21 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
     }
 
-    // First "Later" → count 1 → 1 day.
-    await store.send(.pushSetupLaterTapped) {
-      $0.showPushSetupSheet = false
+    // First "Not now" / "Later" → count 1 → 1 day.
+    await store.send(.pushCardNotNowButtonTapped) {
+      $0.pushCard = nil
     }
     let snooze = prefs.loadPushPromptSnooze()
     #expect(snooze?.count == 1)
     #expect(snooze?.until == now.addingTimeInterval(1 * 86_400))
   }
 
-  @Test func pushSetupLaterIncrementsCountAndUsesNextFibonacciInterval() async {
-    // A prior snooze already recorded one "Later" — the next bumps to count 2 → 2 days out.
+  @Test func pushCardNotNowIncrementsCountAndUsesNextFibonacciInterval() async {
+    // Two prior snoozes — the next bumps to count 3 → 3 days out.
     let prefs = PreferencesClient.inMemory()
-    prefs.savePushPromptSnooze(1, now.addingTimeInterval(-1)) // already elapsed
+    prefs.savePushPromptSnooze(2, now.addingTimeInterval(-1)) // already elapsed
     var initial = SessionListFeature.State(connection: connection)
-    initial.showPushSetupSheet = true
+    initial.pushCard = .enableNotifications
     let store = TestStore(initialState: initial) {
       SessionListFeature()
     } withDependencies: {
@@ -3717,25 +3904,52 @@ struct SessionListFeatureTests {
       $0.preferences = prefs
     }
 
-    await store.send(.pushSetupLaterTapped) {
-      $0.showPushSetupSheet = false
+    await store.send(.pushCardNotNowButtonTapped) {
+      $0.pushCard = nil
     }
     let snooze = prefs.loadPushPromptSnooze()
-    #expect(snooze?.count == 2)
-    #expect(snooze?.until == now.addingTimeInterval(2 * 86_400))
+    #expect(snooze?.count == 3)
+    #expect(snooze?.until == now.addingTimeInterval(3 * 86_400))
   }
 
-  @Test func pushSetupAskAgentOpensPrefilledChat() async {
+  /// The snooze written by Not now hides the card on the next appearance.
+  @Test func pushCardNotNowHidesTheCardOnTheNextAppearance() async {
+    let prefs = PreferencesClient.inMemory()
     var initial = SessionListFeature.State(connection: connection)
-    initial.showPushSetupSheet = true
-    let store = TestStore(initialState: initial) { SessionListFeature() }
-
-    await store.send(.pushSetupAskAgentTapped) {
-      $0.showPushSetupSheet = false
+    initial.pushCard = .installPlugin
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = prefs
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .notReady }
     }
-    // The create delegate carries the install prompt (the AppFeature test asserts it reaches
-    // the composer); here we only confirm the delegate fires from the "Ask agent" button.
-    await store.receive(\.delegate.createSession)
+
+    await store.send(.pushCardNotNowButtonTapped) {
+      $0.pushCard = nil
+    }
+    await store.send(.setupPush)
+    await store.receive(\.pushPluginStatusLoaded) {
+      $0.pushAvailable = false // snoozed → still no card
+    }
+  }
+
+  @Test func pushCardAskAgentOpensPrefilledChat() async {
+    let prefs = PreferencesClient.inMemory()
+    var initial = SessionListFeature.State(connection: connection)
+    initial.pushCard = .installPlugin
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = prefs
+    }
+
+    await store.send(.pushCardAskAgentButtonTapped) {
+      $0.pushCard = nil
+    }
+    // The create delegate carries the install prompt, pre-filled but not sent.
+    await store.receive(\.delegate.createSession, PushSetup.installPrompt)
+    #expect(prefs.loadPushPromptSnooze() == nil) // asking the agent is not a snooze
   }
 
   @Test func settingsInstallPushPluginOpensPrefilledChat() async {
@@ -5611,5 +5825,88 @@ struct SessionListFeatureTests {
       $0.sessions = [Session(id: "b"), session]
       $0.loadError = "Couldn’t archive the session."
     }
+  }
+
+  // MARK: - Onboarding tips (#136)
+
+  /// Hide hides the row at once and persists the dismissal.
+  @Test func onboardingTipsHidePersists() async {
+    let prefs = PreferencesClient.inMemory()
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.preferences = prefs
+    }
+
+    #expect(store.state.showsOnboardingTipsRow) // shown until dismissed
+    await store.send(.onboardingTipsHideButtonTapped) {
+      $0.showsOnboardingTips = false
+    }
+    #expect(prefs.loadOnboardingTipsDismissed())
+  }
+
+  /// A dismissal persisted earlier keeps the row hidden when the list re-reads its prefs.
+  @Test func onboardingTipsStayHiddenAfterReload() async {
+    let prefs = PreferencesClient.inMemory()
+    prefs.saveOnboardingTipsDismissed(true)
+    let store = TestStore(initialState: SessionListFeature.State(connection: connection)) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = prefs
+      $0.hermesProfiles.list = { @Sendable _ in throw RESTError.notFound }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+    }
+
+    await store.send(.task) {
+      $0.now = now
+      $0.isLoading = true
+      $0.showsOnboardingTips = false
+    }
+    await store.receive(\.setupPush)
+    await store.receive(\.pushPluginStatusLoaded)
+    await store.receive(\.profilesResponse.failure)
+    await store.receive(\.sessionsResponse.success) {
+      $0.statusSessions = [] // an empty list holds `isLoading` for the cron fetch
+    }
+    await store.receive(\.cronJobsResponse.failure) {
+      $0.cronJobsSupported = false
+      $0.isLoading = false
+    }
+    #expect(!store.state.showsOnboardingTipsRow)
+    #expect(!store.state.showsInlineEmptyPlaceholder) // no leading cards → centred overlay
+    await store.send(.onDisappear)
+  }
+
+  /// The profiles tip needs the profiles API (it points at the pill, hidden without it).
+  @Test func onboardingTipsGateTheProfilesTip() {
+    var state = SessionListFeature.State(connection: connection)
+    #expect(state.onboardingTips == [.voice, .swipeActions])
+    state.profilesSupported = true
+    #expect(state.onboardingTips == [.profiles, .voice, .swipeActions])
+  }
+
+  /// The row renders only on the Sessions tab with no query, and pulls the empty placeholder
+  /// under it like the push card does.
+  @Test func onboardingTipsRowHidesWhileSearchingAndOnTheCronTab() {
+    var state = SessionListFeature.State(connection: connection)
+    #expect(state.showsOnboardingTipsRow)
+    #expect(state.showsInlineEmptyPlaceholder) // empty list + tips → placeholder row under them
+    state.isLoading = true
+    #expect(!state.showsInlineEmptyPlaceholder) // still loading → no placeholder at all
+    state.isLoading = false
+    state.searchQuery = "parser"
+    #expect(!state.showsOnboardingTipsRow)
+    state.searchQuery = ""
+    state.cronJobs = [CronJob(id: "j1", name: "Nightly")]
+    state.selectedTab = .cron
+    #expect(!state.showsOnboardingTipsRow)
+    state.selectedTab = .sessions
+    state.showsOnboardingTips = false
+    #expect(!state.showsOnboardingTipsRow)
+    #expect(!state.showsInlineEmptyPlaceholder) // no tips, no card → the centred overlay
   }
 }

@@ -11,8 +11,8 @@ import SwiftUI
 /// surface: launch transport failures no longer pass through onboarding at all, and this
 /// screen shows exactly the failures the guide explains (a host-header 400, a 404 from a route
 /// that moved, a `.decoding` reply that "doesn't look like Hermes"). Presentation is view-local
-/// `@State` — the same way the login screen does it — so nothing about a sheet reaches the
-/// reducer.
+/// `@State` — the same way onboarding's `ConnectionView` does it — so nothing about a sheet
+/// reaches the reducer.
 struct ConnectionFailedView: View {
   @Bindable var store: StoreOf<ConnectionFailedFeature>
 
