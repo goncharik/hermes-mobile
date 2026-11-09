@@ -224,6 +224,26 @@ server's copy. The job's past runs stay on the server but are no longer listed i
 shows the shared unread dot when that run is in the list's cron slice and unread
 (`unreadSessionIDs`); the flat fallback keeps the regular row dot.
 
+## Shared pin membership, local order
+
+**Pin membership syncs with the server; pin order stays device-local.**
+
+- Server sync requires `profilesSupported` and pin capability discovered from a list response.
+  Otherwise pins stay local-only. Writes use the selected literal profile, including `"default"`.
+  After discovery, search rows support Pin/Unpin even without a `pinned` field; search responses
+  never reconcile membership or initiate migration.
+- Explicit list membership is authoritative except for pending writes and legacy migration.
+  Nil fields and absent rows preserve cached membership; local ordering is never server-owned.
+- Legacy pins remain pending per server across pages, profiles, failed uploads, and normal
+  relaunches until acknowledged or observed pinned. Failed uploads retry silently on a later
+  capable list; retired pins follow server membership. Logout clears migration state.
+  Persistence does not guarantee crash-durable flushing or atomicity with network dispatch.
+- Pin writes are single-flight per ID. Failure restores only that ID at its bounded prior index
+  and shows an error that survives the completion-triggered refetch. Stale pre-write fetches
+  cannot overwrite completed writes; profile switches clear old rows.
+- Pin and archive/delete do not exclude each other, including archived-sheet deletes.
+  Confirmed removal prevents a later pin failure from restoring removed membership.
+
 ## Shared unread state
 
 On agents that return the optional `unread` field, the backend owns read state: its
