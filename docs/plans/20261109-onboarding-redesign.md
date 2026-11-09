@@ -296,12 +296,12 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesKit/Sources/HermesKit/Models/ServerProbe.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ProbeFailureTests.swift`
 
-- [ ] implement `ProbeFailure.classify(_:address:)` for `URLError` codes (table in Technical Details); a non-`URLError` maps to `.other`
-- [ ] implement `classify(httpStatus:contentType:detail:)`: 404 → `.notHermes`, 400 + "Invalid Host header" → `.hostRejected(detail)`, others → `.other(detail ?? "HTTP \(status)")`
-- [ ] implement `isTransport`; add `ServerProbe` (Equatable, Sendable, public init for snapshot/demo targets)
-- [ ] tests for every `URLError` row, including `hostNotFound(tailnetName:)` for a `.ts.net` versus a public name, and `isTransport` per case
-- [ ] tests for the HTTP rows, including a 400 whose detail is something other than the Host message
-- [ ] run `make test` and confirm it passes before task 3
+- [x] implement `ProbeFailure.classify(_:address:)` for `URLError` codes (table in Technical Details); a non-`URLError` maps to `.other`
+- [x] implement `classify(httpStatus:contentType:detail:)`: 404 → `.notHermes`, 400 + "Invalid Host header" → `.hostRejected(detail)`, others → `.other(detail ?? "HTTP \(status)")`
+- [x] implement `isTransport`; add `ServerProbe` (Equatable, Sendable, public init for snapshot/demo targets)
+- [x] tests for every `URLError` row, including `hostNotFound(tailnetName:)` for a `.ts.net` versus a public name, and `isTransport` per case
+- [x] tests for the HTTP rows, including a 400 whose detail is something other than the Host message
+- [x] run `make test` and confirm it passes before task 3
 
 ### Task 3: Add the `probeStatus` REST endpoint
 
