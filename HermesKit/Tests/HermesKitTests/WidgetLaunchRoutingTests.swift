@@ -225,7 +225,7 @@ struct WidgetLaunchRoutingTests {
   @Test func openSessionDismissesListPresentations() async {
     var home = SessionListFeature.State(connection: connection)
     home.settings = SettingsFeature.State(connection: connection)
-    home.showPushSetupSheet = true
+    home.renamingID = "s1"
     let store = TestStore(initialState: AppFeature.State(home: home)) {
       AppFeature()
     } withDependencies: {
@@ -235,7 +235,7 @@ struct WidgetLaunchRoutingTests {
 
     await store.send(.launchIntentReceived(.openSession(id: "s1", profile: nil))) {
       $0.home?.settings = nil
-      $0.home?.showPushSetupSheet = false
+      $0.home?.renamingID = nil
     }
     await store.receive(\.home.delegate.openSession)
     #expect(store.state.liveChat?.storedSessionID == "s1")

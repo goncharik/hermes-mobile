@@ -51,8 +51,9 @@ struct SessionListView: View {
     .environment(\.defaultMinListHeaderHeight, 0)
     .listSectionSpacing(0)
     .overlay {
-      if store.showsEmptyPlaceholder {
-        ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right")
+      // With the push card up, the placeholder is a row under it instead (`showsPushCard`).
+      if store.showsEmptyPlaceholder, !store.showsPushCard {
+        emptyPlaceholder
       }
     }
     // Applied BEFORE the bottom `safeAreaInset` so the toast floats inside the list area,
@@ -152,16 +153,6 @@ struct SessionListView: View {
         AddProfileView(store: addProfileStore)
       }
     }
-    // Push onboarding info sheet — raised by the reducer when the plugin isn't ready and the
-    // prompt isn't snoozed. Its two buttons send `SessionListFeature` actions.
-    .sheet(isPresented: $store.showPushSetupSheet) {
-      PushSetupGuideView(
-        // This sheet is only raised when the plugin isn't ready, so always show the install actions.
-        pluginInstalled: false,
-        onAskAgent: { store.send(.pushSetupAskAgentTapped) },
-        onLater: { store.send(.pushSetupLaterTapped) }
-      )
-    }
   }
 
   /// The Sessions tab's non-search body: the "Sessions" header, the pinned section, then the
@@ -172,6 +163,17 @@ struct SessionListView: View {
   private var sessionListContent: some View {
     // Top-level "Sessions" header, scoped to the active profile pill.
     tabTitleHeader("Sessions")
+    // The push card (#136) leads the list, above Pinned and the date sections; never while
+    // searching. With no sessions the placeholder follows it as a row.
+    if store.showsPushCard, let card = store.pushCard {
+      pushCardRow(card)
+      if store.showsEmptyPlaceholder {
+        emptyPlaceholder
+          .padding(.top, 24)
+          .listRowSeparator(.hidden)
+          .listRowBackground(Color.clear)
+      }
+    }
     // Pinned sessions float to the top — as cards too, so the column never mixes card and
     // one-line geometry (desktop parity).
     if !store.pinnedSessions.isEmpty {
@@ -194,6 +196,25 @@ struct SessionListView: View {
         sectionHeader(section.label)
       }
     }
+  }
+
+  private var emptyPlaceholder: some View {
+    ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right")
+  }
+
+  /// The push card as a plain list row: no separator, no row background (the card draws its
+  /// own surface), and the same 16pt side insets as the session cards below it.
+  private func pushCardRow(_ card: SessionListFeature.PushCard) -> some View {
+    let animation: Animation? = reduceMotion ? nil : .snappy
+    return PushCardView(
+      card: card,
+      askAgentButtonTapped: { store.send(.pushCardAskAgentButtonTapped) },
+      enableButtonTapped: { store.send(.pushCardEnableButtonTapped, animation: animation) },
+      notNowButtonTapped: { store.send(.pushCardNotNowButtonTapped, animation: animation) }
+    )
+    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+    .listRowSeparator(.hidden)
+    .listRowBackground(Color.clear)
   }
 
   /// A Pinned / date-section header: the title on the leading side and a hairline running to

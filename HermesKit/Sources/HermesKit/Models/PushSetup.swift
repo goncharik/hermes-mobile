@@ -58,10 +58,11 @@ public enum PushSetup {
 /// Readiness of the `hermes-push` plugin on the connected agent, derived from
 /// `GET /api/dashboard/plugins/hub`.
 public enum PushPluginStatus: Equatable, Sendable {
-  /// Present AND `runtime_status == "enabled"` → request permission + register.
+  /// Present AND `runtime_status == "enabled"` → read the permission: register silently when
+  /// granted, else offer the session list's Turn on card (unless snoozed).
   case ready
-  /// Present but not enabled (disabled/inactive), OR absent from the list → present the info
-  /// sheet (unless snoozed).
+  /// Present but not enabled (disabled/inactive), OR absent from the list → the session
+  /// list's install card (unless snoozed).
   case notReady
   /// The endpoint 404'd or the request failed — we can't tell, so don't nag (leave the
   /// capability flag as-is).
@@ -157,7 +158,8 @@ public extension PushSetup {
   }
 }
 
-/// Days to snooze the push info sheet after the N-th "Later" tap (1-indexed). A Fibonacci
+/// Days to snooze the session-list push card after the N-th "Not now" / "Later" tap
+/// (1-indexed). A Fibonacci
 /// backoff capped at ~60 days so the nag spaces out quickly but never disappears entirely.
 ///
 /// `1→1, 2→2, 3→3, 4→5, 5→8, 6→13, 7→21, 8→34, 9→55, 10+→60`. A `laterCount` below 1 is

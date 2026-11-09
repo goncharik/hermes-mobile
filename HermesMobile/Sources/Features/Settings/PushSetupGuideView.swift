@@ -6,8 +6,9 @@ import SwiftUI
 /// "Later" snooze on the not-installed path. A small text link opens the plugin's GitHub page.
 ///
 /// It deliberately talks about the **plugin only** — the relay/gateway is publisher infra
-/// the user never has to know about. The actions are surfaced as closures so both call
-/// sites (the sessions-list auto-present and Settings) reuse the same view.
+/// the user never has to know about. The actions are surfaced as closures; Settings is the
+/// only call site (the session list shows an inline `PushCardView` instead of auto-presenting
+/// this sheet).
 struct PushSetupGuideView: View {
   @Environment(\.dismiss) private var dismiss
 

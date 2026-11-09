@@ -87,10 +87,12 @@ public struct SessionListFeature {
     /// (plugin not installed). Threaded into Settings so the notifications UI is capability-gated.
     /// Defaults to `true` (optimistic) so we attempt registration before the first probe.
     public var pushAvailable: Bool
-    /// Whether the push info sheet is presented. Raised when the plugin is not ready and the
-    /// prompt isn't currently snoozed; dismissed by either of the sheet's two buttons. Pure
-    /// presentation state (a `Bool`) — the sheet's buttons send `SessionListFeature` actions.
-    public var showPushSetupSheet: Bool
+    /// The inline push card at the top of the Sessions tab, or `nil` for none. Set by
+    /// `setupPush`'s verdict: the plugin is ready but notification permission was never asked
+    /// → `.enableNotifications`; the plugin is not ready → `.installPlugin` — each only while
+    /// the prompt isn't snoozed. Every card button clears it. The system permission prompt
+    /// fires only from the card's Turn on button, never on list appearance.
+    public var pushCard: SessionListFeature.PushCard?
     /// Cron jobs fetched from `GET /api/cron/jobs` — the Cron Jobs tab's rows. Empty until
     /// the first fetch lands.
     public var cronJobs: IdentifiedArrayOf<CronJob>
@@ -178,7 +180,7 @@ public struct SessionListFeature {
       renamingProfileName: String? = nil,
       profileRenameDraft: String = "",
       pushAvailable: Bool = true,
-      showPushSetupSheet: Bool = false,
+      pushCard: SessionListFeature.PushCard? = nil,
       cronJobs: IdentifiedArrayOf<CronJob> = [],
       cronJobsSupported: Bool = true,
       expandedCronJobID: String? = nil,
@@ -214,7 +216,7 @@ public struct SessionListFeature {
       self.renamingProfileName = renamingProfileName
       self.profileRenameDraft = profileRenameDraft
       self.pushAvailable = pushAvailable
-      self.showPushSetupSheet = showPushSetupSheet
+      self.pushCard = pushCard
       self.cronJobs = cronJobs
       self.cronJobsSupported = cronJobsSupported
       self.expandedCronJobID = expandedCronJobID
@@ -252,7 +254,6 @@ public struct SessionListFeature {
       archived = nil
       addProfile = nil
       confirmationDialog = nil
-      showPushSetupSheet = false
       renamingID = nil
       renameDraft = ""
       renamingProfileName = nil
@@ -322,6 +323,13 @@ public struct SessionListFeature {
     public var showsEmptyPlaceholder: Bool {
       effectiveTab == .sessions && !isLoading && loadError == nil
         && (isSearching ? sessions.isEmpty : interactiveSessions.isEmpty)
+    }
+
+    /// Whether the push card renders: a verdict set it, on the Sessions tab, and never with a
+    /// search query active. While it shows, the "No sessions" placeholder flows as a row under
+    /// it instead of floating centred over the list (where a tall card would collide with it).
+    public var showsPushCard: Bool {
+      pushCard != nil && effectiveTab == .sessions && !isSearching
     }
 
     /// A non-search list with no interactive session and no jobs known yet: the load's
@@ -556,17 +564,23 @@ public struct SessionListFeature {
     /// Kicks off contextual push setup once the list appears (right after login): first probe
     /// the `hermes-push` plugin readiness, then branch on the result. Fired from `.task`.
     case setupPush
-    /// Result of the plugin-readiness probe (`rest.pushPluginStatus`). `ready` → permission +
-    /// register (and clear any snooze); `notReady` → set `pushAvailable=false` and raise the
-    /// info sheet unless snoozed; `unknown` → leave capability as-is (don't nag).
+    /// Result of the plugin-readiness probe (`rest.pushPluginStatus`). `ready` → read the
+    /// notification permission (no prompt); `notReady` → set `pushAvailable=false` and show
+    /// the install card unless snoozed; `unknown` → leave capability as-is (don't nag).
     case pushPluginStatusLoaded(PushPluginStatus)
+    /// The current notification permission, read once the plugin is ready. `authorized` /
+    /// `provisional` → silent register (and clear any snooze); `notDetermined` → the Turn on
+    /// card unless snoozed; `denied` → nothing.
+    case pushAuthorizationStatusLoaded(PushAuthorizationStatus)
     /// Begin the permission-request + token-observe flow (only when the plugin is ready).
     case requestPushAuthorization
-    /// The info sheet's "Ask agent to install" button — open a new chat with the install prompt
-    /// pre-filled in the composer (dismisses the sheet; bubbles up via the create delegate).
-    case pushSetupAskAgentTapped
-    /// The info sheet's "Later" button — dismiss + snooze (Fibonacci backoff on the Later count).
-    case pushSetupLaterTapped
+    /// The install card's "Ask my agent to install it" — open a new chat with the install
+    /// prompt pre-filled in the composer (bubbles up via the create delegate).
+    case pushCardAskAgentButtonTapped
+    /// The enable card's "Turn on" — the only path to the system permission prompt.
+    case pushCardEnableButtonTapped
+    /// Either card's "Not now" / "Later" — hide + snooze (Fibonacci backoff on the count).
+    case pushCardNotNowButtonTapped
     /// A device token arrived from `PushClient.register()` (initial registration OR an OS
     /// rotation) — (re-)register it with the agent. Carries the lowercase-hex token.
     case pushTokenReceived(String)
@@ -624,6 +638,14 @@ public struct SessionListFeature {
       /// The Settings "Show session titles" toggle changed (Settings persisted it).
       case liveActivityShowsTitlesToggled(Bool)
     }
+  }
+
+  /// The inline push card's variant (`State.pushCard`).
+  public enum PushCard: Equatable, Sendable {
+    /// The plugin is ready and permission was never asked: preview + "Turn on".
+    case enableNotifications
+    /// The plugin isn't installed / enabled: "Ask my agent to install it".
+    case installPlugin
   }
 
   // One id for BOTH the list fetch and the search fetch: any new fetch (list refresh, poll,
@@ -685,9 +707,9 @@ public struct SessionListFeature {
             }
           }
           .cancellable(id: CancelID.poll, cancelInFlight: true),
-          // Contextual push setup: prompt for permission now that we're past login, and (if
-          // granted) start observing device tokens. Per the product decision the permission
-          // prompt fires here on the sessions list — never at first launch.
+          // Contextual push setup now that we're past login: decide which push card (if any)
+          // to show, or register silently when permission was already granted. The system
+          // permission prompt itself waits for the card's Turn on tap.
           .send(.setupPush)
         )
 
@@ -877,7 +899,7 @@ public struct SessionListFeature {
       case .setupPush:
         // Push onboarding (after login, on the list). FIRST probe whether the `hermes-push`
         // plugin is installed + enabled (a REST-only check that works without the WS); the
-        // result decides whether to request permission, raise the info sheet, or do nothing.
+        // result decides which card to show, whether to register silently, or nothing.
         return .run { [rest, connection = state.connection] send in
           let status = (try? await rest.pushPluginStatus(connection)) ?? .unknown
           await send(.pushPluginStatusLoaded(status))
@@ -887,22 +909,42 @@ public struct SessionListFeature {
       case let .pushPluginStatusLoaded(status):
         switch status {
         case .ready:
-          // Plugin is live → push is available. Clear any prior snooze (so a later uninstall
-          // re-prompts fresh) and run the existing permission-request + token-register flow.
+          // Plugin is live → push is available. Read the permission WITHOUT prompting: it
+          // decides between a silent register and the Turn on card. An install card from an
+          // earlier probe is stale now.
           state.pushAvailable = true
-          state.showPushSetupSheet = false
-          preferences.clearPushPromptSnooze()
-          return .send(.requestPushAuthorization)
+          state.pushCard = nil
+          return .run { [push] send in
+            await send(.pushAuthorizationStatusLoaded(push.authorizationStatus()))
+          }
+          .cancellable(id: CancelID.pushTokens, cancelInFlight: true)
         case .notReady:
-          // Plugin absent / disabled → push isn't available. Raise the info sheet unless the
+          // Plugin absent / disabled → push isn't available. Show the install card unless the
           // prompt is currently snoozed (Fibonacci backoff from prior "Later" taps).
           state.pushAvailable = false
-          if !isPushPromptSnoozed() {
-            state.showPushSetupSheet = true
-          }
+          state.pushCard = isPushPromptSnoozed() ? nil : .installPlugin
           return .none
         case .unknown:
           // Endpoint 404 / network error — can't tell. Don't nag; leave capability as-is.
+          return .none
+        }
+
+      case let .pushAuthorizationStatusLoaded(status):
+        switch status {
+        case .authorized, .provisional:
+          // Already granted → register silently (no prompt: `requestAuthorization` resolves
+          // at once). Clear any prior snooze so a later uninstall re-prompts fresh.
+          state.pushCard = nil
+          preferences.clearPushPromptSnooze()
+          return .send(.requestPushAuthorization)
+        case .notDetermined:
+          // Never asked → offer the Turn on card unless the user snoozed it.
+          state.pushCard = isPushPromptSnoozed() ? nil : .enableNotifications
+          return .none
+        case .denied:
+          // The user said no in the system prompt (or Settings) — don't nag; Settings has the
+          // toggle.
+          state.pushCard = nil
           return .none
         }
 
@@ -919,16 +961,22 @@ public struct SessionListFeature {
         }
         .cancellable(id: CancelID.pushTokens, cancelInFlight: true)
 
-      case .pushSetupAskAgentTapped:
-        // Dismiss the sheet and open a new chat with the install prompt pre-filled (NOT sent —
+      case .pushCardAskAgentButtonTapped:
+        // Hide the card and open a new chat with the install prompt pre-filled (NOT sent —
         // the user reviews and sends). Bubbles up via the create delegate, carrying the text.
-        state.showPushSetupSheet = false
+        state.pushCard = nil
         return .send(.delegate(.createSession(initialComposerText: PushSetup.installPrompt)))
 
-      case .pushSetupLaterTapped:
-        // Dismiss + snooze: bump the Later count and push the next prompt out by the matching
-        // Fibonacci interval, persisting both so it survives relaunch.
-        state.showPushSetupSheet = false
+      case .pushCardEnableButtonTapped:
+        // The user opted in → the system prompt, then (if granted) the token register.
+        state.pushCard = nil
+        return .send(.requestPushAuthorization)
+
+      case .pushCardNotNowButtonTapped:
+        // Hide + snooze: bump the count and push the next prompt out by the matching
+        // Fibonacci interval, persisting both so it survives relaunch. Both card variants
+        // share the one snooze.
+        state.pushCard = nil
         let count = (preferences.loadPushPromptSnooze()?.count ?? 0) + 1
         let until = now.addingTimeInterval(Double(pushPromptSnoozeDays(laterCount: count)) * 86_400)
         preferences.savePushPromptSnooze(count, until)
@@ -1742,8 +1790,8 @@ public struct SessionListFeature {
     }
   }
 
-  /// Whether the push info sheet is currently snoozed — a persisted `until` exists and `now`
-  /// is still before it. A cleared snooze (ready/logout) or an elapsed window returns `false`.
+  /// Whether the push card is currently snoozed — a persisted `until` exists and `now` is
+  /// still before it. A cleared snooze (authorized/logout) or an elapsed window returns `false`.
   private func isPushPromptSnoozed() -> Bool {
     guard let snooze = preferences.loadPushPromptSnooze() else { return false }
     return now < snooze.until

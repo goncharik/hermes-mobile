@@ -426,13 +426,15 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesMobile/Sources/Features/PushCardView.swift`
 - Modify: `HermesMobileTests/` session-list snapshot suite
 
-- [ ] `.pushPluginStatusLoaded(.ready)`: read `push.authorizationStatus()`. `.notDetermined` + not snoozed → `pushCard = .enableNotifications`; `.authorized` → `.requestPushAuthorization` (silent register, as today); denied → nothing.
-- [ ] `.notReady` + not snoozed → `pushCard = .installPlugin` instead of `showPushSetupSheet = true`. Keep the sheet for its Settings entry point.
-- [ ] card actions reuse the existing `.requestPushAuthorization`, `.delegate(.createSession(initialComposerText: PushSetup.installPrompt))` and snooze save; each clears `pushCard`
-- [ ] the card is the first list row (above the date sections), with the generic notification preview (privacy rule: no content), and is hidden while searching
-- [ ] tests: each `(plugin status × authorization status × snoozed)` combination; the snooze count increments; Ask Agent emits the create-session delegate; no `requestAuthorization` call before the Enable tap
-- [ ] snapshots: both card variants, light + dark (device image, since this is a `List`)
-- [ ] run `make test` and `make snapshot` and confirm both are clean before task 11
+- [x] `.pushPluginStatusLoaded(.ready)`: read `push.authorizationStatus()`. `.notDetermined` + not snoozed → `pushCard = .enableNotifications`; `.authorized` → `.requestPushAuthorization` (silent register, as today); denied → nothing.
+- [x] `.notReady` + not snoozed → `pushCard = .installPlugin` instead of `showPushSetupSheet = true`. Keep the sheet for its Settings entry point.
+- [x] card actions reuse the existing `.requestPushAuthorization`, `.delegate(.createSession(initialComposerText: PushSetup.installPrompt))` and snooze save; each clears `pushCard`
+- [x] the card is the first list row (above the date sections), with the generic notification preview (privacy rule: no content), and is hidden while searching
+- [x] tests: each `(plugin status × authorization status × snoozed)` combination; the snooze count increments; Ask Agent emits the create-session delegate; no `requestAuthorization` call before the Enable tap
+- [x] snapshots: both card variants, light + dark (device image, since this is a `List`)
+- [x] run `make test` and `make snapshot` and confirm both are clean before task 11
+- ➕ the list's `showPushSetupSheet` + `pushSetupAskAgentTapped`/`pushSetupLaterTapped` are removed (Settings presents `PushSetupGuideView` from its own view-local `@State`); new `pushAuthorizationStatusLoaded` action carries the permission read; the snooze is cleared on an authorized/provisional verdict instead of on every `.ready`
+- ➕ `State.showsPushCard` (Sessions tab, no query): while the card shows, the "No sessions" placeholder is a row under it instead of the centred overlay (snapshot `pushCard_emptyList`)
 
 ### Task 11: Add the dismissible onboarding tips to the session list
 

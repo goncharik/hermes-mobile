@@ -302,6 +302,67 @@ final class SessionSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: deviceImage())
   }
 
+  // MARK: Push card (#136)
+
+  /// The list with the push card leading it, above three dated sessions (or none).
+  private func pushCardHost(_ card: SessionListFeature.PushCard, sessionCount: Int = 3) -> some View {
+    let now = self.now
+    let sessions: [Session] = (0..<sessionCount).map { i in
+      Session(id: "m\(i)",
+              title: ["Refactor the streaming parser", "Plan the iOS MVP", "UX polish pass"][i],
+              updatedAt: Date(timeIntervalSince1970: 1_749_556_800 - Double(i) * 86_400),
+              cwd: "/Users/me/dev/hermes-mobile",
+              startedAt: Date(timeIntervalSince1970: 1_749_556_800 - Double(i) * 86_400),
+              messageCount: 10)
+    }
+    let seen = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.messageCount ?? 0) })
+    return NavigationStack {
+      SessionListView(
+        store: Store(
+          initialState: SessionListFeature.State(
+            connection: connection,
+            sessions: IdentifiedArray(uniqueElements: sessions),
+            now: now,
+            calendar: listCalendar,
+            seenCounts: seen,
+            pushCard: card
+          )
+        ) {
+          SessionListFeature().ignoring(\.task)
+        } withDependencies: {
+          $0.hermesREST.sessions = { _, _, _, _, _ in sessions }
+          $0.continuousClock = ImmediateClock()
+          $0.date = .constant(now)
+        }
+      )
+    }
+  }
+
+  /// Plugin ready, permission never asked: the generic notification preview (no content) and
+  /// Not now / Turn on.
+  func testSessionList_pushCard_enable() {
+    assertSnapshot(of: pushCardHost(.enableNotifications), as: deviceImage())
+  }
+
+  func testSessionList_pushCard_enable_light() {
+    assertSnapshot(of: pushCardHost(.enableNotifications), as: deviceImage(appearance: .light))
+  }
+
+  /// Plugin not installed: Later / Ask my agent to install it.
+  func testSessionList_pushCard_install() {
+    assertSnapshot(of: pushCardHost(.installPlugin), as: deviceImage())
+  }
+
+  func testSessionList_pushCard_install_light() {
+    assertSnapshot(of: pushCardHost(.installPlugin), as: deviceImage(appearance: .light))
+  }
+
+  /// No sessions yet: the "No sessions" placeholder flows under the card instead of floating
+  /// centred over it.
+  func testSessionList_pushCard_emptyList() {
+    assertSnapshot(of: pushCardHost(.enableNotifications, sessionCount: 0), as: deviceImage())
+  }
+
   func testSessionList_pinnedSection() {
     let now = self.now
     let mobile = "/Users/me/dev/hermes-mobile"

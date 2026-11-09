@@ -3550,7 +3550,6 @@ struct AppFeatureTests {
   @Test func launchIntentDismissesListPresentations() async {
     var home = SessionListFeature.State(connection: connection)
     home.settings = SettingsFeature.State(connection: connection)
-    home.showPushSetupSheet = true
     home.renamingID = "s1"
     home.renameDraft = "draft"
     let store = TestStore(initialState: AppFeature.State(home: home)) {
@@ -3559,7 +3558,6 @@ struct AppFeatureTests {
 
     await store.send(.launchIntentReceived(.newChat)) {
       $0.home?.settings = nil
-      $0.home?.showPushSetupSheet = false
       $0.home?.renamingID = nil
       $0.home?.renameDraft = ""
       $0.liveChat = ChatFeature.State(connection: self.connection, profileName: nil, composerText: "")
