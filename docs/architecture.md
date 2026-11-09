@@ -704,6 +704,16 @@ throws to the caller's own catch, which banners (`.promptSubmitFailed`,
 slash pipeline: exec → directive / `command.dispatch` fallback / alias hop) threads one
 `HealCursor` through its RPCs, so it heals at most once and every later RPC targets the healed id.
 
+On a canonical session-authority host (`session_authority: true` on the ready, v0.22.3+),
+`config.set model` is refused with `use_session_mutation_model` (#157). The pick there is
+`session.mutate {operation: "model", payload: {model, provider}}`, fenced by
+`expected_revision` / `expected_generation` (`State.sessionFences`, adopted monotonically from
+the hydrate snapshot, `session.info` and mutation receipts; read with a message-less
+`session.resume` when unknown). A `revision_conflict` / `stale_generation` re-reads and retries
+once. A guarded target answers `confirmation_required` with a one-time token: the pick rolls back
+and the banner asks for a second tap on the same model, which sends `payload.confirm`.
+Reasoning keeps `config.set`, which the host still accepts.
+
 **Never-saved fallback (#132).** `session.create` mints the stored key, but the server writes
 the DB row lazily on the first prompt. On agents without `_resume_materialize_minted`,
 `session.resume` of a reaped, never-prompted session answers 4007 "session not found", so the

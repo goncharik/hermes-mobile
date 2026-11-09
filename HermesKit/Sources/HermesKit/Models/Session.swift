@@ -199,6 +199,8 @@ public struct ActivateResponse: Equatable, Sendable, Decodable {
   /// Present on a live reattach (`session.resume` / `session.activate`) when non-empty;
   /// absent → `[]`. Decoded per entry: a malformed entry is dropped, the rest kept.
   public var openRequests: [OpenRequest]
+  /// The canonical snapshot's CAS fences (session-authority hosts, #157); nil on legacy hosts.
+  public var fences: SessionFences?
 
   enum CodingKeys: String, CodingKey {
     case sessionID = "session_id"
@@ -211,12 +213,14 @@ public struct ActivateResponse: Equatable, Sendable, Decodable {
     case sessionKey = "session_key"
     case messages, info, running, inflight
     case openRequests = "open_requests"
+    case revision
+    case executionGeneration = "execution_generation"
   }
 
   public init(
     sessionID: String, storedSessionID: String? = nil, messages: [SessionMessage] = [],
     info: SessionInfo? = nil, running: Bool? = nil, inflight: SessionInflight? = nil,
-    openRequests: [OpenRequest] = []
+    openRequests: [OpenRequest] = [], fences: SessionFences? = nil
   ) {
     self.sessionID = sessionID
     self.storedSessionID = storedSessionID
@@ -225,6 +229,7 @@ public struct ActivateResponse: Equatable, Sendable, Decodable {
     self.running = running
     self.inflight = inflight
     self.openRequests = openRequests
+    self.fences = fences
   }
 
   public init(from decoder: Decoder) throws {
@@ -243,6 +248,26 @@ public struct ActivateResponse: Equatable, Sendable, Decodable {
     inflight = try? c.decodeIfPresent(SessionInflight.self, forKey: .inflight)
     let rawOpenRequests = (try? c.decodeIfPresent([JSONValue].self, forKey: .openRequests)) ?? nil
     openRequests = (rawOpenRequests ?? []).compactMap { $0.decoded(OpenRequest.self) }
+    let revision = (try? c.decodeIfPresent(Int.self, forKey: .revision)) ?? nil
+    let generation = (try? c.decodeIfPresent(Int.self, forKey: .executionGeneration)) ?? nil
+    fences = SessionFences(revision: revision, generation: generation)
+  }
+}
+
+/// A session-authority host's compare-and-swap fences for `session.mutate` (#157):
+/// `expected_revision` / `expected_generation`. Built only when both are present.
+public struct SessionFences: Equatable, Sendable {
+  public var revision: Int
+  public var generation: Int
+
+  public init(revision: Int, generation: Int) {
+    self.revision = revision
+    self.generation = generation
+  }
+
+  public init?(revision: Int?, generation: Int?) {
+    guard let revision, let generation else { return nil }
+    self.init(revision: revision, generation: generation)
   }
 }
 
