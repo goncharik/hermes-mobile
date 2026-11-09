@@ -21,6 +21,7 @@ ConnectionFeature.State {
   lastProbedCapability: ServerAuthCapability?   // AppFeature's re-sign-in provider label
   path: StackState<ConnectionPath.State>
   prefilledToken: String?                       // credentials-verdict recovery only
+  prefilledTokenHost: String?                   // the stored URL's host
 }
 ```
 
@@ -39,14 +40,17 @@ ConnectionFeature.State {
   element's effects, which replaced the old URL-edit `onChange` that abandoned an OAuth attempt.
   Cancellation never drains the shared bearer store (`performNativeOAuthLogin`, rule 4 in
   `docs/features/oauth-sign-in.md`).
-- `prefilledToken` is not consumed when Sign in is pushed: popping back and probing again
+- `prefilledToken` goes only to a Sign in whose probed host equals `prefilledTokenHost`, so an
+  edited address never receives another server's token (another port on the stored host still
+  does). It is not consumed when Sign in is pushed: popping back and probing that host again
   prefills it again. `lastProbedCapability` survives the pop.
 - `ConnectionView` owns `NavigationStack(path:)` with a `destination` switch over the two cases;
   `AppView` no longer wraps it in its own stack. The steps are titled "Step 1 of 2" / "Step 2 of
   2"; Welcome hides the navigation bar.
-- `AuthMethod` survives in `ConnectionFeature.swift` only because `ReauthFeature` still uses it;
-  onboarding derives its layout from the probed capability instead. `Status`, `MethodHint` and
-  the URL `onChange` are gone.
+- `AuthMethod` stays in `ConnectionFeature.swift`: `ReauthFeature` uses it and
+  `SignInStep.State.Status` tags each attempt with it, but onboarding derives its layout from
+  the probed capability. The old `ConnectionFeature` `Status`, `MethodHint` and the URL
+  `onChange` are gone.
 
 ## Entry points
 
@@ -77,8 +81,8 @@ host is lowercased, with IPv6 brackets and a trailing root dot removed.
 | `publicHost` | everything else |
 
 An IPv4-mapped IPv6 literal classifies as its IPv4 address. The kind is a heuristic: a wrong
-guess only changes whether a failure card shows the Local Network hint (and, for
-`publicHost`, the cleartext warning on Sign in).
+guess only changes copy — the Local Network hint, the kind-specific `hostNotFound`, `timedOut`
+and `offline` cards (table below) and, for `publicHost`, the cleartext warning on Sign in.
 
 - `candidates`: the URL as typed, then the same URL on `:9119` (`ServerAddress.fallbackPort`,
   the dashboard's default) when the scheme is http and no port was given. The fallback keeps
@@ -90,9 +94,10 @@ guess only changes whether a failure card shows the Local Network hint (and, for
 One cancellable effect (`CancelID.probe`):
 
 1. Walk `candidates`, calling `rest.probeStatus(candidate)`. Move to the next candidate ONLY on
-   `failure.isTransport`. Any HTTP answer, a 404 or 400 included, is the server's verdict and
-   stops the loop. When every candidate fails, the LAST candidate's failure is reported (for a
-   bare host, the `:9119` verdict).
+   `failure.triesNextCandidate`: nothing answered (`isTransport`), or something that isn't
+   Hermes answered (`notHermes`, e.g. a NAS or web server on port 80). Every other failure
+   stops the loop. When the walk ends in failure, it reports a `FailedServerProbe`: the address,
+   the candidates `tried`, and the LAST one's failure (for a bare host, the `:9119` verdict).
 2. On a status, send `.statusReceived` (`.reaching` → `.readingSignInOptions`). When
    `authRequired == true`, fetch `rest.authProviders`; a failure is swallowed as no providers,
    as the launch probe does.
@@ -100,7 +105,7 @@ One cancellable effect (`CancelID.probe`):
    the candidate that answered. Sign in connects to and saves that URL, so a `:9119` fallback is
    what gets persisted.
 
-The phase is `.idle | .probing(Stage) | .failed(ProbeFailure, ServerAddress)`. A success returns
+The phase is `.idle | .probing(Stage) | .failed(FailedServerProbe)`. A success returns
 the phase to `.idle`, so Continue is usable after popping back from Sign in.
 
 - **Editing the address** resets the phase to `.idle` and cancels an in-flight probe.
@@ -120,33 +125,35 @@ the phase to `.idle`, so Continue is usable after popping back from Sign in.
 `GET /api/status` on the same session as `status`, but classifies the RAW `URLError` or HTTP
 response with `ProbeFailure.classify` before anything is flattened to `RESTError`. `RESTError`,
 `RESTError(transport:)` and their many references are untouched, and the launch path (#62)
-keeps `rest.status`. A 2xx that doesn't decode as `ServerStatus` is `.notHermes(httpStatus:)`
-with the real status; an unparseable base URL or a non-HTTP response is `.requestFailed`.
+keeps `rest.status`. Each request times out after `probeStatusTimeout` (10 s), so a host that
+drops packets fails within seconds per candidate. A 2xx counts only when it decodes as
+`ServerStatus` WITH a `version` (every Hermes `/api/status` reports one, signed out included);
+any other 2xx is `.notHermes(httpStatus:)` with the real status. An unparseable base URL or a
+non-HTTP response is `.requestFailed`.
 
 | Case | Source | `isTransport` | Fails | Card |
 |---|---|---|---|---|
-| `offline` | `.notConnectedToInternet`, `.dataNotAllowed`, `.internationalRoamingOff` | no | Reaching | "This phone is offline" |
-| `hostNotFound(tailnetName: true)` | `.cannotFindHost`, `.dnsLookupFailed` on a `tailnet` address | yes | Reaching | "Is Tailscale on?" |
-| `hostNotFound(tailnetName: false)` | the same codes on any other address | yes | Reaching | "Can't find \<host\>" |
+| `offline` | `.notConnectedToInternet`, `.dataNotAllowed`, `.internationalRoamingOff` | no | Reaching | "This phone is offline" ("Can't reach \<host\>", same-Wi-Fi / Airplane Mode fixes, on a `localNetwork` address) |
+| `hostNotFound` | `.cannotFindHost`, `.dnsLookupFailed` | yes | Reaching | "Is Tailscale on?" on a `tailnet` address, else "Can't find \<host\>" |
 | `refused` | `.cannotConnectToHost` | yes | Reaching | "The computer is there, but the dashboard isn't" (`--host 0.0.0.0`, port 9119) |
-| `timedOut` | `.timedOut`, `.networkConnectionLost` | yes | Reaching | "No answer from \<host\>" (same-Wi-Fi fixes for a local address, Tailscale/VPN fixes otherwise) |
+| `timedOut` | `.timedOut`, `.networkConnectionLost` | yes | Reaching | "No answer from \<host\>" (same-Wi-Fi fixes for a `localNetwork` address, Tailscale/VPN fixes otherwise) |
 | `untrustedCertificate` | `.serverCertificate*`, `.secureConnectionFailed`, `.clientCertificate*` | no | Reaching | "The certificate isn't trusted" |
 | `notHermes(httpStatus:)` | 404, or a 2xx that isn't Hermes status JSON | no | Hermes | "This isn't a Hermes agent" |
 | `hostRejected(detail:)` | 400 whose detail starts "Invalid Host header" | no | Hermes | "Your agent rejected this address" (`--host`, `dashboard.public_url` / `HERMES_DASHBOARD_PUBLIC_URL`) |
-| `httpError(String)` | any other HTTP status | no | Hermes | "Couldn't connect to \<host\>", server copy verbatim |
-| `requestFailed(String)` | any other `URLError`, or a non-`URLError` | no | Reaching | "Couldn't connect to \<host\>", system copy verbatim |
+| `httpError(String)` | any other HTTP status | no | Hermes | "Couldn't connect to \<host\>", the server copy's first line (`headline(of:)`) |
+| `requestFailed(String)` | any other `URLError`, or a non-`URLError` | no | Reaching | "Couldn't connect to \<host\>", the system copy's first line (`headline(of:)`) |
 
 - The Host-rejection text was checked against upstream `host_header_middleware`
   (`hermes_cli/web_server.py`). Hermes rejects a Host header that is neither the bound host nor
   the `dashboard.public_url` host; a `0.0.0.0`/`::` bind accepts any.
 - An HTML `Content-Type` drops the detail (a reverse proxy's error page is markup, not copy), so
   the card falls back to "HTTP \<status\>". An empty detail is treated as none.
-- `classify(_:address:)` passes an already-classified `ProbeFailure` through unchanged.
-- Each card has a "Setup guide" button and a Details disclosure listing the URLs actually tried:
-  both candidates for a transport failure, only the first for an HTTP answer. `ProbeFailure`
-  doesn't record which candidate answered, so the `notHermes` copy says "\<host\> answered"
-  without naming a URL. The `offline` and `httpError` copy isn't in the prototype and follows its
-  voice; `timedOut` doesn't promise a time limit (the probe uses the session's default timeout).
+- Each card has a "Setup guide" button and a Details disclosure. Details opens with
+  `FailedServerProbe.triedDetail` (every `/api/status` URL probed, in order) and then the raw
+  reason; `httpError` and `requestFailed` show `reportedURL` and the full text instead. The
+  `refused` and `timedOut` copy names `reportedURL`, the candidate whose failure the card
+  reports. The `offline` and `httpError` copy isn't in the prototype and follows its voice;
+  `timedOut` doesn't promise a time limit.
 
 ### The Local Network rule (TN3179)
 
@@ -156,10 +163,12 @@ VPN", so a Tailscale address never triggers it. The first request can fail while
 on screen.
 
 The app shows **no explainer before the alert and doesn't try to detect a denial**. Instead,
-when a probe to a `localNetwork` address fails with a transport error
-(`ProbeFailure.showsLocalNetworkHint(for:)` = `address.kind == .localNetwork && isTransport`),
-the failure card adds one line: "If iOS asked about Local Network access, allow it and try
-again. You can change it in Settings › Privacy & Security › Local Network." That covers both
+when a probe to a `localNetwork` address fails with nothing answering, or as `offline` (a
+denied Local Network permission fails as "not connected") —
+`ProbeFailure.showsLocalNetworkHint(for:)` = `address.kind == .localNetwork && (isTransport ||
+self == .offline)` — the failure card adds one line: "If iOS asked about Local Network access,
+allow it and try again. You can change it in Settings › Privacy & Security › Local Network."
+That covers both
 the first request failing behind the alert and a user who tapped Don't Allow, without
 device-only code. It's a view decision with no reducer state. The `NSLocalNetworkUsageDescription`
 comment in `Project.swift` records that Tailscale/VPN traffic doesn't trigger the prompt; the
@@ -177,8 +186,8 @@ provider AND `native_pkce`) as the old segmented toggle:
 | password, OAuth too old (providers without `native_pkce`) | `.password(oauthProviders: [])` + a "\<names\> sign-in needs a newer Hermes agent" notice |
 | password, no OAuth | `.password(oauthProviders: [])` |
 | no password, OAuth available | `.oauthOnly(providers)` |
-| no password, OAuth too old | `.token(reason: .oauthNeedsNewerAgent(names))` |
-| not gated (token-only server) | `.token(reason: .tokenOnlyServer)` |
+| no password, OAuth too old | `.token(reason: .oauthNeedsNewerAgent)` |
+| not gated, or gated with no providers (`.tokenOnly`) | `.token(reason: .tokenOnlyServer)` |
 
 - Under the two non-token layouts the token field sits behind "Other ways to sign in"
   (`isShowingOtherWays`).
@@ -188,13 +197,14 @@ provider AND `native_pkce`) as the old segmented toggle:
   `probe.baseURL`. Token persistence is byte-identical to the legacy path; a second provider
   tap supersedes the first (`CancelID.oauthLogin`, `cancelInFlight: true`); an OAuth
   `.login(.cancelled)` returns to `.idle` with no copy; `.validation(.unauthorized)` is
-  `.invalidCredentials`; anything else is `.failed(message)`.
-- **Only an attempt in flight blocks a retry** (`canSubmit` checks `.validating` only). The old
-  screen's URL edit cleared a `.failed` status; this step has no URL field, so keeping that
-  block would trap the user behind Change.
-- `selectedOAuthProviderName` is cleared when a password or token attempt starts, so the view
-  can tell an OAuth `.invalidCredentials` ("The agent rejected that sign-in…") from a password
-  one. `.failed(message)` renders as one notice above the methods.
+  `.invalidCredentials(.oauth)`; anything else is `.failed(message)`.
+- **Only an attempt in flight blocks a retry**: `canSignInWithPassword` / `canSignInWithToken` /
+  `canSignInWithOAuth` reject `.validating` but not `.failed`, and each action checks its own
+  rule. The old screen's URL edit cleared a `.failed` status; this step has no URL field, so
+  keeping that block would trap the user behind Change.
+- Verdicts are method-tagged (`.validating(AuthMethod)`, `.invalidCredentials(AuthMethod)`), so
+  the view tells an OAuth rejection ("The agent rejected that sign-in…") from a password or
+  token one. `.failed(message)` renders as one notice above the methods.
 - Error copy names the server-side setting: `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD`
   in `~/.hermes/.env` for a password, `HERMES_DASHBOARD_SESSION_TOKEN` for a token.
 - `ServerCard` (host, version, `methodSummary`, Change) heads the step; Change is
@@ -216,7 +226,8 @@ onboarding entry points, and `ConnectionFailedView` keeps its own:
 
 The guide has two tabs (local `@State` segmented picker, fixed above the scroll): **On my
 computer** (the existing cards) and **Hermes Cloud** ("Hermes Cloud runs your agent for you.
-Open your agent in the Nous portal, copy its address, and paste it on the next screen…", with
+Open your agent in the Nous portal, copy its address, and paste it into Hermes Mobile's agent
+address field…", with
 a link to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_URL`). The README
 quick-start carries the same Cloud copy verbatim and maps the two tabs to its steps.
 

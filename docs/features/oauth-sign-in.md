@@ -81,7 +81,6 @@ over `/api/status` + `/api/auth/providers`:
 passwordProvider: AuthProvider?   // first supports_password == true
 oauthProviders:   [AuthProvider]  // supports_password == false, in server order
 supportsNativeFlow: Bool          // auth_flows contains "native_pkce"
-isGated: Bool                     // gated AND advertising providers
 ```
 
 Two rules carry the weight:
@@ -93,9 +92,9 @@ Two rules carry the weight:
   an *existing* affordance, but a NEW one appears only on positive evidence (the desktop
   does the same). `SignInStep` enforces it twice: the layout offers only those providers, and
   `oauthProviderButtonTapped` ignores a provider outside that list.
-- **`isGated` is NOT a bare `authRequired == true`.** A gated server whose providers endpoint
-  404s (or answers `[]`) still maps to `.tokenOnly`, because token is then the user's only way
-  in and must not be nudged away from. It gets the token layout (`.tokenOnlyServer`).
+- **A gated server with no providers maps to `.tokenOnly`.** When its providers endpoint 404s
+  (or answers `[]`), token is the user's only way in and must not be nudged away from, so it
+  gets the token layout (`.tokenOnlyServer`).
 
 ### Where the capability lands: the Sign in layout (#136)
 
@@ -119,10 +118,9 @@ have no licence for). The provider button IS the sign-in action. Its note reads 
 deliberately omits that note: a user who reaches it has already completed this browser leg at
 least once.
 
-**Only an attempt in flight blocks a retry.** `SignInStep.canSubmit` checks `.validating` only,
-so a failed OAuth sign-in leaves the provider button usable (the old one-screen form needed a
-special `.failed where method == .oauth` arm for that). A failed *probe* never reaches Sign in:
-the Server step shows its failure card instead.
+A failed OAuth sign-in leaves the provider button usable (`canSignInWithOAuth`; the retry rule
+is in `docs/features/onboarding.md`). A failed *probe* never reaches Sign in: the Server step
+shows its failure card instead.
 
 ## Sign-in flow
 

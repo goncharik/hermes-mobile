@@ -2072,9 +2072,9 @@ public struct AppFeature {
   }
 
   /// The prefilled-onboarding landing for a connection that needs *editing* rather than
-  /// retrying: token mode prefills both fields so the user can fix them; cookie and bearer
-  /// mode prefill only the URL (neither a password nor a browser leg is persistable), so the
-  /// user re-authenticates. Shared by the launch auth-failure fallback and the retry screen's
+  /// retrying: the Server step auto-probes the stored URL, and token mode prefills the token
+  /// into the Sign in step it pushes; cookie and bearer mode prefill nothing more (neither a
+  /// password nor a browser leg is persistable), so the user re-authenticates. Shared by the launch auth-failure fallback and the retry screen's
   /// `.credentialsRejected` delegate, so onboarding is constructed in exactly one place.
   ///
   /// Only the bearer regime has an effect: this is a verdict that the stored pair is DEAD, so

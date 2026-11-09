@@ -25,7 +25,11 @@ Hermes Mobile is a thin remote client for a self-hosted
 keeps running on your machine; your iPhone or iPad is a window into it — so you can step
 away from your desk and still keep your agent moving.
 
-- **Connect once.** Enter your server URL and sign in the way your agent is configured:
+- **Connect once.** Enter your agent's address — a bare host name is enough, since the app
+  also tries the dashboard's default port 9119 — and the app checks it before asking you to
+  sign in. If the address doesn't work, a card says what went wrong and what to try: Tailscale
+  is off, the dashboard isn't running, the agent rejected the address, the certificate isn't
+  trusted, or the phone is offline. Then sign in the way your agent is configured:
   a username and password when the server runs gated auth (the recommended setup), your
   identity provider via OAuth (Nous Research or your own OIDC server — it opens in Safari,
   so your existing session and passkeys just work), or a static token
@@ -131,6 +135,10 @@ away from your desk and still keep your agent moving.
   key can safely live), and the app deep-links you straight to the session. Privacy by
   design: only a generic title/body and the `session_id` ever transit the gateway — the
   real message content is fetched in-app over your private network, never through Apple.
+  The app never asks for permission out of the blue: after you sign in, the session list
+  shows a **Turn on** card (or, when the plugin is missing, one that asks your agent to
+  install it), and **Not now** snoozes it. A row of getting-started tips sits below it until
+  you hide it.
 - **Start a chat without opening the app first.** "New Hermes chat" and "Dictate to Hermes"
   work from Shortcuts, Siri, Spotlight and the app icon's long-press menu with no setup, and
   can be assigned to the Action button (iPhone 15 Pro and later): the app opens on a fresh
@@ -165,7 +173,8 @@ You'll need macOS with **Xcode 26+**, **Tuist** (`brew install tuist`), and a ru
 Hermes Agent reachable from your Mac.
 
 > **Hermes Cloud runs your agent for you.** Open your agent in the Nous portal, copy its
-> address, and paste it on the next screen. You'll sign in with your Nous Research account.
+> address, and paste it into Hermes Mobile's agent address field. You'll sign in with your
+> Nous Research account.
 > No agent yet? Create one in the [Nous portal](https://portal.nousresearch.com).
 >
 > That's the guide's **Hermes Cloud** tab: with a cloud agent, skip step 1 below. The
@@ -199,8 +208,9 @@ hermes dashboard --host 0.0.0.0 --port 9119 --no-open
 > your private network (e.g. Tailscale) — never port-forward the dashboard to the open
 > internet.
 
-The app's built-in **Set Up Your Agent** guide (on the sign-in screen) walks you
-through this same recipe with copyable commands.
+The app's built-in **Set Up Your Agent** guide (on the Welcome and server address screens,
+and on every connection-failure card) walks you through this same recipe with copyable
+commands.
 
 **2. Build and run the app:**
 
@@ -208,9 +218,10 @@ through this same recipe with copyable commands.
 make run        # builds and launches on a simulator — no signing needed
 ```
 
-**3. Connect.** Open the app and enter your server URL (e.g.
-`http://<tailnet-host>:9119`), pick **Password**, and sign in with the username and
-password from step 1. That's it — you're in.
+**3. Connect.** Open the app, enter your server address (e.g. `<tailnet-host>` or
+`http://<tailnet-host>:9119`) and tap **Continue**, then sign in with the username and
+password from step 1 (or **Continue with Nous Research** for a Hermes Cloud agent). That's
+it — you're in.
 
 <details>
 <summary><strong>Last resort: token mode</strong> (fully trusted networks only)</summary>
@@ -227,7 +238,8 @@ echo "$HERMES_DASHBOARD_SESSION_TOKEN"
 hermes dashboard --host 0.0.0.0 --insecure
 ```
 
-Then pick **Token** in the app and paste the printed token. Recent Hermes releases
+Then paste the printed token into the token field on the app's sign-in screen (under
+**Other ways to sign in** if a password form shows). Recent Hermes releases
 ignore `--insecure` and always require a login beyond the machine itself — if the
 dashboard refuses to start or still asks you to sign in, use the password setup above.
 Never expose `--insecure` to the public internet.

@@ -155,8 +155,9 @@ struct SessionListView: View {
     }
   }
 
-  /// The Sessions tab's non-search body: the "Sessions" header, the pinned section, then the
-  /// interactive sessions split into update-date sections (cron runs live in their own tab).
+  /// The Sessions tab's non-search body: the "Sessions" header, the push card, the tips row
+  /// and the inline "No sessions" placeholder, the pinned section, then the interactive
+  /// sessions split into update-date sections (cron runs live in their own tab).
   /// Extracted from `body` to keep the `List` builder within the compiler's type-check
   /// budget.
   @ViewBuilder

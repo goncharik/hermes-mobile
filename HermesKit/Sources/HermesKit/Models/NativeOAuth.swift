@@ -216,7 +216,7 @@ public enum OAuthLoginError: Error, Equatable, Sendable {
   /// `POST /auth/native/token` failed.
   case tokenExchange(RESTError)
 
-  /// User-facing copy for the connection/reauth status footer.
+  /// User-facing copy for the Sign in step's notice and the reauth status footer.
   public var message: String {
     switch self {
     case .cancelled: "Sign-in was cancelled."

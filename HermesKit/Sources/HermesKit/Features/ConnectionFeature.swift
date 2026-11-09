@@ -19,7 +19,7 @@ public enum OAuthFlowError: Error, Equatable, Sendable {
   case login(OAuthLoginError)
   case validation(RESTError)
 
-  /// User-facing copy for the status footer.
+  /// User-facing copy for the Sign in step's notice and the reauth status footer.
   public var message: String {
     switch self {
     case let .login(error): error.message

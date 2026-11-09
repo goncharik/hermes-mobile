@@ -14,8 +14,8 @@ import Foundation
 ///
 /// Two ways out, only one of them destructive: **Retry** (plus a foreground auto-retry) and
 /// **Log Out**, behind a confirmation, which abandons the session. The view additionally links
-/// the `AgentSetupGuideView` sheet directly (view-local `@State`, as on the login screen), so
-/// connection help is one tap away.
+/// the `AgentSetupGuideView` sheet directly (view-local `@State`, as in onboarding's
+/// `ConnectionView`), so connection help is one tap away.
 ///
 /// The reducer is pure routing + the retry probe: clearing the keychain/prefs on
 /// `.logoutConfirmed` lives in `AppFeature`, next to the other full-logout recipe.

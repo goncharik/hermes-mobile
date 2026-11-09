@@ -128,8 +128,8 @@ struct AgentSetupGuideView: View {
     card {
       cardHeader(icon: "cloud.fill", title: "Hermes Cloud runs your agent for you.", tint: .blue)
       Text("""
-      Open your agent in the Nous portal, copy its address, and paste it on the next screen. \
-      You'll sign in with your Nous Research account.
+      Open your agent in the Nous portal, copy its address, and paste it into Hermes Mobile's \
+      agent address field. You'll sign in with your Nous Research account.
       """)
       .font(.subheadline)
       .foregroundStyle(.secondary)

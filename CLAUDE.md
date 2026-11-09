@@ -34,8 +34,8 @@ bullets below are the compressed rules.
   `-32601` (`GatewayError.isUnknownMethod`) or REST 404 (405 where an older agent's catch-all
   matches) flips a `*Supported` flag off (attach, profiles, cron jobs, push, slash commands,
   TTS); `?? true` on unknown capability fields. Mirror the desktop's behaviour where one
-  exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
-  the OAuth bullet below.)
+  exists; check the Hermes source. (#19's OAuth provider buttons deliberately invert `?? true`
+  — see the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
   swallow them with `try?` (the logout hops, below, and the debug-log-only #98 replay read
   and Settings `/api/status` probe are the carved-out exceptions).
@@ -120,8 +120,8 @@ bullets below are the compressed rules.
   `rest.logout` is the one deliberate never-swallow exception. Details:
   `docs/features/oauth-sign-in.md`.
 - **An OAuth provider button needs positive evidence, not `?? true`**: an OAuth provider AND
-  `native_pkce` in `auth_flows`, else hidden. `isGated` is deliberately NOT a bare
-  `authRequired == true`. Loopback-only redirect (`ASWebAuthenticationSession` + in-app
+  `native_pkce` in `auth_flows`, else hidden. A gated server with no providers is
+  `.tokenOnly` (token layout). Loopback-only redirect (`ASWebAuthenticationSession` + in-app
   `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
   Details: `docs/features/oauth-sign-in.md`.
 - **Onboarding is a `ConnectionPath` stack (#136)**: Welcome (root, no reducer) → `ServerStep`
@@ -272,10 +272,10 @@ bullets below are the compressed rules.
 - **`ChatSnapshotClient` (GRDB) is a NON-AUTHORITATIVE cache** — instant paint + turn
   anchor only; server wins on hydrate, persistence debounced (flushed on
   `.background`), wiped on logout; behind the client boundary (no reactive `@FetchAll`).
-- **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts,
-  pins, swipe default, read-aloud toggle, profile, model-picker favorites/collapsed
-  providers) → `PreferencesClient`. Clients over `@Shared` for test isolation; both have
-  `.inMemory()`. **Logout must clear every prefs entry.**
+- **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts, pins,
+  swipe default, read-aloud toggle, profile, model-picker favorites/collapsed providers,
+  push-card snooze, tips dismissal) → `PreferencesClient`. Clients over `@Shared` for test
+  isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
 - **Pins are device-local; archive, rename, and delete are server-side**, optimistic
   with rollback (list → REST `PATCH`/`DELETE`; chat rename → `session.title`).
 - **Delete (#73) mirrors archive** (`deletingIDs` guard, rollback) with a
@@ -396,7 +396,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (397/397), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (406/406), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

@@ -59,7 +59,8 @@ public enum PushSetup {
 /// `GET /api/dashboard/plugins/hub`.
 public enum PushPluginStatus: Equatable, Sendable {
   /// Present AND `runtime_status == "enabled"` → read the permission: register silently when
-  /// granted, else offer the session list's Turn on card (unless snoozed).
+  /// granted; the session list's Turn on card when never asked (unless snoozed); nothing when
+  /// denied.
   case ready
   /// Present but not enabled (disabled/inactive), OR absent from the list → the session
   /// list's install card (unless snoozed).

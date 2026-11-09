@@ -5,11 +5,10 @@ import Foundation
 /// Pure value type answering every address policy question the flow asks:
 /// - the candidate URLs to probe (as typed, then `:9119` for http without a port — Hermes'
 ///   default dashboard port, for a user who typed only the host);
-/// - the network kind, which decides whether a transport failure card adds the
-///   Local Network hint line;
+/// - the network kind, which picks some failure-card copy and the Local Network hint line;
 /// - whether the address is public cleartext (warn before sending credentials over http).
 ///
-/// The kind is a HEURISTIC: a wrong guess only toggles the Local Network hint line.
+/// The kind is a HEURISTIC: a wrong guess only changes copy (`docs/features/onboarding.md`).
 public struct ServerAddress: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     /// `localhost`, `*.localhost`, 127.0.0.0/8, `::1`.

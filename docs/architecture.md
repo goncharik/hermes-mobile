@@ -56,7 +56,8 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 ├─ ReauthFeature           // re-auth modal: fixed URL, prefilled identity, password/token field
 │                          //   or (.oauth) a single "Continue with …" button;
 │                          //   same-user resume vs different-user switch vs Quit→onboarding
-├─ SessionListFeature      // flat list: pinned + update-date sections + Cron Jobs tab /
+├─ SessionListFeature      // flat list: push card + tips row (docs/features/onboarding.md) +
+│  │                       //   pinned + update-date sections + Cron Jobs tab /
 │  │                       //   search / create; pin (client-side) + archive/rename/delete (server) +
 │  │                       //   working-glow auto-poll; profile pill/switcher (per-call scoped) +
 │  │                       //   presents Settings + Archived + AddProfile sheets
@@ -249,10 +250,10 @@ with the tokens intact so backoff can retry. **Ordering contract:** `rest.logout
 
 **Capability probe.** `ServerAuthCapability(from: status, providers:)` is a pure mapper over
 `/api/status` (`auth_required` / `auth_flows`) + `GET /api/auth/providers` into a struct:
-`passwordProvider`, `oauthProviders`, `supportsNativeFlow`, `isGated`. It drives the onboarding
+`passwordProvider`, `oauthProviders`, `supportsNativeFlow`. It drives the onboarding
 Sign in step's layout (`SignInStep.State.Layout`: password first with provider buttons under
-"or", OAuth-only, or token). A providers 404 / unreachable endpoint (older servers) falls back
-to `.tokenOnly`. A provider button needs positive evidence on BOTH halves — an OAuth provider
+"or", OAuth-only, or token). A gated server with no providers (a providers 404 / unreachable
+endpoint on older servers, or an empty list) falls back to `.tokenOnly`. A provider button needs positive evidence on BOTH halves — an OAuth provider
 *and* `native_pkce` in `auth_flows`. Full contract, including the notice a provider-advertising
 gateway without `native_pkce` gets: `docs/features/oauth-sign-in.md`.
 
@@ -294,7 +295,7 @@ own `500`, a vanished route's `404`, a `429`, a captive portal's HTML (`.decodin
 network or the server changed, not the saved sign-in. The screen offers Retry, a foreground
 auto-retry (`.sceneBecameActive`, which SUPERSEDES an in-flight probe rather than being
 swallowed by `isRetrying` — a probe whose result never lands would latch the spinner), the
-`AgentSetupGuideView` help sheet (a tertiary link, view-local `@State` as on the login screen)
+`AgentSetupGuideView` help sheet (a tertiary link, view-local `@State` as in onboarding)
 and a confirmed Log Out (the clearing itself lives in `AppFeature`). Its reason line splits a
 `.server` status three ways — a 5xx (`500..<600`) and the transient refusals 408/425/429 may
 clear on their own, every *other* 4xx repeats identically and so surfaces the server's own

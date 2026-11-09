@@ -113,7 +113,7 @@ public struct ServerStatus: Equatable, Sendable, Decodable {
   public var authProviders: [String]?
   /// Interactive login flows the gate supports — gated servers report `["cookie"]`, plus
   /// `"native_pkce"` once any interactive session provider is registered. Absent on older
-  /// gateways (treat absent as "no native flow": the OAuth segment needs positive evidence).
+  /// gateways (treat absent as "no native flow": a provider button needs positive evidence).
   public var authFlows: [String]?
 
   enum CodingKeys: String, CodingKey {
