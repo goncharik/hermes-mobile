@@ -283,11 +283,11 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesKit/Sources/HermesKit/Models/ServerAddress.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ServerAddressTests.swift`
 
-- [ ] implement `ServerAddress.init?(_:)` with the same leniency as `parseServerURL` (http default, host required) and keep `parseServerURL` for its existing callers
-- [ ] implement `kind`, `candidates`, `isPublicCleartext`
-- [ ] table-driven tests: bare name, `*.ts.net`, 100.64/10 edges (100.63.x and 100.128.x are public), RFC 1918 edges (172.15 and 172.32 are public), `.local`, localhost/127.x, https with and without a port, explicit port, IPv6 literal, whitespace, invalid input
-- [ ] tests: candidates add `:9119` only for http with no port; public cleartext only for http + public host
-- [ ] run `make test` and confirm it passes before task 2
+- [x] implement `ServerAddress.init?(_:)` with the same leniency as `parseServerURL` (http default, host required) and keep `parseServerURL` for its existing callers
+- [x] implement `kind`, `candidates`, `isPublicCleartext`
+- [x] table-driven tests: bare name, `*.ts.net`, 100.64/10 edges (100.63.x and 100.128.x are public), RFC 1918 edges (172.15 and 172.32 are public), `.local`, localhost/127.x, https with and without a port, explicit port, IPv6 literal, whitespace, invalid input
+- [x] tests: candidates add `:9119` only for http with no port; public cleartext only for http + public host
+- [x] run `make test` and confirm it passes before task 2
 
 ### Task 2: Add `ProbeFailure` classification and the `ServerProbe` model
 
