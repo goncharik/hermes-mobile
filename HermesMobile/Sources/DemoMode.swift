@@ -40,6 +40,24 @@ enum DemoMode {
     token: "demo-token"
   )
 
+  /// The "connect" scenario's typed address: a bare Tailscale name (tailnet, so the Sign in
+  /// step shows no public-cleartext warning).
+  private static let connectAddress = ServerAddress("mac-mini.tail4c2e.ts.net")!
+
+  /// What the "connect" scenario's Server step found: the `:9119` fallback answered, offering
+  /// a password and Nous Research sign-in (native PKCE advertised, so the provider shows).
+  private static let connectProbe = ServerProbe(
+    address: connectAddress,
+    baseURL: connectAddress.candidates.last!,
+    capability: ServerAuthCapability(
+      passwordProvider: AuthProvider(name: "basic", displayName: "Password", supportsPassword: true),
+      oauthProviders: [AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)],
+      supportsNativeFlow: true,
+      isGated: true
+    ),
+    version: "0.19.2"
+  )
+
   /// Build the root store for the active scenario.
   static func makeStore() -> StoreOf<AppFeature> {
     let scenario = self.scenario ?? "chat"
@@ -124,10 +142,13 @@ enum DemoMode {
     case "voice":
       return chatScenario(voiceChat)
     case "connect":
-      // The Server step with the demo address typed in (no auto-probe: the demo REST client
-      // has no `probeStatus`).
+      // The Sign in step (#136) over an already-answered Server step, as the flow leaves it
+      // after a probe: a password + Nous Research agent. Seeded rather than probed, so no
+      // live REST call runs (the Server step below it has no auto-probe).
       var onboarding = ConnectionFeature.State()
-      onboarding.path.append(.server(ServerStep.State(addressText: "mac.tailnet:9119")))
+      onboarding.path.append(.server(ServerStep.State(addressText: connectAddress.typed)))
+      onboarding.path.append(.signIn(SignInStep.State(probe: connectProbe)))
+      onboarding.lastProbedCapability = connectProbe.capability
       return AppFeature.State(onboarding: onboarding)
     default: // "chat"
       return chatScenario(heroChat)

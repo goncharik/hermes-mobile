@@ -458,10 +458,11 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Modify: `HermesMobile/Sources/DemoMode.swift`
 - Modify: `Project.swift`
 
-- [ ] the "connect" scenario builds a path of `[.server, .signIn(probe: password + Nous capability)]` so the screenshot shows the new Sign in step; other scenarios still land signed in
-- [ ] fix the `NSLocalNetworkUsageDescription` comment: Tailscale/VPN traffic does not trigger the prompt (TN3179); the user-facing string is unchanged
-- [ ] build the app (`make run` or `xcodebuild`) and launch the demo "connect" scenario once to confirm it renders
-- [ ] run `make test` and `make snapshot` and confirm both are clean before task 13
+- [x] the "connect" scenario builds a path of `[.server, .signIn(probe: password + Nous capability)]` so the screenshot shows the new Sign in step; other scenarios still land signed in
+- [x] fix the `NSLocalNetworkUsageDescription` comment: Tailscale/VPN traffic does not trigger the prompt (TN3179); the user-facing string is unchanged
+- [x] build the app (`make run` or `xcodebuild`) and launch the demo "connect" scenario once to confirm it renders
+- [x] run `make test` and `make snapshot` and confirm both are clean before task 13
+- ➕ the demo address is the tailnet name `mac-mini.tail4c2e.ts.net` (answered on the `:9119` fallback), not the scenarios' `mac.tailnet`, which classifies as a public host and would show the cleartext warning in the capture
 
 ### Task 13: Verify acceptance criteria
 - [ ] every row of the #136 gap-analysis table marked "adjust app" is implemented, except the rows this plan defers or drops: the connected beat, the Local Network explainer/detection, starter prompts
