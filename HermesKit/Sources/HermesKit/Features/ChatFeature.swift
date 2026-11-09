@@ -171,6 +171,20 @@ public struct ChatFeature {
     /// confirmation of that key (`session.info` / hydrate), after which the chip IS the server's
     /// value and the next pick captures it fresh. Internal and unpersisted.
     var pendingConfigRollback: [String: String?]
+    /// The live session's `session.mutate` fences on a session-authority host (#157), from the
+    /// hydrate snapshot, `session.info` and mutation receipts. Nil until learned (or after a heal
+    /// swapped the live id): the pick then reads them with a message-less `session.resume`.
+    var sessionFences: SessionFences?
+    /// A guarded model switch the host asked to confirm (`confirmation_required`, cost / data
+    /// policy / large context). Re-picking the SAME model sends its one-time token. Never
+    /// auto-confirmed.
+    var pendingModelConfirmation: ModelConfirmation?
+
+    struct ModelConfirmation: Equatable, Sendable {
+      let model: String
+      let provider: String?
+      let token: String
+    }
     /// Latest context-window usage (from `session.info` / `message.complete`), driving the
     /// composer's context pill. `nil` until the agent reports usage (old agents never do).
     public var usage: Usage?
@@ -900,6 +914,8 @@ public struct ChatFeature {
       self.model = nil
       self.reasoningEffort = nil
       self.pendingConfigRollback = [:]
+      self.sessionFences = nil
+      self.pendingModelConfirmation = nil
       self.usage = nil
       self.modelPicker = nil
       self.filePreview = nil
@@ -1319,6 +1335,13 @@ public struct ChatFeature {
     /// key only). One path serves both keys (#81).
     case configSetFailed(
       key: String, value: String, previousValue: String?, previousProvider: String?, error: GatewayError
+    )
+    /// Fresh `session.mutate` fences (#157): adopted only if they don't move backwards.
+    case sessionFencesLearned(SessionFences)
+    /// The host refused a guarded model switch until confirmed (#157): nothing was written.
+    case modelSwitchNeedsConfirmation(
+      model: String, provider: String?, token: String, message: String,
+      previousValue: String?, previousProvider: String?
     )
     /// A `hermes-file:` link in the transcript was tapped (routed by `ChatView`'s one
     /// `OpenURLAction`). Raises the preview sheet for `path`; a no-op while one is already up.
@@ -1910,6 +1933,7 @@ public struct ChatFeature {
         // Self-heal landed a fresh runtime id (#17). Swap it in so subsequent RPCs target the
         // valid session; do NOT touch the transcript (the retried RPC's events repaint it, and a
         // wholesale replace here would wipe the optimistic user/attachment row mid-retry).
+        if liveSessionID != state.liveSessionID { state.sessionFences = nil } // the old id's (#157)
         state.liveSessionID = liveSessionID
         state.storedSessionID = storedSessionID ?? state.storedSessionID
         if state.branchSeed != nil {
@@ -2777,6 +2801,20 @@ public struct ChatFeature {
         // sheet stays open, the row deselects under the inline error (desktop parity).
         return .none
 
+      case let .sessionFencesLearned(fences):
+        adoptFences(fences, into: &state)
+        return .none
+
+      case let .modelSwitchNeedsConfirmation(model, provider, token, message, previousValue, previousProvider):
+        state.model = previousValue
+        state.modelPicker?.rollBackModelPick(to: previousProvider)
+        state.pendingConfigRollback.removeValue(forKey: "model")
+        state.pendingModelConfirmation = .init(model: model, provider: provider, token: token)
+        let text = "\(message) Tap \(model) again to switch anyway."
+        state.errorBanner = text
+        state.modelPicker?.applyError = text
+        return .none
+
       case let .fileReferenceTapped(path):
         // One sheet at a time: a second tap (a double-tap, or a tap landing while the sheet
         // is animating in) must not replace the preview under the user.
@@ -3292,6 +3330,9 @@ public struct ChatFeature {
       if let effort = info.reasoningEffort?.nonEmpty { state.reasoningEffort = effort }
       if let u = info.usage { state.usage = u }
       if let contract = info.desktopContract { state.desktopContract = contract }
+      if let fences = SessionFences(revision: info.revision, generation: info.executionGeneration) {
+        adoptFences(fences, into: &state)
+      }
       confirmConfigKeys(info, into: &state)
       return .none
 
@@ -4425,7 +4466,10 @@ public struct ChatFeature {
   /// is set we seed an assistant streaming row eagerly and point `streamingRowID` at it so
   /// the next `message.delta` appends to it instead of lazily creating a duplicate.
   private func applyActivate(_ response: ActivateResponse, into state: inout State) -> Effect<Action> {
+    if response.sessionID != state.liveSessionID { state.sessionFences = nil }
     state.liveSessionID = response.sessionID
+    // The snapshot's fences are authoritative for this attach (#157).
+    if let fences = response.fences { state.sessionFences = fences }
     state.storedSessionID = response.storedSessionID ?? state.storedSessionID
     state.status = .ready
     state.hydrateRetriedAfterTimeout = false // hydrate landed: the timeout-retry budget resets
@@ -5457,10 +5501,123 @@ public struct ChatFeature {
     // the model id alone. A nil slug (no section context) stays a bare model id —
     // the gateway's own detection ladder handles it exactly as before.
     let wireValue = providerSlug.map { "\(model) --provider \($0)" } ?? model
+    // A confirmation token answers only the exact target it was issued for (#157).
+    let pending = state.pendingModelConfirmation
+    state.pendingModelConfirmation = nil
+    if state.isSessionAuthority {
+      let confirm = pending.flatMap { $0.model == model && $0.provider == providerSlug ? $0.token : nil }
+      return mutateModel(
+        model: model, providerSlug: providerSlug, confirm: confirm, wireValue: wireValue,
+        previousValue: previousModel, previousProvider: previousProvider,
+        sessionID: sessionID, fences: state.sessionFences, heal: state.healTarget
+      )
+    }
     return configSet(
       key: "model", value: wireValue, previousValue: previousModel,
       previousProvider: previousProvider, sessionID: sessionID, heal: state.healTarget
     )
+  }
+
+  /// Monotonic: an older receipt or event never moves the fences backwards.
+  private func adoptFences(_ fences: SessionFences, into state: inout State) {
+    guard let current = state.sessionFences else { state.sessionFences = fences; return }
+    state.sessionFences = SessionFences(
+      revision: max(current.revision, fences.revision),
+      generation: max(current.generation, fences.generation)
+    )
+  }
+
+  /// The model pick on a canonical session-authority host (#157): `config.set model` is refused
+  /// there (`use_session_mutation_model`); the pick is the revision-fenced
+  /// `session.mutate {operation: "model"}` Hermes Desktop sends. Missing fences (or a heal that
+  /// swapped the live id) are read first with a message-less `session.resume`; a
+  /// `revision_conflict` / `stale_generation` re-reads them and retries ONCE with a new request
+  /// id. A guarded target (`confirmation_required`) rolls back and waits for an explicit
+  /// re-pick. Failures share `.configSetFailed`'s rollback + banner, and the same cancel id so a
+  /// newer pick supersedes an in-flight one.
+  private func mutateModel(
+    model: String, providerSlug: String?, confirm: String?, wireValue: String,
+    previousValue: String?, previousProvider: String?,
+    sessionID: String, fences: SessionFences?, heal: State.HealTarget
+  ) -> Effect<Action> {
+    .run { [gateway, uuid] send in
+      var payload: [String: JSONValue] = ["model": .string(model)]
+      if let providerSlug { payload["provider"] = .string(providerSlug) }
+      if let confirm { payload["confirm"] = .string(confirm) }
+      var known = fences
+      func readFences(_ targetID: String) async throws -> SessionFences {
+        var fields: [String: JSONValue] = [
+          "session_id": .string(targetID), "omit_messages": .bool(true),
+        ]
+        if let profile = heal.profile { fields["profile"] = .string(profile) }
+        let result = try await gateway.send("session.resume", .object(fields))
+        guard let fences = result.decoded(ActivateResponse.self)?.fences else {
+          throw GatewayError.server("Session revision unavailable")
+        }
+        return fences
+      }
+      func attempt(_ targetID: String, _ fences: SessionFences) async throws -> JSONValue {
+        try await gateway.send("session.mutate", .object([
+          "session_id": .string(targetID),
+          "request_id": .string(uuid().uuidString.lowercased()),
+          "expected_revision": .number(Double(fences.revision)),
+          "expected_generation": .number(Double(fences.generation)),
+          "operation": .string("model"),
+          "payload": .object(payload),
+        ]))
+      }
+      // A newer pick cancels this effect, but an awaited `gateway.send` doesn't observe
+      // cancellation, so every FOLLOW-UP RPC checks first: a superseded pick must never
+      // re-read and retry its way past the newer one (its first write is already on the wire).
+      func mutate(_ targetID: String) async throws -> JSONValue {
+        if known == nil || targetID != sessionID {
+          known = try await readFences(targetID)
+          try Task.checkCancellation()
+        }
+        do {
+          return try await attempt(targetID, known!)
+        } catch let error as GatewayError where error.isStaleFence {
+          try Task.checkCancellation()
+          known = try await readFences(targetID)
+          try Task.checkCancellation()
+          return try await attempt(targetID, known!)
+        }
+      }
+      do {
+        let result = try await withSessionHeal(
+          mutate, sessionID: sessionID, heal: heal, gateway: gateway, send: send
+        )
+        if result["status"]?.stringValue == "confirmation_required",
+           let token = result["confirm"]?.stringValue {
+          let message = result["confirm_message"]?.stringValue?.trimmedNonEmpty
+            ?? "This model needs confirmation."
+          await send(.modelSwitchNeedsConfirmation(
+            model: model, provider: providerSlug, token: token, message: message,
+            previousValue: previousValue, previousProvider: previousProvider
+          ))
+          return
+        }
+        if let learned = SessionFences(
+          revision: result["revision"]?.intValue, generation: result["execution_generation"]?.intValue
+        ) ?? known {
+          await send(.sessionFencesLearned(learned))
+        }
+      } catch is CancellationError {
+        // Superseded by a newer pick: that pick owns the optimistic state and any rollback.
+        return
+      } catch let error as GatewayError {
+        await send(.configSetFailed(
+          key: "model", value: wireValue, previousValue: previousValue,
+          previousProvider: previousProvider, error: error
+        ))
+      } catch {
+        await send(.configSetFailed(
+          key: "model", value: wireValue, previousValue: previousValue,
+          previousProvider: previousProvider, error: .disconnected
+        ))
+      }
+    }
+    .cancellable(id: CancelID.configSet("model"), cancelInFlight: true)
   }
 
   /// An effort row tapped in the picker (its `.reasoningSelected` delegate).

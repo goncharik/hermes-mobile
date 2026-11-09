@@ -34,8 +34,8 @@ bullets below are the compressed rules.
   `-32601` (`GatewayError.isUnknownMethod`) or REST 404 (405 where an older agent's catch-all
   matches) flips a `*Supported` flag off (attach, profiles, cron jobs, push, slash commands,
   TTS); `?? true` on unknown capability fields. Mirror the desktop's behaviour where one
-  exists; check the Hermes source. (#19's OAuth segment deliberately inverts `?? true` — see
-  the OAuth bullet below.)
+  exists; check the Hermes source. (#19's OAuth provider buttons deliberately invert `?? true`
+  — see the OAuth bullet below.)
 - **Surface RPC failures** (set `errorBanner`, clear `isSending`/`activity`) — never
   swallow them with `try?` (the logout hops, below, and the debug-log-only #98 replay read
   and Settings `/api/status` probe are the carved-out exceptions).
@@ -109,7 +109,7 @@ bullets below are the compressed rules.
   `?ticket=` minted per connect — never cached, and `.cookie`/`.bearer` SHARE the `connect`
   branch so the cancellation choreography can't drift; a 401 mint → `.sessionExpired` →
   `ReauthFeature` with identity-aware routing (same user reconnects; different user pops +
-  clears identity-scoped prefs). The Password | Token | \<provider\> toggle is capability-gated.
+  clears identity-scoped prefs). Onboarding's Sign in layout is derived from the capability.
   Full protocol: `docs/architecture.md`.
 - **`RequestAuth` is the ONE place either auth header is written**, and **every bearer read
   goes through `BearerTokenStore.validAccessToken()`** — the store owns the token pair and is
@@ -119,19 +119,26 @@ bullets below are the compressed rules.
   `bearerTokens.clear(claim:)`; `detachPersistence()` BEFORE every `keychain.deleteSession()`.
   `rest.logout` is the one deliberate never-swallow exception. Details:
   `docs/features/oauth-sign-in.md`.
-- **The OAuth segment needs positive evidence, not `?? true`**: an OAuth provider AND
-  `native_pkce` in `auth_flows`, else hidden. `isGated` is deliberately NOT a bare
-  `authRequired == true`. Loopback-only redirect (`ASWebAuthenticationSession` + in-app
+- **An OAuth provider button needs positive evidence, not `?? true`**: an OAuth provider AND
+  `native_pkce` in `auth_flows`, else hidden. A gated server with no providers is
+  `.tokenOnly` (token layout). Loopback-only redirect (`ASWebAuthenticationSession` + in-app
   `NWListener`), no WKWebView fallback, plain-text provider labels (App Store 5.2.1).
   Details: `docs/features/oauth-sign-in.md`.
+- **Onboarding is a `ConnectionPath` stack (#136)**: Welcome (root, no reducer) → `ServerStep`
+  → `SignInStep`, parented by `ConnectionFeature`; `.connected` goes up unchanged. Sign in exists
+  only with a `ServerProbe` and connects to the URL that answered (the `:9119` fallback is what's
+  saved); popping it cancels its effects (that abandons OAuth). Probe failures are a typed
+  `ProbeFailure` from `probeStatus` — never widen `RESTError`. Local Network gets a card hint
+  line, no explainer or detection (TN3179). Details: `docs/features/onboarding.md`.
 - **Login help**: the `AgentSetupGuideView` sheet is the single connection-help surface
-  (four entry points toggle one local `@State`; presentation stays out of the reducer).
-  Keep the README quick-start and the sheet's commands verbatim-identical.
-- **Launch auto-connect failure that isn't a credentials verdict raises the retry
-  screen, never onboarding (#62)**: only 401/403 falls back to prefilled onboarding;
-  everything else (incl. `RESTError.offline`) populates `connectionFailed`.
-  `ConnectionFailedFeature.isRetryable` is the ONE routing rule. Launch path only;
-  a foreground re-probe supersedes an in-flight one.
+  (Welcome, the Server step, each failure card, the retry screen — view-local `@State`, never
+  reducer state). Keep the README quick-start (incl. the Hermes Cloud copy) and the sheet
+  verbatim-identical.
+- **Launch auto-connect failure that isn't a credentials verdict raises the retry screen,
+  never onboarding (#62)**: only 401/403 falls back to onboarding (`State(recovering:token:)`:
+  auto-probing Server step, token prefilled); everything else (incl. `RESTError.offline`)
+  populates `connectionFailed`. `ConnectionFailedFeature.isRetryable` is the ONE routing
+  rule. Launch path only; a foreground re-probe supersedes an in-flight one.
 
 ## Transcript & chat UI
 
@@ -265,10 +272,10 @@ bullets below are the compressed rules.
 - **`ChatSnapshotClient` (GRDB) is a NON-AUTHORITATIVE cache** — instant paint + turn
   anchor only; server wins on hydrate, persistence debounced (flushed on
   `.background`), wiped on logout; behind the client boundary (no reactive `@FetchAll`).
-- **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts,
-  pins, swipe default, read-aloud toggle, profile, model-picker favorites/collapsed
-  providers) → `PreferencesClient`. Clients over `@Shared` for test isolation; both have
-  `.inMemory()`. **Logout must clear every prefs entry.**
+- **Persistence**: secrets → `KeychainClient`; non-secret prefs (URL, seen counts, pins,
+  swipe default, read-aloud toggle, profile, model-picker favorites/collapsed providers,
+  push-card snooze, tips dismissal) → `PreferencesClient`. Clients over `@Shared` for test
+  isolation; both have `.inMemory()`. **Logout must clear every prefs entry.**
 - **Pins are device-local; archive, rename, and delete are server-side**, optimistic
   with rollback (list → REST `PATCH`/`DELETE`; chat rename → `session.title`).
 - **Delete (#73) mirrors archive** (`deletingIDs` guard, rollback) with a
@@ -330,8 +337,9 @@ bullets below are the compressed rules.
   repos). Non-negotiables: capability-gate on the plugin `/register` 404; the
   **generic-body privacy rule** (no content/args/command in a push, ever); `apns_env`
   must match the per-configuration `$(APS_ENVIRONMENT)` entitlement; the app and plugin
-  hold no push secret (gateway-issued device-scoped capability); permission requested
-  on sessions-list appearance. Repos, capability scheme, the four trigger hooks,
+  hold no push secret (gateway-issued device-scoped capability); the permission prompt fires
+  only from the session list's Turn on card, never on appearance (#136,
+  `docs/features/onboarding.md`). Repos, capability scheme, the four trigger hooks,
   cold-launch tap replay (#46), and fork filtering (#64):
   `docs/features/push-notifications.md`.
 - **Push-tap routing dedups against the slot (#32)** under `isChatDetached`: matches slot
@@ -388,7 +396,7 @@ bullets below are the compressed rules.
   (assert `contentSize` vs `bounds`, hosted `sizeThatFits`) — see
   `MarkdownTableLayoutTests.swift` and `ApprovalCardLayoutTests.swift`. Pin
   `.dynamicTypeSize(.large)`, and vary it where a `@ScaledMetric` cap is under test.
-- **`make snapshot` is clean** (364/364), so any failure is a real signal. A view change
+- **`make snapshot` is clean** (406/406), so any failure is a real signal. A view change
   re-records its own baselines in the same PR. If a future runtime drifts, judge by size
   first: differing render size = regression; equal size with small pixel residual = drift,
   re-recorded in its own commit. Details: `docs/development.md`.

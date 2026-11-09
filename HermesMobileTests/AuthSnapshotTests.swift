@@ -6,18 +6,14 @@ import XCTest
 
 @testable import HermesMobile
 
-/// Snapshot coverage for the capability-aware auth screen (Password / Token segments,
-/// token disclaimer, the "Set Up Your Agent" guide sheet, capability-disabled segment
-/// states) and the re-auth sheet (password vs token variants). Mirrors the host / setup
-/// pattern in `ConnectionSnapshotTests` / `AddProfileSnapshotTests`: dark traits,
-/// `deviceImage()` whole-screen render. Views wrap in a `NavigationStack` (the re-auth
-/// sheet and the guide bring their own).
+/// Snapshot coverage for the auth surfaces outside the onboarding flow: the "Set Up Your
+/// Agent" guide sheet, the show/hide credential field, and the re-auth sheet (password, token
+/// and OAuth variants). The onboarding Sign in step itself lives in `ConnectionSnapshotTests`.
+/// Dark traits, `deviceImage()` whole-screen render (the re-auth sheet and the guide bring
+/// their own `NavigationStack`).
 final class AuthSnapshotTests: SnapshotTestCase {
-  /// The OAuth provider every gated fixture below advertises.
-  private let nous = AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)
-
   /// A tall fixed-size whole-screen render (device width, extra-tall height) so a long
-  /// scrolling `Form` is captured in full rather than clipped at the device fold. Same dark
+  /// scrolling sheet is captured in full rather than clipped at the device fold. Same dark
   /// traits + key-window compositing as `deviceImage()`.
   private func tallImage<V: SwiftUI.View>(height: CGFloat = 1400) -> Snapshotting<V, UIImage> {
     .image(
@@ -25,72 +21,6 @@ final class AuthSnapshotTests: SnapshotTestCase {
       perceptualPrecision: 0.98,
       layout: .fixed(width: device.size!.width, height: height),
       traits: UITraitCollection(userInterfaceStyle: .dark)
-    )
-  }
-
-  private func connectionView(_ state: ConnectionFeature.State) -> some View {
-    NavigationStack {
-      ConnectionView(
-        store: Store(initialState: state) { ConnectionFeature() }
-      )
-    }
-  }
-
-  // MARK: - Auth screen: segments
-
-  /// Password segment on a gated server with a password-capable provider: username +
-  /// password fields, both segments enabled, Password preselected.
-  func testAuthScreen_passwordSegment() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          username: "alice",
-          password: "••••••••",
-          method: .password,
-          capability: ServerAuthCapability(
-            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
-            isGated: true
-          ),
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  /// Token segment with no capability probed yet: session-token field plus the always-on
-  /// disclaimer + "Learn how to connect securely" link.
-  func testAuthScreen_tokenSegment() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••",
-          method: .token,
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  // MARK: - Token disclaimer
-
-  /// The token disclaimer in context on a token-only server: the inline honesty note and
-  /// the "This server only supports token sign-in." hint footer.
-  func testAuthScreen_tokenDisclaimer_tokenOnly() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••",
-          method: .token,
-          capability: .tokenOnly,
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
     )
   }
 
@@ -103,7 +33,8 @@ final class AuthSnapshotTests: SnapshotTestCase {
   func testAgentSetupGuide_collapsed() {
     assertSnapshot(
       of: AgentSetupGuideView(),
-      as: tallImage(height: 2050)
+      // 2100pt: the tab picker above the scroll pushed the docs link to the old 2050 edge.
+      as: tallImage(height: 2100)
     )
   }
 
@@ -119,155 +50,24 @@ final class AuthSnapshotTests: SnapshotTestCase {
     )
   }
 
-  // MARK: - Capability-disabled segment states
-
-  /// Gated server (password available) but the user is on the Token segment: the de-emphasis
-  /// hint nudges back to password ("This server uses password login…").
-  func testAuthScreen_gated_tokenDeemphasized() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••",
-          method: .token,
-          capability: ServerAuthCapability(
-            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
-            isGated: true
-          ),
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
+  /// The guide's "Hermes Cloud" tab (seeded via the init): the segmented control on Cloud,
+  /// the copy card (desktop's "Hermes Cloud" / "Nous portal" terms, verbatim with the README
+  /// quick-start) and the "Open the Nous portal" link row. Short enough for one phone screen.
+  func testAgentSetupGuide_cloud() {
+    assertSnapshot(of: AgentSetupGuideView(tab: .cloud), as: deviceImage())
   }
 
-  /// Token-only server with the Password segment selected: Password is disabled (the segment
-  /// stays usable for Token), and the footer explains the server only supports token sign-in.
-  func testAuthScreen_tokenOnly_passwordDisabled() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          method: .token,
-          capability: .tokenOnly,
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  // MARK: - OAuth segment (#19)
-
-  /// Gated OAuth-only server (one provider, `native_pkce` advertised): the segment is
-  /// labelled with the server's own display name, its content is the single plain-text
-  /// "Continue with …" button (no logo, no brand colour — App Store 5.2.1), the Safari note,
-  /// and no generic Connect button. Password is unavailable so its segment is omitted rather
-  /// than shown inert — the picker has to stay live for Token ↔ provider switching.
-  func testAuthScreen_oauthSegment() {
-    assertSnapshot(
-      of: connectionView(oauthOnlyState()),
-      as: deviceImage()
-    )
-  }
-
-  /// Same screen in light appearance — the provider button must read as an ordinary tinted
-  /// row in both, which is the whole point of the plain-text treatment.
-  func testAuthScreen_oauthSegment_light() {
-    assertSnapshot(
-      of: connectionView(oauthOnlyState()),
-      as: deviceImage(appearance: .light)
-    )
-  }
-
-  /// Two advertised providers: the segment label falls back to the neutral "OAuth" (two
-  /// display names don't fit one segment) and the content lists one button per provider.
-  func testAuthScreen_oauthSegment_twoProviders() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          method: .oauth,
-          capability: ServerAuthCapability(
-            oauthProviders: [
-              nous,
-              AuthProvider(name: "self_hosted", displayName: "Keycloak", supportsPassword: false),
-            ],
-            supportsNativeFlow: true,
-            isGated: true
-          ),
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  /// Mixed gated server (`basic` + `nous`, native flow advertised): all three segments are
-  /// offered and Password stays preselected (the lower-friction path, mirroring the desktop).
-  func testAuthScreen_mixedServer_threeSegments() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          username: "alice",
-          password: "••••••••",
-          method: .password,
-          capability: ServerAuthCapability(
-            passwordProvider: AuthProvider(name: "basic", displayName: "Basic", supportsPassword: true),
-            oauthProviders: [nous],
-            supportsNativeFlow: true,
-            isGated: true
-          ),
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  /// A gateway that advertises an OAuth provider but NOT `native_pkce`: the segment is
-  /// hidden (this app can't drive the flow) and the footer says why instead of claiming the
-  /// server only supports token sign-in.
-  func testAuthScreen_oauthProviderWithoutNativeFlow() {
-    assertSnapshot(
-      of: connectionView(
-        ConnectionFeature.State(
-          serverURL: "http://mac.tailnet:9119",
-          token: "••••••••",
-          method: .token,
-          capability: ServerAuthCapability(
-            oauthProviders: [nous],
-            supportsNativeFlow: false,
-            isGated: true
-          ),
-          status: .reachable(version: "0.16.0")
-        )
-      ),
-      as: deviceImage()
-    )
-  }
-
-  /// Gated OAuth-only server with the native flow available, sitting on the OAuth segment.
-  private func oauthOnlyState() -> ConnectionFeature.State {
-    ConnectionFeature.State(
-      serverURL: "http://mac.tailnet:9119",
-      method: .oauth,
-      capability: ServerAuthCapability(
-        oauthProviders: [nous],
-        supportsNativeFlow: true,
-        isGated: true
-      ),
-      status: .reachable(version: "0.16.0")
-    )
+  func testAgentSetupGuide_cloud_light() {
+    assertSnapshot(of: AgentSetupGuideView(tab: .cloud), as: deviceImage(appearance: .light))
   }
 
   // MARK: - Show/hide credential toggle (#129)
 
   /// The credential field rendered on its own at a phone row width, both states side by side
   /// in one image: masked with the `eye` button, then revealed (plain text) with `eye.slash`.
-  /// The whole-screen auth, re-auth and Settings baselines show the masked state in context;
-  /// this one pins the revealed state, which a snapshot can only reach via `initiallyRevealed`.
+  /// The whole-screen Sign in, re-auth and Settings baselines show the masked state in
+  /// context; this one pins the revealed state, which a snapshot can only reach via
+  /// `initiallyRevealed`.
   func testRevealableSecureField_maskedAndRevealed() {
     assertSnapshot(
       of: VStack(spacing: 16) {

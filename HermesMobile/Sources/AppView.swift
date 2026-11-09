@@ -93,11 +93,8 @@ struct AppView: View {
         ConnectionFailedView(store: failedStore)
       }
     case .onboarding:
-      NavigationStack {
-        ConnectionView(store: store.scope(state: \.onboarding, action: \.onboarding))
-          .navigationTitle("Connect to Hermes")
-          .navigationBarTitleDisplayMode(.inline)
-      }
+      // `ConnectionView` hosts its own `NavigationStack` (Welcome → Server → Sign in).
+      ConnectionView(store: store.scope(state: \.onboarding, action: \.onboarding))
     }
   }
 

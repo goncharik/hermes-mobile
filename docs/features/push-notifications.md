@@ -32,8 +32,12 @@ Push notifications span THREE artifacts but only the iOS app lives in this repo:
   `$(APS_ENVIRONMENT)` (Debug → `development`, Release → `production`) in `Project.swift`, NOT a
   static value (Tuist emits the entitlement verbatim with no Xcode export rewrite, so a static
   `development` would ship a sandbox entitlement on Release).
-- **Permission is requested on the sessions-list appearance** (right after login), per the
-  product decision — NOT first launch.
+- **Permission is requested only from the session list's push card (#136)**, never on list
+  appearance and never at first launch. On appearance `setupPush` probes the plugin and reads
+  the permission without prompting: already granted → silent register; never asked → the
+  "Turn on" card; plugin missing → the "Ask my agent to install it" card; denied → nothing.
+  Both cards share the one Fibonacci snooze. `PushSetupGuideView` is now reached only from
+  Settings. Full matrix: `docs/features/onboarding.md` → "After sign-in: the push card".
 - **`PushClient` is iOS-only-guarded** like `AudioRecorderClient` (`#if canImport(UIKit)`;
   non-iOS `liveValue = testValue`); keep pure logic (hex, `apnsEnv`, payload parse,
   foreground-suppression) — and `PushBridge` itself (Foundation-only: `NSLock` + `AsyncStream`)
