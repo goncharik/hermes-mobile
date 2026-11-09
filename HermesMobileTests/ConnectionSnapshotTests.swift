@@ -72,14 +72,14 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   // MARK: - Server step: failure cards
 
   func testServerFailure_tailscaleNameNotFound() {
-    assertFailure(.hostNotFound(tailnetName: true), address: "mac-mini.tail4c2e.ts.net")
+    assertFailure(.hostNotFound, address: "mac-mini.tail4c2e.ts.net")
   }
 
   func testServerFailure_hostNotFound() {
-    assertFailure(.hostNotFound(tailnetName: false), address: "agent.example.com")
+    assertFailure(.hostNotFound, address: "agent.example.com")
   }
 
-  /// A bare http host: the card names both the as-typed URL and port 9119.
+  /// A bare http host, both candidates refused: the card names the last one tried (`:9119`).
   func testServerFailure_refused() {
     assertFailure(.refused, address: "mac-mini.tail4c2e.ts.net")
   }
@@ -102,11 +102,24 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   }
 
   func testServerFailure_offline() {
-    assertFailure(.offline, address: "mac-mini.tail4c2e.ts.net")
+    assertFailure(.offline, address: "mac-mini.tail4c2e.ts.net", tried: 1)
+  }
+
+  /// "Offline" for a same-Wi-Fi address may be a denied Local Network permission: the card
+  /// says it couldn't reach the host and adds the Local Network hint.
+  func testServerFailure_offline_localNetwork() {
+    assertFailure(.offline, address: "192.168.1.20", tried: 1)
   }
 
   func testServerFailure_notHermes() {
     assertFailure(.notHermes(httpStatus: 404), address: "mac-mini.tail4c2e.ts.net:8080")
+  }
+
+  /// A 2xx that isn't Hermes status JSON: the non-404 copy, with the Details box open.
+  func testServerFailure_notHermes200_detailsOpen() {
+    assertFailure(
+      .notHermes(httpStatus: 200), address: "mac-mini.tail4c2e.ts.net", detailsExpanded: true
+    )
   }
 
   func testServerFailure_hostRejected() {
@@ -128,34 +141,34 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   /// Password available + OAuth available: fields first, the provider under "or".
   func testSignIn_passwordAndOAuth() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true)
     )))
   }
 
   /// Password available, OAuth advertised by a gateway too old for the native flow.
   func testSignIn_passwordOAuthTooOld() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: false, isGated: true)
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: false)
     )))
   }
 
   func testSignIn_passwordOnly() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, isGated: true)
+      ServerAuthCapability(passwordProvider: basic)
     )))
   }
 
   /// No password, OAuth available: the provider button IS the call to action (no footer).
   func testSignIn_oauthOnly() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true)
     )))
   }
 
   /// No password, OAuth too old: the token field, with the reason.
   func testSignIn_tokenOAuthTooOld() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: false, isGated: true)
+      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: false)
     )))
   }
 
@@ -167,7 +180,7 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   /// "Other ways to sign in" opened under the password layout: the token field + its button.
   func testSignIn_otherWaysOpen() {
     var state = SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true)
     ))
     state.isShowingOtherWays = true
     assertSignIn(state)
@@ -178,22 +191,69 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   /// Plain http to a public host: the cleartext warning above the fields.
   func testSignIn_cleartextWarning() {
     assertSignIn(SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, isGated: true),
+      ServerAuthCapability(passwordProvider: basic),
+      typed: "agent.example.com:9119"
+    )))
+  }
+
+  /// The OAuth-only layout warns too: the bearer pair and every later request travel in plain
+  /// text.
+  func testSignIn_cleartextWarning_oauthOnly() {
+    assertSignIn(SignInStep.State(probe: probe(
+      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true),
       typed: "agent.example.com:9119"
     )))
   }
 
   func testSignIn_invalidCredentials() {
-    var state = SignInStep.State(probe: probe(ServerAuthCapability(passwordProvider: basic, isGated: true)))
+    var state = SignInStep.State(probe: probe(ServerAuthCapability(passwordProvider: basic)))
     state.username = "alice"
     state.password = "wrong-password"
-    state.status = .invalidCredentials
+    state.status = .invalidCredentials(.password)
+    assertSignIn(state)
+  }
+
+  /// "Other ways" open, so the token field is on screen too: only the password fields get
+  /// the red outline.
+  func testSignIn_invalidCredentials_otherWaysOpen() {
+    var state = SignInStep.State(probe: probe(ServerAuthCapability(passwordProvider: basic)))
+    state.username = "alice"
+    state.password = "wrong-password"
+    state.isShowingOtherWays = true
+    state.status = .invalidCredentials(.password)
+    assertSignIn(state)
+  }
+
+  /// An OAuth 401 under the password layout: the verdict sits under the provider button and
+  /// the password fields stay unmarked.
+  func testSignIn_oauthInvalidCredentials_passwordLayout() {
+    var state = SignInStep.State(probe: probe(
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true)
+    ))
+    state.status = .invalidCredentials(.oauth)
+    assertSignIn(state)
+  }
+
+  func testSignIn_oauthInvalidCredentials_oauthOnly() {
+    var state = SignInStep.State(probe: probe(
+      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true)
+    ))
+    state.status = .invalidCredentials(.oauth)
+    assertSignIn(state)
+  }
+
+  /// A password attempt in flight: "Signing in…" on the footer button.
+  func testSignIn_validatingPassword() {
+    var state = SignInStep.State(probe: probe(ServerAuthCapability(passwordProvider: basic)))
+    state.username = "alice"
+    state.password = "pw"
+    state.status = .validating(.password)
     assertSignIn(state)
   }
 
   func testSignIn_invalidToken() {
     var state = SignInStep.State(probe: probe(.tokenOnly), prefilledToken: "hm_tok_stale")
-    state.status = .invalidToken
+    state.status = .invalidCredentials(.token)
     assertSignIn(state)
   }
 
@@ -201,9 +261,8 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   /// notice above the methods.
   func testSignIn_failed() {
     var state = SignInStep.State(probe: probe(
-      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+      ServerAuthCapability(oauthProviders: [nous], supportsNativeFlow: true)
     ))
-    state.selectedOAuthProviderName = "nous"
     state.status = .failed("Too many sign-in attempts. Wait a minute, then try again.")
     assertSignIn(state)
   }
@@ -230,7 +289,7 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
   /// The server card stacks: the host and summary full width, "Change" under them.
   func testSignIn_accessibilitySize() {
     let state = SignInStep.State(probe: probe(
-      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true, isGated: true)
+      ServerAuthCapability(passwordProvider: basic, oauthProviders: [nous], supportsNativeFlow: true)
     ))
     assertSnapshot(
       of: step(SignInStepView(store: Store(initialState: state) { SignInStep() }))
@@ -268,20 +327,40 @@ final class ConnectionSnapshotTests: SnapshotTestCase {
     )
   }
 
+  /// The Server step showing `failure` for `text` after probing its first `tried` candidates
+  /// (all of them by default). `detailsExpanded` renders the card alone with Details open.
   private func assertFailure(
     _ failure: ProbeFailure,
     address text: String,
+    tried: Int? = nil,
+    detailsExpanded: Bool = false,
     appearance: UIUserInterfaceStyle = .light,
     file: StaticString = #filePath,
     testName: String = #function,
     line: UInt = #line
   ) {
     let address = ServerAddress(text)!
-    assertSnapshot(
-      of: server(text, phase: .failed(failure, address)),
-      as: deviceImage(appearance: appearance, height: Self.tallHeight),
-      file: file, testName: testName, line: line
+    let candidates = address.candidates
+    let failed = FailedServerProbe(
+      address: address, failure: failure,
+      tried: Array(candidates.prefix(tried ?? candidates.count))
     )
+    if detailsExpanded {
+      let card = ProbeFailureCard(failed: failed, setupGuideButtonTapped: {}, isShowingDetails: true)
+        .padding()
+        .frame(width: device.size?.width ?? 390)
+        .background(Color(.systemGroupedBackground))
+      assertSnapshot(
+        of: card, as: componentImage(appearance: appearance),
+        file: file, testName: testName, line: line
+      )
+    } else {
+      assertSnapshot(
+        of: server(text, phase: .failed(failed)),
+        as: deviceImage(appearance: appearance, height: Self.tallHeight),
+        file: file, testName: testName, line: line
+      )
+    }
   }
 
   private func assertSignIn(

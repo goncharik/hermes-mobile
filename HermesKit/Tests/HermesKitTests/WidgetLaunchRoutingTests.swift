@@ -417,8 +417,18 @@ struct WidgetLaunchRoutingTests {
 
   /// A manual login (onboarding fallback) can land minutes or hours after the tap, so a
   /// stashed camera / photos intent replays as a plain new chat — no picker pops up unasked.
-  @Test(arguments: [LaunchIntent.newChatWithCamera, .newChatWithPhotos])
-  func preHomeCameraAndPhotosIntentsDropTheActionOnManualLogin(intent: LaunchIntent) async {
+  ///
+  /// Two tests, not one parameterized: the onboarding landing mints a stack id, and every
+  /// case of a parameterized test shares one cached stack-ID generator.
+  @Test func preHomeCameraIntentDropsTheActionOnManualLogin() async {
+    await assertIntentDropsTheActionOnManualLogin(.newChatWithCamera)
+  }
+
+  @Test func preHomePhotosIntentDropsTheActionOnManualLogin() async {
+    await assertIntentDropsTheActionOnManualLogin(.newChatWithPhotos)
+  }
+
+  private func assertIntentDropsTheActionOnManualLogin(_ intent: LaunchIntent) async {
     let store = TestStore(initialState: AppFeature.State(autoConnecting: true)) {
       AppFeature()
     }

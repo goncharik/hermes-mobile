@@ -16,8 +16,8 @@ struct ProbeFailureTests {
     (URLError.Code.notConnectedToInternet, ProbeFailure.offline),
     (.dataNotAllowed, .offline),
     (.internationalRoamingOff, .offline),
-    (.cannotFindHost, .hostNotFound(tailnetName: false)),
-    (.dnsLookupFailed, .hostNotFound(tailnetName: false)),
+    (.cannotFindHost, .hostNotFound),
+    (.dnsLookupFailed, .hostNotFound),
     (.cannotConnectToHost, .refused),
     (.timedOut, .timedOut),
     (.networkConnectionLost, .timedOut),
@@ -30,54 +30,28 @@ struct ProbeFailureTests {
     (.clientCertificateRequired, .untrustedCertificate),
   ])
   func classifiesURLErrorCode(_ code: URLError.Code, expected: ProbeFailure) {
-    expectNoDifference(
-      ProbeFailure.classify(URLError(code), address: Self.publicAddress),
-      expected
-    )
+    expectNoDifference(ProbeFailure.classify(URLError(code)), expected)
   }
 
-  @Test func hostNotFoundFlagsTailnetNames() {
-    expectNoDifference(
-      ProbeFailure.classify(URLError(.cannotFindHost), address: Self.tailnetAddress),
-      .hostNotFound(tailnetName: true)
-    )
-    expectNoDifference(
-      ProbeFailure.classify(URLError(.dnsLookupFailed), address: Self.shortNameAddress),
-      .hostNotFound(tailnetName: true)
-    )
-    expectNoDifference(
-      ProbeFailure.classify(URLError(.cannotFindHost), address: Self.publicAddress),
-      .hostNotFound(tailnetName: false)
-    )
-    expectNoDifference(
-      ProbeFailure.classify(URLError(.cannotFindHost), address: Self.localAddress),
-      .hostNotFound(tailnetName: false)
-    )
-  }
-
-  @Test(arguments: [URLError.Code.cancelled, .badServerResponse, .unknown])
-  func unlistedURLErrorIsOther(_ code: URLError.Code) {
-    let failure = ProbeFailure.classify(URLError(code), address: Self.publicAddress)
-    guard case .other = failure else {
-      Issue.record("Expected .other, got \(failure)")
+  /// A request that failed with no HTTP answer, for a reason not listed, fails the
+  /// "Reaching" check — nothing was reached.
+  @Test(arguments: [URLError.Code.cancelled, .badServerResponse, .unsupportedURL, .unknown])
+  func unlistedURLErrorIsRequestFailed(_ code: URLError.Code) {
+    let failure = ProbeFailure.classify(URLError(code))
+    guard case .requestFailed = failure else {
+      Issue.record("Expected .requestFailed, got \(failure)")
       return
     }
+    #expect(failure.failedCheck == .reaching)
   }
 
-  @Test func nonURLErrorIsOther() {
+  @Test func nonURLErrorIsRequestFailed() {
     struct Boom: Error {}
-    let failure = ProbeFailure.classify(Boom(), address: Self.publicAddress)
-    guard case .other = failure else {
-      Issue.record("Expected .other, got \(failure)")
+    let failure = ProbeFailure.classify(Boom())
+    guard case .requestFailed = failure else {
+      Issue.record("Expected .requestFailed, got \(failure)")
       return
     }
-  }
-
-  @Test func alreadyClassifiedFailurePassesThrough() {
-    expectNoDifference(
-      ProbeFailure.classify(ProbeFailure.refused, address: Self.publicAddress),
-      .refused
-    )
   }
 
   // MARK: - HTTP
@@ -149,39 +123,62 @@ struct ProbeFailureTests {
     )
   }
 
-  // MARK: - isTransport
+  // MARK: - Headline
+
+  /// A text/plain error body (a traceback, a proxy dump) is cut to its first line on the card.
+  @Test func headlineIsTheFirstNonEmptyLine() {
+    let traceback = """
+
+      Traceback (most recent call last):
+        File "web_server.py", line 12, in status
+      RuntimeError: boom
+      """
+    #expect(ProbeFailure.headline(of: traceback) == "Traceback (most recent call last):")
+    #expect(ProbeFailure.headline(of: "Gateway starting") == "Gateway starting")
+    #expect(ProbeFailure.headline(of: "") == "")
+  }
+
+  @Test func headlineCapsALongLine() {
+    let line = String(repeating: "x", count: 250)
+    #expect(ProbeFailure.headline(of: line) == String(repeating: "x", count: 200) + "…")
+    #expect(ProbeFailure.headline(of: line, limit: 300) == line)
+  }
+
+  // MARK: - isTransport / triesNextCandidate
 
   @Test(arguments: [
-    (ProbeFailure.offline, false),
-    (.hostNotFound(tailnetName: false), true),
-    (.hostNotFound(tailnetName: true), true),
-    (.refused, true),
-    (.timedOut, true),
-    (.untrustedCertificate, false),
-    (.notHermes(httpStatus: 404), false),
-    (.notHermes(httpStatus: nil), false),
-    (.hostRejected(detail: "Invalid Host header."), false),
-    (.other("HTTP 500"), false),
+    (ProbeFailure.offline, false, false),
+    (.hostNotFound, true, true),
+    (.refused, true, true),
+    (.timedOut, true, true),
+    (.untrustedCertificate, false, false),
+    (.notHermes(httpStatus: 404), false, true),
+    (.notHermes(httpStatus: 200), false, true),
+    (.hostRejected(detail: "Invalid Host header."), false, false),
+    (.other("HTTP 500"), false, false),
+    (.requestFailed("unsupported URL"), false, false),
   ])
-  func isTransport(_ failure: ProbeFailure, expected: Bool) {
-    #expect(failure.isTransport == expected)
+  func transportAndFallback(_ failure: ProbeFailure, isTransport: Bool, triesNext: Bool) {
+    #expect(failure.isTransport == isTransport)
+    #expect(failure.triesNextCandidate == triesNext)
   }
 
   // MARK: - Local Network hint
 
-  /// The hint line rides only on a transport failure to a same-network address: the iOS
-  /// Local Network alert (or its denial) can only be what stopped THAT request.
+  /// The hint line rides on a same-network address that nothing answered, or that iOS
+  /// reported as offline (how a denied Local Network permission fails).
   @Test(arguments: [
-    (ProbeFailure.hostNotFound(tailnetName: false), true),
+    (ProbeFailure.hostNotFound, true),
     (.refused, true),
     (.timedOut, true),
-    (.offline, false),
+    (.offline, true),
     (.untrustedCertificate, false),
     (.notHermes(httpStatus: 404), false),
     (.hostRejected(detail: "Invalid Host header."), false),
     (.other("HTTP 500"), false),
+    (.requestFailed("unsupported URL"), false),
   ])
-  func localNetworkHintNeedsATransportFailure(_ failure: ProbeFailure, onLocalNetwork: Bool) {
+  func localNetworkHint(_ failure: ProbeFailure, onLocalNetwork: Bool) {
     #expect(failure.showsLocalNetworkHint(for: Self.localAddress) == onLocalNetwork)
     #expect(failure.showsLocalNetworkHint(for: ServerAddress("mac.local")!) == onLocalNetwork)
     // Tailscale, public and loopback addresses never trigger the iOS alert (TN3179).
@@ -194,10 +191,11 @@ struct ProbeFailureTests {
 
   @Test(arguments: [
     (ProbeFailure.offline, ServerStep.State.Check.reaching),
-    (.hostNotFound(tailnetName: true), .reaching),
+    (.hostNotFound, .reaching),
     (.refused, .reaching),
     (.timedOut, .reaching),
     (.untrustedCertificate, .reaching),
+    (.requestFailed("unsupported URL"), .reaching),
     (.notHermes(httpStatus: 404), .hermes),
     (.hostRejected(detail: "Invalid Host header."), .hermes),
     (.other("HTTP 500"), .hermes),
@@ -206,15 +204,21 @@ struct ProbeFailureTests {
     #expect(failure.failedCheck == check)
   }
 
-  // MARK: - ServerProbe
+  // MARK: - FailedServerProbe
 
-  @Test func serverProbeKeepsTheAnsweringCandidate() throws {
-    let address = try #require(ServerAddress("mac-studio"))
-    let fallback = try #require(address.candidates.last)
-    let probe = ServerProbe(
-      address: address, baseURL: fallback, capability: .tokenOnly, version: "0.9.0")
-    #expect(probe.baseURL == URL(string: "http://mac-studio:9119"))
-    #expect(probe.address == address)
-    #expect(probe.version == "0.9.0")
+  /// The card's Details lists every `/api/status` URL the probe walked, and its copy names the
+  /// last one — the candidate whose failure is reported.
+  @Test func failedProbeNamesWhatWasTried() throws {
+    let address = try #require(ServerAddress("mac"))
+    let both = FailedServerProbe(address: address, failure: .refused, tried: address.candidates)
+    #expect(both.reportedURL == URL(string: "http://mac:9119"))
+    #expect(both.triedDetail == "Tried http://mac/api/status, then http://mac:9119/api/status")
+
+    let first = FailedServerProbe(
+      address: address, failure: .hostRejected(detail: "Invalid Host header."),
+      tried: [address.url]
+    )
+    #expect(first.reportedURL == URL(string: "http://mac"))
+    #expect(first.triedDetail == "Tried http://mac/api/status")
   }
 }

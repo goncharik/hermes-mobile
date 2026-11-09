@@ -31,12 +31,8 @@ struct ServerStepView: View {
         } else {
           checklist
         }
-        if case let .failed(failure, address) = store.phase {
-          ProbeFailureCard(
-            failure: failure,
-            address: address,
-            setupGuideButtonTapped: setupGuideButtonTapped
-          )
+        if case let .failed(failed) = store.phase {
+          ProbeFailureCard(failed: failed, setupGuideButtonTapped: setupGuideButtonTapped)
         }
       }
     } footer: {
@@ -127,7 +123,7 @@ struct ServerStepView: View {
         if address.candidates.count > 1 {
           Text("""
           Connects to \(code(address.url.absoluteString)), then \
-          \(code(":\(ServerAddress.fallbackPort)")) if nothing answers
+          \(code(":\(ServerAddress.fallbackPort)")) if no agent answers
           """)
         } else {
           Text("Connects to \(code(address.url.absoluteString))")

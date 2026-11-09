@@ -299,7 +299,7 @@ struct AgentSetupGuideView: View {
       """)
       CommandCard(command: Self.verifyCommand)
       footnote("You should see auth_required: true.")
-      footnote("Then enter the URL and your username and password back on the sign-in screen.")
+      footnote("Then enter the address and sign in with your username and password.")
     }
   }
 
@@ -316,7 +316,8 @@ struct AgentSetupGuideView: View {
           // The dashboard reads the token once at launch — export must come first.
           stepRow(number: 1, text: """
           Generate the shared token the dashboard and this app will use — the echo line \
-          prints it so you can paste it into the Token field on the sign-in screen:
+          prints it so you can paste it into the token field when you sign in (under "Other \
+          ways to sign in" when the agent also offers a password):
           """)
           CommandCard(command: Self.tokenExportCommand, showsPrompt: false)
           stepRow(number: 2, text: """

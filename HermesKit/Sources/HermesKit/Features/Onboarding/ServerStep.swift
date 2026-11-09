@@ -8,13 +8,12 @@ import Foundation
 /// - The typed text is parsed once into a `ServerAddress`; an unparseable address never
 ///   probes (the view shows the inline hint off `showsInvalidAddressHint`).
 /// - The probe walks `ServerAddress.candidates` (as typed, then `:9119` for http without a
-///   port) and moves to the next candidate ONLY on a transport failure
-///   (`ProbeFailure.isTransport`) — any HTTP answer, a 404 or a 400 included, is the server's
-///   verdict and stops the loop. The success carries the candidate that answered, so the
+///   port) and moves to the next candidate only while nothing (or something that isn't
+///   Hermes) answered (`ProbeFailure.triesNextCandidate`) — a Hermes verdict, a 400
+///   included, stops the loop. The success carries the candidate that answered, so the
 ///   `:9119` fallback is what sign-in connects to and saves.
-/// - A failure lands in `.failed(failure, address)` with the address the card needs for its
-///   copy and its Local Network hint (`address.kind == .localNetwork && failure.isTransport`,
-///   a view decision).
+/// - A failure lands in `.failed(FailedServerProbe)`: the address, the candidates tried and
+///   the last one's failure — what the card needs for its copy and its Local Network hint.
 /// - Editing the address resets to `.idle` and cancels an in-flight probe.
 @Reducer
 public struct ServerStep {
@@ -32,8 +31,8 @@ public struct ServerStep {
     }
 
     public enum Phase: Equatable, Sendable {
-      /// The probe of `address` failed; the card renders `failure` for that address.
-      case failed(ProbeFailure, ServerAddress)
+      /// The probe failed; the card renders it.
+      case failed(FailedServerProbe)
       case idle
       case probing(Stage)
     }
@@ -89,8 +88,8 @@ public struct ServerStep {
         return index == 0 ? .running : .pending
       case .probing(.readingSignInOptions):
         return check == .signInOptions ? .running : .passed
-      case let .failed(failure, _):
-        let failedIndex = order.firstIndex(of: failure.failedCheck)!
+      case let .failed(failed):
+        let failedIndex = order.firstIndex(of: failed.failure.failedCheck)!
         if index < failedIndex { return .passed }
         return index == failedIndex ? .failed : .pending
       }
@@ -107,7 +106,7 @@ public struct ServerStep {
     case continueButtonTapped
     case delegate(Delegate)
     case onAppear
-    case probeResponse(Result<ServerProbe, ProbeFailure>)
+    case probeResponse(Result<ServerProbe, FailedServerProbe>)
     /// `/api/status` answered — advances `.reaching` → `.readingSignInOptions`.
     case statusReceived
 
@@ -125,13 +124,17 @@ public struct ServerStep {
 
   public var body: some ReducerOf<Self> {
     BindingReducer()
+      // Only a CHANGED address resets: a redundant binding write (SwiftUI echoing the same
+      // text on a focus change) must not cancel the probe it just started.
+      .onChange(of: \.addressText) { _, _ in
+        Reduce { state, _ in
+          // A new address invalidates whatever the old one answered (or is answering).
+          state.phase = .idle
+          return .cancel(id: CancelID.probe)
+        }
+      }
     Reduce { state, action in
       switch action {
-      case .binding(\.addressText):
-        // A new address invalidates whatever the old one answered (or is answering).
-        state.phase = .idle
-        return .cancel(id: CancelID.probe)
-
       case .binding:
         return .none
 
@@ -152,14 +155,8 @@ public struct ServerStep {
         state.phase = .idle
         return .send(.delegate(.probeSucceeded(probe)))
 
-      case let .probeResponse(.failure(failure)):
-        // The address is the one the probe ran against: editing it cancels the probe, so the
-        // text still parses to the same address here.
-        guard let address = state.address else {
-          state.phase = .idle
-          return .none
-        }
-        state.phase = .failed(failure, address)
+      case let .probeResponse(.failure(failed)):
+        state.phase = .failed(failed)
         return .none
 
       case .statusReceived:
@@ -175,8 +172,10 @@ public struct ServerStep {
     state.phase = .probing(.reaching)
     return .run { [rest] send in
       // `candidates` is never empty; the placeholder is always overwritten.
-      var lastFailure = ProbeFailure.other("No address to probe")
+      var lastFailure = ProbeFailure.requestFailed("No address to probe")
+      var tried: [URL] = []
       candidates: for candidate in address.candidates {
+        tried.append(candidate)
         let status: ServerStatus
         switch await rest.probeStatus(candidate) {
         case let .success(answer):
@@ -184,9 +183,7 @@ public struct ServerStep {
         case let .failure(failure):
           // The last candidate's failure is the one reported (for `mac`, the `:9119` verdict).
           lastFailure = failure
-          // An HTTP answer is the server's verdict; only "nothing answered" tries the next
-          // candidate.
-          if failure.isTransport { continue candidates }
+          if failure.triesNextCandidate { continue candidates }
           break candidates
         }
         await send(.statusReceived)
@@ -205,7 +202,9 @@ public struct ServerStep {
         await send(.probeResponse(.success(probe)))
         return
       }
-      await send(.probeResponse(.failure(lastFailure)))
+      await send(
+        .probeResponse(.failure(FailedServerProbe(address: address, failure: lastFailure, tried: tried)))
+      )
     }
     .cancellable(id: CancelID.probe, cancelInFlight: true)
   }

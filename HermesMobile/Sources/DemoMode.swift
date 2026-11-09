@@ -52,8 +52,7 @@ enum DemoMode {
     capability: ServerAuthCapability(
       passwordProvider: AuthProvider(name: "basic", displayName: "Password", supportsPassword: true),
       oauthProviders: [AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false)],
-      supportsNativeFlow: true,
-      isGated: true
+      supportsNativeFlow: true
     ),
     version: "0.19.2"
   )
@@ -87,10 +86,15 @@ enum DemoMode {
     deps.hermesREST.cronJobs = { _, _ in seededCronJobs }
     deps.hermesREST.cronJobRuns = { _, jobID, _, _ in seededCronRuns[jobID] ?? [] }
     // "notify" needs REAL notification permission (the panel captures a live banner from
-    // `simctl push`), so report the plugin ready → the reducer runs the OS permission
-    // prompt. Every other scenario reports unknown: no prompt, no sheet, no live REST.
+    // `simctl push`), so report the plugin ready and the permission as granted → the reducer
+    // registers "silently", which on a fresh simulator runs the OS permission prompt with no
+    // Turn on card in the backdrop. Every other scenario reports unknown: no prompt, no card,
+    // no live REST.
     let pushStatus: PushPluginStatus = scenario == "notify" ? .ready : .unknown
     deps.hermesREST.pushPluginStatus = { _ in pushStatus }
+    if scenario == "notify" {
+      deps.push.authorizationStatus = { .authorized }
+    }
     // Settings probes the same hub for the plugin's version. Report no version so the demo
     // never renders the "plugin update available" row in a screenshot.
     deps.hermesREST.pushPluginInfo = { _ in PushPluginInfo(status: pushStatus) }

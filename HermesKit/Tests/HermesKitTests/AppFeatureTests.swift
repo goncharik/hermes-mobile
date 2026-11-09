@@ -13,6 +13,7 @@ private func recoveringOnboarding(
 ) -> ConnectionFeature.State {
   var state = ConnectionFeature.State()
   state.prefilledToken = token
+  state.prefilledTokenHost = ServerAddress(url)?.host
   state.path[id: 0] = .server(ServerStep.State(addressText: url, autoProbe: true))
   return state
 }
@@ -7022,8 +7023,7 @@ struct AppFeatureTests {
       oauthProviders: [
         AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
       ],
-      supportsNativeFlow: true,
-      isGated: true
+      supportsNativeFlow: true
     )
     let store = TestStore(
       initialState: AppFeature.State(
@@ -7082,8 +7082,7 @@ struct AppFeatureTests {
       oauthProviders: [
         AuthProvider(name: "nous", displayName: "Nous Research", supportsPassword: false),
       ],
-      supportsNativeFlow: true,
-      isGated: true
+      supportsNativeFlow: true
     )
     let probe = ServerProbe(
       address: ServerAddress("http://mac.tailnet:9119")!,
@@ -7115,7 +7114,7 @@ struct AppFeatureTests {
   /// are all dropped, so the next sign-in starts at the stack root with no stale server.
   @Test(arguments: LogoutPath.allCases)
   func everyLogoutLandsOnWelcome(_ logout: LogoutPath) async {
-    let capability = ServerAuthCapability(oauthProviders: [], supportsNativeFlow: false, isGated: false)
+    let capability = ServerAuthCapability(oauthProviders: [], supportsNativeFlow: false)
     var finishedFlow = ConnectionFeature.State()
     finishedFlow.prefilledToken = "tok"
     finishedFlow.lastProbedCapability = capability

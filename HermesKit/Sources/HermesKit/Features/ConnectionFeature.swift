@@ -1,9 +1,9 @@
 import ComposableArchitecture
 import Foundation
 
-/// Which auth regime a re-sign-in collects credentials for. `ReauthFeature` derives it from
-/// the stored connection's regime (onboarding derives its layout from the probed capability
-/// instead — see `SignInStep.State.Layout`).
+/// An auth regime. `ReauthFeature` derives the one a re-sign-in collects from the stored
+/// connection's regime; `SignInStep.State.Status` tags each attempt with the one it used
+/// (the onboarding layout comes from the probed capability — `SignInStep.State.Layout`).
 public enum AuthMethod: String, Equatable, Sendable {
   case password
   case token
@@ -154,6 +154,9 @@ public struct ConnectionFeature {
     /// The token the credentials-verdict fallback prefills into Sign in (#62). `nil` for a
     /// fresh onboarding and for the cookie/bearer regimes, which have nothing persistable.
     public var prefilledToken: String?
+    /// The stored server's host: only a Sign in for that host gets `prefilledToken`, so an
+    /// edited address never receives another server's token.
+    public var prefilledTokenHost: String?
 
     /// A fresh onboarding: Welcome, nothing prefilled (first launch, every logout).
     public init() {}
@@ -165,6 +168,7 @@ public struct ConnectionFeature {
         .server(ServerStep.State(addressText: url.absoluteString, autoProbe: true)),
       ])
       self.prefilledToken = token
+      self.prefilledTokenHost = ServerAddress(url.absoluteString)?.host
     }
   }
 
@@ -199,9 +203,8 @@ public struct ConnectionFeature {
         state.lastProbedCapability = probe.capability
         // Sign in always sits directly above the Server step that probed for it.
         state.path.pop(to: id)
-        state.path.append(
-          .signIn(SignInStep.State(probe: probe, prefilledToken: state.prefilledToken))
-        )
+        let token = probe.address.host == state.prefilledTokenHost ? state.prefilledToken : nil
+        state.path.append(.signIn(SignInStep.State(probe: probe, prefilledToken: token)))
         return .none
 
       case let .path(.element(_, .signIn(.delegate(.connected(connection))))):

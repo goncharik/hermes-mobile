@@ -147,8 +147,8 @@ struct OnboardingCard<Content: View>: View {
 struct OnboardingNotice<Message: View>: View {
   var systemImage = "info.circle"
   var tint: Color = OnboardingLayout.accentInk
-  /// A tinted background for a warning; `nil` keeps the plain card surface.
-  var warningTint: Color?
+  /// A warning gets a `tint`-tinted background instead of the plain card surface.
+  var isWarning = false
   @ViewBuilder var message: Message
 
   var body: some View {
@@ -166,8 +166,9 @@ struct OnboardingNotice<Message: View>: View {
     .padding(.vertical, 12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      warningTint.map { AnyShapeStyle($0.opacity(0.14)) }
-        ?? AnyShapeStyle(Color(.secondarySystemGroupedBackground)),
+      isWarning
+        ? AnyShapeStyle(tint.opacity(0.14))
+        : AnyShapeStyle(Color(.secondarySystemGroupedBackground)),
       in: RoundedRectangle(cornerRadius: 12, style: .continuous)
     )
     .accessibilityElement(children: .combine)

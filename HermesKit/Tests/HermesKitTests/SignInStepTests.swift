@@ -18,14 +18,14 @@ private let keycloakProvider = AuthProvider(
 )
 
 private func passwordCapability(
+  passwordProvider: AuthProvider = basicProvider,
   oauthProviders: [AuthProvider] = [],
   supportsNativeFlow: Bool = false
 ) -> ServerAuthCapability {
   ServerAuthCapability(
-    passwordProvider: basicProvider,
+    passwordProvider: passwordProvider,
     oauthProviders: oauthProviders,
-    supportsNativeFlow: supportsNativeFlow,
-    isGated: true
+    supportsNativeFlow: supportsNativeFlow
   )
 }
 
@@ -33,11 +33,7 @@ private func oauthCapability(
   providers: [AuthProvider] = [nousProvider],
   supportsNativeFlow: Bool = true
 ) -> ServerAuthCapability {
-  ServerAuthCapability(
-    oauthProviders: providers,
-    supportsNativeFlow: supportsNativeFlow,
-    isGated: true
-  )
+  ServerAuthCapability(oauthProviders: providers, supportsNativeFlow: supportsNativeFlow)
 }
 
 /// A probe of `mac:9119` (or `baseURL`, e.g. the `:9119` fallback of a bare host).
@@ -97,12 +93,12 @@ struct SignInStepTests {
      .oauthOnly([nousProvider, keycloakProvider]), nil),
     // OAuth only, too old: token is the way in, and the reason names the providers.
     (oauthCapability(providers: [nousProvider, keycloakProvider], supportsNativeFlow: false),
-     .token(reason: .oauthNeedsNewerAgent("Nous Research or Keycloak")),
+     .token(reason: .oauthNeedsNewerAgent),
      "Nous Research or Keycloak"),
     // Not gated (token-only server).
     (.tokenOnly, .token(reason: .tokenOnlyServer), nil),
     // Native flow advertised but no OAuth provider: still no buttons (positive evidence).
-    (ServerAuthCapability(supportsNativeFlow: true, isGated: false),
+    (ServerAuthCapability(supportsNativeFlow: true),
      .token(reason: .tokenOnlyServer), nil),
   ] as [(ServerAuthCapability, SignInStep.State.Layout, String?)])
   func layoutFollowsTheCapability(
@@ -146,15 +142,14 @@ struct SignInStepTests {
     #expect(SignInStep.State(probe: probe(.tokenOnly)).oauthProviderNames.isEmpty)
   }
 
-  /// A password or token attempt clears the last provider tap, so an `.invalidCredentials`
-  /// verdict is attributed to the leg that produced it (the view picks its copy off this).
-  @Test func aPasswordOrTokenAttemptClearsTheSelectedProvider() async {
+  /// Every attempt and its 401 verdict carry the method that made it, so the view puts the
+  /// copy and the red outline on that method's fields only.
+  @Test func eachVerdictNamesTheMethodThatEarnedIt() async {
     var state = SignInStep.State(
       probe: probe(passwordCapability(oauthProviders: [nousProvider], supportsNativeFlow: true))
     )
     state.username = "alice"
     state.password = "wrong"
-    state.selectedOAuthProviderName = "nous"
     state.isShowingOtherWays = true
     state.token = "tok"
     let store = TestStore(initialState: state) {
@@ -162,22 +157,19 @@ struct SignInStepTests {
     } withDependencies: {
       $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.unauthorized }
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.oauthLogin.signIn = { @Sendable _, _ in bearerFixture() }
+      $0.bearerTokens = BearerTokenStore()
+      $0.keychain = .inMemory()
     }
 
-    await store.send(.signInButtonTapped) {
-      $0.selectedOAuthProviderName = nil
-      $0.status = .validating
-    }
-    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
 
-    await store.send(.binding(.set(\.selectedOAuthProviderName, "nous"))) {
-      $0.selectedOAuthProviderName = "nous"
-    }
-    await store.send(.tokenSignInButtonTapped) {
-      $0.selectedOAuthProviderName = nil
-      $0.status = .validating
-    }
-    await store.receive(\.tokenValidationResponse.failure) { $0.status = .invalidToken }
+    await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
+    await store.receive(\.tokenValidationResponse.failure) { $0.status = .invalidCredentials(.token) }
+
+    await store.send(.oauthProviderButtonTapped(nousProvider)) { $0.status = .validating(.oauth) }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials(.oauth) }
   }
 
   @Test func prefilledTokenSeedsTheTokenField() {
@@ -190,42 +182,44 @@ struct SignInStepTests {
 
   @Test func passwordLayoutSubmitsOnceBothFieldsAreFilled() {
     var state = passwordState(username: "", password: "")
-    #expect(state.canSubmit == false)
+    #expect(state.canSignInWithPassword == false)
     state.username = "alice"
-    #expect(state.canSubmit == false)
+    #expect(state.canSignInWithPassword == false)
     state.password = "pw"
-    #expect(state.canSubmit)
-    state.status = .validating
-    #expect(state.canSubmit == false)
+    #expect(state.canSignInWithPassword)
+    state.status = .validating(.password)
+    #expect(state.canSignInWithPassword == false)
     // A finished attempt never blocks a retry, whatever its verdict.
-    for status: SignInStep.State.Status in [.invalidCredentials, .failed("Too many attempts."), .idle] {
+    for status: SignInStep.State.Status in [
+      .invalidCredentials(.password), .failed("Too many attempts."), .idle,
+    ] {
       state.status = status
-      #expect(state.canSubmit)
+      #expect(state.canSignInWithPassword)
     }
   }
 
   @Test func oauthOnlyLayoutSubmitsWithNothingToType() {
     var state = oauthState()
-    #expect(state.canSubmit)
+    #expect(state.canSignInWithOAuth)
     #expect(state.canSignInWithPassword == false)
-    state.status = .validating
-    #expect(state.canSubmit == false)
+    state.status = .validating(.oauth)
+    #expect(state.canSignInWithOAuth == false)
     state.status = .failed("Sign-in timed out. Try again.")
-    #expect(state.canSubmit)
+    #expect(state.canSignInWithOAuth)
   }
 
   @Test func tokenLayoutSubmitsOnceATokenIsEntered() {
     var state = SignInStep.State(probe: probe(.tokenOnly))
     #expect(state.showsTokenField)
-    #expect(state.canSubmit == false)
+    #expect(state.canSignInWithToken == false)
     state.token = "tok"
-    #expect(state.canSubmit)
+    #expect(state.canSignInWithToken)
     #expect(state.canSignInWithPassword == false)
     #expect(state.canSignInWithOAuth == false)
-    state.status = .validating
-    #expect(state.canSubmit == false)
-    state.status = .invalidToken
-    #expect(state.canSubmit)
+    state.status = .validating(.token)
+    #expect(state.canSignInWithToken == false)
+    state.status = .invalidCredentials(.token)
+    #expect(state.canSignInWithToken)
   }
 
   /// In the non-token layouts the token is reachable only behind "Other ways to sign in".
@@ -275,7 +269,7 @@ struct SignInStepTests {
     }
 
     await store.send(\.binding.token, "secret") { $0.token = "secret" }
-    await store.send(.tokenSignInButtonTapped) { $0.status = .validating }
+    await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
     await store.receive(\.tokenValidationResponse.success)
     await store.receive(\.delegate.connected)
 
@@ -304,7 +298,7 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.tokenSignInButtonTapped) { $0.status = .validating }
+    await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
     await store.receive(\.tokenValidationResponse.success)
     await store.receive(\.delegate.connected)
     #expect(preferences.loadServerURL() == "http://mac:9119")
@@ -323,8 +317,8 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.tokenSignInButtonTapped) { $0.status = .validating }
-    await store.receive(\.tokenValidationResponse.failure) { $0.status = .invalidToken }
+    await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
+    await store.receive(\.tokenValidationResponse.failure) { $0.status = .invalidCredentials(.token) }
 
     #expect(keychain.loadToken() == nil)
     #expect(preferences.loadServerURL() == nil)
@@ -345,7 +339,7 @@ struct SignInStepTests {
       $0.keychain = keychain
     }
 
-    await store.send(.tokenSignInButtonTapped) { $0.status = .validating }
+    await store.send(.tokenSignInButtonTapped) { $0.status = .validating(.token) }
     await store.receive(\.tokenValidationResponse.failure) {
       $0.status = .failed(RESTError.offline.message)
     }
@@ -388,7 +382,7 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.success)
     await store.receive(\.delegate.connected)
 
@@ -409,11 +403,32 @@ struct SignInStepTests {
       $0.preferences = preferences
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating }
-    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
 
     #expect(keychain.loadSession(.shared) == nil)
     #expect(preferences.loadServerURL() == nil)
+  }
+
+  /// The login goes to the provider the server advertised, not a hard-coded "basic".
+  @Test func passwordLoginUsesTheProbedProviderName() async {
+    let pam = AuthProvider(name: "pam", displayName: "System account", supportsPassword: true)
+    var state = SignInStep.State(probe: probe(passwordCapability(passwordProvider: pam)))
+    state.username = "alice"
+    state.password = "pw"
+    let usedProvider = LockIsolated<String?>(nil)
+    let store = TestStore(initialState: state) {
+      SignInStep()
+    } withDependencies: {
+      $0.hermesREST.passwordLogin = { @Sendable _, provider, _, _ in
+        usedProvider.setValue(provider)
+        throw RESTError.unauthorized
+      }
+    }
+
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
+    #expect(usedProvider.value == "pam")
   }
 
   /// Cookies issued, then rejected by the validating call: same verdict, nothing persisted.
@@ -430,8 +445,8 @@ struct SignInStepTests {
       $0.keychain.saveSession = { @Sendable in try keychain.saveSession($0) }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating }
-    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
+    await store.receive(\.passwordLoginResponse.failure) { $0.status = .invalidCredentials(.password) }
     #expect(keychain.loadSession(.shared) == nil)
   }
 
@@ -442,7 +457,7 @@ struct SignInStepTests {
       $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.rateLimited }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) {
       $0.status = .failed(RESTError.rateLimited.message)
     }
@@ -455,7 +470,7 @@ struct SignInStepTests {
       $0.hermesREST.passwordLogin = { @Sendable _, _, _, _ in throw RESTError.serviceUnavailable }
     }
 
-    await store.send(.signInButtonTapped) { $0.status = .validating }
+    await store.send(.signInButtonTapped) { $0.status = .validating(.password) }
     await store.receive(\.passwordLoginResponse.failure) {
       $0.status = .failed(RESTError.serviceUnavailable.message)
     }
@@ -490,8 +505,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.success)
     await store.receive(\.delegate.connected)
@@ -518,8 +532,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(keycloakProvider)) {
-      $0.selectedOAuthProviderName = "self_hosted"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.success)
     await store.receive(\.delegate.connected)
@@ -548,8 +561,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.failure) { $0.status = .idle }
 
@@ -557,7 +569,7 @@ struct SignInStepTests {
     #expect(preferences.loadServerURL() == nil)
     let seeded = tokenStore.current
     #expect(seeded == nil)
-    #expect(store.state.canSubmit)
+    #expect(store.state.canSignInWithOAuth)
   }
 
   @Test(arguments: [
@@ -580,15 +592,14 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.failure) { $0.status = .failed(message) }
 
     let seeded = tokenStore.current
     #expect(seeded == nil)
     #expect(keychain.loadSession(.shared) == nil)
-    #expect(store.state.canSubmit) // retryable: nothing to type
+    #expect(store.state.canSignInWithOAuth) // retryable: nothing to type
   }
 
   /// The pair was minted but the server rejected it on the validating call: drained, not
@@ -608,10 +619,9 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
-    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials(.oauth) }
 
     let seeded = tokenStore.current
     #expect(seeded == nil, "a rejected bearer pair must not stay seeded")
@@ -632,8 +642,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.failure) {
       $0.status = .failed(RESTError.serviceUnavailable.message)
@@ -672,8 +681,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.send(.oauthProviderButtonTapped(nousProvider)) // cancels the first
     await store.receive(\.oauthLoginResponse.success)
@@ -710,8 +718,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.success)
     await store.receive(\.delegate.connected)
@@ -750,10 +757,9 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
-    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials }
+    await store.receive(\.oauthLoginResponse.failure) { $0.status = .invalidCredentials(.oauth) }
 
     #expect(
       keychain.loadSession(.shared) == nil,
@@ -774,8 +780,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.failure) {
       $0.status = .failed(OAuthLoginError.tokenExchange(RESTError(transport: Unexpected())).message)
@@ -802,8 +807,7 @@ struct SignInStepTests {
     }
 
     await store.send(.oauthProviderButtonTapped(nousProvider)) {
-      $0.selectedOAuthProviderName = "nous"
-      $0.status = .validating
+      $0.status = .validating(.oauth)
     }
     await store.receive(\.oauthLoginResponse.success)
     await store.receive(\.delegate.connected)

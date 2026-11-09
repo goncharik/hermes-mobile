@@ -95,6 +95,21 @@ final class MockURLProtocol: URLProtocol {
   }
 }
 
+/// Answers every request with a plain `URLResponse` (not HTTP) and an empty body.
+private final class NonHTTPURLProtocol: URLProtocol {
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+  override func stopLoading() {}
+
+  override func startLoading() {
+    let response = URLResponse(
+      url: request.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil
+    )
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocolDidFinishLoading(self)
+  }
+}
+
 /// Read a (possibly streamed) request body back as `Data` — `URLProtocol` turns `httpBody`
 /// into a stream. Shared by the REST/profile/native-flow suites.
 func mockRequestBody(_ req: URLRequest) -> Data {
@@ -218,6 +233,16 @@ struct HermesRESTClientTests {
     #expect(req.url?.absoluteString == "http://test.local:9119/api/status")
     #expect(req.value(forHTTPHeaderField: "X-Hermes-Session-Token") == nil)
     #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
+    // Short, so an unreachable host fails per candidate in seconds, not the default minute.
+    #expect(req.timeoutInterval == 10)
+  }
+
+  /// Every Hermes `/api/status` reports its `version`; another service's JSON (an empty
+  /// object, a generic health check) is not Hermes.
+  @Test(arguments: ["{}", #"{"status":"ok"}"#, #"{"gateway_running":true}"#])
+  func probeStatusJSONWithoutAVersionIsNotHermes(body: String) async {
+    MockURLProtocol.set(json: body, headers: ["Content-Type": "application/json"])
+    #expect(await makeClient().probeStatus(baseURL) == .failure(.notHermes(httpStatus: 200)))
   }
 
   @Test func probeStatusHTMLOn2xxIsNotHermes() async {
@@ -249,7 +274,7 @@ struct HermesRESTClientTests {
   }
 
   @Test(arguments: [
-    (URLError.Code.cannotFindHost, ProbeFailure.hostNotFound(tailnetName: false)),
+    (URLError.Code.cannotFindHost, ProbeFailure.hostNotFound),
     (.cannotConnectToHost, .refused),
     (.timedOut, .timedOut),
     (.serverCertificateUntrusted, .untrustedCertificate),
@@ -260,10 +285,14 @@ struct HermesRESTClientTests {
     #expect(await makeClient().probeStatus(baseURL) == .failure(expected))
   }
 
-  @Test func probeStatusHostNotFoundFlagsATailnetName() async {
-    MockURLProtocol.set(fail: true, failCode: .cannotFindHost)
-    let tailnet = URL(string: "http://mac-mini.tail1234.ts.net:9119")!
-    #expect(await makeClient().probeStatus(tailnet) == .failure(.hostNotFound(tailnetName: true)))
+  @Test func probeStatusNonHTTPResponseIsRequestFailed() async {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [NonHTTPURLProtocol.self]
+    let client = HermesRESTClient.live(session: URLSession(configuration: config))
+    #expect(
+      await client.probeStatus(baseURL)
+        == .failure(.requestFailed("The server sent a response that isn’t HTTP."))
+    )
   }
 
   @Test func sessionsMapsListToDomain() async throws {

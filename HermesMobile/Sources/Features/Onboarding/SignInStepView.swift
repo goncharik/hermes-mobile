@@ -46,7 +46,7 @@ struct SignInStepView: View {
       OnboardingHeading(title: "Sign in", subtitle: subtitle)
 
       if case let .failed(message) = store.status {
-        OnboardingNotice(systemImage: "exclamationmark.triangle.fill", tint: .red, warningTint: .red) {
+        OnboardingNotice(systemImage: "exclamationmark.triangle.fill", tint: .red, isWarning: true) {
           Text(verbatim: message)
         }
       }
@@ -55,6 +55,7 @@ struct SignInStepView: View {
       case let .password(providers):
         passwordLayout(providers: providers)
       case let .oauthOnly(providers):
+        cleartextWarning(credential: "sign-in")
         providerButtons(providers, prominent: true)
         otherWays
       case let .token(reason):
@@ -88,16 +89,9 @@ struct SignInStepView: View {
   @ViewBuilder
   private func passwordLayout(providers: [AuthProvider]) -> some View {
     cleartextWarning(credential: "password")
-    if let names = store.oauthNeedsNewerAgentFor {
-      OnboardingNotice {
-        Text(verbatim: """
-        \(names) sign-in needs a newer Hermes agent. Update the agent to use it, or sign in \
-        with your password.
-        """)
-      }
-    }
+    oauthNeedsNewerAgentNotice(fallback: "your password")
     VStack(alignment: .leading, spacing: 8) {
-      fieldGroup {
+      fieldGroup(hasError: store.status == .invalidCredentials(.password)) {
         TextField("Username", text: $store.username)
           .textContentType(.username)
           .textInputAutocapitalization(.never)
@@ -110,7 +104,7 @@ struct SignInStepView: View {
           .padding(.horizontal, 14)
           .padding(.vertical, 13)
       }
-      if store.status == .invalidCredentials, store.selectedOAuthProviderName == nil {
+      if store.status == .invalidCredentials(.password) {
         errorLine("""
         That username and password didn’t work. They’re set by \
         `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` and `_PASSWORD` in `~/.hermes/.env`.
@@ -127,14 +121,7 @@ struct SignInStepView: View {
   @ViewBuilder
   private func tokenLayout(reason: SignInStep.State.TokenReason) -> some View {
     cleartextWarning(credential: "token")
-    if case let .oauthNeedsNewerAgent(names) = reason {
-      OnboardingNotice {
-        Text(verbatim: """
-        \(names) sign-in needs a newer Hermes agent. Update the agent to use it, or sign in \
-        with a session token.
-        """)
-      }
-    }
+    oauthNeedsNewerAgentNotice(fallback: "a session token")
     VStack(alignment: .leading, spacing: 8) {
       tokenField
       warningLine("A token never expires and gives full access. Use it only on a private network.")
@@ -145,6 +132,19 @@ struct SignInStepView: View {
         Text("""
         Newer Hermes agents support password sign-in, which is safer. Update the agent to \
         switch.
+        """)
+      }
+    }
+  }
+
+  /// OAuth providers the gateway is too old to drive, and what to sign in with instead.
+  @ViewBuilder
+  private func oauthNeedsNewerAgentNotice(fallback: String) -> some View {
+    if let names = store.oauthNeedsNewerAgentFor {
+      OnboardingNotice {
+        Text(verbatim: """
+        \(names) sign-in needs a newer Hermes agent. Update the agent to use it, or sign in \
+        with \(fallback).
         """)
       }
     }
@@ -204,7 +204,7 @@ struct SignInStepView: View {
       .font(.footnote)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
-      if store.status == .invalidCredentials, store.selectedOAuthProviderName != nil {
+      if store.status == .invalidCredentials(.oauth) {
         errorLine(
           store.state.layout == .oauthOnly(providers)
             ? "The agent rejected that sign-in. Try again."
@@ -215,7 +215,7 @@ struct SignInStepView: View {
   }
 
   private var tokenField: some View {
-    fieldGroup {
+    fieldGroup(hasError: store.status == .invalidCredentials(.token)) {
       RevealableSecureField("Session token", text: $store.token)
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
@@ -224,7 +224,7 @@ struct SignInStepView: View {
 
   @ViewBuilder
   private var invalidTokenLine: some View {
-    if store.status == .invalidToken {
+    if store.status == .invalidCredentials(.token) {
       errorLine("""
       The agent didn’t accept that token. Check it matches `HERMES_DASHBOARD_SESSION_TOKEN`, \
       then try again.
@@ -236,11 +236,7 @@ struct SignInStepView: View {
   @ViewBuilder
   private func cleartextWarning(credential: String) -> some View {
     if store.probe.address.isPublicCleartext {
-      OnboardingNotice(
-        systemImage: "exclamationmark.triangle.fill",
-        tint: .orange,
-        warningTint: .orange
-      ) {
+      OnboardingNotice(systemImage: "exclamationmark.triangle.fill", tint: .orange, isWarning: true) {
         Text("""
         **This connection isn’t encrypted.** \(store.probe.address.host) looks like a public \
         address, so your \(credential) would cross the internet in plain text. Use Tailscale \
@@ -250,7 +246,8 @@ struct SignInStepView: View {
     }
   }
 
-  private func fieldGroup(@ViewBuilder _ content: () -> some View) -> some View {
+  /// Grouped fields, outlined red when the agent rejected what was typed in them.
+  private func fieldGroup(hasError: Bool, @ViewBuilder _ content: () -> some View) -> some View {
     VStack(spacing: 0) {
       content()
     }
@@ -260,15 +257,7 @@ struct SignInStepView: View {
     )
     .overlay {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(hasFieldError ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1)
-    }
-  }
-
-  private var hasFieldError: Bool {
-    switch store.status {
-    case .invalidToken: true
-    case .invalidCredentials: store.selectedOAuthProviderName == nil
-    case .failed, .idle, .validating: false
+        .strokeBorder(hasError ? Color.red.opacity(0.6) : Color.clear, lineWidth: 1)
     }
   }
 
@@ -311,7 +300,7 @@ struct SignInStepView: View {
 
   /// A non-OAuth attempt is in flight (the OAuth leg shows in the browser sheet instead).
   private var isValidatingHere: Bool {
-    store.status == .validating && store.selectedOAuthProviderName == nil
+    store.status.isValidating && store.status != .validating(.oauth)
   }
 }
 
@@ -393,8 +382,7 @@ struct ServerCard: View {
             address: ServerAddress("mac-mini.tail4c2e.ts.net")!,
             baseURL: URL(string: "http://mac-mini.tail4c2e.ts.net:9119")!,
             capability: ServerAuthCapability(
-              passwordProvider: AuthProvider(name: "basic", displayName: "Password", supportsPassword: true),
-              isGated: true
+              passwordProvider: AuthProvider(name: "basic", displayName: "Password", supportsPassword: true)
             ),
             version: "0.19.2"
           )

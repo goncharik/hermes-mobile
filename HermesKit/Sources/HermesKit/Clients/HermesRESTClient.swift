@@ -203,12 +203,12 @@ public struct HermesRESTClient: Sendable {
   public var status: @Sendable (_ baseURL: URL) async throws -> ServerStatus
   /// The onboarding Server step's probe (#136): the same unauthenticated `GET /api/status`
   /// as `status`, but every failure is classified from the RAW `URLError` / HTTP response
-  /// into a typed `ProbeFailure` (a 2xx body that doesn't decode is `.notHermes`), so each
+  /// into a typed `ProbeFailure` (a 2xx body without a Hermes `version` is `.notHermes`), so each
   /// failure card can say what went wrong. Never throws. The launch path keeps `status`.
   public var probeStatus: @Sendable (_ baseURL: URL) async -> Result<ServerStatus, ProbeFailure> = { _ in
     // `@DependencyClient` needs a default for a non-throwing closure; an unstubbed call
     // still reports an unimplemented issue in tests.
-    .failure(.other("probeStatus is unimplemented"))
+    .failure(.requestFailed("probeStatus is unimplemented"))
   }
   /// Public capability probe — `GET /api/auth/providers` → `[{name, display_name,
   /// supports_password}]`. Returns `nil` on older servers that 404 this endpoint (treat as
@@ -876,30 +876,39 @@ func get<T: Decodable>(_ url: URL, auth: RequestAuth, session: URLSession) async
   }
 }
 
+/// The onboarding probe's per-request timeout, in seconds.
+let probeStatusTimeout: TimeInterval = 10
+
 /// `GET /api/status` for the onboarding probe, classifying every failure as a `ProbeFailure`
 /// instead of flattening it to `RESTError` (see `HermesRESTClient.probeStatus`).
 func probeStatus(baseURL: URL, session: URLSession) async -> Result<ServerStatus, ProbeFailure> {
-  guard let address = ServerAddress(baseURL.absoluteString),
-    let url = try? makeURL(baseURL, "/api/status")
-  else { return .failure(.other("“\(baseURL.absoluteString)” is not a valid server address.")) }
+  guard let url = try? makeURL(baseURL, "/api/status") else {
+    return .failure(.requestFailed("“\(baseURL.absoluteString)” is not a valid server address."))
+  }
 
+  var request = URLRequest(url: url)
+  // Short, so a host that drops packets fails within seconds per candidate, not a minute.
+  request.timeoutInterval = probeStatusTimeout
   let data: Data
   let response: URLResponse
   do {
-    (data, response) = try await session.data(for: URLRequest(url: url))
+    (data, response) = try await session.data(for: request)
   } catch {
-    return .failure(ProbeFailure.classify(error, address: address))
+    return .failure(ProbeFailure.classify(error))
   }
 
   guard let http = response as? HTTPURLResponse else {
-    return .failure(.other("The server sent a response that isn’t HTTP."))
+    return .failure(.requestFailed("The server sent a response that isn’t HTTP."))
   }
+  // Every Hermes `/api/status` reports its `version`, signed out included; a 2xx JSON
+  // object without one is some other service.
   if (200..<300).contains(http.statusCode),
-    let status = try? JSONDecoder().decode(ServerStatus.self, from: data)
+    let status = try? JSONDecoder().decode(ServerStatus.self, from: data),
+    status.version != nil
   {
     return .success(status)
   }
-  // A non-2xx, or a 2xx whose body isn't `/api/status` JSON (→ `.notHermes`).
+  // A non-2xx, or a 2xx whose body isn't Hermes `/api/status` JSON (→ `.notHermes`).
   return .failure(
     ProbeFailure.classify(
       httpStatus: http.statusCode,

@@ -23,10 +23,6 @@ public struct SignInStep {
     public var isShowingOtherWays = false
     public var password = ""
     public let probe: ServerProbe
-    /// Which OAuth provider button started the latest attempt (servers may advertise
-    /// several). Cleared when a password or token attempt starts, so a non-nil value also
-    /// tells the view an `.invalidCredentials` verdict came from the OAuth leg.
-    public var selectedOAuthProviderName: String?
     public var status: Status = .idle
     public var token: String
     public var username = ""
@@ -40,11 +36,15 @@ public struct SignInStep {
       /// A wait-it-out verdict or a browser-leg failure, server/REST copy verbatim.
       case failed(String)
       case idle
-      /// 401 from the password login, its validating call, or an OAuth validating call.
-      case invalidCredentials
-      /// 401 from the token's validating call.
-      case invalidToken
-      case validating
+      /// A 401 for the attempt made with that method: the password login or its validating
+      /// call, the token's validating call, or an OAuth validating call.
+      case invalidCredentials(AuthMethod)
+      case validating(AuthMethod)
+
+      public var isValidating: Bool {
+        if case .validating = self { return true }
+        return false
+      }
     }
 
     /// What the step renders, derived purely from the probed capability. Mirrors the old
@@ -60,9 +60,9 @@ public struct SignInStep {
     }
 
     public enum TokenReason: Equatable, Sendable {
-      /// OAuth providers exist but the gateway is too old for the native flow; carries their
-      /// display names joined with " or ".
-      case oauthNeedsNewerAgent(String)
+      /// OAuth providers exist but the gateway is too old for the native flow
+      /// (`oauthNeedsNewerAgentFor` names them).
+      case oauthNeedsNewerAgent
       /// The server is not gated (or gated with no providers): token is its only regime.
       case tokenOnlyServer
     }
@@ -72,13 +72,13 @@ public struct SignInStep {
       let offered = capability.isOAuthAvailable ? capability.oauthProviders : []
       if capability.isPasswordAvailable { return .password(oauthProviders: offered) }
       if !offered.isEmpty { return .oauthOnly(offered) }
-      if let names = oauthNeedsNewerAgentFor { return .token(reason: .oauthNeedsNewerAgent(names)) }
+      if oauthNeedsNewerAgentFor != nil { return .token(reason: .oauthNeedsNewerAgent) }
       return .token(reason: .tokenOnlyServer)
     }
 
     /// Display names of the OAuth providers this gateway advertises but cannot drive (no
-    /// `native_pkce`), joined with " or "; `nil` when there are none. The password layout
-    /// shows it as a hint line; the token layout carries it as its reason.
+    /// `native_pkce`), joined with " or "; `nil` when there are none. Both the password and
+    /// the token layout show it as a notice.
     public var oauthNeedsNewerAgentFor: String? {
       let capability = probe.capability
       guard !capability.oauthProviders.isEmpty, !capability.supportsNativeFlow else { return nil }
@@ -120,26 +120,18 @@ public struct SignInStep {
       return isShowingOtherWays
     }
 
-    /// Whether the layout's PRIMARY action can be taken: the password Sign in button, a
-    /// provider button, or the token Sign in button. Only an attempt in flight blocks a
-    /// retry — this step has no URL field whose edit used to reset a `.failed` status.
-    public var canSubmit: Bool {
-      switch layout {
-      case .password: canSignInWithPassword
-      case .oauthOnly: canSignInWithOAuth
-      case .token: canSignInWithToken
-      }
-    }
+    // Only an attempt in flight blocks a retry — this step has no URL field whose edit used
+    // to reset a `.failed` status.
 
-    public var canSignInWithOAuth: Bool { status != .validating && !oauthProviders.isEmpty }
+    public var canSignInWithOAuth: Bool { !status.isValidating && !oauthProviders.isEmpty }
 
     public var canSignInWithPassword: Bool {
-      guard status != .validating, case .password = layout else { return false }
+      guard !status.isValidating, case .password = layout else { return false }
       return !username.isEmpty && !password.isEmpty
     }
 
     public var canSignInWithToken: Bool {
-      status != .validating && showsTokenField && !token.isEmpty
+      !status.isValidating && showsTokenField && !token.isEmpty
     }
   }
 
@@ -200,7 +192,7 @@ public struct SignInStep {
           state.status = .idle
         // The bearer pair was minted but the server rejected it on the validating call.
         case .validation(.unauthorized):
-          state.status = .invalidCredentials
+          state.status = .invalidCredentials(.oauth)
         // Everything else surfaces verbatim — the gateway's reason, the timeout, a state
         // mismatch, or the REST copy from a failed validating call.
         default:
@@ -211,8 +203,7 @@ public struct SignInStep {
       case let .oauthProviderButtonTapped(provider):
         // Positive evidence only: a provider this step doesn't offer never starts a sign-in.
         guard state.oauthProviders.contains(provider) else { return .none }
-        state.selectedOAuthProviderName = provider.name
-        state.status = .validating
+        state.status = .validating(.oauth)
         // Native PKCE path (#19) — the shared login leg, plus this step's own tail: the
         // server URL is saved only once a sign-in actually succeeded.
         let url = state.probe.baseURL
@@ -249,7 +240,7 @@ public struct SignInStep {
       case let .passwordLoginResponse(.failure(error)):
         switch error {
         // 401 from login (bad creds) or from the validating call (cookies rejected).
-        case .unauthorized: state.status = .invalidCredentials
+        case .unauthorized: state.status = .invalidCredentials(.password)
         // Surface server copy verbatim for the rest (429 rate-limit, 503 unreachable,
         // 404 unsupported provider, other) via `RESTError.message`.
         default: state.status = .failed(error.message)
@@ -259,8 +250,7 @@ public struct SignInStep {
       case .signInButtonTapped:
         // Password path: log in for cookies, validate them with one authenticated call,
         // then persist the cookie session + server URL and signal the parent.
-        state.selectedOAuthProviderName = nil
-        state.status = .validating
+        state.status = .validating(.password)
         let url = state.probe.baseURL
         let provider = state.probe.capability.passwordProviderName ?? "basic"
         let username = state.username
@@ -283,6 +273,9 @@ public struct SignInStep {
             await send(.passwordLoginResponse(.failure(asRESTError(error))))
             return
           }
+          // Popped (Sign in abandoned) while validating: the success would be dropped, so
+          // nothing may land on disk either.
+          guard !Task.isCancelled else { return }
           try? keychain.saveSession(.cookie(cookieSession))
           preferences.saveServerURL(connection.baseURL.absoluteString)
           await send(.passwordLoginResponse(.success(connection)))
@@ -291,8 +284,7 @@ public struct SignInStep {
       case .tokenSignInButtonTapped:
         // Token path — byte-identical to the legacy one: validate with one authenticated
         // call, then persist the token + server URL and signal the parent.
-        state.selectedOAuthProviderName = nil
-        state.status = .validating
+        state.status = .validating(.token)
         let connection = ServerConnection(baseURL: state.probe.baseURL, token: state.token)
         return .run { [keychain, preferences, rest] send in
           do {
@@ -301,6 +293,7 @@ public struct SignInStep {
             await send(.tokenValidationResponse(.failure(asRESTError(error))))
             return
           }
+          guard !Task.isCancelled else { return }  // popped: see the password path
           try? keychain.saveSession(.token(connection.token ?? ""))
           preferences.saveServerURL(connection.baseURL.absoluteString)
           await send(.tokenValidationResponse(.success(connection)))
@@ -311,7 +304,7 @@ public struct SignInStep {
 
       case let .tokenValidationResponse(.failure(error)):
         switch error {
-        case .unauthorized: state.status = .invalidToken
+        case .unauthorized: state.status = .invalidCredentials(.token)
         default: state.status = .failed(error.message)
         }
         return .none

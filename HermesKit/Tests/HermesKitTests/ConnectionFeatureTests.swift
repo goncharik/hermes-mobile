@@ -42,9 +42,7 @@ private func oauthProbe() -> ServerProbe {
   ServerProbe(
     address: ServerAddress("mac:9119")!,
     baseURL: URL(string: "http://mac:9119")!,
-    capability: ServerAuthCapability(
-      oauthProviders: [nousProvider], supportsNativeFlow: true, isGated: true
-    ),
+    capability: ServerAuthCapability(oauthProviders: [nousProvider], supportsNativeFlow: true),
     version: "0.17.0"
   )
 }
@@ -105,7 +103,7 @@ struct ConnectionFeatureTests {
       $0.path[id: 1, case: \.signIn]?.token = "secret"
     }
     await store.send(\.path[id: 1].signIn.tokenSignInButtonTapped) {
-      $0.path[id: 1, case: \.signIn]?.status = .validating
+      $0.path[id: 1, case: \.signIn]?.status = .validating(.token)
     }
     await store.receive(\.path[id: 1].signIn.tokenValidationResponse.success)
     await store.receive(\.path[id: 1].signIn.delegate.connected)
@@ -155,8 +153,7 @@ struct ConnectionFeatureTests {
     }
 
     await store.send(\.path[id: 1].signIn.oauthProviderButtonTapped, nousProvider) {
-      $0.path[id: 1, case: \.signIn]?.selectedOAuthProviderName = "nous"
-      $0.path[id: 1, case: \.signIn]?.status = .validating
+      $0.path[id: 1, case: \.signIn]?.status = .validating(.oauth)
     }
     var started = validating.makeAsyncIterator()
     await started.next()
@@ -214,6 +211,71 @@ struct ConnectionFeatureTests {
 
     #expect(store.state.path[id: 1, case: \.signIn]?.token == "tok")
     #expect(probed.value == [URL(string: "http://mac.tailnet:9119")!])
+  }
+
+  /// The stored token belongs to the stored server: a Sign in for another host (the user
+  /// edited the address) starts with an empty token field.
+  @Test func theStoredTokenIsPrefilledOnlyForTheStoredHost() async {
+    let store = TestStore(
+      initialState: ConnectionFeature.State(
+        recovering: URL(string: "http://mac.tailnet:9119")!, token: "tok"
+      )
+    ) {
+      ConnectionFeature()
+    }
+    let otherHost = tokenOnlyProbe(typed: "other-box:9119", baseURL: "http://other-box:9119")
+    await store.send(\.path[id: 0].server.delegate.probeSucceeded, otherHost) {
+      $0.lastProbedCapability = .tokenOnly
+      $0.path[id: 1] = .signIn(SignInStep.State(probe: otherHost))
+    }
+
+    // Back on the stored host (another port, same machine): the token comes back.
+    let storedHost = tokenOnlyProbe(typed: "mac.tailnet", baseURL: "http://mac.tailnet:9119")
+    await store.send(\.path[id: 0].server.delegate.probeSucceeded, storedHost) {
+      $0.path.pop(from: 1)
+      $0.path[id: 2] = .signIn(SignInStep.State(probe: storedHost, prefilledToken: "tok"))
+    }
+  }
+
+  /// Popping Sign in after the token's validating call succeeded (but before its response
+  /// lands) drops the response — so nothing may have been persisted either: no Keychain
+  /// entry, no server URL for the next launch to auto-connect to.
+  @Test func poppingSignInAfterAValidatedTokenPersistsNothing() async {
+    let keychain = KeychainClient.inMemory()
+    let preferences = PreferencesClient.inMemory()
+    let (validating, signalValidating) = AsyncStream<Void>.makeStream()
+    let release = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    var initial = ConnectionFeature.State()
+    initial.path.append(.server(ServerStep.State(addressText: "mac:9119")))
+    initial.path.append(.signIn(SignInStep.State(probe: tokenOnlyProbe(), prefilledToken: "secret")))
+    let store = TestStore(initialState: initial) {
+      ConnectionFeature()
+    } withDependencies: {
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+        // Not cancellation-aware: the call SUCCEEDS, just after Sign in was popped.
+        await withCheckedContinuation { continuation in
+          release.setValue(continuation)
+          signalValidating.yield()
+        }
+        return []
+      }
+      $0.keychain = keychain
+      $0.preferences = preferences
+    }
+
+    await store.send(\.path[id: 1].signIn.tokenSignInButtonTapped) {
+      $0.path[id: 1, case: \.signIn]?.status = .validating(.token)
+    }
+    var started = validating.makeAsyncIterator()
+    await started.next()
+    await store.send(.path(.popFrom(id: 1))) {
+      $0.path.pop(from: 1)
+    }
+    release.value?.resume()
+    await store.finish()
+
+    #expect(keychain.loadSession(.shared) == nil)
+    #expect(preferences.loadServerURL() == nil)
   }
 
   /// `AppFeature`'s re-sign-in label reads the last probe, so popping Sign in (back to edit

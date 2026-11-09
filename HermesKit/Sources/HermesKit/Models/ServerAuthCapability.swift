@@ -30,20 +30,20 @@ public struct AuthProvider: Equatable, Sendable, Decodable {
   }
 }
 
-/// What auth UI the onboarding screen should offer for a given server. Derived purely from
-/// the capability probe (`/api/status` + `/api/auth/providers`) so it stays unit-testable
-/// and free of regime checks scattered across the reducer.
+/// What a given server offers for sign-in, derived purely from the capability probe
+/// (`/api/status` + `/api/auth/providers`) so it stays unit-testable; the onboarding Sign in
+/// step derives its `SignInStep.State.Layout` from it.
 ///
 /// The three regimes it describes:
 /// - **token only** — old/loopback servers (`auth_required` absent/`false`) or a gated
 ///   server that advertises no providers at all: only the static-token path is offered.
-///   That's `.tokenOnly` — `isGated == false`, both provider lists empty.
+///   That's `.tokenOnly` — both provider lists empty, so the token layout.
 /// - **password** — a gated server with a password-capable provider (`passwordProvider`).
-///   Preferred segment whenever it exists.
+///   The preferred layout whenever it exists.
 /// - **OAuth** — a gated server with non-password (session) providers AND the
 ///   `native_pkce` auth flow advertised. Both halves are required: a provider list without
 ///   the flow means the gateway is too old for the RFC 8252 native login (#19), so the
-///   segment must stay hidden — a NEW affordance needs positive evidence.
+///   provider buttons stay hidden — a NEW affordance needs positive evidence.
 public struct ServerAuthCapability: Equatable, Sendable {
   /// The `auth_flows` entry that means "this gateway serves `/auth/native/authorize`".
   public static let nativePKCEFlow = "native_pkce"
@@ -54,21 +54,15 @@ public struct ServerAuthCapability: Equatable, Sendable {
   public var oauthProviders: [AuthProvider]
   /// `auth_flows` contains `native_pkce` — the gateway serves the native PKCE endpoints.
   public var supportsNativeFlow: Bool
-  /// The server is in the gated regime AND advertises providers, i.e. the static-token path
-  /// is a poor fit here (the UI de-emphasizes it). A gated server that advertises nothing
-  /// stays `.tokenOnly` — token is then the user's only way in, so it isn't de-emphasized.
-  public var isGated: Bool
 
   public init(
     passwordProvider: AuthProvider? = nil,
     oauthProviders: [AuthProvider] = [],
-    supportsNativeFlow: Bool = false,
-    isGated: Bool = false
+    supportsNativeFlow: Bool = false
   ) {
     self.passwordProvider = passwordProvider
     self.oauthProviders = oauthProviders
     self.supportsNativeFlow = supportsNativeFlow
-    self.isGated = isGated
   }
 
   /// Pure mapper. `providers` is the decoded `/api/auth/providers` payload, or `nil` when
@@ -90,8 +84,7 @@ public struct ServerAuthCapability: Equatable, Sendable {
       // Mixed → password preferred: pick the first password-capable provider.
       passwordProvider: providers.first(where: \.supportsPassword),
       oauthProviders: providers.filter { !$0.supportsPassword },
-      supportsNativeFlow: status.authFlows?.contains(Self.nativePKCEFlow) ?? false,
-      isGated: true
+      supportsNativeFlow: status.authFlows?.contains(Self.nativePKCEFlow) ?? false
     )
   }
 

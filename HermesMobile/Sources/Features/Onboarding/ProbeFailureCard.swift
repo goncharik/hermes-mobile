@@ -4,16 +4,26 @@ import SwiftUI
 /// The Server step's failure card (#136): what went wrong for THIS address, what to try, and a
 /// way into the setup guide — one card per `ProbeFailure` case, copy from the prototype.
 ///
-/// The Local Network hint line is a view decision (`ProbeFailure.showsLocalNetworkHint`): a
-/// transport failure to a same-network address may be iOS's Local Network alert (still up, or
-/// denied), so the card says how to allow it instead of the app detecting it (TN3179).
+/// The Local Network hint line follows `ProbeFailure.showsLocalNetworkHint`: a same-network
+/// address that nothing answered may be iOS's Local Network alert (still up, or denied), so the
+/// card says how to allow it instead of the app detecting it (TN3179).
 struct ProbeFailureCard: View {
-  let failure: ProbeFailure
-  let address: ServerAddress
+  let failed: FailedServerProbe
   let setupGuideButtonTapped: () -> Void
+  @State private var isShowingDetails: Bool
+
+  init(
+    failed: FailedServerProbe,
+    setupGuideButtonTapped: @escaping () -> Void,
+    isShowingDetails: Bool = false
+  ) {
+    self.failed = failed
+    self.setupGuideButtonTapped = setupGuideButtonTapped
+    self._isShowingDetails = State(initialValue: isShowingDetails)
+  }
 
   var body: some View {
-    let content = Content(failure: failure, address: address)
+    let content = Content(failed)
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline, spacing: 10) {
         Image(systemName: content.systemImage)
@@ -37,7 +47,7 @@ struct ProbeFailureCard: View {
         }
       }
 
-      if failure.showsLocalNetworkHint(for: address) {
+      if failed.failure.showsLocalNetworkHint(for: failed.address) {
         OnboardingNotice {
           Text("""
           If iOS asked about Local Network access, allow it and try again. You can change it \
@@ -50,7 +60,7 @@ struct ProbeFailureCard: View {
         .onboardingTonalButton()
         .controlSize(.small)
 
-      DisclosureGroup {
+      DisclosureGroup(isExpanded: $isShowingDetails) {
         Text(verbatim: content.detail)
           .font(.caption.monospaced())
           .foregroundStyle(.secondary)
@@ -111,21 +121,15 @@ struct ProbeFailureCard: View {
     let detail: String
     let tint: Color
 
-    init(failure: ProbeFailure, address: ServerAddress) {
+    init(_ failed: FailedServerProbe) {
+      let address = failed.address
       let host = address.host
-      let url = address.url.absoluteString
-      let usedFallback = address.candidates.count > 1
-      // Where a transport probe knocked: a bare http host tried both the as-typed URL and
-      // the :9119 fallback.
-      let where_ = usedFallback ? "\(url) or on port \(ServerAddress.fallbackPort)" : url
-      // Only a transport failure moves the probe on to the next candidate.
-      let triedCandidates = failure.isTransport ? address.candidates : Array(address.candidates.prefix(1))
-      let tried = "Tried " + triedCandidates
-        .map { $0.appending(path: "api/status").absoluteString }
-        .joined(separator: ", then ")
+      // The candidate whose failure this card reports (for a bare host, the :9119 fallback).
+      let url = failed.reportedURL.absoluteString
+      let tried = failed.triedDetail
 
-      switch failure {
-      case let .hostNotFound(tailnetName) where tailnetName:
+      switch failed.failure {
+      case .hostNotFound where address.kind == .tailnet:
         systemImage = "network"
         title = "Is Tailscale on?"
         message = """
@@ -154,7 +158,7 @@ struct ProbeFailureCard: View {
       case .refused:
         systemImage = "server.rack"
         title = "The computer is there, but the dashboard isn’t"
-        message = "\(host) refused the connection at \(where_)."
+        message = "\(host) refused the connection at \(url)."
         fixes = [
           "Check that `hermes dashboard` is running.",
           "Start it with `--host 0.0.0.0`. A dashboard on 127.0.0.1 only answers on that computer.",
@@ -166,7 +170,7 @@ struct ProbeFailureCard: View {
       case .timedOut:
         systemImage = "wifi.exclamationmark"
         title = "No answer from \(host)"
-        message = "Nothing answered at \(where_)."
+        message = "Nothing answered at \(url)."
         fixes = address.kind == .localNetwork
           ? [
             "Check that this phone is on the same Wi-Fi as the agent’s computer.",
@@ -193,6 +197,17 @@ struct ProbeFailureCard: View {
         detail = "\(tried)\nTLS: the server certificate isn’t trusted"
         tint = .red
 
+      case .offline where address.kind == .localNetwork:
+        systemImage = "wifi.slash"
+        title = "Can’t reach \(host)"
+        message = "iOS reported no network connection for \(host)."
+        fixes = [
+          "Check that this phone is on the same Wi-Fi as the agent’s computer.",
+          "Turn off Airplane Mode.",
+        ]
+        detail = "\(tried)\nNot connected to the internet"
+        tint = .red
+
       case .offline:
         systemImage = "wifi.slash"
         title = "This phone is offline"
@@ -214,8 +229,7 @@ struct ProbeFailureCard: View {
           "Check the port. The dashboard uses 9119 unless you changed it.",
           "Behind a reverse proxy, use the address that serves the dashboard itself.",
         ]
-        detail = httpStatus.map { "HTTP \($0) on /api/status" }
-          ?? "/api/status didn’t return Hermes status JSON"
+        detail = "\(tried)\nHTTP \(httpStatus) on /api/status"
         tint = .orange
 
       case let .hostRejected(serverDetail):
@@ -239,12 +253,12 @@ struct ProbeFailureCard: View {
         detail = "HTTP 400 · \"\(serverDetail)\""
         tint = .orange
 
-      case let .other(serverMessage):
+      case let .other(text), let .requestFailed(text):
         systemImage = "exclamationmark.triangle"
         title = "Couldn’t connect to \(host)"
-        message = serverMessage
+        message = ProbeFailure.headline(of: text)
         fixes = ["Check the address, then try again."]
-        detail = "\(url)\n\(serverMessage)"
+        detail = "\(url)\n\(text)"
         tint = .red
       }
     }

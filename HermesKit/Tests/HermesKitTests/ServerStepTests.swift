@@ -18,6 +18,20 @@ private func state(_ text: String, autoProbe: Bool = false) -> ServerStep.State 
   ServerStep.State(addressText: text, autoProbe: autoProbe)
 }
 
+/// The failed phase for `text` after the probe walked its first `tried` candidates (all of
+/// them by default).
+private func failed(
+  _ failure: ProbeFailure, _ text: String, tried: Int? = nil
+) -> ServerStep.State.Phase {
+  let address = ServerAddress(text)!
+  let candidates = address.candidates
+  return .failed(
+    FailedServerProbe(
+      address: address, failure: failure, tried: Array(candidates.prefix(tried ?? candidates.count))
+    )
+  )
+}
+
 @MainActor
 struct ServerStepTests {
   // MARK: - Derived state
@@ -51,11 +65,10 @@ struct ServerStepTests {
     step.phase = .probing(.readingSignInOptions)
     #expect(checks.map { step.status(of: $0) } == [.passed, .passed, .running])
 
-    let address = ServerAddress("mac")!
-    step.phase = .failed(.refused, address)
+    step.phase = failed(.refused, "mac")
     #expect(checks.map { step.status(of: $0) } == [.failed, .pending, .pending])
 
-    step.phase = .failed(.notHermes(httpStatus: 404), address)
+    step.phase = failed(.notHermes(httpStatus: 404), "mac")
     #expect(checks.map { step.status(of: $0) } == [.passed, .failed, .pending])
   }
 
@@ -176,14 +189,35 @@ struct ServerStepTests {
     #expect(probed.value == [URL(string: "http://mac")!, URL(string: "http://mac:9119")!])
   }
 
+  /// Something that isn't Hermes on port 80 (a NAS page, a web server) is no reason to stop:
+  /// the dashboard may still be on its default port.
+  @Test func notHermesOnTheTypedURLFallsBackTo9119() async {
+    let probed = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: state("mac")) {
+      ServerStep()
+    } withDependencies: {
+      $0.hermesREST.probeStatus = { url in
+        probed.withValue { $0.append(url) }
+        return url.port == 9119 ? .success(tokenOnlyStatus) : .failure(.notHermes(httpStatus: 404))
+      }
+    }
+    await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
+    await store.receive(\.statusReceived) { $0.phase = .probing(.readingSignInOptions) }
+    await store.receive(\.probeResponse.success) { $0.phase = .idle }
+    await store.receive(\.delegate.probeSucceeded)
+    #expect(store.state.phase == .idle)
+    #expect(probed.value == [URL(string: "http://mac")!, URL(string: "http://mac:9119")!])
+  }
+
+  /// A Hermes verdict (or a failure no other port changes) is final.
   @Test(arguments: [
-    ProbeFailure.notHermes(httpStatus: 404),
-    .hostRejected(detail: "Invalid Host header. Dashboard requests must use the bound hostname."),
+    ProbeFailure.hostRejected(detail: "Invalid Host header. Dashboard requests must use the bound hostname."),
     .other("Bad Request"),
     .untrustedCertificate,
     .offline,
+    .requestFailed("unsupported URL"),
   ])
-  func httpAnswerOrNonTransportFailureDoesNotFallBack(failure: ProbeFailure) async {
+  func aFinalFailureDoesNotFallBack(failure: ProbeFailure) async {
     let probed = LockIsolated<[URL]>([])
     let store = TestStore(initialState: state("mac")) {
       ServerStep()
@@ -195,7 +229,7 @@ struct ServerStepTests {
     }
     await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
     await store.receive(\.probeResponse.failure) {
-      $0.phase = .failed(failure, ServerAddress("mac")!)
+      $0.phase = failed(failure, "mac", tried: 1)
     }
     #expect(probed.value == [URL(string: "http://mac")!])
   }
@@ -212,9 +246,32 @@ struct ServerStepTests {
     }
     await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
     await store.receive(\.probeResponse.failure) {
-      $0.phase = .failed(.timedOut, ServerAddress("192.168.1.20")!)
+      $0.phase = failed(.timedOut, "192.168.1.20")
     }
     #expect(probed.value.count == 2)
+  }
+
+  /// Mixed: nothing on port 80, and `:9119` answers with a verdict — that answer (and both
+  /// URLs tried) is what the card reports.
+  @Test(arguments: [
+    ProbeFailure.notHermes(httpStatus: 404),
+    .hostRejected(detail: "Invalid Host header."),
+  ])
+  func aRefusedTypedURLThenAnAnswerOn9119ReportsTheAnswer(answer: ProbeFailure) async {
+    let probed = LockIsolated<[URL]>([])
+    let store = TestStore(initialState: state("mac")) {
+      ServerStep()
+    } withDependencies: {
+      $0.hermesREST.probeStatus = { url in
+        probed.withValue { $0.append(url) }
+        return .failure(url.port == 9119 ? answer : .refused)
+      }
+    }
+    await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
+    await store.receive(\.probeResponse.failure) {
+      $0.phase = failed(answer, "mac")
+    }
+    #expect(probed.value == [URL(string: "http://mac")!, URL(string: "http://mac:9119")!])
   }
 
   @Test func explicitPortOrHTTPSHasNoFallback() async {
@@ -230,7 +287,7 @@ struct ServerStepTests {
       }
       await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
       await store.receive(\.probeResponse.failure) {
-        $0.phase = .failed(.refused, ServerAddress(text)!)
+        $0.phase = failed(.refused, text)
       }
       #expect(probed.value.count == 1)
     }
@@ -240,7 +297,7 @@ struct ServerStepTests {
 
   @Test(arguments: [
     ProbeFailure.offline,
-    .hostNotFound(tailnetName: false),
+    .hostNotFound,
     .refused,
     .timedOut,
     .untrustedCertificate,
@@ -248,6 +305,7 @@ struct ServerStepTests {
     .notHermes(httpStatus: 200),
     .hostRejected(detail: "Invalid Host header"),
     .other("HTTP 500"),
+    .requestFailed("unsupported URL"),
   ])
   func eachFailureLandsInFailedWithItsAddress(failure: ProbeFailure) async {
     let store = TestStore(initialState: state("https://agent.example.com")) {
@@ -257,14 +315,14 @@ struct ServerStepTests {
     }
     await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
     await store.receive(\.probeResponse.failure) {
-      $0.phase = .failed(failure, ServerAddress("https://agent.example.com")!)
+      $0.phase = failed(failure, "https://agent.example.com")
     }
   }
 
   @Test func retryAfterAFailureProbesAgain() async {
     let attempts = LockIsolated(0)
     var initial = state("mac:9119")
-    initial.phase = .failed(.refused, ServerAddress("mac:9119")!)
+    initial.phase = failed(.refused, "mac:9119")
     let store = TestStore(initialState: initial) {
       ServerStep()
     } withDependencies: {
@@ -275,7 +333,7 @@ struct ServerStepTests {
     }
     await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
     await store.receive(\.probeResponse.failure) {
-      $0.phase = .failed(.timedOut, ServerAddress("mac:9119")!)
+      $0.phase = failed(.timedOut, "mac:9119")
     }
     #expect(attempts.value == 1)
   }
@@ -306,9 +364,35 @@ struct ServerStepTests {
     await store.finish()
   }
 
+  /// SwiftUI may write the field's unchanged text back (e.g. on the focus change Continue
+  /// causes): that is not an edit, so the probe it just started keeps running and lands.
+  @Test func aRedundantAddressWriteDoesNotCancelTheProbe() async {
+    let (started, signalStarted) = AsyncStream<Void>.makeStream()
+    let release = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    let store = TestStore(initialState: state("mac:9119")) {
+      ServerStep()
+    } withDependencies: {
+      $0.hermesREST.probeStatus = { _ in
+        await withCheckedContinuation { continuation in
+          release.setValue(continuation)
+          signalStarted.yield()
+        }
+        return .success(tokenOnlyStatus)
+      }
+    }
+    await store.send(.continueButtonTapped) { $0.phase = .probing(.reaching) }
+    var iterator = started.makeAsyncIterator()
+    await iterator.next()
+    await store.send(\.binding.addressText, "mac:9119")
+    release.value?.resume()
+    await store.receive(\.statusReceived) { $0.phase = .probing(.readingSignInOptions) }
+    await store.receive(\.probeResponse.success) { $0.phase = .idle }
+    await store.receive(\.delegate.probeSucceeded)
+  }
+
   @Test func editingClearsAFailure() async {
     var initial = state("mac:9119")
-    initial.phase = .failed(.refused, ServerAddress("mac:9119")!)
+    initial.phase = failed(.refused, "mac:9119")
     let store = TestStore(initialState: initial) { ServerStep() }
     await store.send(\.binding.addressText, "mac:9120") {
       $0.addressText = "mac:9120"
@@ -351,7 +435,7 @@ struct ServerStepTests {
       $0.phase = .probing(.reaching)
     }
     await store.receive(\.probeResponse.failure) {
-      $0.phase = .failed(.refused, ServerAddress("http://mac:9119")!)
+      $0.phase = failed(.refused, "http://mac:9119")
     }
     await store.send(.onAppear)
   }
