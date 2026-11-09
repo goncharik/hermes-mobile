@@ -683,6 +683,13 @@ throws to the caller's own catch, which banners (`.promptSubmitFailed`,
 slash pipeline: exec → directive / `command.dispatch` fallback / alias hop) threads one
 `HealCursor` through its RPCs, so it heals at most once and every later RPC targets the healed id.
 
+On a canonical session-authority host (`session_authority: true` on the ready, v0.22.3+),
+`prompt.submit` must carry a `submission_id` or it is refused with `invalid_params` (#158). The
+reducer mints one per user send (`mintSubmissionID`) and threads it through that send's heal
+replay and slash `send`/`skill` directive, so a retried send keeps its identity and the gateway
+can de-duplicate it. A legacy host rejects the key as an unknown param, so it is sent only to an
+authority host.
+
 **Never-saved fallback (#132).** `session.create` mints the stored key, but the server writes
 the DB row lazily on the first prompt. On agents without `_resume_materialize_minted`,
 `session.resume` of a reaped, never-prompted session answers 4007 "session not found", so the

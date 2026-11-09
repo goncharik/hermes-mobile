@@ -5034,6 +5034,7 @@ public struct ChatFeature {
       let heal = state.healTarget
       // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
       let interrupted = takeReadAloudInterruption(&state)
+      let submissionID = mintSubmissionID(state)
       return .merge(anchor, .run { [gateway, uuid] send in
         // The uploads + submit target the live id, which can be stale after a
         // background→foreground; self-heal the whole upload→submit sequence once on a
@@ -5051,7 +5052,9 @@ public struct ChatFeature {
           let body = (refs + (text.isEmpty ? [] : [text])).joined(separator: "\n")
           _ = try await gateway.send(
             "prompt.submit",
-            Self.promptSubmitParams(sessionID: targetID, text: body, interrupted: interrupted)
+            Self.promptSubmitParams(
+              sessionID: targetID, text: body, interrupted: interrupted, submissionID: submissionID
+            )
           )
         }
         do {
@@ -5170,10 +5173,11 @@ public struct ChatFeature {
       // raw alias (`/compact`) would fall through to the isolated slash-worker and
       // report "Unknown command". The echoed user row above keeps the RAW typed text.
       let wireCommand = catalog.canonicalizedCommandText(text)
+      let submissionID = mintSubmissionID(state)
       return .run { [gateway] send in
         var cursor = HealCursor(sessionID: sessionID, heal: heal)
         await executeSlashCommand(
-          command: wireCommand, cursor: &cursor, gateway: gateway, send: send
+          command: wireCommand, submissionID: submissionID, cursor: &cursor, gateway: gateway, send: send
         )
       }
     }
@@ -5198,13 +5202,16 @@ public struct ChatFeature {
     let heal = state.healTarget
     // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
     let interrupted = takeReadAloudInterruption(&state)
+    let submissionID = mintSubmissionID(state)
     return .merge(anchor, .run { [gateway] send in
       await submitPrompt(
         sessionID: sessionID, heal: heal, gateway: gateway, send: send
       ) { healedID in
         _ = try await gateway.send(
           "prompt.submit",
-          Self.promptSubmitParams(sessionID: healedID, text: text, interrupted: interrupted)
+          Self.promptSubmitParams(
+            sessionID: healedID, text: text, interrupted: interrupted, submissionID: submissionID
+          )
         )
       }
     })
@@ -5213,12 +5220,25 @@ public struct ChatFeature {
   /// The params of every `prompt.submit` (both `submitDraft` builders, incl. the #17 heal
   /// replay, and the slash `send` directive). `interrupted: true` (#74 barge-in, v2026.7.30+; older agents ignore unknown
   /// keys) is added ONLY when set, so every other frame stays byte-identical to the legacy one.
-  fileprivate static func promptSubmitParams(sessionID: String, text: String, interrupted: Bool) -> JSONValue {
+  ///
+  /// `submissionID` (#158) is the send's identity on a canonical session-authority host
+  /// (`gateway.ready.session_authority: true`, Hermes v0.22.3+), which refuses an identityless
+  /// submit with `invalid_params`. It is minted once per user send and reused by that send's
+  /// heal replay. A legacy host rejects the key as an extra param, so it is set ONLY there.
+  fileprivate static func promptSubmitParams(
+    sessionID: String, text: String, interrupted: Bool, submissionID: UUID? = nil
+  ) -> JSONValue {
     var params: [String: JSONValue] = [
       "session_id": .string(sessionID), "text": .string(text),
     ]
     if interrupted { params["interrupted"] = .bool(true) }
+    if let submissionID { params["submission_id"] = .string(submissionID.uuidString.lowercased()) }
     return .object(params)
+  }
+
+  /// A fresh `prompt.submit` identity for one user send, or nil on a legacy host (#158).
+  private func mintSubmissionID(_ state: State) -> UUID? {
+    state.isSessionAuthority ? uuid() : nil
   }
 
   // MARK: - Queue drain (#66)
@@ -5722,6 +5742,7 @@ private func runDispatchDirective(
   _ directive: JSONValue,
   name: String,
   arg: String,
+  submissionID: UUID?,
   cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
@@ -5747,6 +5768,7 @@ private func runDispatchDirective(
     }
     await executeSlashCommand(
       command: "/\(target)\(arg.isEmpty ? "" : " \(arg)")",
+      submissionID: submissionID,
       cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: false
     )
@@ -5793,7 +5815,9 @@ private func runDispatchDirective(
         { targetID in
           _ = try await gateway.send(
             "prompt.submit",
-            ChatFeature.promptSubmitParams(sessionID: targetID, text: message, interrupted: false)
+            ChatFeature.promptSubmitParams(
+              sessionID: targetID, text: message, interrupted: false, submissionID: submissionID
+            )
           )
         },
         cursor: &cursor, gateway: gateway, send: send
@@ -5842,6 +5866,7 @@ private func runDispatchDirective(
 /// command targets the healed id.
 private func executeSlashCommand(
   command: String,
+  submissionID: UUID?,
   cursor: inout HealCursor,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>,
@@ -5877,7 +5902,7 @@ private func executeSlashCommand(
     // result — dropping it here would silently discard the command's entire outcome.
     if isDispatchDirective(result) {
       await runDispatchDirective(
-        result, name: name, arg: arg,
+        result, name: name, arg: arg, submissionID: submissionID,
         cursor: &cursor, gateway: gateway, send: send,
         allowAliasHop: allowAliasHop
       )
@@ -5930,7 +5955,7 @@ private func executeSlashCommand(
       cursor: &cursor, gateway: gateway, send: send
     )
     await runDispatchDirective(
-      directive, name: name, arg: arg,
+      directive, name: name, arg: arg, submissionID: submissionID,
       cursor: &cursor, gateway: gateway, send: send,
       allowAliasHop: allowAliasHop
     )
