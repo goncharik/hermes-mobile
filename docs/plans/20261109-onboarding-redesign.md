@@ -475,14 +475,15 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - ➕ the earlier `ac7e42d` re-record is legitimate drift: same 1170×8100 size, one pixel differing by 1/255
 
 ### Task 14: [Final] Update documentation
-- [ ] create `docs/features/onboarding.md`: flow, entry points table, `ProbeFailure` table, the Local Network rule (TN3179, hint line instead of an explainer), port fallback, push card, tips, pointer to #160
-- [ ] update `docs/architecture.md` (onboarding section) and `docs/features/push-notifications.md` (permission now behind the card)
-- [ ] update CLAUDE.md, staying near ~200 lines with bullets as rule + pointer:
-  - [ ] the Login help bullet: entry points changed
-  - [ ] the push bullet: "permission requested on sessions-list appearance" → card
-  - [ ] a new onboarding bullet pointing to `docs/features/onboarding.md`
-  - [ ] note the `ConnectionPath` stack
-- [ ] move this plan to `docs/plans/completed/`
+- [x] create `docs/features/onboarding.md`: flow, entry points table, `ProbeFailure` table, the Local Network rule (TN3179, hint line instead of an explainer), port fallback, push card, tips, pointer to #160
+- [x] update `docs/architecture.md` (onboarding section) and `docs/features/push-notifications.md` (permission now behind the card)
+- [x] update CLAUDE.md, staying near ~200 lines with bullets as rule + pointer:
+  - [x] the Login help bullet: entry points changed
+  - [x] the push bullet: "permission requested on sessions-list appearance" → card
+  - [x] a new onboarding bullet pointing to `docs/features/onboarding.md`
+  - [x] note the `ConnectionPath` stack
+- [x] move this plan to `docs/plans/completed/` (done by the orchestrator after reviews)
+- ➕ `docs/features/oauth-sign-in.md` rewritten where it described the removed segmented toggle (now the Sign in layout); the snapshot count in CLAUDE.md and `docs/development.md` updated to 397
 
 ## Post-Completion
 *Items requiring manual intervention or external systems. Informational only.*
