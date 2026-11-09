@@ -1854,7 +1854,10 @@ public struct SessionListFeature {
         migration.pendingIDs.removeAll { id in
           visible[id: id]?.pinned == true && state.canChangePin(id: id)
         }
+        // Upload only pins the user still has: a local-only unpin (server writes off this
+        // launch) leaves its id pending, and pushing it would re-pin it everywhere.
         for session in visible where migration.pendingIDs.contains(session.id)
+          && state.pinnedIDs.contains(session.id)
           && session.pinned == false && state.canChangePin(id: session.id) {
           let mutation = PinMutation(pinned: true,
             previousIndex: state.pinnedIDs.firstIndex(of: session.id),

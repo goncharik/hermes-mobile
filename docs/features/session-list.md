@@ -237,7 +237,8 @@ shows the shared unread dot when that run is in the list's cron slice and unread
 - Legacy pins remain pending per server across pages, profiles, failed uploads, and normal
   relaunches until acknowledged or observed pinned. Failed uploads retry silently on a later
   capable list; retired pins follow server membership. Logout clears migration state.
-  Persistence does not guarantee crash-durable flushing or atomicity with network dispatch.
+  Only ids still pinned locally are uploaded: a pin change made while server writes are off
+  (e.g. a failed profiles probe) stays local, and the next capable list decides membership.
 - Pin writes are single-flight per ID. Failure restores only that ID at its bounded prior index
   and shows an error that survives the completion-triggered refetch. Stale pre-write fetches
   cannot overwrite completed writes; profile switches clear old rows.

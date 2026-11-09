@@ -261,6 +261,26 @@ struct SessionListFeatureTests {
     #expect(prefs.loadPinMigration(store.state.pinMigrationServerID)?.pendingIDs == [])
   }
 
+  /// A legacy pin unpinned locally while server writes were off (a failed profiles probe)
+  /// stays pending but is never pushed back as pinned (`setPinned` is unimplemented here).
+  @Test func migrationSkipsPendingIDNoLongerPinnedLocally() async {
+    let prefs = PreferencesClient.inMemory()
+    let initial = SessionListFeature.State(
+      connection: connection, pinnedIDs: [], profilesSupported: true
+    )
+    prefs.savePinMigration(initial.pinMigrationServerID, PinMigration(pendingIDs: ["a"]))
+    let store = TestStore(initialState: initial) { SessionListFeature() } withDependencies: {
+      $0.preferences = prefs
+    }
+    await store.send(.sessionsResponse(.success([Session(id: "a", pinned: false)]))) {
+      $0.sessions = [Session(id: "a", pinned: false)]
+      $0.seenCounts = ["a": 0]
+      $0.statusSessions = $0.sessions
+    }
+    await store.finish()
+    #expect(prefs.loadPinnedIDs() == [])
+  }
+
   @Test func pinMigrationFailureRemainsPendingAndRetriesAfterRelaunch() async {
     let suite = "pin-migration-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
