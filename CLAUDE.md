@@ -323,8 +323,9 @@ bullets below are the compressed rules.
   bottom `.safeAreaInset`; on the transcript, not the outer `VStack`); announce every
   copy to VoiceOver off the token.
 - **Settings is a home TAB: ONE `Form` (six groups) + a `SettingsPath` stack** owned by
-  `SettingsView`, layered over (never nested in) the list's stack in `AppView`; state seeded on
-  select, dropped on leave (`closeSettingsTab()`); a pushed chat marker leaves the tab. Rows
+  `SettingsView`, layered over the WHOLE split view in `AppView` (never inside a column — that
+  nests stacks); state seeded on select, dropped on leave (`closeSettingsTab()`); every chat
+  route (push tap, intent, open, new session) leaves the tab. Rows
   push by reducer append, never `NavigationLink`.
   App icons: every set is an alternate in `Project.swift` (primary included — it differs
   per build); `AppIconCatalog.parse` filters the primary, which is always `set(nil)`; iOS

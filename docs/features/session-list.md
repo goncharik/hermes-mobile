@@ -31,16 +31,28 @@ selected tab is unavailable, so a poll or profile switch that drops every cron r
 strands an empty tab.
 
 **The Settings tab** (`docs/features/settings.md`) is its own `NavigationStack`
-(`SettingsView` owns the `SettingsPath` pushes), so `AppView` LAYERS it over the list's stack
-in the sidebar column — never inside it (nesting stacks is unsupported). The list stays mounted
-underneath (opacity 0, no hit testing, hidden from VoiceOver) so its `.task` poll and sheets
-are not torn down and re-fired per switch. `selectTab(.settings)` seeds `settings` fresh (the
+(`SettingsView` owns the `SettingsPath` pushes), so `AppView` LAYERS it over the WHOLE
+`NavigationSplitView` — never inside the sidebar column, whose navigation controller would nest
+it (tried: on device the list's bar covered Settings and its root title vanished). On iPad it
+therefore spans the window, like any tab. The split stays mounted underneath (opacity 0, no hit
+testing, `.accessibilityHidden`; the Settings layer also carries the `.isModal` trait, since the
+hidden modifier does not reach the list's UIKit-backed rows — and toggling it on the `List`
+itself broke the tab switch on device) so the list's `.task` poll, its sheets and the live chat are not
+torn down per switch. `selectTab(.settings)` seeds `settings` fresh (the
 old `settingsButtonTapped` seeding); re-tapping keeps it; any other tab, a child `dismiss()`
-(Reconnect, Sign out, "Ask agent"), the disconnect / install delegates and
-`dismissPresentations()` all go through `closeSettingsTab()` (state dropped → child effects
-cancelled, tab back to Sessions). `AppFeature` leaves the tab (`.home(.selectTab(.sessions))`,
-an action so the `ifLet` cancels) whenever the path gains a chat marker — a push tap, intent or
-new session would otherwise land hidden under the Settings layer.
+(Reconnect, Sign out, "Ask agent") and the disconnect / install delegates all go through
+`closeSettingsTab()` (state dropped → child effects cancelled, tab back to Sessions). While the
+tab is open, a trailing reducer (`syncSettingsSeed()`) mirrors the list-owned seed facts —
+`connection`, `pushAvailable`, `deleteSupported`, the scoped profile — so a long-lived tab
+never shows a stale capability or a deleted profile. `dismissPresentations()` (App Intents)
+deliberately leaves the tab alone: it runs in `AppFeature`, outside the list's `ifLet`, so a
+nil-out there would orphan Settings' effects. Instead `AppFeature` leaves the tab
+(`.home(.selectTab(.sessions))`, an action so the `ifLet` cancels) on every chat route —
+`pushTapped`, `launchIntentReceived` (widgets too), the list's `openSession` / `createSession`
+delegates — in both layouts, since the chat (compact marker or regular seat, even an in-place
+hydrate) would otherwise land hidden under the Settings layer. Under the Settings layer the
+list keeps rendering the Sessions rows (the tab Settings always returns to), so their scroll
+position survives.
 
 **The nav bar**: Archive on the leading side; the profile pill as the centered title (when
 `profilesSupported`); trailing, in one `ToolbarItemGroup` (one glass pill on iOS 26), Search

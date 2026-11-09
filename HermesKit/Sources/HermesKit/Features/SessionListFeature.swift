@@ -297,9 +297,11 @@ public struct SessionListFeature {
 
     /// Dismiss everything the list can present (sheets, the action sheet, the rename alerts) —
     /// for routing that can arrive while one is up (an App Intent, #93), so the chat it opens
-    /// isn't left behind a sheet.
+    /// isn't left behind a sheet. NOT the Settings tab: it is no presentation, and nil-ing it
+    /// here (from `AppFeature`, outside the list's `ifLet`) would leave its effects running. In
+    /// compact the chat's marker leaves the tab through `AppFeature`'s path rule; in regular
+    /// the chat seats in the detail column beside it.
     mutating func dismissPresentations() {
-      closeSettingsTab()
       archived = nil
       addProfile = nil
       confirmationDialog = nil
@@ -307,6 +309,18 @@ public struct SessionListFeature {
       renameDraft = ""
       renamingProfileName = nil
       profileRenameDraft = ""
+    }
+
+    /// Copy the list facts Settings was seeded with into the open tab (no-op when closed).
+    /// Only the list-owned facts: the Live Activity prefs and the swipe default are Settings'
+    /// own (it writes them and tells the list).
+    mutating func syncSettingsSeed() {
+      guard var seeded = settings else { return }
+      seeded.connection = connection
+      seeded.pushAvailable = pushAvailable
+      seeded.deleteSupported = deleteSupported
+      seeded.profileName = scopedProfileName
+      if seeded != settings { settings = seeded }
     }
 
     /// Leave the Settings tab: drop its state and fall back to Sessions. Every path that
@@ -1749,7 +1763,7 @@ public struct SessionListFeature {
 
       case let .settings(.presented(.delegate(.defaultSwipeActionChanged(action)))):
         // Mirror the new default immediately (Settings already persisted it) so the swipe
-        // rows are right the moment the sheet dismisses.
+        // rows are right the moment the tab is left.
         state.defaultSwipeAction = action
         return .none
 
@@ -1803,6 +1817,14 @@ public struct SessionListFeature {
         }
         return .none
       }
+    }
+    // An open Settings tab can stay up for a long time (the old sheet was short-lived) while
+    // the list underneath keeps polling: mirror the facts `seedSettings` copied, so a capability
+    // flip, a profile re-homed by a delete, or a re-auth's new connection reaches it in the
+    // same action that changed it. A no-op while the tab is closed.
+    Reduce { state, _ in
+      state.syncSettingsSeed()
+      return .none
     }
   }
 

@@ -1258,18 +1258,6 @@ public struct AppFeature {
     .onChange(of: \.profileReseatSignal) { _, _ in
       Reduce { state, _ in reduceProfileReseat(&state) }
     }
-    // A chat marker landing on the stack (push tap, intent, widget, "Ask agent", a narrowing
-    // reseat) leaves the Settings tab: the Settings stack is layered OVER the list's stack in
-    // `AppView`, so a chat pushed under it would stay hidden, and popping back should land on
-    // Sessions — the tab the chat belongs to. Sent as a list ACTION (never a direct nil-out)
-    // so the list's `ifLet` cancels Settings' effects. Compact only in practice: regular
-    // never holds a marker.
-    .onChange(of: \.path.isEmpty) { _, isEmpty in
-      Reduce { state, _ in
-        guard !isEmpty, state.home?.effectiveTab == .settings else { return .none }
-        return .send(.home(.selectTab(.sessions)))
-      }
-    }
     // Home Screen quick actions only while signed in (#93): every sign-in lands on a
     // non-onboarding root and every logout or credentials verdict lands on onboarding, so this
     // one edge covers all of them. iOS persists the items, so a fresh process starting on
@@ -1322,6 +1310,22 @@ public struct AppFeature {
           syncMirror(status, state, debounced: true),
           syncLiveActivity(status, &state, previous == nil ? .restamp : .debounced)
         )
+      }
+    }
+    // Every route that opens a chat leaves the Settings tab: `AppView` layers Settings over
+    // the WHOLE split view, so the chat (a compact marker, or the regular detail seat — even
+    // an in-place hydrate of the seated session) would otherwise land hidden under it. Sent
+    // as a list ACTION, never a direct nil-out, so the list's `ifLet` cancels Settings'
+    // effects. Evaluated after the routing itself; a route that stashes (no home yet) or
+    // finds nothing to open still just lands on Sessions.
+    Reduce { state, action in
+      switch action {
+      case .pushTapped, .launchIntentReceived,
+           .home(.delegate(.openSession)), .home(.delegate(.createSession)):
+        guard state.home?.effectiveTab == .settings else { return .none }
+        return .send(.home(.selectTab(.sessions)))
+      default:
+        return .none
       }
     }
   }

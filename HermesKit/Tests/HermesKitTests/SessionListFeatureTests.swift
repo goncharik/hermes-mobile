@@ -4026,13 +4026,87 @@ struct SessionListFeatureTests {
     #expect(store.state.effectiveTab == .sessions)
   }
 
-  /// An App Intent dismissing the list's presentations leaves the Settings tab too.
-  @Test func dismissPresentationsLeavesTheSettingsTab() {
+  /// An App Intent dismissing the list's presentations does NOT touch the Settings tab: that
+  /// nil-out would run in `AppFeature`, outside the list's `ifLet`, orphaning Settings'
+  /// effects. (Compact leaves the tab through `AppFeature`'s path rule instead.)
+  @Test func dismissPresentationsKeepsTheSettingsTab() {
     var state = SessionListFeature.State(connection: connection, selectedTab: .settings)
     state.settings = SettingsFeature.State(connection: connection)
+    state.archived = ArchivedSessionsFeature.State(connection: connection)
     state.dismissPresentations()
-    #expect(state.settings == nil)
-    #expect(state.selectedTab == .sessions)
+    #expect(state.archived == nil)
+    #expect(state.settings != nil)
+    #expect(state.effectiveTab == .settings)
+  }
+
+  /// Leaving the tab drops Settings' state through the list's `ifLet`, so its in-flight
+  /// effects (here the `.task` status probe, parked forever) are cancelled, not orphaned.
+  @Test func leavingTheSettingsTabCancelsItsEffects() async {
+    let probeCancelled = LockIsolated(false)
+    var initial = SessionListFeature.State(connection: connection, selectedTab: .settings)
+    initial.settings = SettingsFeature.State(connection: connection)
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesREST.status = { @Sendable _ in
+        do {
+          try await Task.never()
+        } catch {
+          probeCancelled.setValue(true)
+          throw error
+        }
+        return ServerStatus()
+      }
+      $0.hermesREST.pushPluginInfo = { @Sendable _ in PushPluginInfo(status: .unknown) }
+      $0.push = PushClient.inMemory(granted: false, status: .notDetermined).client
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.settings(.presented(.task)))
+    await store.send(.selectTab(.sessions)) {
+      $0.settings = nil
+      $0.selectedTab = .sessions
+    }
+    await store.finish()
+    #expect(probeCancelled.value)
+  }
+
+  /// An open Settings tab follows the list's seed facts: a renamed (or re-homed) profile, a
+  /// delete-capability verdict and a push verdict all reach it.
+  @Test func openSettingsTabMirrorsTheListsSeedFacts() async {
+    var initial = SessionListFeature.State(
+      connection: connection,
+      selectedTab: .settings,
+      profiles: [Profile(name: "default", isDefault: true), Profile(name: "work")],
+      selectedProfileName: "work",
+      profilesSupported: true
+    )
+    initial.settings = SettingsFeature.State(connection: connection, profileName: "work")
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.hermesProfiles.rename = { @Sendable _, _, _ in }
+    }
+
+    // The trailing sync runs in the SAME action that moved the list's scope.
+    await store.send(.renameProfileButtonTapped(name: "work", newName: "job")) {
+      $0.profiles = [Profile(name: "default", isDefault: true), Profile(name: "job")]
+      $0.selectedProfileName = "job"
+      $0.settings?.profileName = "job"
+    }
+    await store.receive(\.renameProfileSucceeded)
+
+    var flipped = store.state
+    flipped.deleteSupported = false
+    flipped.pushAvailable = false
+    flipped.syncSettingsSeed()
+    #expect(flipped.settings?.deleteSupported == false)
+    #expect(flipped.settings?.pushAvailable == false)
+
+    // Closed tab: nothing to mirror.
+    var closed = SessionListFeature.State(connection: connection)
+    closed.syncSettingsSeed()
+    #expect(closed.settings == nil)
   }
 
   /// The Settings tab renders only with seeded state, and never while searching.
@@ -4312,6 +4386,7 @@ struct SessionListFeatureTests {
 
     await store.send(.settings(.presented(.delegate(.tokenSaved("newtok"))))) {
       $0.connection.token = "newtok"
+      $0.settings?.connection.token = "newtok" // the open tab mirrors the list's connection
     }
   }
 

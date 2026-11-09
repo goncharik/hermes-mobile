@@ -18,8 +18,8 @@ three rows push a sub-screen, and they push through a TCA stack:
   `.tint(.primary)`, since a Form button resolves `.primary` to the tint), never a
   `NavigationLink`.
 - **`SettingsView` owns the `NavigationStack(path:)`**, with the `Form` as root and
-  `switch pathStore.case` as the destination. `AppView` layers it OVER the session list's
-  stack (never inside it: that would nest two stacks) while `effectiveTab == .settings`, and
+  `switch pathStore.case` as the destination. `AppView` layers it OVER the whole split view
+  (never inside a column: that would nest two stacks) while `effectiveTab == .settings`, and
   passes the `HomeTabBar` as `bottomBar`, inset on the Form root only so a pushed sub-screen
   covers it. There is no Done button; tab lifecycle rules are in
   `docs/features/session-list.md` ("The Settings tab").

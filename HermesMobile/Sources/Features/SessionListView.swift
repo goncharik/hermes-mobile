@@ -28,7 +28,9 @@ struct SessionListView: View {
           .listRowSeparator(.hidden)
       }
       switch store.effectiveTab {
-      case .sessions:
+      // Under the Settings layer (`AppView`) the list keeps the Sessions rows: leaving Settings
+      // always lands on Sessions, so they come back with their scroll position intact.
+      case .sessions, .settings:
         if store.isSearching {
           // Search results are flat cards. A hit carries only id, snippet (as `preview`) and
           // start time: the untitled card promotes the snippet to its title, and the header
@@ -41,9 +43,6 @@ struct SessionListView: View {
         }
       case .cron:
         cronTabContent
-      case .settings:
-        // Settings is its own stack, layered over this list by `AppView`; nothing renders here.
-        EmptyView()
       }
     }
     .listStyle(.plain)

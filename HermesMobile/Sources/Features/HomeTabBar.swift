@@ -5,7 +5,8 @@ import SwiftUI
 /// The home screen's bottom bar: a glass tab pill (Sessions, Cron Jobs while there is cron
 /// content, Settings) filling the leading space, and the round glass New session button
 /// trailing. Rendered at the root of BOTH home stacks — the session list and the Settings tab
-/// (`AppView`) — through a `safeAreaInset`, so a pushed screen covers it. The pill hides while
+/// (`AppView`) — through a `safeAreaInset`, so a pushed screen covers it. Capped at
+/// `maxBarWidth` and centred: on iPad the Settings tab spans the whole window. The pill hides while
 /// searching (`showsTabBar`: search is a Sessions-only mode), leaving just New session.
 struct HomeTabBar: View {
   let store: StoreOf<SessionListFeature>
@@ -24,9 +25,15 @@ struct HomeTabBar: View {
       Spacer(minLength: 0)
       newSessionButton
     }
+    .frame(maxWidth: Self.maxBarWidth)
     .padding(.horizontal)
     .padding(.vertical, 8)
+    .frame(maxWidth: .infinity)
   }
+
+  /// Wider than any sidebar column (≤ 400 pt) and a phone, so only a full-window iPad
+  /// Settings tab is capped.
+  private static let maxBarWidth: CGFloat = 560
 
   /// The pill fills the width the New session button leaves, its tabs sharing it equally —
   /// so three tabs fit a 320 pt iPad sidebar as well as a phone.
@@ -55,10 +62,10 @@ struct HomeTabBar: View {
         Text(tab.title)
           .font(.caption.weight(.semibold))
           .lineLimit(1)
-          .minimumScaleFactor(0.8)
+          .minimumScaleFactor(0.7)
       }
       .foregroundStyle(isSelected ? Color.hermesAccent : Color.primary)
-      .padding(.horizontal, 8)
+      .padding(.horizontal, 4)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .background {
         if isSelected {
@@ -76,7 +83,7 @@ struct HomeTabBar: View {
 
   /// The round glass New session button (icon-only: it starts a new session, not a chat).
   /// Offered on every tab, so the bar never changes shape: a new session opened from Settings
-  /// lands on the Sessions tab (`AppFeature` leaves Settings when a chat is pushed).
+  /// lands on the Sessions tab (`AppFeature` leaves Settings on every chat route).
   private var newSessionButton: some View {
     Button {
       store.send(.newSessionButtonTapped)
