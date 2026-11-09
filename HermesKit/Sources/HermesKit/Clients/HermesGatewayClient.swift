@@ -129,6 +129,15 @@ public enum GatewayError: Error, Equatable, Sendable {
   /// `"session not found"` text (case-insensitive) — used to self-heal outbound RPCs by
   /// transparently re-resuming for a fresh live id and replaying the call (#17). Mirrors
   /// `isUnknownMethod`.
+  /// A session-authority host refused a `session.mutate` because its fences moved
+  /// (`revision_conflict` / `stale_generation`, #157): nothing was written; re-read and retry.
+  public var isStaleFence: Bool {
+    if case let .server(message) = self {
+      return message == "revision_conflict" || message == "stale_generation"
+    }
+    return false
+  }
+
   public var isSessionNotFound: Bool {
     if case let .server(message) = self {
       return message.lowercased().contains("session not found")
