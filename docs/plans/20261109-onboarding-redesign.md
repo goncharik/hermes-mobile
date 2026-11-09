@@ -334,17 +334,17 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Create: `HermesKit/Sources/HermesKit/Features/Onboarding/ServerStep.swift`
 - Create: `HermesKit/Tests/HermesKitTests/ServerStepTests.swift`
 
-- [ ] implement `State`/`Action` as specified; `continueButtonTapped` parses `addressText` (invalid → stays `.idle`, view shows the inline hint) and starts the probe
-- [ ] probe effect: candidate loop (fallback only on `isTransport`), `.statusReceived` stage advance, providers fetch; `.failed` carries the `ServerAddress` the card needs for its copy and the Local Network hint
-- [ ] binding on `addressText` → phase `.idle`, `.cancel(id: CancelID.probe)`; `onAppear` probes only when `autoProbe && phase == .idle`
-- [ ] `TestStore` tests (mocked `probeStatus`/`authProviders`):
-  - [ ] success on the first candidate
-  - [ ] fallback to `:9119` after a refused, and the success carries the `:9119` URL
-  - [ ] no fallback after a 404 or a 400
-  - [ ] each failure lands in `.failed` with its address
-  - [ ] editing cancels an in-flight probe
-  - [ ] auto-probe on appear and no re-probe on re-appear
-- [ ] run `make test` and confirm it passes before task 6
+- [x] implement `State`/`Action` as specified; `continueButtonTapped` parses `addressText` (invalid → stays `.idle`, view shows the inline hint) and starts the probe
+- [x] probe effect: candidate loop (fallback only on `isTransport`), `.statusReceived` stage advance, providers fetch; `.failed` carries the `ServerAddress` the card needs for its copy and the Local Network hint
+- [x] binding on `addressText` → phase `.idle`, `.cancel(id: CancelID.probe)`; `onAppear` probes only when `autoProbe && phase == .idle`
+- [x] `TestStore` tests (mocked `probeStatus`/`authProviders`):
+  - [x] success on the first candidate
+  - [x] fallback to `:9119` after a refused, and the success carries the `:9119` URL
+  - [x] no fallback after a 404 or a 400
+  - [x] each failure lands in `.failed` with its address
+  - [x] editing cancels an in-flight probe
+  - [x] auto-probe on appear and no re-probe on re-appear
+- [x] run `make test` and confirm it passes before task 6
 
 ### Task 6: Turn `ConnectionFeature` into the flow parent with `ConnectionPath`
 
