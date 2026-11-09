@@ -8,20 +8,36 @@ import UIKit
 /// and from `ConnectionFailedView` — a reference card you consult and dismiss, not a
 /// navigation destination.
 ///
-/// Scope: static copy, copy affordances on the commands, and two external `Link`s. No
-/// network detection, no reducer involvement. The card stack is the visual language carried
-/// over from the old `SecureConnectionInfoView` (which this guide replaces).
+/// Two tabs on a segmented control: **On my computer** (the self-hosted recipe below) and
+/// **Hermes Cloud** (desktop's terms — open the agent in the Nous portal, paste its
+/// address). The Cloud copy is kept verbatim with the README quick-start.
+///
+/// Scope: static copy, copy affordances on the commands, and external `Link`s. No
+/// network detection, no reducer involvement — the selected tab is view-local `@State`.
+/// The card stack is the visual language carried over from the old
+/// `SecureConnectionInfoView` (which this guide replaces).
 struct AgentSetupGuideView: View {
+  enum Tab: Hashable {
+    case cloud
+    case computer
+  }
+
   @Environment(\.dismiss) private var dismiss
 
   /// Whether the "Advanced: token mode" disclosure starts open. Defaults to collapsed;
   /// seeded only so snapshot tests can capture the expanded variant.
   @State private var advancedExpanded: Bool
+  /// The selected tab. Defaults to "On my computer"; seeded only so snapshot tests can
+  /// capture the Hermes Cloud tab.
+  @State private var tab: Tab
 
-  init(advancedExpanded: Bool = false) {
+  init(advancedExpanded: Bool = false, tab: Tab = .computer) {
     _advancedExpanded = State(initialValue: advancedExpanded)
+    _tab = State(initialValue: tab)
   }
 
+  /// Desktop's `FALLBACK_PORTAL_URL` — where Hermes Cloud agents are created and opened.
+  private static let portalURL = URL(string: "https://portal.nousresearch.com")!
   private static let tailscaleURL = URL(string: "https://tailscale.com")!
   private static let docsURL = URL(
     string: "https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard"
@@ -63,20 +79,36 @@ struct AgentSetupGuideView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(spacing: 20) {
-          hero
-          loginCard
-          dashboardCard
-          reachCard
-          tailscaleLink
-          portForwardWarning
-          verifyCard
-          advancedCard
-          docsLink
+      VStack(spacing: 0) {
+        Picker("Where the agent runs", selection: $tab) {
+          Text("On my computer").tag(Tab.computer)
+          Text("Hermes Cloud").tag(Tab.cloud)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity)
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        ScrollView {
+          VStack(spacing: 20) {
+            switch tab {
+            case .cloud:
+              cloudCard
+              portalLink
+            case .computer:
+              hero
+              loginCard
+              dashboardCard
+              reachCard
+              tailscaleLink
+              portForwardWarning
+              verifyCard
+              advancedCard
+              docsLink
+            }
+          }
+          .padding(20)
+          .frame(maxWidth: .infinity)
+        }
       }
       .background(Color(.systemGroupedBackground))
       .navigationTitle("Set Up Your Agent")
@@ -89,7 +121,58 @@ struct AgentSetupGuideView: View {
     }
   }
 
-  // MARK: - Sections
+  // MARK: - Hermes Cloud
+
+  // Copy kept verbatim with the README quick-start's Hermes Cloud line.
+  private var cloudCard: some View {
+    card {
+      cardHeader(icon: "cloud.fill", title: "Hermes Cloud runs your agent for you.", tint: .blue)
+      Text("""
+      Open your agent in the Nous portal, copy its address, and paste it on the next screen. \
+      You'll sign in with your Nous Research account.
+      """)
+      .font(.subheadline)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      footnote("No agent yet? Create one in the Nous portal.")
+    }
+  }
+
+  private var portalLink: some View {
+    Link(destination: Self.portalURL) {
+      HStack(spacing: 14) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Self.brand)
+            .frame(width: 44, height: 44)
+          Image(systemName: "cloud.fill")
+            .font(.system(size: 20, weight: .semibold))
+            .foregroundStyle(.white)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Open the Nous portal")
+            .font(.headline)
+            .foregroundStyle(.primary)
+          Text(verbatim: "portal.nousresearch.com")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 8)
+        Image(systemName: "arrow.up.forward")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(.secondary)
+      }
+      .padding(16)
+      .frame(maxWidth: .infinity)
+      .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
+      )
+    }
+  }
+
+  // MARK: - On my computer
 
   private var hero: some View {
     VStack(spacing: 14) {
@@ -408,4 +491,8 @@ struct AgentSetupGuideView: View {
 
 #Preview("Advanced expanded") {
   AgentSetupGuideView(advancedExpanded: true)
+}
+
+#Preview("Hermes Cloud") {
+  AgentSetupGuideView(tab: .cloud)
 }

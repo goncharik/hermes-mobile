@@ -164,6 +164,13 @@ if you want to hack on the app.
 You'll need macOS with **Xcode 26+**, **Tuist** (`brew install tuist`), and a running
 Hermes Agent reachable from your Mac.
 
+> **Hermes Cloud runs your agent for you.** Open your agent in the Nous portal, copy its
+> address, and paste it on the next screen. You'll sign in with your Nous Research account.
+> No agent yet? Create one in the [Nous portal](https://portal.nousresearch.com).
+>
+> That's the guide's **Hermes Cloud** tab: with a cloud agent, skip step 1 below. The
+> steps below are the **On my computer** tab.
+
 **1. Expose Hermes to your network.** On the Hermes machine, run this in a terminal to
 add your credentials to `~/.hermes/.env` — edit the username and password first (most
 special characters are fine in the password — but the agent's .env parser treats a few

@@ -33,7 +33,8 @@ final class AuthSnapshotTests: SnapshotTestCase {
   func testAgentSetupGuide_collapsed() {
     assertSnapshot(
       of: AgentSetupGuideView(),
-      as: tallImage(height: 2050)
+      // 2100pt: the tab picker above the scroll pushed the docs link to the old 2050 edge.
+      as: tallImage(height: 2100)
     )
   }
 
@@ -47,6 +48,17 @@ final class AuthSnapshotTests: SnapshotTestCase {
       // Metal texture limit — 2800pt recorded a blank image.
       as: tallImage(height: 2700)
     )
+  }
+
+  /// The guide's "Hermes Cloud" tab (seeded via the init): the segmented control on Cloud,
+  /// the copy card (desktop's "Hermes Cloud" / "Nous portal" terms, verbatim with the README
+  /// quick-start) and the "Open the Nous portal" link row. Short enough for one phone screen.
+  func testAgentSetupGuide_cloud() {
+    assertSnapshot(of: AgentSetupGuideView(tab: .cloud), as: deviceImage())
+  }
+
+  func testAgentSetupGuide_cloud_light() {
+    assertSnapshot(of: AgentSetupGuideView(tab: .cloud), as: deviceImage(appearance: .light))
   }
 
   // MARK: - Show/hide credential toggle (#129)

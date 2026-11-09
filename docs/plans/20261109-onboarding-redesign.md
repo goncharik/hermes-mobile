@@ -411,10 +411,11 @@ The link goes to `https://portal.nousresearch.com`, desktop's `FALLBACK_PORTAL_U
 - Modify: `README.md`
 - Modify: `HermesMobileTests/` setup-guide snapshot suite
 
-- [ ] add a local-`@State` segmented control: "On my computer" (existing cards unchanged) / "Hermes Cloud" (copy and portal link from Technical Details)
-- [ ] add the matching Hermes Cloud line to the README quick-start, keeping it verbatim with the sheet
-- [ ] snapshots for the Cloud tab; re-record the existing guide snapshots only if their render size changed
-- [ ] run `make snapshot` and confirm it is clean before task 10
+- [x] add a local-`@State` segmented control: "On my computer" (existing cards unchanged) / "Hermes Cloud" (copy and portal link from Technical Details)
+- [x] add the matching Hermes Cloud line to the README quick-start, keeping it verbatim with the sheet
+- [x] snapshots for the Cloud tab; re-record the existing guide snapshots only if their render size changed
+- [x] run `make snapshot` and confirm it is clean before task 10
+- ➕ the two existing guide baselines were re-recorded: the picker above the scroll shifts their content (the canvas size is fixed, so "render size" never changes); the collapsed canvas grew 2050 → 2100pt so the docs link isn't clipped
 
 ### Task 10: Replace the immediate push prompt with the session-list card
 
