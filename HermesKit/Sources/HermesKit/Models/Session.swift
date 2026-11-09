@@ -349,6 +349,9 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
   public var displayKind: String?
   /// The row's `display_metadata` object (`display_text`, `task_count`, `model_only`, …), or nil.
   public var displayMetadata: JSONValue?
+  /// The durable stored-row id a canonical session-authority host projects (`row_id`): the
+  /// `through_message_id` boundary of a `session.mutate` branch (#159). Nil on older hosts.
+  public var rowID: Int?
 
   /// The single reasoning string for this message, first-non-empty of the three variants
   /// (`reasoning ?? reasoning_content ?? reasoning_details`), or `nil`.
@@ -372,6 +375,7 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     case reasoningDetails = "reasoning_details"
     case displayKind = "display_kind"
     case displayMetadata = "display_metadata"
+    case rowID = "row_id"
   }
 
   public init(
@@ -381,8 +385,9 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     toolName: String? = nil, toolCallID: String? = nil, toolCalls: [ToolCallRef]? = nil,
     reasoning: String? = nil, reasoningContent: String? = nil, reasoningDetails: String? = nil,
     args: JSONValue? = nil, inlineDiff: String? = nil,
-    displayKind: String? = nil, displayMetadata: JSONValue? = nil
+    displayKind: String? = nil, displayMetadata: JSONValue? = nil, rowID: Int? = nil
   ) {
+    self.rowID = rowID
     self.id = id
     self.role = role
     self.content = content
@@ -430,6 +435,7 @@ public struct SessionMessage: Equatable, Sendable, Decodable, Identifiable {
     displayKind = (try? c.decodeIfPresent(String.self, forKey: .displayKind))?.trimmedNonEmpty
     displayMetadata = decodeDisplayMetadata(c, forKey: .displayMetadata)
     inlineDiff = displayMetadata?["tool_result_metadata"]?["inline_diff"]?.stringValue?.nonEmpty
+    rowID = (try? c.decodeIfPresent(Int.self, forKey: .rowID)) ?? nil
   }
 }
 

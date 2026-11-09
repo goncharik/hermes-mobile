@@ -1269,6 +1269,9 @@ public struct ChatFeature {
     /// method exists, so no `-32601`) and degrade to a plain empty chat.
     case branchFromMessage(id: ChatRow.ID)
     case branchResult(Result<SessionHandle, GatewayError>)
+    /// A session-authority host's `session.mutate` branch answered (#159): the persisted
+    /// child's id, opened like any stored session.
+    case branchMutated(Result<String, GatewayError>)
     /// The replayed seeded `session.create` after the server reaped an unpersisted
     /// branch's live session (#34) — re-arms the attach bookkeeping on success rather
     /// than emitting a second `branchCreated` slot replacement.
@@ -1488,9 +1491,11 @@ public struct ChatFeature {
       /// seed that can rebuild the branch wholesale after an orphan reap.
       public struct BranchCreation: Equatable, Sendable {
         public var handle: SessionHandle
-        public var seed: State.BranchSeed
+        /// Nil for a session-authority branch (#159): the child is a persisted copy of the
+        /// parent's history, so it resumes by stored id and has nothing to rebuild.
+        public var seed: State.BranchSeed?
 
-        public init(handle: SessionHandle, seed: State.BranchSeed) {
+        public init(handle: SessionHandle, seed: State.BranchSeed?) {
           self.handle = handle
           self.seed = seed
         }
@@ -2220,10 +2225,49 @@ public struct ChatFeature {
           state.errorBanner = "This chat can’t be branched yet."
           return .none
         }
+        if state.isSessionAuthority {
+          // v0.22.3+ refuses the seeded `session.create` (closed key set) and has no
+          // `session.activate`: a branch is the parent's `session.mutate {operation:"branch"}`,
+          // copying its history through the tapped reply (Hermes Desktop parity).
+          guard let liveID = state.liveSessionID,
+                let tapped = state.transcript.index(id: id)
+          else {
+            state.errorBanner = "This chat can’t be branched yet."
+            return .none
+          }
+          // Which same-text row, counted from the newest over EVERY later assistant message row
+          // (commentary included), the same set `branchBoundaryRowID` matches in the snapshot.
+          let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+          let later = state.transcript[(tapped + 1)...].filter {
+            guard case let .message(role, other, _) = $0.kind, role == .assistant else { return false }
+            return other.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+          }.count
+          state.isBranching = true
+          return mutateBranch(
+            sessionID: liveID, replyText: text, occurrenceFromEnd: later, profile: state.profileName
+          )
+        }
         let seed = State.BranchSeed(text: text, parentSessionID: parentID)
         state.pendingBranchSeed = seed
         state.isBranching = true
         return branchSession(seed: seed, profile: state.profileName)
+
+      case let .branchMutated(.success(childID)):
+        state.isBranching = false
+        return .send(.delegate(.branchCreated(.init(
+          handle: SessionHandle(sessionID: childID, storedSessionID: childID), seed: nil
+        ))))
+
+      case let .branchMutated(.failure(error)):
+        state.isBranching = false
+        if case let .server(message) = error, message == "session_busy" {
+          state.errorBanner = "Stop the current turn before branching."
+        } else if case let .server(message) = error, message == branchUnsavedMessage {
+          state.errorBanner = message
+        } else {
+          state.errorBanner = "Couldn’t branch the chat: \(error.message)"
+        }
+        return .none
 
       case let .branchResult(.success(handle)):
         state.isBranching = false
@@ -4305,6 +4349,39 @@ public struct ChatFeature {
     }
   }
 
+  /// The session-authority branch (#159). Reads the parent's snapshot (`session.resume`: row
+  /// ids + CAS fences), resolves the tapped reply's stored row there (`branchBoundaryRowID`) as
+  /// `through_message_id`,
+  /// then sends the fenced `session.mutate {operation: "branch"}`. A `revision_conflict` /
+  /// `stale_generation` (a turn or edit landed between the two calls) re-reads once.
+  private func mutateBranch(
+    sessionID: String, replyText: String, occurrenceFromEnd: Int, profile: String?
+  ) -> Effect<Action> {
+    .run { [gateway, uuid] send in
+      do {
+        let result = try await fencedSessionMutate(
+          "branch", sessionID: sessionID, known: nil, withMessages: true,
+          profile: profile, gateway: gateway, uuid: uuid
+        ) { messages in
+          guard let through = branchBoundaryRowID(
+            messages, replyText: replyText, occurrenceFromEnd: occurrenceFromEnd
+          ) else { throw BranchBoundaryUnsaved() }
+          return ["through_message_id": .number(Double(through))]
+        }.result
+        guard let child = result["branched_session_id"]?.stringValue?.trimmedNonEmpty else {
+          throw GatewayError.server("Malformed branch result")
+        }
+        await send(.branchMutated(.success(child)))
+      } catch is BranchBoundaryUnsaved {
+        await send(.branchMutated(.failure(.server(branchUnsavedMessage))))
+      } catch let error as GatewayError {
+        await send(.branchMutated(.failure(error)))
+      } catch {
+        await send(.branchMutated(.failure(.disconnected)))
+      }
+    }
+  }
+
   /// Replay the seeded branch `session.create` after the server reaped the unpersisted
   /// live session (#34) — the same wire shape as `branchSession`, routed to
   /// `.branchReplayResult` so the fresh handle re-arms the attach bookkeeping in place
@@ -5544,44 +5621,16 @@ public struct ChatFeature {
       var payload: [String: JSONValue] = ["model": .string(model)]
       if let providerSlug { payload["provider"] = .string(providerSlug) }
       if let confirm { payload["confirm"] = .string(confirm) }
-      var known = fences
-      func readFences(_ targetID: String) async throws -> SessionFences {
-        var fields: [String: JSONValue] = [
-          "session_id": .string(targetID), "omit_messages": .bool(true),
-        ]
-        if let profile = heal.profile { fields["profile"] = .string(profile) }
-        let result = try await gateway.send("session.resume", .object(fields))
-        guard let fences = result.decoded(ActivateResponse.self)?.fences else {
-          throw GatewayError.server("Session revision unavailable")
-        }
-        return fences
-      }
-      func attempt(_ targetID: String, _ fences: SessionFences) async throws -> JSONValue {
-        try await gateway.send("session.mutate", .object([
-          "session_id": .string(targetID),
-          "request_id": .string(uuid().uuidString.lowercased()),
-          "expected_revision": .number(Double(fences.revision)),
-          "expected_generation": .number(Double(fences.generation)),
-          "operation": .string("model"),
-          "payload": .object(payload),
-        ]))
-      }
-      // A newer pick cancels this effect, but an awaited `gateway.send` doesn't observe
-      // cancellation, so every FOLLOW-UP RPC checks first: a superseded pick must never
-      // re-read and retry its way past the newer one (its first write is already on the wire).
+      var used: SessionFences?
       func mutate(_ targetID: String) async throws -> JSONValue {
-        if known == nil || targetID != sessionID {
-          known = try await readFences(targetID)
-          try Task.checkCancellation()
-        }
-        do {
-          return try await attempt(targetID, known!)
-        } catch let error as GatewayError where error.isStaleFence {
-          try Task.checkCancellation()
-          known = try await readFences(targetID)
-          try Task.checkCancellation()
-          return try await attempt(targetID, known!)
-        }
+        let receipt = try await fencedSessionMutate(
+          "model", sessionID: targetID,
+          // A heal swapped the live id: the old id's fences don't apply.
+          known: targetID == sessionID ? fences : nil,
+          profile: heal.profile, gateway: gateway, uuid: uuid
+        ) { _ in payload }
+        used = receipt.fences
+        return receipt.result
       }
       do {
         let result = try await withSessionHeal(
@@ -5599,7 +5648,7 @@ public struct ChatFeature {
         }
         if let learned = SessionFences(
           revision: result["revision"]?.intValue, generation: result["execution_generation"]?.intValue
-        ) ?? known {
+        ) ?? used {
           await send(.sessionFencesLearned(learned))
         }
       } catch is CancellationError {
@@ -5742,6 +5791,80 @@ private func recreateLiveSession(
     liveSessionID: handle.sessionID, storedSessionID: handle.storedSessionID
   ))
   return handle.sessionID
+}
+
+/// The branch boundary refusal (#159): the tapped reply has no stored row in the snapshot.
+private struct BranchBoundaryUnsaved: Error {}
+let branchUnsavedMessage = "This message isn’t saved yet; wait for it to settle, then branch from it again."
+
+/// One revision-fenced `session.mutate` on a session-authority host (#157 model pick, #159
+/// branch). Reads the fences with `session.resume` when `known` is nil (message-less unless
+/// `withMessages`, which the branch needs for its boundary), builds the payload from that read,
+/// and sends the mutate with a fresh `request_id`. A `revision_conflict` / `stale_generation`
+/// re-reads and retries ONCE; cancellation is checked before every follow-up RPC, since an
+/// awaited `gateway.send` doesn't observe it (a superseded model pick must not retry past a
+/// newer one). Returns the receipt and the fences it was sent with.
+private func fencedSessionMutate(
+  _ operation: String, sessionID: String, known: SessionFences?, withMessages: Bool = false,
+  profile: String?, gateway: HermesGatewayClient, uuid: UUIDGenerator,
+  payload: ([SessionMessage]) throws -> [String: JSONValue]
+) async throws -> (result: JSONValue, fences: SessionFences) {
+  func read() async throws -> (SessionFences, [SessionMessage]) {
+    var fields: [String: JSONValue] = ["session_id": .string(sessionID)]
+    if !withMessages { fields["omit_messages"] = .bool(true) }
+    if let profile { fields["profile"] = .string(profile) }
+    let result = try await gateway.send("session.resume", .object(fields))
+    guard let response = result.decoded(ActivateResponse.self), let fences = response.fences else {
+      throw GatewayError.server("Session revision unavailable")
+    }
+    return (fences, response.messages)
+  }
+  func attempt(_ fences: SessionFences, _ messages: [SessionMessage]) async throws -> JSONValue {
+    try await gateway.send("session.mutate", .object([
+      "session_id": .string(sessionID),
+      "request_id": .string(uuid().uuidString.lowercased()),
+      "expected_revision": .number(Double(fences.revision)),
+      "expected_generation": .number(Double(fences.generation)),
+      "operation": .string(operation),
+      "payload": .object(try payload(messages)),
+    ]))
+  }
+  var fences: SessionFences
+  var messages: [SessionMessage] = []
+  if let known, !withMessages {
+    fences = known
+  } else {
+    (fences, messages) = try await read()
+    try Task.checkCancellation()
+  }
+  do {
+    return (try await attempt(fences, messages), fences)
+  } catch let error as GatewayError where error.isStaleFence {
+    try Task.checkCancellation()
+    (fences, messages) = try await read()
+    try Task.checkCancellation()
+    return (try await attempt(fences, messages), fences)
+  }
+}
+
+/// The `through_message_id` of a session-authority branch (#159): the stored row of the TAPPED
+/// reply, resolved against the parent's fetched snapshot rather than a local turn count (another
+/// client's turns reach this transcript without their user bubbles, so local ordinals drift).
+/// The reply is matched by its text, as the `occurrenceFromEnd`-th (0-based) assistant message
+/// row with that text counted from the newest, over the same set the caller counts locally:
+/// every painted assistant message row (final replies AND commentary), never a notice. That row is the answer, the last row of its bubble, so its
+/// id is the bubble's highest (Desktop `branchThroughRowId`). Nil when it isn't stored: the
+/// caller refuses rather than branch at the wrong point.
+func branchBoundaryRowID(_ messages: [SessionMessage], replyText: String, occurrenceFromEnd: Int) -> Int? {
+  let target = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
+  var seen = 0
+  for message in messages.reversed()
+  where message.role == "assistant" && message.isPainted && !message.isTimelineNotice {
+    guard message.displayText?.trimmingCharacters(in: .whitespacesAndNewlines) == target else { continue }
+    if seen == occurrenceFromEnd { return message.rowID.flatMap { $0 > 0 ? $0 : nil } }
+    seen += 1
+  }
+  return nil
 }
 
 /// The branch `session.create` extras (#34): the single-assistant-message seed + the

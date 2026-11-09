@@ -1024,13 +1024,23 @@ public struct AppFeature {
         // under its parent) once its DB row exists server-side — an abandoned branch
         // simply never appears (documented v1 behavior, no optimistic insert).
         guard let home = state.home else { return .none }
+        // A seedless (session-authority, #159) child lives in the SOURCE chat's profile, which
+        // can differ from the sidebar's after a profile switch kept that chat open: resuming it
+        // under the sidebar's profile would miss its state.db and start an unrelated session.
+        let profile = creation.seed == nil
+          ? (state.liveChat?.profileName ?? home.scopedProfileName)
+          : home.scopedProfileName
         var chat = ChatFeature.State(
           connection: home.connection,
           resumeStoredID: creation.handle.storedSessionID,
-          profileName: home.scopedProfileName
+          profileName: profile
         )
-        chat.attachLiveSessionID = creation.handle.sessionID
-        chat.branchSeed = creation.seed
+        // A session-authority branch (#159, no seed) is already a persisted copy: it opens by
+        // stored id like any list row.
+        if let seed = creation.seed {
+          chat.attachLiveSessionID = creation.handle.sessionID
+          chat.branchSeed = seed
+        }
         let reload: Effect<Action> = .send(.home(.pulledToRefresh))
         guard state.liveChat != nil else {
           seatLiveChat(chat, into: &state)
