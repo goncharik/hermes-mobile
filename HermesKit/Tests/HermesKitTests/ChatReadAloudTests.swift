@@ -1522,9 +1522,11 @@ struct ChatReadAloudTests {
     return state
   }
 
-  private func submitParams(_ text: String, interrupted: Bool = false) -> JSONValue {
+  private func submitParams(_ text: String, interrupted: Bool = false, queued: Bool = false) -> JSONValue {
     var params: [String: JSONValue] = ["session_id": .string("live1"), "text": .string(text)]
     if interrupted { params["interrupted"] = .bool(true) }
+    // A queue drain is flagged `queued` (the busy path holds it, never interrupts a live turn).
+    if queued { params["queued"] = .bool(true) }
     return .object(params)
   }
 
@@ -1664,7 +1666,7 @@ struct ChatReadAloudTests {
       $0.readAloudInterruptedAt = nil
     }
     await store.finish()
-    #expect(submits.value == [submitParams("queued", interrupted: true)])
+    #expect(submits.value == [submitParams("queued", interrupted: true, queued: true)])
   }
 
   @Test func aQueueDrainAtMessageCompleteDoesNotStopTheAutoSpeakItTriggers() async {
@@ -1681,9 +1683,9 @@ struct ChatReadAloudTests {
       $0.queuedPrompts = []
     }
     await store.receive(\.ttsSpeaking) { $0.ttsPlayback = .speaking(self.uuid(101)) }
-    // The drained prompt went out unflagged, and the reply it raced keeps playing.
+    // The drained prompt went out without the barge-in flag, and the reply it raced keeps playing.
     await waitUntil { submits.value.count == 1 }
-    #expect(submits.value == [submitParams("queued")])
+    #expect(submits.value == [submitParams("queued", queued: true)])
     #expect(recorder.stops.value == 0)
     #expect(store.state.readAloudInterruptedAt == nil)
     await playClock.advance(by: TTSRecorder.clipLength)

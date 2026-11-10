@@ -4,7 +4,7 @@ import SwiftUI
 /// The queued-prompt panel (#66): compact rows pinned between the transcript and the
 /// composer (above the slash-suggestion panel — deliberately NOT in the transcript, so
 /// wholesale hydrates can never touch it). Each row is a frozen draft waiting for the
-/// running turn to end; the context menu offers Send Now / Edit / Delete.
+/// running turn to end; the context menu offers Steer Now / Send Now / Edit / Delete.
 ///
 /// Sizing: this sits in the same non-scrolling, compressible region #65 mapped out, so
 /// the panel must never grow unbounded and squeeze the transcript. Up to
@@ -23,6 +23,14 @@ struct QueuedPromptsPanel: View {
   /// composer): the menu item is disabled while a draft is mid-typing so the two can't
   /// disagree — the reducer stays authoritative.
   let composerHasDraft: Bool
+  /// The reducer's `canSteerQueued` (a turn running, steer supported, none in flight). Steer
+  /// Now shows only with it and for `SteerEligibility.isSteerable` entries; the reducer
+  /// re-checks both.
+  var canSteer: Bool = false
+  var onSteer: (UUID) -> Void = { _ in }
+  /// The entry whose steer is in flight: it shows a spinner and "Steering…", and its menu is
+  /// inert until the server answers (the reducer ignores those taps too).
+  var steeringID: UUID?
   let onSendNow: (UUID) -> Void
   let onEdit: (UUID) -> Void
   let onDelete: (UUID) -> Void
@@ -67,10 +75,18 @@ struct QueuedPromptsPanel: View {
   }
 
   private func row(_ entry: QueuedPrompt) -> some View {
-    HStack(spacing: 8) {
-      Image(systemName: isParked ? "pause.circle" : "clock")
-        .font(.footnote)
-        .foregroundStyle(.secondary)
+    let isSteering = entry.id == steeringID
+    return HStack(spacing: 8) {
+      if isSteering {
+        // `session.steer` can take up to the 30s RPC timeout: say the entry is on its way
+        // instead of leaving a row whose menu just went empty.
+        ProgressView()
+          .controlSize(.mini)
+      } else {
+        Image(systemName: isParked ? "pause.circle" : "clock")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+      }
       Text(displayText(entry))
         .font(.callout)
         .lineLimit(2)
@@ -84,25 +100,44 @@ struct QueuedPromptsPanel: View {
           .font(.caption)
           .foregroundStyle(.secondary)
       }
+      if isSteering {
+        Text("Steering…")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
     .background(Color(uiColor: .secondarySystemBackground), in: .rect(cornerRadius: 14))
     .contentShape(.rect(cornerRadius: 14))
     .contextMenu {
-      Button { onSendNow(entry.id) } label: {
-        Label("Send Now", systemImage: "paperplane")
-      }
-      Button { onEdit(entry.id) } label: {
-        Label("Edit", systemImage: "pencil")
-      }
-      .disabled(composerHasDraft)
-      Button(role: .destructive) { onDelete(entry.id) } label: {
-        Label("Delete", systemImage: "trash")
+      if !isSteering {
+        menuItems(entry)
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(isParked ? "Held" : "Queued") message: \(displayText(entry))")
+    .accessibilityLabel(
+      "\(isSteering ? "Steering" : isParked ? "Held" : "Queued") message: \(displayText(entry))"
+    )
+  }
+
+  @ViewBuilder
+  private func menuItems(_ entry: QueuedPrompt) -> some View {
+    if canSteer, SteerEligibility.isSteerable(entry) {
+      Button { onSteer(entry.id) } label: {
+        Label("Steer Now", systemImage: "arrow.turn.down.right")
+      }
+    }
+    Button { onSendNow(entry.id) } label: {
+      Label("Send Now", systemImage: "paperplane")
+    }
+    Button { onEdit(entry.id) } label: {
+      Label("Edit", systemImage: "pencil")
+    }
+    .disabled(composerHasDraft)
+    Button(role: .destructive) { onDelete(entry.id) } label: {
+      Label("Delete", systemImage: "trash")
+    }
   }
 
   /// An attachment-only draft has no text to show — fall back to its filenames.
