@@ -214,6 +214,9 @@ bullets below are the compressed rules.
   per-socket `client.capabilities` advertisement settles (5 s cap, no retry); its `-32601` is
   NOT a `*Supported` verdict (`docs/architecture.md`). Queue, replay, decline matrix, clarify
   forms, layout, push-tap recovery: `docs/features/approvals.md`.
+- **Approval mode is profile-wide**, gated on desktop contract ≥3: reconcile through
+  profile-scoped config reads, preserve absent session-info values, and allow one write
+  at a time. Details in `docs/features/approval-mode.md`.
 - **Context-usage pill**: display derives from `Usage` helpers in HermesKit (thresholds
   mirror the Hermes TUI, unit-tested); severity→color and popover are local `@State`.
 - **File references are tappable in place** — `MarkdownText.inline` attaches

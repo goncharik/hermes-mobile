@@ -727,11 +727,24 @@ struct ServerRequestTests {
   @Test func sessionInfoRecordsTheContractOnlyWhenPresent() async {
     var initial = ChatFeature.State(connection: ServerConnection(baseURL: url, token: "t"), status: .ready)
     initial.model = "m"
-    let store = TestStore(initialState: initial) { ChatFeature() }
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.hermesGateway.send = { method, params in
+        #expect(method == "config.get")
+        #expect(params == .object(["key": .string("approvals.mode")]))
+        return .object(["key": .string("approvals.mode"), "value": .string("manual")])
+      }
+    }
     await store.send(.gatewayEvent(.sessionInfo(SessionInfo(desktopContract: 7)))) {
       $0.desktopContract = 7
     }
+    await store.receive { action in
+      guard case .approvalModeReadResponse(profile: nil, .success(.manual)) = action else { return false }
+      return true
+    } assert: {
+      $0.approvalMode = .manual
+    }
     // A partial `session.info` without the field leaves the recorded generation alone.
     await store.send(.gatewayEvent(.sessionInfo(SessionInfo(model: "m"))))
+    await store.finish()
   }
 }

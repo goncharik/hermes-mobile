@@ -185,6 +185,48 @@ final class ComposerSnapshotTests: SnapshotTestCase {
     .frame(width: device.size?.width ?? 390)
   }
 
+  // MARK: Approval mode (#118)
+
+  func testComposer_approvalManual_phone() {
+    assertSnapshot(of: approvalComposer(.manual), as: componentImage())
+  }
+
+  func testComposer_approvalOff_phone() {
+    assertSnapshot(of: approvalComposer(.off), as: componentImage())
+  }
+
+  private func approvalComposer(_ mode: ApprovalMode) -> some View {
+    ComposerView(
+      text: .constant("Review this attachment"),
+      isSending: false, canSend: true,
+      model: "claude-opus-4-8", reasoningEffort: "high",
+      approvalMode: mode,
+      attachmentsSupported: true,
+      attachments: [ComposerAttachment(
+        id: id(1), kind: .file, filename: "notes.txt",
+        mimeType: "text/plain", data: Data([0x41])
+      )],
+      autoSpeak: true, showsAutoSpeak: true,
+      onModelTap: {}, onSend: {}, onInterrupt: {}
+    )
+    .environment(\.dynamicTypeSize, .large)
+    .frame(width: 390)
+  }
+
+  func testApprovalModePopover_large() {
+    let view = ApprovalModePopover(selectedMode: .manual, isPending: false, onSelect: { _ in })
+      .environment(\.dynamicTypeSize, .large)
+      .frame(width: 340, height: 420)
+    assertSnapshot(of: view, as: componentImage())
+  }
+
+  func testApprovalModePopover_accessibility5() {
+    let view = ApprovalModePopover(selectedMode: .off, isPending: false, onSelect: { _ in })
+      .environment(\.dynamicTypeSize, .accessibility5)
+      .frame(width: 340, height: 650)
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   // MARK: ModelPickerSheet (#81, redesigned for #130)
 
   /// The base shape: an Options card (`Reasoning › high` — the current model reasons), the

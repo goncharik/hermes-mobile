@@ -310,6 +310,8 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
   public var version: String?
   public var cwd: String?
   public var profileName: String?
+  /// Raw wire value so a future policy does not break decoding the entire session.
+  public var approvalMode: String?
   public var usage: Usage?
   /// The session's live title. Deliberately read in ONE place: the post-slash
   /// server-authoritative refresh (`.slashHistoryRefreshed`) applies it on top of
@@ -333,6 +335,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     case reasoningEffort = "reasoning_effort"
     case profileName = "profile_name"
     case desktopContract = "desktop_contract"
+    case approvalMode = "approval_mode"
     case executionGeneration = "execution_generation"
   }
 
@@ -340,7 +343,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     model: String? = nil, provider: String? = nil, reasoningEffort: String? = nil,
     running: Bool? = nil, version: String? = nil, cwd: String? = nil, profileName: String? = nil,
     usage: Usage? = nil, title: String? = nil, desktopContract: Int? = nil,
-    revision: Int? = nil, executionGeneration: Int? = nil
+    revision: Int? = nil, executionGeneration: Int? = nil, approvalMode: String? = nil
   ) {
     self.model = model
     self.provider = provider
@@ -354,6 +357,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     self.desktopContract = desktopContract
     self.revision = revision
     self.executionGeneration = executionGeneration
+    self.approvalMode = approvalMode
   }
 
   /// Hand-written only for the lenient `desktopContract` / `provider` decodes; every other field
@@ -372,6 +376,7 @@ public struct SessionInfo: Equatable, Sendable, Decodable {
     desktopContract = Self.lenientContract(c)
     revision = (try? c.decodeIfPresent(Int.self, forKey: .revision)) ?? nil
     executionGeneration = (try? c.decodeIfPresent(Int.self, forKey: .executionGeneration)) ?? nil
+    approvalMode = try c.decodeIfPresent(String.self, forKey: .approvalMode)
   }
 
   private static func lenientContract(_ c: KeyedDecodingContainer<CodingKeys>) -> Int? {
