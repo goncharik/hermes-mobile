@@ -16,7 +16,7 @@ expiry, `cancelInFlight`). The third **Read aloud** button (#74) is specified in
 
 ## Branch creation
 
-**Branch** is desktop parity — no branch RPC exists, so `.branchFromMessage` fires a one-shot
+**Branch** is desktop parity. On a legacy host no branch RPC exists, so `.branchFromMessage` fires a one-shot
 `session.create` seeded with ONLY the selected assistant message (`messages`) +
 `parent_session_id` (**no `title`** — server auto-titles on first submit), gated by `canBranch`
 (**requires `storedSessionID` AND `attachLiveSessionID == nil` AND `branchSeed == nil`** — a
@@ -32,6 +32,26 @@ and the RPC would just fail against the dead socket).
 parent turn, since `AppFeature` tears down this whole slot on `branchCreated` and a just-submitted
 turn would be silently lost (cancelled effects, no server response ever observed).
 
+
+## Session-authority hosts (#159)
+
+On a canonical session-authority host (`session_authority: true` on the ready, v0.22.3+) the
+seeded `session.create` is refused (closed key set) and `session.activate` is gone. There a
+branch is the parent's `session.mutate {operation: "branch", payload: {through_message_id}}`,
+through the shared `fencedSessionMutate` (fences from `session.resume`, one re-read and retry
+on `revision_conflict` / `stale_generation`, the same helper as the #157 model pick).
+
+- **Boundary.** `through_message_id` is the tapped reply's own stored `row_id`, matched in the
+  parent's fetched snapshot by text and position from the newest, over every painted assistant
+  message row (commentary included, notices skipped), the same set the client counts in its
+  transcript. A reply the snapshot doesn't hold is refused ("This message isn't saved yet…"),
+  never guessed.
+- **No seed, no live-id attach, no reap recovery.** The child is a persisted copy of the history
+  through that turn, so `branchCreated` carries `seed: nil` and `AppFeature` opens it by stored
+  id, in the source chat's profile. `branchSeed`, `attachLiveSessionID` and the orphan-reap
+  replay are unreachable on this path.
+- **Gates unchanged.** `canBranch` and `isBranching` apply as above; `session_busy` maps to
+  "Stop the current turn before branching."
 ## The primed slot
 
 **A fresh branch has NO DB row until its first prompt** (server-lazy), so `Delegate.branchCreated`

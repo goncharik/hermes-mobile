@@ -199,7 +199,8 @@ bullets below are the compressed rules.
   `.status(kind: "notice")` lines, never bubbles; `hidden` / `model_only` rows are dropped.
   Same rule for a running turn's `inflight.display_kind`. Details: `docs/architecture.md`.
 - **Message actions & branching (#34)**: copy via the shared
-  `copyWithFeedback`/`rowCopyToken` mechanism; branch is a seeded `session.create`
+  `copyWithFeedback`/`rowCopyToken` mechanism; branch is a seeded `session.create` (on a
+  session-authority host, a fenced `session.mutate` branch that opens by stored id, no seed)
   guarded by strict `canBranch` gates with a client-held `BranchSeed` recovery protocol
   (probe-before-seed-replay; no probe budget). The trickiest state machine in the app —
   read `docs/features/message-actions-and-branching.md` before touching it.
