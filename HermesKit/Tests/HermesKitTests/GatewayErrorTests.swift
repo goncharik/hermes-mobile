@@ -24,6 +24,19 @@ import Testing
     #expect(GatewayError.server("error: session not found").isSessionNotFound)
   }
 
+  /// A session-authority host's refusal is the bare reason code (#166), matched exactly.
+  @Test func sessionNotFoundMatchesTheAuthorityReasonCode() {
+    #expect(GatewayError.server("not_found").isSessionNotFound)
+    #expect(!GatewayError.server("file not_found here").isSessionNotFound)
+    #expect(!GatewayError.server("permission_denied").isSessionNotFound)
+  }
+
+  @Test func submitUnattachedMatchesOnlyPermissionDenied() {
+    #expect(GatewayError.server("permission_denied").isSubmitUnattached)
+    #expect(!GatewayError.server("not_found").isSubmitUnattached)
+    #expect(!GatewayError.disconnected.isSubmitUnattached)
+  }
+
   @Test func sessionNotFoundFalseForOtherServerMessages() {
     #expect(!GatewayError.server("unknown method: prompt.submit").isSessionNotFound)
     #expect(!GatewayError.server("invalid params").isSessionNotFound)

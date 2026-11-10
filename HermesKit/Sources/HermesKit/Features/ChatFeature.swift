@@ -5182,7 +5182,8 @@ public struct ChatFeature {
           // Stale live id: re-resume/recreate for a fresh one, apply it, replay the whole
           // upload→submit sequence once (uploads are idempotent).
           try await withSessionHeal(
-            runUploadAndSubmit, sessionID: sessionID, heal: heal, gateway: gateway, send: send
+            runUploadAndSubmit, sessionID: sessionID, heal: heal, isSubmit: true,
+            gateway: gateway, send: send
           )
           // Echo images as thumbnails in the bubble; non-image files (no thumbnail)
           // fall back to their names when there's no typed text.
@@ -5918,11 +5919,14 @@ private func withSessionHeal<T>(
   _ op: (_ targetID: String) async throws -> T,
   sessionID: String,
   heal: ChatFeature.State.HealTarget,
+  isSubmit: Bool = false,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async throws -> T {
   var cursor = HealCursor(sessionID: sessionID, heal: heal)
-  return try await withSessionHeal(op, cursor: &cursor, gateway: gateway, send: send)
+  return try await withSessionHeal(
+    op, cursor: &cursor, isSubmit: isSubmit, gateway: gateway, send: send
+  )
 }
 
 /// The live id the next op of ONE user action targets, plus the heal it may still spend.
@@ -5935,17 +5939,21 @@ private struct HealCursor {
 }
 
 /// `withSessionHeal` over a shared `HealCursor`: a not-found with the heal already spent
-/// throws as-is.
+/// throws as-is. `isSubmit` (an op whose RPC is `prompt.submit`) also heals a
+/// session-authority host's `permission_denied` (#166, `isSubmitUnattached`): the replay
+/// carries the same `submission_id` (#158), so an already-admitted send de-dupes.
 @discardableResult
 private func withSessionHeal<T>(
   _ op: (_ targetID: String) async throws -> T,
   cursor: inout HealCursor,
+  isSubmit: Bool = false,
   gateway: HermesGatewayClient,
   send: Send<ChatFeature.Action>
 ) async throws -> T {
   do {
     return try await op(cursor.sessionID)
-  } catch let error as GatewayError where error.isSessionNotFound {
+  } catch let error as GatewayError
+    where error.isSessionNotFound || (isSubmit && error.isSubmitUnattached) {
     guard let heal = cursor.heal else { throw error }
     cursor.heal = nil
     cursor.sessionID = try await healLiveSessionID(heal: heal, gateway: gateway, send: send)
@@ -6100,7 +6108,7 @@ private func runDispatchDirective(
             )
           )
         },
-        cursor: &cursor, gateway: gateway, send: send
+        cursor: &cursor, isSubmit: true, gateway: gateway, send: send
       )
       await send(.slashCommandHandedOff)
     } catch let error as GatewayError {
@@ -6332,7 +6340,7 @@ private func submitPrompt(
 ) async {
   do {
     try await withSessionHeal(
-      submit, sessionID: sessionID, heal: heal, gateway: gateway, send: send
+      submit, sessionID: sessionID, heal: heal, isSubmit: true, gateway: gateway, send: send
     )
   } catch let error as GatewayError {
     await send(.promptSubmitFailed(message: error.message))

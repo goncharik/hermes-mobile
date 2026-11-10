@@ -138,10 +138,24 @@ public enum GatewayError: Error, Equatable, Sendable {
     return false
   }
 
+  /// A canonical session-authority host (`gateway.ready.session_authority: true`, v0.22.3+)
+  /// never sends that text: its refusal is `{code: 4001, message: <reason>}`, and a session
+  /// it has no row for is the bare reason `not_found` (#166), matched exactly.
   public var isSessionNotFound: Bool {
     if case let .server(message) = self {
-      return message.lowercased().contains("session not found")
+      return message == "not_found" || message.lowercased().contains("session not found")
     }
+    return false
+  }
+
+  /// A session-authority host refused a `prompt.submit` with `permission_denied`: its
+  /// `submission()` raises that when THIS connection isn't attached to the session (a new
+  /// socket before its hydrate's `session.resume` lands, or after the server dropped the
+  /// subscription). A re-resume attaches it, so the submit heals like a not-found (#166).
+  /// The same reason also covers a real authz refusal, so it is healed ONLY on a submit, and
+  /// only once: a real refusal fails the replay and banners as before.
+  public var isSubmitUnattached: Bool {
+    if case let .server(message) = self { return message == "permission_denied" }
     return false
   }
 }

@@ -714,6 +714,17 @@ replay and slash `send`/`skill` directive, so a retried send keeps its identity 
 can de-duplicate it. A legacy host rejects the key as an unknown param, so it is sent only to an
 authority host.
 
+The same hosts never send the "session not found" text (#166): a refusal is
+`{code: 4001, message: <reason>}`. `isSessionNotFound` also matches the bare `not_found` reason
+(a session deleted or unknown to the host), so the heal and the foreground hydrate's recreate
+fire there too. `prompt.submit` additionally heals `permission_denied`
+(`GatewayError.isSubmitUnattached`): the host's `submission()` raises it when this connection
+isn't attached to the session (a submit racing a new socket's hydrate, or a subscription the
+server dropped), and a re-resume attaches it. Only submits (composer, drain, attachment upload,
+slash directive) pass `isSubmit: true`, because the same reason is a real authz refusal on other
+RPCs. Still one replay: a real refusal fails the replay and banners, and the replay's reused
+`submission_id` de-dupes a send the host had in fact admitted.
+
 On the same hosts, `config.set model` is refused with `use_session_mutation_model` (#157). The pick there is
 `session.mutate {operation: "model", payload: {model, provider}}`, fenced by
 `expected_revision` / `expected_generation` (`State.sessionFences`, adopted monotonically from

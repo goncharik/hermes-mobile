@@ -1291,4 +1291,118 @@ struct SelfHealTests {
     #expect(healCalls.value.last?.params == .object(createParams))
     #expect(store.state.errorBanner == nil)
   }
+
+  // MARK: session-authority refusal codes (#166)
+
+  /// A session-authority host answers `{code: 4001, message: <reason>}`, never the
+  /// "session not found" text. Runs one `.composerSubmitted` whose first `prompt.submit`
+  /// throws `firstError`, the replay answering `replay`; returns the RPC methods.
+  private func submitOnce(
+    firstError: String, replay: GatewayError? = nil
+  ) async -> (methods: [String], store: TestStoreOf<ChatFeature>) {
+    let calls = LockIsolated<[(method: String, sessionID: String?)]>([])
+    var initial = healableState()
+    initial.composerText = "hello"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, params in
+        let sid = params["session_id"]?.stringValue
+        calls.withValue { $0.append((method, sid)) }
+        switch method {
+        case "prompt.submit":
+          if sid == "stale-live" { throw GatewayError.server(firstError) }
+          if let replay { throw replay }
+          return .object(["status": .string("streaming")])
+        case "session.resume":
+          return self.resumePayload(liveID: "fresh-live")
+        default:
+          return .object([:])
+        }
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.send(.composerSubmitted)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(calls.value.last?.sessionID == (calls.value.count > 1 ? "fresh-live" : "stale-live"))
+    return (calls.value.map(\.method), store)
+  }
+
+  @Test func authorityNotFoundOnSubmitHeals() async {
+    let (methods, store) = await submitOnce(firstError: "not_found")
+    #expect(methods == ["prompt.submit", "session.resume", "prompt.submit"])
+    #expect(store.state.liveSessionID == "fresh-live")
+    #expect(store.state.errorBanner == nil)
+    #expect(store.state.isSending)
+  }
+
+  /// `submission()` refuses a socket that isn't attached to the session with
+  /// `permission_denied`; the re-resume attaches it and the replay goes through.
+  @Test func authorityUnattachedSubmitHeals() async {
+    let (methods, store) = await submitOnce(firstError: "permission_denied")
+    #expect(methods == ["prompt.submit", "session.resume", "prompt.submit"])
+    #expect(store.state.errorBanner == nil)
+    #expect(store.state.isSending)
+  }
+
+  /// A real authz refusal keeps refusing: one replay, then the banner. Never a loop.
+  @Test func authorityPermissionDeniedThatPersistsBannersAfterOneReplay() async {
+    let (methods, store) = await submitOnce(
+      firstError: "permission_denied", replay: .server("permission_denied")
+    )
+    #expect(methods == ["prompt.submit", "session.resume", "prompt.submit"])
+    #expect(store.state.errorBanner == "Prompt failed: permission_denied")
+    #expect(!store.state.isSending)
+  }
+
+  /// `permission_denied` heals ONLY a submit: on any other RPC it is a real refusal.
+  @Test func permissionDeniedOnRenameIsNotHealed() async {
+    let calls = LockIsolated<[String]>([])
+    var initial = healableState()
+    initial.title = "Old title"
+    initial.renameDraft = "New title"
+    let store = TestStore(initialState: initial) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        calls.withValue { $0.append(method) }
+        if method == "session.title" { throw GatewayError.server("permission_denied") }
+        return .object([:])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.send(.confirmRename)
+    await store.finish()
+    await store.skipReceivedActions(strict: false)
+    #expect(calls.value == ["session.title"])
+    #expect(store.state.title == "Old title")
+  }
+
+  /// The foreground hydrate's `not_found` (a session reaped/deleted server-side) recovers like
+  /// the legacy text: drop the stale id and create a fresh session.
+  @Test func authorityNotFoundOnHydrateRecreatesSession() async {
+    let store = TestStore(initialState: healableState()) { ChatFeature() } withDependencies: {
+      $0.uuid = .incrementing
+      $0.date = .constant(.init(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        if method == "session.create" {
+          return .object(["session_id": .string("recreated-live"), "stored_session_id": .string("stored123")])
+        }
+        return .object([:])
+      }
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+    await store.send(.activateResult(.failure(.server("not_found")))) {
+      $0.status = .reconnecting
+      $0.liveSessionID = nil
+      $0.hasRequestedSession = true
+    }
+    await store.receive(\.sessionResult.success)
+    await store.finish()
+    #expect(store.state.liveSessionID == "recreated-live")
+  }
 }
