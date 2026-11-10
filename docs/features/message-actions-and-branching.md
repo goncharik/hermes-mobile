@@ -32,7 +32,6 @@ and the RPC would just fail against the dead socket).
 parent turn, since `AppFeature` tears down this whole slot on `branchCreated` and a just-submitted
 turn would be silently lost (cancelled effects, no server response ever observed).
 
-
 ## Session-authority hosts (#159)
 
 On a canonical session-authority host (`session_authority: true` on the ready, v0.22.3+) the
@@ -50,8 +49,12 @@ on `revision_conflict` / `stale_generation`, the same helper as the #157 model p
   through that turn, so `branchCreated` carries `seed: nil` and `AppFeature` opens it by stored
   id, in the source chat's profile. `branchSeed`, `attachLiveSessionID` and the orphan-reap
   replay are unreachable on this path.
-- **Gates unchanged.** `canBranch` and `isBranching` apply as above; `session_busy` maps to
-  "Stop the current turn before branching."
+- **Gates unchanged.** `canBranch` and `isBranching` apply as above.
+- **Refusals.** The host answers a bare reason code; `branchFailureBanner` maps the known ones to
+  plain copy (`session_busy` → "Stop the current turn before branching.", `not_found`, the
+  permission family, an exhausted fence retry, and the transient/server-state family) and keeps
+  any other text as the detail.
+
 ## The primed slot
 
 **A fresh branch has NO DB row until its first prompt** (server-lazy), so `Delegate.branchCreated`
