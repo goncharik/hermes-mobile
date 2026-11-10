@@ -126,7 +126,7 @@ struct BranchMutationTests {
     await store.skipReceivedActions(strict: false)
 
     #expect(store.state.isBranching == false)
-    #expect(store.state.errorBanner == "Couldn’t branch the chat: permission_denied")
+    #expect(store.state.errorBanner == "Couldn’t branch the chat: the server doesn’t allow it here.")
   }
 
   @Test func boundaryIsTheTappedRepliesStoredRow() throws {
@@ -266,5 +266,20 @@ struct BranchMutationTests {
 
     await store.send(.liveChat(.teardown))
     await store.send(.home(.onDisappear))
+  }
+
+  /// Review on #164: refusal codes never show raw.
+  @Test func refusalCodesGetPlainBanners() {
+    #expect(branchFailureBanner(.server("session_busy")) == "Stop the current turn before branching.")
+    #expect(branchFailureBanner(.server("not_found")) == "Couldn’t branch the chat: it no longer exists on the server.")
+    #expect(branchFailureBanner(.server("permission_denied")) == "Couldn’t branch the chat: the server doesn’t allow it here.")
+    #expect(branchFailureBanner(.server("stale_generation")) == "Couldn’t branch the chat: it changed on the server. Try again.")
+    #expect(branchFailureBanner(.server("invalid_params")) == "Couldn’t branch the chat. Try again.")
+    #expect(branchFailureBanner(.server(branchUnsavedMessage)) == branchUnsavedMessage)
+    // A legacy host's prose stays as the detail.
+    #expect(branchFailureBanner(.server("Session cap reached")) == "Couldn’t branch the chat: Session cap reached")
+    for reason in ["not_found", "permission_denied", "invalid_params", "revision_conflict", "runtime_draining"] {
+      #expect(!branchFailureBanner(.server(reason)).contains(reason))
+    }
   }
 }

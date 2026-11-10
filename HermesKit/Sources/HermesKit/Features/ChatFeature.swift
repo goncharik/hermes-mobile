@@ -2260,13 +2260,7 @@ public struct ChatFeature {
 
       case let .branchMutated(.failure(error)):
         state.isBranching = false
-        if case let .server(message) = error, message == "session_busy" {
-          state.errorBanner = "Stop the current turn before branching."
-        } else if case let .server(message) = error, message == branchUnsavedMessage {
-          state.errorBanner = message
-        } else {
-          state.errorBanner = "Couldn’t branch the chat: \(error.message)"
-        }
+        state.errorBanner = branchFailureBanner(error)
         return .none
 
       case let .branchResult(.success(handle)):
@@ -5791,6 +5785,26 @@ private func recreateLiveSession(
     liveSessionID: handle.sessionID, storedSessionID: handle.storedSessionID
   ))
   return handle.sessionID
+}
+
+/// The banner for a failed branch. A session-authority host refuses with a bare reason code
+/// (`{code: 4001, message: <reason>}`), which reads as jargon, so the known reasons get plain
+/// copy; any other server text (a legacy host's prose) stays as the detail.
+func branchFailureBanner(_ error: GatewayError) -> String {
+  guard case let .server(reason) = error else { return "Couldn’t branch the chat: \(error.message)" }
+  switch reason {
+  case "session_busy": return "Stop the current turn before branching."
+  case branchUnsavedMessage: return reason
+  case "not_found": return "Couldn’t branch the chat: it no longer exists on the server."
+  case "permission_denied", "profile_mismatch", "read_only":
+    return "Couldn’t branch the chat: the server doesn’t allow it here."
+  case "revision_conflict", "stale_generation":
+    return "Couldn’t branch the chat: it changed on the server. Try again."
+  case "invalid_params", "runtime_draining", "runtime_retired", "storage_unavailable",
+       "runtime_coordination_required", "admission_conflict":
+    return "Couldn’t branch the chat. Try again."
+  default: return "Couldn’t branch the chat: \(reason)"
+  }
 }
 
 /// The branch boundary refusal (#159): the tapped reply has no stored row in the snapshot.
