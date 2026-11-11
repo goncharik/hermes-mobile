@@ -179,6 +179,41 @@ import Testing
     #expect(draft.answers(for: request) == ["q2": .other("app")])
   }
 
+  @Test func progressCountsSettledQuestionsAndReadsNOfNExactlyWhenComplete() {
+    var draft = ClarifyDraft()
+    #expect(draft.progressText(for: batch) == "0 of 3 answered")
+    draft.toggle("UIKit", in: pickOne)
+    #expect(draft.progressText(for: batch) == "1 of 3 answered")
+    draft.toggleSkip(freeText)
+    #expect(draft.progressText(for: batch) == "2 of 3 answered", "a skip settles a question")
+    #expect(!draft.isComplete(for: batch))
+    draft.toggle("iOS", in: pickMany)
+    #expect(draft.progressText(for: batch) == "3 of 3 answered")
+    #expect(draft.isComplete(for: batch))
+    draft.toggle("iOS", in: pickMany)
+    #expect(draft.progressText(for: batch) == "2 of 3 answered", "un-picking unsettles it again")
+  }
+
+  @Test func progressCountsLocksAndBlankTextIsNotAnAnswer() {
+    var request = batch
+    request.lockedAnswers = ["q1": String?.none]
+    var draft = ClarifyDraft()
+    #expect(draft.progressText(for: request) == "1 of 3 answered")
+    draft.setText("  ", for: freeText)
+    #expect(draft.progressText(for: request) == "1 of 3 answered")
+    #expect(draft.isSettled(pickMany, in: request))
+    #expect(!draft.isSettled(freeText, in: request))
+  }
+
+  @Test func aOneQuestionCardHasNoProgressCaption() {
+    let single = ClarifyRequest(requestID: nil, questions: [pickMany], answerShape: .answers)
+    var draft = ClarifyDraft()
+    draft.toggle("iOS", in: pickMany)
+    #expect(draft.progressText(for: single) == nil)
+    let legacy = ClarifyRequest(requestID: "r1", question: "Proceed?", choices: ["Yes", "No"])
+    #expect(ClarifyDraft().progressText(for: legacy) == nil)
+  }
+
   @Test func singleFormsKeyTheirAnswerOnTheEmptyKey() {
     let single = ClarifyRequest(requestID: nil, question: "Proceed?", choices: ["Yes", "No"])
     let question = single.questions[0]
