@@ -183,6 +183,7 @@ struct ChatQueueSteerTests {
     await store.send(.gatewayEvent(.messageComplete(text: "done", usage: nil)))
     #expect(store.state.drainingEntry?.text == "B")
     await store.receive(\.drainedEntryHeld)
+    #expect(store.state.heldDrain?.entry.text == "B", "kept until its own turn shows")
 
     #expect(submits.value.count == 1)
     #expect(submits.value.first?["text"]?.stringValue == "B")
@@ -880,6 +881,182 @@ struct ChatQueueSteerTests {
     await store.send(.teardown)
     await store.finish()
   }
+
+  // MARK: Held drains (review on #109)
+
+  /// A, then B queued; A's steer was accepted and the server runs its follow-up. B drains and
+  /// the legacy host holds it. Returns the store with B held behind that follow-up turn.
+  private func heldStore(
+    _ calls: LockIsolated<[String]> = LockIsolated([]),
+    behind: [QueuedPrompt] = []
+  ) async -> TestStoreOf<ChatFeature> {
+    let store = makeStore(runningState([QueuedPrompt(id: uuid(91), text: "B")] + behind)) { method, _ in
+      calls.withValue { $0.append(method) }
+      if method == "prompt.submit" { return .object(["status": .string("queued")]) }
+      return .object([:])
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "done", usage: nil)))
+    await store.receive(\.drainedEntryHeld)
+    return store
+  }
+
+  /// The server's Stop clears its `queued_prompt`: B goes back to the panel, its bubble goes.
+  @Test func stopBeforeTheHeldDrainRunsReparksIt() async {
+    let store = await heldStore()
+    #expect(store.state.heldDrain?.entry.text == "B")
+    #expect(store.state.transcript.contains { $0.kind == .message(role: .user, text: "B", isComplete: true) })
+    await store.send(.interruptTapped)
+    #expect(store.state.heldDrain == nil)
+    #expect(store.state.queuedPrompts.map(\.text) == ["B"])
+    #expect(store.state.isQueueParked)
+    #expect(!store.state.transcript.contains { $0.kind == .message(role: .user, text: "B", isComplete: true) })
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// The turn in front ends, then B's own turn starts: released; a Stop now stops B's turn
+  /// and never re-queues it.
+  @Test func heldDrainIsReleasedByItsOwnTurn() async {
+    let store = await heldStore()
+    await store.send(.gatewayEvent(.messageComplete(text: "follow-up", usage: nil)))
+    #expect(store.state.heldDrain?.sawTurnEnd == true)
+    await store.send(.gatewayEvent(.messageStart))
+    #expect(store.state.heldDrain == nil)
+    await store.send(.interruptTapped)
+    #expect(store.state.queuedPrompts.isEmpty)
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// An `.error` ends the turn in front too; the server still runs B next.
+  @Test func errorInFrontMarksTheHeldDrainNext() async {
+    let store = await heldStore()
+    await store.send(.gatewayEvent(.error(message: "boom")))
+    #expect(store.state.heldDrain?.sawTurnEnd == true)
+    #expect(store.state.queuedPrompts.isEmpty, "never re-queued: the server runs it")
+    await store.send(.gatewayEvent(.messageStart))
+    #expect(store.state.heldDrain == nil)
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// While B is held, the queue behind it waits: C must not jump ahead of B.
+  @Test func heldDrainHoldsTheQueueBehindIt() async {
+    let calls = LockIsolated<[String]>([])
+    let store = await heldStore(calls, behind: [QueuedPrompt(id: uuid(92), text: "C")])
+    // The turn in front ends: C must still wait for B's own turn.
+    await store.send(.gatewayEvent(.messageComplete(text: "follow-up", usage: nil)))
+    await store.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live123", storedSessionID: "stored123", running: true,
+      inflight: SessionInflight(user: "A", assistant: "", streaming: true, corrections: [])
+    ))))
+    #expect(store.state.heldDrain != nil, "a running turn that isn't B keeps it held")
+    #expect(store.state.queuedPrompts.map(\.text) == ["C"])
+    #expect(calls.value.filter { $0 == "prompt.submit" }.count == 1)
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// A running hydrate whose turn IS B releases it.
+  @Test func runningHydrateOfTheHeldDrainReleasesIt() async {
+    let store = await heldStore()
+    await store.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live123", storedSessionID: "stored123", running: true,
+      inflight: SessionInflight(user: "B", assistant: "", streaming: true, corrections: [])
+    ))))
+    #expect(store.state.heldDrain == nil)
+    #expect(store.state.queuedPrompts.isEmpty)
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// An idle hydrate: B ran if it's the last user message, else the server dropped it.
+  @Test func idleHydrateSettlesTheHeldDrain() async {
+    let ran = await heldStore()
+    await ran.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live123", storedSessionID: "stored123",
+      messages: [
+        SessionMessage(id: 1, role: "user", content: "A"),
+        SessionMessage(id: 2, role: "assistant", content: "ok"),
+        SessionMessage(id: 3, role: "user", content: "B"),
+        SessionMessage(id: 4, role: "assistant", content: "ok B"),
+      ],
+      running: false
+    ))))
+    #expect(ran.state.heldDrain == nil)
+    #expect(ran.state.queuedPrompts.isEmpty)
+    await ran.send(.teardown)
+    await ran.finish()
+
+    let dropped = await heldStore()
+    await dropped.send(.activateResult(.success(ActivateResponse(
+      sessionID: "live123", storedSessionID: "stored123",
+      messages: [
+        SessionMessage(id: 1, role: "user", content: "A"),
+        SessionMessage(id: 2, role: "assistant", content: "ok"),
+      ],
+      running: false
+    ))))
+    #expect(dropped.state.heldDrain == nil)
+    #expect(dropped.state.queuedPrompts.map(\.text) == ["B"])
+    #expect(dropped.state.isQueueParked)
+    await dropped.send(.teardown)
+    await dropped.finish()
+  }
+
+  /// A late `queued` receipt for B must not clear C's draining slot.
+  @Test func lateHeldReceiptClearsOnlyItsOwnEntry() async {
+    var initial = runningState([])
+    initial.drainingEntry = QueuedPrompt(id: uuid(92), text: "C")
+    let store = makeStore(initial) { _, _ in .object([:]) }
+    await store.send(.drainedEntryHeld(entry: QueuedPrompt(id: uuid(91), text: "B"), rowID: nil))
+    #expect(store.state.drainingEntry?.text == "C")
+    await store.send(.promptSubmitFailed(message: "boom"))
+    #expect(store.state.queuedPrompts.map(\.text) == ["C"], "C can still re-park")
+    await store.finish()
+  }
+
+  /// Every admission on a session-authority host answers `queued`: consumed, never held.
+  @Test func authorityQueuedReceiptIsNotHeld() async {
+    let submits = LockIsolated<[JSONValue]>([])
+    var initial = runningState([QueuedPrompt(id: uuid(91), text: "B")])
+    initial.isSessionAuthority = true
+    let store = makeStore(initial) { method, params in
+      if method == "prompt.submit" {
+        submits.withValue { $0.append(params) }
+        return .object(["status": .string("queued")])
+      }
+      return .object([:])
+    }
+    await store.send(.gatewayEvent(.messageComplete(text: "done", usage: nil)))
+    await store.receive(\.drainedEntryHeld)
+    #expect(store.state.drainingEntry == nil)
+    #expect(store.state.heldDrain == nil)
+    await store.send(.interruptTapped)
+    #expect(store.state.queuedPrompts.isEmpty)
+    // The authority frame carries both keys.
+    #expect(submits.value.first?["queued"] == .bool(true))
+    #expect(submits.value.first?["submission_id"]?.stringValue != nil)
+    await store.send(.teardown)
+    await store.finish()
+  }
+
+  /// A session-authority host's `session.steer` needs the claim's generation: hidden there.
+  @Test func steerIsHiddenOnSessionAuthorityHosts() async {
+    var initial = runningState([QueuedPrompt(id: uuid(90), text: "A")])
+    #expect(initial.canSteerQueued)
+    initial.isSessionAuthority = true
+    #expect(!initial.canSteerQueued)
+    let calls = LockIsolated<[String]>([])
+    let store = makeStore(initial) { method, _ in
+      calls.withValue { $0.append(method) }
+      return .object([:])
+    }
+    await store.send(.queuedPromptSteer(id: uuid(90)))
+    #expect(calls.value.isEmpty)
+    #expect(store.state.queuedPrompts.map(\.text) == ["A"])
+    await store.finish()
+  }
 }
 
 /// `SteerEligibility` (desktop `isSteerableEntry`) and the `session.steer` answer mapping.
@@ -940,4 +1117,5 @@ struct SteerEligibilityTests {
     #expect(malformed.corrections.isEmpty)
     #expect(malformed.user == "u")
   }
+
 }
