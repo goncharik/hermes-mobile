@@ -543,7 +543,7 @@ public struct SessionListFeature {
     /// while the pin/seen restore always applies (see `rollBackFailedRemoval` for the rule).
     case archiveFailed(
       id: Session.ID, session: Session, index: Int, pinIndex: Int?, seenCount: Int?,
-      profileName: String?, searchQuery: String
+      profileName: String?, searchQuery: String, error: RESTError
     )
     /// Ask to permanently delete a session (presents the confirmation dialog).
     case deleteButtonTapped(id: Session.ID)
@@ -582,7 +582,7 @@ public struct SessionListFeature {
     /// Rename PATCH succeeded — the optimistic value stands.
     case renameSucceeded(id: Session.ID)
     /// Rename PATCH failed — restore `previousTitle` and surface the error.
-    case renameFailed(id: Session.ID, previousTitle: String?)
+    case renameFailed(id: Session.ID, previousTitle: String?, error: RESTError)
     /// Dismiss the rename alert without applying changes.
     case cancelRename
     case confirmationDialog(PresentationAction<Dialog>)
@@ -1209,7 +1209,9 @@ public struct SessionListFeature {
           }
           preferences.savePinnedIDs(state.pinnedIDs)
           let fetch = cancelOrRestartFetch(&state)
-          state.loadError = error.message
+          // A fenced-write refusal reads as a sentence; anything else keeps the server's copy.
+          state.loadError = error.sessionMutationRefusal == nil
+            ? error.message : error.sessionMutationBanner("Couldn’t update the pin.")
           return fetch
         }
         retireMigrationPin(server: state.pinMigrationServerID, id: id)
@@ -1311,7 +1313,8 @@ public struct SessionListFeature {
               } catch {
                 await send(.archiveFailed(
                   id: id, session: session, index: index, pinIndex: pinIndex,
-                  seenCount: seenCount, profileName: archiveProfile, searchQuery: archiveQuery
+                  seenCount: seenCount, profileName: archiveProfile, searchQuery: archiveQuery,
+                  error: asRESTError(error)
                 ))
               }
             }
@@ -1411,7 +1414,7 @@ public struct SessionListFeature {
         if error.isMissingEndpointVerdict {
           state.deleteSupported = false
         } else {
-          state.loadError = "Couldn’t delete the session."
+          state.loadError = error.sessionMutationBanner("Couldn’t delete the session.")
         }
         return .none
 
@@ -1439,7 +1442,7 @@ public struct SessionListFeature {
         state.archivingIDs.remove(id)
         return cancelOrRestartFetch(&state)
 
-      case let .archiveFailed(id, session, index, pinIndex, seenCount, profileName, searchQuery):
+      case let .archiveFailed(id, session, index, pinIndex, seenCount, profileName, searchQuery, error):
         // The archive didn't take — the server still has the session. Lift the in-flight
         // guard, roll back (rollback rule: `rollBackFailedRemoval`), and surface the error.
         state.archivingIDs.remove(id)
@@ -1447,7 +1450,7 @@ public struct SessionListFeature {
           &state, id: id, session: session, index: index, pinIndex: pinIndex,
           seenCount: seenCount, profileName: profileName, searchQuery: searchQuery
         )
-        state.loadError = "Couldn’t archive the session."
+        state.loadError = error.sessionMutationBanner("Couldn’t archive the session.")
         return .none
 
       case let .renameButtonTapped(id):
@@ -1481,7 +1484,9 @@ public struct SessionListFeature {
               try await rest.rename(connection, id, trimmed, renameProfile)
               await send(.renameSucceeded(id: id))
             } catch {
-              await send(.renameFailed(id: id, previousTitle: previousTitle))
+              await send(.renameFailed(
+                id: id, previousTitle: previousTitle, error: asRESTError(error)
+              ))
             }
           }
         )
@@ -1495,12 +1500,12 @@ public struct SessionListFeature {
         state.renamingInFlightIDs.remove(id)
         return cancelOrRestartFetch(&state)
 
-      case let .renameFailed(id, previousTitle):
+      case let .renameFailed(id, previousTitle, error):
         // The rename didn't take (e.g. a 400 for an over-long/duplicate title) — lift the guard,
         // restore the previous title locally, and surface the error.
         state.renamingInFlightIDs.remove(id)
         state.sessions[id: id]?.title = previousTitle
-        state.loadError = "Couldn’t rename the session."
+        state.loadError = error.sessionMutationBanner("Couldn’t rename the session.")
         return .none
 
       case .cancelRename:
@@ -1590,7 +1595,7 @@ public struct SessionListFeature {
         if error.isMissingEndpointVerdict {
           state.deleteSupported = false
         } else {
-          state.loadError = "Couldn’t delete the session."
+          state.loadError = error.sessionMutationBanner("Couldn’t delete the session.")
         }
         return .none
 

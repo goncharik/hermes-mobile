@@ -72,7 +72,7 @@ public struct ArchivedSessionsFeature {
     /// Restore PATCH succeeded — the optimistic removal stands.
     case restoreSucceeded(id: Session.ID)
     /// Restore PATCH failed — re-insert the session at its saved index and surface the error.
-    case restoreFailed(id: Session.ID, session: Session, index: Int)
+    case restoreFailed(id: Session.ID, session: Session, index: Int, error: RESTError)
     /// Permanently delete a row — IMMEDIATE, no confirmation (decided in planning: the
     /// archived sheet is the bulk-cleanup surface and its rows are already tucked away).
     case deleteButtonTapped(id: Session.ID)
@@ -163,7 +163,9 @@ public struct ArchivedSessionsFeature {
             try await rest.archive(connection, id, false, profileName) // archived:false = restore
             await send(.restoreSucceeded(id: id))
           } catch {
-            await send(.restoreFailed(id: id, session: session, index: index))
+            await send(.restoreFailed(
+              id: id, session: session, index: index, error: asRESTError(error)
+            ))
           }
         }
 
@@ -171,11 +173,11 @@ public struct ArchivedSessionsFeature {
         state.restoringIDs.remove(id)
         return .none
 
-      case let .restoreFailed(id, session, index):
+      case let .restoreFailed(id, session, index, error):
         state.restoringIDs.remove(id)
         let insertAt = min(index, state.sessions.count)
         state.sessions.insert(session, at: insertAt)
-        state.loadError = "Couldn’t restore the session."
+        state.loadError = error.sessionMutationBanner("Couldn’t restore the session.")
         return .none
 
       case let .deleteButtonTapped(id):
@@ -220,7 +222,7 @@ public struct ArchivedSessionsFeature {
           state.deleteSupported = false
           return .send(.delegate(.deleteUnsupported))
         } else {
-          state.loadError = "Couldn’t delete the session."
+          state.loadError = error.sessionMutationBanner("Couldn’t delete the session.")
           return .none
         }
 

@@ -19,8 +19,11 @@ extension RESTTransportSuite {
       let json = nullField
         ? #"{"results":[{"session_id":"a","pinned":null}]}"#
         : #"{"results":[{"session_id":"a"}]}"#
+      // search, the pin write's mutation-snapshot read, the fenced PATCH, the refetch.
+      let snapshot = #"{"session_id":"a","exists":true,"runtime_revision":3,"runtime_generation":1}"#
       MockURLProtocol.setSequence([
-        .init(body: Data(json.utf8)), .init(), .init(body: Data(json.utf8)),
+        .init(body: Data(json.utf8)), .init(body: Data(snapshot.utf8)), .init(),
+        .init(body: Data(json.utf8)),
       ])
       let rows = try await rest.search(connection, "find", profile)
       let row = try #require(rows.first)
@@ -56,7 +59,7 @@ extension RESTTransportSuite {
       await store.receive(\.sessionsResponse.success) { $0.isLoading = false }
       await store.finish()
       #expect(prefs.loadPinnedIDs() == expected)
-      #expect(MockURLProtocol.requests.count == 3)
+      #expect(MockURLProtocol.requests.count == 4)
       let patches = MockURLProtocol.requests.filter { $0.httpMethod == "PATCH" }
       #expect(patches.count == 1)
       let request = try #require(patches.first)
@@ -64,6 +67,7 @@ extension RESTTransportSuite {
       let body = try #require(JSONSerialization.jsonObject(with: mockRequestBody(request)) as? [String: Any])
       #expect(body["pinned"] as? Bool == pinned)
       #expect(body["profile"] as? String == profile)
+      #expect(body["expected_revision"] as? Int == 3)
     }
   }
 }
@@ -2708,6 +2712,38 @@ struct SessionListFeatureTests {
     #expect(store.state.sessions.map(\.id) == ["a", "b"])
   }
 
+  /// A fenced-write refusal (Hermes v0.22.1+) names its reason after the action's banner.
+  @Test func archiveRefusalAppendsTheReasonToTheBanner() async {
+    let session = Session(id: "a", title: "Keep me")
+    var initial = SessionListFeature.State(connection: connection, sessions: [session])
+    initial.confirmationDialog = ConfirmationDialogState {
+      TextState("Archive session?")
+    } actions: {
+      ButtonState(role: .destructive, action: .confirmArchive(id: "a")) { TextState("Archive") }
+    }
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.preferences = .inMemory()
+      $0.hermesREST.archive = { @Sendable _, _, _, _ in
+        throw RESTError.server(status: 409, detail: "session_busy")
+      }
+    }
+
+    await store.send(.confirmationDialog(.presented(.confirmArchive(id: "a")))) {
+      $0.confirmationDialog = nil
+      $0.sessions = []
+      $0.archivingIDs = ["a"]
+    }
+    await store.receive(\.delegate.sessionArchived)
+    await store.receive(\.archiveFailed) {
+      $0.sessions = [session]
+      $0.archivingIDs = []
+      $0.loadError = "Couldn’t archive the session. The session is busy. Try again when its turn ends."
+    }
+  }
+
   @Test func archiveFailureRestoresPinAndSeenState() async {
     let prefs = PreferencesClient.inMemory()
     let session = Session(id: "a", title: "Keep me", messageCount: 5)
@@ -3292,7 +3328,7 @@ struct SessionListFeatureTests {
 
     await store.send(.archiveFailed(
       id: "a", session: Session(id: "a", title: "Work row"), index: 0, pinIndex: nil,
-      seenCount: nil, profileName: "work", searchQuery: ""
+      seenCount: nil, profileName: "work", searchQuery: "", error: .unreachable
     )) {
       $0.archivingIDs = []
       $0.loadError = "Couldn’t archive the session."
@@ -3343,7 +3379,7 @@ struct SessionListFeatureTests {
 
     await store.send(.archiveFailed(
       id: "a", session: Session(id: "a", title: "Old result"), index: 0, pinIndex: nil,
-      seenCount: nil, profileName: nil, searchQuery: "old"
+      seenCount: nil, profileName: nil, searchQuery: "old", error: .unreachable
     )) {
       $0.archivingIDs = []
       $0.loadError = "Couldn’t archive the session."
@@ -5995,7 +6031,7 @@ struct SessionListFeatureTests {
 
     await store.send(.archiveFailed(
       id: "a", session: Session(id: "a"), index: 0, pinIndex: nil,
-      seenCount: nil, profileName: captured, searchQuery: ""
+      seenCount: nil, profileName: captured, searchQuery: "", error: .unreachable
     )) {
       $0.archivingIDs = []
       $0.loadError = "Couldn’t archive the session."
@@ -6038,7 +6074,7 @@ struct SessionListFeatureTests {
 
     await store.send(.archiveFailed(
       id: "a", session: session, index: 1, pinIndex: nil,
-      seenCount: nil, profileName: "default", searchQuery: ""
+      seenCount: nil, profileName: "default", searchQuery: "", error: .unreachable
     )) {
       $0.archivingIDs = []
       $0.sessions = [Session(id: "b"), session]

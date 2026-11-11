@@ -287,7 +287,10 @@ bullets below are the compressed rules.
 - **Pin membership syncs with the server; pin order stays device-local.** Details in
   `docs/features/session-list.md`.
 - **Archive, rename, and delete are server-side**, optimistic with rollback (list → REST
-  `PATCH`/`DELETE`; chat rename → `session.title`).
+  `PATCH`/`DELETE`; chat rename → `session.title`). Every session `PATCH`/`DELETE` goes
+  through `mutateSession`: a `mutation-snapshot` read, then the write fenced with
+  `request_id` + `expected_revision` (v0.22.1+ refuses unfenced writes with 409), unfenced
+  only when the snapshot route is missing. Details: `docs/features/session-list.md`.
 - **Delete (#73) mirrors archive** (`deletingIDs` guard, rollback) with a
   `deleteSupported` flip on 404 **or 405** (older agents serve the path for
   `PATCH`/`GET`) — silent, mirrored both ways with the archived sheet; the swipe-default

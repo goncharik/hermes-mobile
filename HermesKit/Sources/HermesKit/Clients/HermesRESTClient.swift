@@ -177,6 +177,34 @@ public enum RESTError: Error, Equatable, Sendable {
     }
   }
 
+  /// A readable reason for an agent's refusal of a fenced session write (`mutateSession`),
+  /// keyed on the reason code the server puts in `detail`; `nil` for anything else.
+  public var sessionMutationRefusal: String? {
+    guard case let .server(_, detail?) = self else { return nil }
+    // `client_upgrade_required` carries prose after a colon.
+    switch detail.prefix(while: { $0 != ":" }) {
+    case "revision_conflict", "stale_generation":
+      return "It changed on another device. Try again."
+    case "session_busy":
+      return "The session is busy. Try again when its turn ends."
+    case "client_upgrade_required", "mutation_identity_required":
+      return "This agent needs a newer version of the app."
+    case "profile_mismatch":
+      return "It belongs to a different profile."
+    case "permission_denied":
+      return "This account can’t change it."
+    case "runtime_draining", "storage_unavailable":
+      return "The agent is unavailable right now. Try again shortly."
+    default:
+      return nil
+    }
+  }
+
+  /// `base` (the action's banner), followed by the refusal reason when there is one.
+  public func sessionMutationBanner(_ base: String) -> String {
+    sessionMutationRefusal.map { "\(base) \($0)" } ?? base
+  }
+
   public var message: String {
     switch self {
     case .unauthorized: "Invalid or missing token."
@@ -244,7 +272,9 @@ public struct HermesRESTClient: Sendable {
   /// Soft-hide (archive) or restore a session — `PATCH /api/sessions/{id}` `{"archived":…}`.
   /// Pass `profile` (the literal name, `"default"` included — see
   /// `SessionListFeature.State.scopedProfileName`) to scope to that profile (added to both
-  /// query and body); `nil` → today's exact request.
+  /// query and body); `nil` omits it. Like every session write (archive, unread, pin, rename,
+  /// delete) it goes through `mutateSession`: a `mutation-snapshot` read first, then the write
+  /// fenced with `request_id` + `expected_revision` on agents that require it (v0.22.1+).
   public var archive: @Sendable (_ connection: ServerConnection, _ id: String, _ archived: Bool, _ profile: String?) async throws -> Void
   /// Set the shared unread flag — `PATCH /api/sessions/{id}` `{"unread":…}`. Sending
   /// `false` on every open both acknowledges current activity and starts tracking a legacy
@@ -448,56 +478,43 @@ public extension HermesRESTClient {
         let response: SearchResponse = try await get(url, auth: authFor(conn), session: session)
         return response.results.map(\.asSession)
       },
+      // Every session write goes through `mutateSession` (fenced on v0.22.1+ agents, see its
+      // doc). Interpolate the RAW id — `makeURL` percent-encodes `comps.path`, so
+      // pre-encoding would double-encode reserved chars.
       archive: { conn, id, archived, profile in
-        // `makeURL` percent-encodes `comps.path`, so interpolate the RAW id — pre-encoding
-        // here would double-encode reserved chars.
-        // A non-nil profile is mirrored into both the query and the body (matches desktop);
-        // `nil` → no `profile` anywhere, byte-identical to today's request.
-        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        var payload: [String: Any] = ["archived": archived]
-        if let profile { payload["profile"] = profile }
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+        try await mutateSession(
+          conn.baseURL, id: id, profile: profile, method: "PATCH",
+          payload: ["archived": archived], auth: authFor(conn), session: session
+        )
       },
       setUnread: { conn, id, unread, profile in
-        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        var payload: [String: Any] = ["unread": unread]
-        if let profile { payload["profile"] = profile }
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+        try await mutateSession(
+          conn.baseURL, id: id, profile: profile, method: "PATCH",
+          payload: ["unread": unread], auth: authFor(conn), session: session
+        )
       },
       setPinned: { conn, id, pinned, profile in
-        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        var payload: [String: Any] = ["pinned": pinned]
-        if let profile { payload["profile"] = profile }
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+        try await mutateSession(
+          conn.baseURL, id: id, profile: profile, method: "PATCH",
+          payload: ["pinned": pinned], auth: authFor(conn), session: session
+        )
       },
       rename: { conn, id, title, profile in
-        // Same endpoint/shape as `archive`: interpolate the RAW id (`makeURL` percent-encodes
-        // the path), send `{"title": …}` — an empty string clears the title server-side.
-        // A non-nil profile is mirrored into both the query and the body (matches desktop);
-        // `nil` → no `profile` anywhere, byte-identical to today's request.
-        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        var payload: [String: Any] = ["title": title]
-        if let profile { payload["profile"] = profile }
-        let body = try JSONSerialization.data(withJSONObject: payload)
-        try await send(url, method: "PATCH", body: body, auth: authFor(conn), session: session)
+        // An empty string clears the title server-side.
+        try await mutateSession(
+          conn.baseURL, id: id, profile: profile, method: "PATCH",
+          payload: ["title": title], auth: authFor(conn), session: session
+        )
       },
       deleteSession: { conn, id, profile in
-        // Same URL shape as `archive`/`rename`: interpolate the RAW id (`makeURL`
-        // percent-encodes the path). A non-nil profile rides in the query only — DELETE
-        // carries no body; `nil` → no `profile` anywhere.
-        // Any 2xx is success (`{ok, already_absent}` included); the body is discarded.
-        // 404 → `.notFound`, 405 (older agent, path exists for PATCH/GET only) →
-        // `.server(status: 405, …)` via the shared `validate` mapping.
-        let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
-        let url = try makeURL(conn.baseURL, "/api/sessions/\(id)", query: query)
-        try await send(url, method: "DELETE", body: nil, auth: authFor(conn), session: session)
+        // DELETE carries no body: the profile (and, when fenced, the identity) ride in the
+        // query. Any 2xx is success (`{ok, already_absent}` included). On an unfenced
+        // (older) agent, 404 → `.notFound` and 405 (path exists for PATCH/GET only) →
+        // `.server(status: 405, …)` — the missing-endpoint verdict.
+        try await mutateSession(
+          conn.baseURL, id: id, profile: profile, method: "DELETE",
+          payload: nil, auth: authFor(conn), session: session
+        )
       },
       transcribe: { conn, dataURL, mimeType in
         let url = try makeURL(conn.baseURL, "/api/audio/transcribe")
@@ -1014,8 +1031,10 @@ func postJSON<T: Decodable>(
 }
 
 /// Fire a write request (e.g. PATCH) and validate the status, discarding the body.
+/// `notFoundMeansNoRoute`: see `validate`.
 func send(
-  _ url: URL, method: String, body: Data?, auth: RequestAuth, session: URLSession
+  _ url: URL, method: String, body: Data?, auth: RequestAuth, session: URLSession,
+  notFoundMeansNoRoute: Bool = false
 ) async throws {
   var request = URLRequest(url: url)
   request.httpMethod = method
@@ -1033,7 +1052,122 @@ func send(
     throw RESTError(transport: error)
   }
 
+  try validate(response, data: data, notFoundMeansNoRoute: notFoundMeansNoRoute)
+}
+
+// MARK: - Fenced session mutations (Hermes Agent v0.22.1+)
+
+/// What `GET /api/sessions/{id}/mutation-snapshot` says a write must be fenced on.
+struct SessionMutationSnapshot: Decodable, Equatable {
+  let exists: Bool
+  let runtimeRevision: Int
+  let runtimeGeneration: Int?
+
+  enum CodingKeys: String, CodingKey {
+    case exists
+    case runtimeRevision = "runtime_revision"
+    case runtimeGeneration = "runtime_generation"
+  }
+}
+
+/// How one session write goes out, decided by the snapshot read.
+enum SessionMutationPlan: Equatable {
+  /// A fencing agent: carry `request_id` + `expected_revision` (+ `expected_generation`).
+  case fenced(revision: Int, generation: Int?)
+  /// An agent without the snapshot route: send today's unfenced request.
+  case unfenced
+  /// The fencing agent has no such session.
+  case absent
+}
+
+/// The 404 an agent answers for a path it has no route for: FastAPI's own `"Not Found"`, the
+/// dashboard catch-all's `"No such API endpoint: …"`, the headless `hermes serve` notice, or
+/// a body with no JSON detail at all.
+private func isUnroutedNotFound(_ data: Data) -> Bool {
+  guard let detail = jsonDetail(from: data) else { return true }
+  return detail == fastAPIUnmatchedRouteDetail
+    || detail.hasPrefix("No such API endpoint")
+    || detail.localizedCaseInsensitiveContains("web UI disabled")
+}
+
+/// Read the session's fences — the desktop's `mutateSessionHttp` prepare step. Since Hermes
+/// Agent v0.22.1 every `PATCH`/`DELETE /api/sessions/{id}` without `request_id` +
+/// `expected_revision` is refused with 409 (`client_upgrade_required`). An agent without the
+/// route (unrouted 404, or a pre-guard SPA answering HTML) gets the unfenced request, as on the
+/// desktop. Falling back is safe either way: a fencing agent never commits an unfenced write.
+func readSessionMutationPlan(
+  _ baseURL: URL, id: String, profile: String?, auth: RequestAuth, session: URLSession
+) async throws -> SessionMutationPlan {
+  let query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+  var request = URLRequest(url: try makeURL(baseURL, "/api/sessions/\(id)/mutation-snapshot", query: query))
+  auth.apply(to: &request)
+
+  let data: Data
+  let response: URLResponse
+  do {
+    (data, response) = try await session.data(for: request)
+  } catch {
+    throw RESTError(transport: error)
+  }
+  if (response as? HTTPURLResponse)?.statusCode == 404 {
+    guard isUnroutedNotFound(data) else {
+      throw RESTError.server(status: 404, detail: serverDetail(from: data))
+    }
+    return .unfenced
+  }
   try validate(response, data: data)
+
+  guard let snapshot = try? JSONDecoder().decode(SessionMutationSnapshot.self, from: data),
+    snapshot.runtimeRevision >= 0
+  else { return .unfenced }
+  guard snapshot.exists else { return .absent }
+  return .fenced(revision: snapshot.runtimeRevision, generation: snapshot.runtimeGeneration)
+}
+
+/// The one funnel for `PATCH`/`DELETE /api/sessions/{id}` (archive, restore, rename, pin,
+/// unread, delete). `payload` is the PATCH body's fields (`nil` for DELETE). The profile rides
+/// in the query, and in a PATCH body too (matches desktop); `nil` omits it everywhere.
+///
+/// - Fenced: a fresh `request_id` + the snapshot's revision (and generation) go in the PATCH
+///   body, or the DELETE query. A 404 then is the owner's `not_found` refusal, never a
+///   missing-endpoint verdict (`notFoundMeansNoRoute`).
+/// - Unfenced: byte-identical to the pre-fence request, so the 404/405 delete verdict stands.
+/// - Absent: DELETE succeeds (the server's own `already_absent` contract); a PATCH throws.
+func mutateSession(
+  _ baseURL: URL, id: String, profile: String?, method: String, payload: [String: Any]?,
+  auth: RequestAuth, session: URLSession,
+  requestID: () -> String = { UUID().uuidString.lowercased() }
+) async throws {
+  let plan = try await readSessionMutationPlan(
+    baseURL, id: id, profile: profile, auth: auth, session: session
+  )
+  var query = profile.map { [URLQueryItem(name: "profile", value: $0)] } ?? []
+  var fields = payload ?? [:]
+  switch plan {
+  case .absent:
+    if method == "DELETE" { return }
+    throw RESTError.server(status: 404, detail: "Session not found.")
+  case .unfenced:
+    break
+  case let .fenced(revision, generation):
+    var identity: [(String, Any)] = [
+      ("request_id", requestID()), ("expected_revision", revision),
+    ]
+    if let generation { identity.append(("expected_generation", generation)) }
+    if payload == nil {
+      query += identity.map { URLQueryItem(name: $0.0, value: "\($0.1)") }
+    } else {
+      for (key, value) in identity { fields[key] = value }
+    }
+  }
+  if payload != nil, let profile { fields["profile"] = profile }
+
+  let url = try makeURL(baseURL, "/api/sessions/\(id)", query: query)
+  let body = try payload.map { _ in try JSONSerialization.data(withJSONObject: fields) }
+  try await send(
+    url, method: method, body: body, auth: auth, session: session,
+    notFoundMeansNoRoute: plan != .unfenced
+  )
 }
 
 // MARK: - DTOs (verified against hermes_cli/web_server.py + hermes_state.py)
