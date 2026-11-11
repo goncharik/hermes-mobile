@@ -228,7 +228,11 @@ one `BoundedHeightLayout` region), with the form chosen by the questions:
   width over it. Only the caption's wording matches the desktop. The desktop has no per-question
   skip and enables Confirm after one answer, sending the rest as skips. The stricter Confirm
   rule here is a deliberate deviation: a question the user never scrolled to is never skipped
-  silently.
+  silently. A hairline `Divider` separates the sections, inside the scroll region (it scrolls
+  with them and adds no rigid height outside it). There is no border per question: the card's
+  border and the choice pills already box everything. A skipped section dims and disables its
+  inputs (choices, Other row, text field), so a field the caption already counts never looks
+  unfilled. The draft keeps the edits under the skip, so toggling Skip off restores them.
 
 Every question with choices also gets an "Other" free-text row (v7 only; the upstream tool schema
 tells the model the UI adds one), sent as the typed string. Skip is on every form, and nothing is
@@ -238,7 +242,9 @@ builds the wire text, so marker stripping and the JSON array stay in HermesKit. 
 `ClarifyDraft` (a pick and Other text are exclusive; a skip keeps the edits under it), held as
 view `@State` under the token key and unit-tested in `ClarifyDraftTests`. Skipping every question
 one by one sends a `null` for each; the card's Skip sends `{}` and cancels the clarify. The echo
-row is the answer for one question, and one `question: answer` line per question for several.
+row is the answer for one question, and one `question: answer` line per question for several
+(`ClarifyQuestion.echoLine`: no colon after a question that already ends in `?`, `:`, `.`, `!`,
+`;`, `…` or their full-width forms, so "What type of site? php", never "site?: php").
 
 The composer stays locked behind a clarify like every other card, and Skip is the way out. The
 desktop cancels the clarify and sends; here that would submit against a running turn, which #66
