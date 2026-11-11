@@ -603,6 +603,15 @@ response (`applyActivate`), in order:
    flag; `inflight.user`/`inflight.assistant` rows are appended and, when `inflight.streaming`
    is set, an assistant streaming row is seeded eagerly with `streamingRowID` pointed at it so
    the next `message.delta` reuses it instead of lazily creating a duplicate.
+   **The prompt seeds only when the history lacks it (#150).** The gateway writes the prompt row
+   at submit (and mid-turn flushes add the turn's tool rounds after it), so a running turn's
+   `messages` usually already carry `inflight.user`. `persistedPromptIndex` walks back from the
+   end over tool rows, a tool round's assistant row (one a tool row follows), steers and
+   unpainted rows; a final reply ends the search (so last turn's identical prompt never hides
+   this one), and the first other user/notice row is the prompt when it is the same kind of row
+   with the same whitespace-collapsed text, not stamped more than 5 s before `started_at`. Then no
+   prompt is seeded, and an unstamped persisted row takes the seed's start so "Worked for" still
+   holds. Desktop parity: `persisted-live-turn.ts` `locateTurn`.
    **Open prompts** follow the wire signal. On v7 (`desktop_contract >= 7` or a non-empty
    `open_requests`) the server-request queue is reconciled with `open_requests` whatever
    `running` says: unlisted ids drop, listed ones refresh in place (same token), new ones
