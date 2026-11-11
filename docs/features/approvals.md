@@ -221,7 +221,14 @@ one `BoundedHeightLayout` region), with the form chosen by the questions:
   (`"[\"A\",\"B\"]"`, encoded with `wireEncoder`'s settings);
 - one free-text question: a field and Send;
 - several questions: one section per question, each skippable, and Confirm once every question
-  is answered, skipped or locked.
+  is answered, skipped or locked. The title line carries an "N of M answered" caption
+  (`ClarifyDraft.progressText`), counting the same settled questions Confirm waits for (a skip
+  or a lock counts), so a question below the fold of the region no longer leaves Confirm
+  looking broken (#169). It shares the one-line title (no added rigid height) and wins the
+  width over it. Only the caption's wording matches the desktop. The desktop has no per-question
+  skip and enables Confirm after one answer, sending the rest as skips. The stricter Confirm
+  rule here is a deliberate deviation: a question the user never scrolled to is never skipped
+  silently.
 
 Every question with choices also gets an "Other" free-text row (v7 only; the upstream tool schema
 tells the model the UI adds one), sent as the typed string. Skip is on every form, and nothing is

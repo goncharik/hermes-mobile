@@ -15,7 +15,7 @@ import SwiftUI
 /// - **one free-text question** — a text field, sent with Send;
 /// - **several questions** — one section per question (choices select instead of submitting,
 ///   each section can be skipped), confirmed with Confirm once every question has an answer or
-///   a skip.
+///   a skip. The title line carries an "N of M answered" caption, the desktop's copy (#169).
 ///
 /// Every question with choices also gets an "Other" free-text row (the upstream tool schema
 /// tells the model the UI adds one) — except on a legacy `clarify.request`, which keeps
@@ -49,10 +49,22 @@ struct ClarifyCardView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       // Rigid and clamped, as on the approval card: every rigid point is one the region loses.
-      Label("Clarification needed", systemImage: "questionmark.circle")
-        .font(.subheadline.weight(.semibold))
-        .lineLimit(1)
-        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+      // The multi-question progress caption shares this line (no extra rigid height) and wins
+      // the width over the title: it is what says why Confirm is still disabled (#169).
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Label("Clarification needed", systemImage: "questionmark.circle")
+          .font(.subheadline.weight(.semibold))
+          .frame(maxWidth: .infinity, alignment: .leading)
+        if let progress = draft.progressText(for: request) {
+          Text(progress)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+            .layoutPriority(1)
+        }
+      }
+      .lineLimit(1)
+      .dynamicTypeSize(...DynamicTypeSize.xxLarge)
 
       scrollableContent
 
