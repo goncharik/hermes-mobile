@@ -734,6 +734,30 @@ final class ChatSnapshotTests: SnapshotTestCase {
     assertSnapshot(of: view, as: componentImage())
   }
 
+  /// Skipped questions dim and disable their inputs: the typed name and the picked target stay
+  /// under the skip (un-skipping restores them) but no longer read as unfilled while the
+  /// caption already counts them ("2 of 2 answered"). Two questions, so both skipped sections
+  /// fit the region.
+  func testClarifyCard_multiQuestionSkipped() {
+    let request = ClarifyRequest(
+      requestID: nil,
+      questions: [
+        ClarifyQuestion(qid: "q0", question: "What should the app be called?"),
+        ClarifyQuestion(qid: "q1", question: "Targets?", choices: ["iOS", "macOS"], multiSelect: true),
+      ],
+      answerShape: .answers
+    )
+    var draft = ClarifyDraft()
+    draft.setText("Atlas", for: request.questions[0])
+    draft.toggleSkip(request.questions[0])
+    draft.toggle("iOS", in: request.questions[1])
+    draft.toggleSkip(request.questions[1])
+    let view = ClarifyCardView(request: request, draft: draft, onSubmit: { _ in }, onSkip: {})
+      .frame(width: device.size?.width ?? 390, height: 520)
+      .background(Color(uiColor: .systemBackground))
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   /// The server's `" (Recommended)"` suffix renders as a badge on the bare label — never a
   /// preselection (v7 single-select: rows submit on tap, plus the Other row and Send).
   func testClarifyCard_recommendedBadge() {

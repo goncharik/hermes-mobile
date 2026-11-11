@@ -16,6 +16,8 @@ import SwiftUI
 /// - **several questions** — one section per question (choices select instead of submitting,
 ///   each section can be skipped), confirmed with Confirm once every question has an answer or
 ///   a skip. The title line carries an "N of M answered" caption, the desktop's copy (#169).
+///   Sections are split by a divider inside the scroll region; a skipped section's inputs are
+///   dimmed and disabled until the skip is toggled off.
 ///
 /// Every question with choices also gets an "Other" free-text row (the upstream tool schema
 /// tells the model the UI adds one) — except on a legacy `clarify.request`, which keeps
@@ -89,13 +91,18 @@ struct ClarifyCardView: View {
 
   /// The questions, in a ``BoundedScrollRegion``. The transcript reserve applies only to the
   /// multi-question card — the one `ChatView` gives layout priority
-  /// (`isCompressibleCardPending`).
+  /// (`isCompressibleCardPending`). Its sections are split by a hairline divider INSIDE the
+  /// region (it scrolls with them, no rigid height outside), never a border per question: the
+  /// card's border and the choice pills already box everything.
   private var scrollableContent: some View {
     BoundedScrollRegion(
-      spacing: request.isMultiQuestion ? 18 : 10,
+      spacing: request.isMultiQuestion ? 12 : 10,
       reserve: request.isMultiQuestion ? PromptCardMetrics.transcriptReserve : 0
     ) {
-      ForEach(Array(request.questions.enumerated()), id: \.offset) { _, question in
+      ForEach(Array(request.questions.enumerated()), id: \.offset) { index, question in
+        if index > 0 {
+          Divider()
+        }
         questionSection(question)
       }
     }
@@ -118,12 +125,15 @@ struct ClarifyCardView: View {
       } else if question.isFreeText {
         TextField("Type a reply", text: textBinding(question), axis: .vertical)
           .textFieldStyle(.roundedBorder)
+          .skippedInput(draft.isSkipped(question))
       } else {
         ForEach(question.choices, id: \.self) { choice in
           choiceRow(choice, in: question)
+            .skippedInput(draft.isSkipped(question))
         }
         if request.offersOtherRow {
           otherRow(question)
+            .skippedInput(draft.isSkipped(question))
         }
       }
 
@@ -198,6 +208,21 @@ struct ClarifyCardView: View {
     case (true, false): "square"
     case (false, true): "checkmark.circle.fill"
     case (false, false): "circle"
+    }
+  }
+}
+
+private extension View {
+  /// A skipped question's input (choice, Other row, text field) reads as skipped, not as an
+  /// empty field the "N of M answered" caption already counts: dimmed and disabled. The draft
+  /// keeps the edits under the skip, so toggling Skip off restores them. Applied per row, and
+  /// only while skipped, so an unskipped card's layout tree is exactly what it was.
+  @ViewBuilder
+  func skippedInput(_ skipped: Bool) -> some View {
+    if skipped {
+      disabled(true).opacity(0.4)
+    } else {
+      self
     }
   }
 }
