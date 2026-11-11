@@ -29,7 +29,9 @@ nothing else retains it. UIKit keeps a picker it will show until it is dismissed
 refused one at once. The presenter reports exactly once: from the delegate callback, or from
 `deinit` as the silent empty batch, which is how a refused presentation (the widget launch
 action raised mid-transition) still finishes. Never add a post-`present` check or a second
-owner.
+owner. The one deliberate exception: a delegate callback's loading `Task` captures the presenter
+strongly until it calls `finish`, because the picker is already dismissed by then (a
+`[weak self]` there would silently drop the selection).
 
 **Every image source — photos, camera, Files, paste — goes through `PickedImageLoader`**
 (`pickedItems` for the provider-backed ones, `rescuedImageItem` for the two that hand over raw

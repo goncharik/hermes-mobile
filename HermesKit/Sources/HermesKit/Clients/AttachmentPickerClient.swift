@@ -66,7 +66,8 @@ public extension DependencyValues {
 
 /// The delegate half of one picker presentation, shared by the three live presenters. It lives
 /// **exactly as long as its picker**: `attach(to:)` hangs it off the picker, and nothing else
-/// keeps it.
+/// keeps it, except a delegate callback's loading `Task`, which must capture it strongly until it
+/// calls `finish` (the picker is already dismissed by then; a `[weak self]` there drops the pick).
 ///
 /// UIKit presents the photos and Files pickers (remote view controllers) *late*:
 /// `presentingViewController` is still `nil` when `present` returns (measured: shown 1–3 s later
