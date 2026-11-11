@@ -62,6 +62,48 @@ public extension DependencyValues {
   }
 }
 
+// MARK: - Presenter lifetime (#170)
+
+/// The delegate half of one picker presentation, shared by the three live presenters. It lives
+/// **exactly as long as its picker**: `attach(to:)` hangs it off the picker, and nothing else
+/// keeps it, except a delegate callback's loading `Task`, which must capture it strongly until it
+/// calls `finish` (the picker is already dismissed by then; a `[weak self]` there drops the pick).
+///
+/// UIKit presents the photos and Files pickers (remote view controllers) *late*:
+/// `presentingViewController` is still `nil` when `present` returns (measured: shown 1–3 s later
+/// on the iOS 26.5 and 27.0 simulators), so no check right after `present` can tell a delayed
+/// presentation from a refused one. Guessing "refused" and releasing the presenter left the
+/// picker on screen with a `nil` weak delegate, so Done and Cancel did nothing. Instead UIKit
+/// decides: it keeps a picker it will show until that picker is dismissed, and drops one it
+/// refused within a runloop turn.
+///
+/// `report` fires exactly once: from `finish(_:)`, or from `deinit` as the silent empty batch
+/// when the picker went away without a delegate callback (refused, no host to present on), so
+/// the caller never waits forever.
+@MainActor
+class PickerPresenter: NSObject {
+  private var report: (@Sendable (PickedBatch) -> Void)?
+  private static var ownerKey: UInt8 = 0
+
+  init(report: @escaping @Sendable (PickedBatch) -> Void) {
+    self.report = report
+  }
+
+  /// Makes `picker` the presenter's only owner.
+  func attach(to picker: NSObject) {
+    objc_setAssociatedObject(picker, &Self.ownerKey, self, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+  }
+
+  func finish(_ batch: PickedBatch) {
+    report?(batch)
+    report = nil
+  }
+
+  deinit {
+    report?(PickedBatch())
+  }
+}
+
 // MARK: - Live (iOS only)
 
 #if canImport(UIKit)
@@ -111,14 +153,13 @@ public extension DependencyValues {
     }
   }
 
-  /// Presents `picker` on the top view controller; `false` when UIKit didn't (no host, or a
-  /// presentation still in progress) — no delegate callback will ever come, so the caller
-  /// must finish with an empty batch rather than leave its continuation waiting.
+  /// Hands `picker` its presenter and presents it on the top view controller. There is nothing
+  /// to check afterwards: whether UIKit shows the picker now, later or never, its presenter
+  /// reports exactly once (see `PickerPresenter`).
   @MainActor
-  private func presentOnTop(_ picker: UIViewController) -> Bool {
-    guard let host = topViewController() else { return false }
-    host.present(picker, animated: true)
-    return picker.presentingViewController != nil
+  private func presentOnTop(_ picker: UIViewController, owner presenter: PickerPresenter) {
+    presenter.attach(to: picker)
+    topViewController()?.present(picker, animated: true)
   }
 
   private func mimeType(for url: URL) -> String {
@@ -126,25 +167,17 @@ public extension DependencyValues {
   }
 
   /// Bridges `PHPickerViewController` (multi-select images) to an async result.
-  @MainActor
-  private final class PhotoPickerPresenter: NSObject, PHPickerViewControllerDelegate {
-    private var continuation: CheckedContinuation<PickedBatch, Never>?
-    private static var retained: PhotoPickerPresenter?
-
+  private final class PhotoPickerPresenter: PickerPresenter, PHPickerViewControllerDelegate {
     static func present() async -> PickedBatch {
       await settlePresentation()
       return await withCheckedContinuation { continuation in
-        let presenter = PhotoPickerPresenter()
-        presenter.continuation = continuation
-        retained = presenter
-
         var config = PHPickerConfiguration()
         config.filter = .images
         config.selectionLimit = 0 // multiple
         let picker = PHPickerViewController(configuration: config)
+        let presenter = PhotoPickerPresenter { continuation.resume(returning: $0) }
         picker.delegate = presenter
-
-        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
+        presentOnTop(picker, owner: presenter)
       }
     }
 
@@ -169,20 +202,10 @@ public extension DependencyValues {
         ))
       }
     }
-
-    private func finish(_ batch: PickedBatch) {
-      continuation?.resume(returning: batch)
-      continuation = nil
-      Self.retained = nil
-    }
   }
 
   /// Bridges `UIImagePickerController` (camera capture) to an async result.
-  @MainActor
-  private final class CameraPresenter: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-    private var continuation: CheckedContinuation<PickedBatch, Never>?
-    private static var retained: CameraPresenter?
-
+  private final class CameraPresenter: PickerPresenter, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
     /// JPEG quality for a fresh camera capture. Lower than
     /// `PickedImageLoader.jpegCompressionQuality` on purpose: that path re-encodes bytes that
     /// could not be sent at all (fidelity traded against a certain rejection), whereas this one
@@ -194,15 +217,11 @@ public extension DependencyValues {
       guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return PickedBatch() }
       await settlePresentation()
       return await withCheckedContinuation { continuation in
-        let presenter = CameraPresenter()
-        presenter.continuation = continuation
-        retained = presenter
-
         let picker = UIImagePickerController()
         picker.sourceType = .camera
+        let presenter = CameraPresenter { continuation.resume(returning: $0) }
         picker.delegate = presenter
-
-        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
+        presentOnTop(picker, owner: presenter)
       }
     }
 
@@ -236,32 +255,18 @@ public extension DependencyValues {
       picker.dismiss(animated: true)
       finish(PickedBatch())
     }
-
-    private func finish(_ batch: PickedBatch) {
-      continuation?.resume(returning: batch)
-      continuation = nil
-      Self.retained = nil
-    }
   }
 
   /// Bridges `UIDocumentPickerViewController` (multi-select any file) to an async result.
-  @MainActor
-  private final class DocumentPickerPresenter: NSObject, UIDocumentPickerDelegate {
-    private var continuation: CheckedContinuation<PickedBatch, Never>?
-    private static var retained: DocumentPickerPresenter?
-
+  private final class DocumentPickerPresenter: PickerPresenter, UIDocumentPickerDelegate {
     static func present() async -> PickedBatch {
       await settlePresentation()
       return await withCheckedContinuation { continuation in
-        let presenter = DocumentPickerPresenter()
-        presenter.continuation = continuation
-        retained = presenter
-
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
         picker.allowsMultipleSelection = true
+        let presenter = DocumentPickerPresenter { continuation.resume(returning: $0) }
         picker.delegate = presenter
-
-        if !presentOnTop(picker) { presenter.finish(PickedBatch()) }
+        presentOnTop(picker, owner: presenter)
       }
     }
 
@@ -295,12 +300,6 @@ public extension DependencyValues {
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
       finish(PickedBatch())
-    }
-
-    private func finish(_ batch: PickedBatch) {
-      continuation?.resume(returning: batch)
-      continuation = nil
-      Self.retained = nil
     }
   }
 #else

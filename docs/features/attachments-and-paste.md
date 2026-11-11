@@ -20,6 +20,19 @@ re-encoded — drives `.attachmentsDropped` and a banner, while a **cancel** is 
 (no items *and* no drops) and stays silent. The sheet must never dismiss onto an unchanged
 composer without saying why.
 
+**A picker owns its presenter (#170).** UIKit presents the photos and Files pickers (remote view
+controllers) late: `presentingViewController` is still `nil` when `present` returns, so no check
+right after `present` can tell a delayed presentation from a refused one. Releasing the
+presenter on that guess left a picker on screen with a `nil` weak delegate, so Done and Cancel
+did nothing. `PickerPresenter` instead hangs off its picker as an associated object and
+nothing else retains it. UIKit keeps a picker it will show until it is dismissed and drops a
+refused one at once. The presenter reports exactly once: from the delegate callback, or from
+`deinit` as the silent empty batch, which is how a refused presentation (the widget launch
+action raised mid-transition) still finishes. Never add a post-`present` check or a second
+owner. The one deliberate exception: a delegate callback's loading `Task` captures the presenter
+strongly until it calls `finish`, because the picker is already dismissed by then (a
+`[weak self]` there would silently drop the selection).
+
 **Every image source — photos, camera, Files, paste — goes through `PickedImageLoader`**
 (`pickedItems` for the provider-backed ones, `rescuedImageItem` for the two that hand over raw
 bytes), so a HEIC/AVIF/RAW original or an oversize TIFF is re-encoded or dropped rather than
