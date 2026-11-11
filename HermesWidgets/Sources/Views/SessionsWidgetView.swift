@@ -19,7 +19,8 @@ enum SessionsWidgetLayout {
 }
 
 /// The sessions widget (#138), Codex-task style: a "Hermes" header over the mirror's rows,
-/// each a `Link` to `hermesmobile://session/<id>`. Signed out → "Sign in to Hermes" (the
+/// each a `Link` to `hermesmobile://session/<id>`, plus a round New session `Link` bottom
+/// trailing. Signed out → "Sign in to Hermes" (the
 /// widget's default tap opens the app); signed in with no sessions → "No sessions yet" plus a
 /// New chat link.
 ///
@@ -44,6 +45,29 @@ struct SessionsWidgetView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .overlay(alignment: .bottomTrailing) {
+      if snapshot.isSignedIn, !snapshot.rows.isEmpty {
+        newSessionButton
+      }
+    }
+  }
+
+  /// The round New session button, bottom trailing, over the rows (the empty state has its
+  /// own New Chat link; signed out has nothing to start). The app's tab-bar glyph.
+  private var newSessionButton: some View {
+    Link(destination: WidgetDeepLink.url(for: .newChat)) {
+      Image(systemName: "square.and.pencil")
+        .font(.body.weight(.semibold))
+        .foregroundStyle(Color.primary)  // not the link tint
+        .widgetAccentable()
+        // The pencil pokes above the square, so the glyph's box centres it ~2 pt low; lift it
+        // so the SQUARE sits in the circle's centre (measured on the snapshot).
+        .offset(y: -2)
+        .frame(width: 40, height: 40)
+        .background(Circle().fill(Color.primary.opacity(0.12)))
+        .contentShape(Circle())
+    }
+    .accessibilityLabel("New session")
   }
 
   private var header: some View {
