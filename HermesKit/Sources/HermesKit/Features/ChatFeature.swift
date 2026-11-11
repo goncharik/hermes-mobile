@@ -4049,7 +4049,9 @@ public struct ChatFeature {
   }
 
   /// The transcript echo for a clarify answer: the answer itself for one question, one
-  /// `question: answer` line per question for several (locks included), "Skipped" for a skip.
+  /// `question: answer` line per question for several (locks included; no colon after a question
+  /// that already ends in `?`, `:`, `.` and the like — `ClarifyQuestion.echoLine`), "Skipped" for
+  /// a skip.
   static func clarifyEchoText(_ request: ClarifyRequest, _ answers: [String: ClarifyAnswer]?) -> String {
     guard let answers else { return "Skipped" }
     func display(_ question: ClarifyQuestion) -> String {
@@ -4057,7 +4059,7 @@ public struct ChatFeature {
         ?? (answers[question.answerKey] ?? .skipped).displayText
     }
     guard request.isMultiQuestion else { return request.questions.first.map(display) ?? "" }
-    return request.questions.map { "\($0.question): \(display($0))" }.joined(separator: "\n")
+    return request.questions.map { $0.echoLine(answer: display($0)) }.joined(separator: "\n")
   }
 
   /// The shared `.foreground` / `.reattached` re-attach policy: the app returned to the

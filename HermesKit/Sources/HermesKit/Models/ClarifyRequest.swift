@@ -23,6 +23,24 @@ public struct ClarifyQuestion: Equatable, Sendable {
   /// or `""` for the `nil`-qid question of the intermediate and legacy single forms.
   public var answerKey: String { qid ?? "" }
 
+  /// This question's line in the multi-question transcript echo: `"Name: Atlas"`, but
+  /// `"What type of site? php"` when the question already ends in terminal punctuation — a
+  /// colon after it read as `"site?: php"`.
+  func echoLine(answer: String) -> String {
+    let label = question.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let last = label.last, Self.echoTerminators.contains(last) {
+      return "\(label) \(answer)"
+    }
+    return "\(label): \(answer)"
+  }
+
+  /// Punctuation a question can end in that already separates it from its answer (ASCII and
+  /// the full-width forms). Closing brackets and quotes are deliberately absent: `Which (optional)`
+  /// still reads best with the colon.
+  private static let echoTerminators: Set<Character> = [
+    "?", ":", ".", "!", ";", "…", "？", "：", "。", "！", "；",
+  ]
+
   public init(qid: String? = nil, question: String, choices: [String] = [], multiSelect: Bool = false) {
     self.qid = qid
     self.question = question

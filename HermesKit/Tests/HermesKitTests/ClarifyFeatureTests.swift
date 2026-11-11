@@ -247,7 +247,7 @@ struct ClarifyFeatureTests {
       "q1": .choices(["iOS/iPadOS", "macOS"]),
       "q2": .other("Kotlin"),
       "q4": .other("Watch app"),
-    ]) }, echo: "Framework?: SwiftUI\nTargets?: iOS/iPadOS, macOS\nLanguage?: Kotlin\nName?: Skipped\nExtras?: Watch app")
+    ]) }, echo: "Framework? SwiftUI\nTargets? iOS/iPadOS, macOS\nLanguage? Kotlin\nName? Skipped\nExtras? Watch app")
     #expect(sent == .object([
       "id": .string("srq-c"),
       "result": .object(["answers": .object([
@@ -269,7 +269,7 @@ struct ClarifyFeatureTests {
     let sent = await answer(request, with: { .submitClarify(token: $0, answers: [
       "q0": .choices(["SwiftUI (Recommended)"]),
       "q2": .skipped,
-    ]) }, echo: "Framework?: UIKit\nTargets?: Skipped\nLanguage?: Skipped")
+    ]) }, echo: "Framework? UIKit\nTargets? Skipped\nLanguage? Skipped")
     #expect(sent?["result"] == .object(["answers": .object([
       "q0": .string("UIKit"), "q1": .null, "q2": .null,
     ])]))
@@ -307,7 +307,7 @@ struct ClarifyFeatureTests {
     #expect(draft.isComplete(for: request))
     let sent = await answer(
       request, with: { .submitClarify(token: $0, answers: draft.answers(for: request)) },
-      echo: "Framework?: Skipped\nTargets?: Skipped\nLanguage?: Skipped"
+      echo: "Framework? Skipped\nTargets? Skipped\nLanguage? Skipped"
     )
     #expect(sent == .object([
       "id": .string("srq-c"),
@@ -454,7 +454,7 @@ struct ClarifyFeatureTests {
       "q0": .choices(["SwiftUI (Recommended)"]), "q1": .choices(["iOS/iPadOS", "macOS"]), "q2": .other("Atlas"),
       "q3": .skipped,
     ]
-    let echo = skipsCard ? "Skipped" : "Framework?: SwiftUI\nTargets?: iOS/iPadOS, macOS\nName?: Atlas\nExtras?: Skipped"
+    let echo = skipsCard ? "Skipped" : "Framework? SwiftUI\nTargets? iOS/iPadOS, macOS\nName? Atlas\nExtras? Skipped"
     let token = store.state.pendingInteractionToken
     await store.send(skipsCard ? .skipClarify(token: token) : .submitClarify(token: token, answers: answers)) {
       $0.pendingInteraction = nil
@@ -530,7 +530,7 @@ struct ClarifyFeatureTests {
     }
     await store.send(.submitClarify(token: store.state.pendingInteractionToken, answers: ["q0": .other("x"), "q1": .other("y")])) {
       $0.pendingInteraction = nil
-      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "clarify", text: "A?: x\nB?: y"))]
+      $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "clarify", text: "A? x\nB? y"))]
     }
     await store.receive(\.legacyRespondFailed) {
       $0.transcript = [ChatRow(id: self.uuid(0), kind: .status(kind: "clarify", text: "Failed to send"))]
