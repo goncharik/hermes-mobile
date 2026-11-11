@@ -19,7 +19,7 @@ All six live in one `WidgetBundle` (`HermesWidgets/Sources/HermesWidgetsBundle.s
 | Surface | Families | Tap |
 |---|---|---|
 | `QuickActionsWidget` ("Hermes") | `systemSmall`: "Ask" pill + Camera + Mic; `systemMedium`: "Ask Hermes" pill + Camera + Photos + Mic | small: `Button(intent: OpenHermesURLIntent)`; medium: `Link` per button |
-| `SessionsWidget` ("Sessions") | `systemMedium`: the top row (needs input, else working, else most recent); `systemLarge`: up to 5 rows | `Link` per row; no `widgetURL` (a tap elsewhere opens the app as is) |
+| `SessionsWidget` ("Sessions") | `systemMedium`: the top row (needs input, else working, else most recent); `systemLarge`: up to 5 rows; both: a round New session button bottom trailing | `Link` per row and for the button (new chat); no `widgetURL` (a tap elsewhere opens the app as is) |
 | `NewChatAccessoryWidget` ("New Chat") | `accessoryCircular`: the Hermes glyph | `widgetURL` new chat |
 | `NewChatControl` / `DictateControl` | Control Center, Lock Screen, Action button | `ControlWidgetButton(action: OpenHermesURLIntent)` |
 | `AgentsLiveActivity` | Lock Screen + Dynamic Island | `widgetURL` to the headline session (none without a headline) |
@@ -40,6 +40,10 @@ All six live in one `WidgetBundle` (`HermesWidgets/Sources/HermesWidgetsBundle.s
   secondary, idle = none. Row text uses `Color.primary` / `Color.secondary`: inside a `Link`
   the hierarchical styles resolve to the link tint. Empty states: signed out → "Sign in to
   Hermes"; no sessions → "No sessions yet" plus a New Chat link.
+- **New session button**: with rows on screen, a 40 pt circle bottom trailing (the tab bar's
+  `square.and.pencil`, `widgetAccentable()`) is a `Link` to `hermesmobile://new`. It is an
+  overlay, so it takes no space from the rows; it is left out signed out (nothing to start)
+  and with no sessions (the empty state's link already does it).
 - **Live Activity, lock screen** — T3 Code's banner: on iOS 26 a clear
   `activityBackgroundTint` reveals the Liquid Glass platter (earlier iOS keeps the standard
   surface); 13 pt semibold text in hierarchical `.primary` / `.secondary` (the system's
