@@ -3168,10 +3168,10 @@ public struct ChatFeature {
       case .confirmationDialog:
         return .none
 
-      case .archiveFailed:
+      case let .archiveFailed(_, error):
         // The chat stays open; the user can retry. Same copy as the list.
         state.removingSessionID = nil
-        state.errorBanner = "Couldn’t archive the session."
+        state.errorBanner = error.sessionMutationBanner("Couldn’t archive the session.")
         return .none
 
       case let .deleteFailed(_, error):
@@ -3182,7 +3182,7 @@ public struct ChatFeature {
           state.deleteSupported = false
           return .none
         }
-        state.errorBanner = "Couldn’t delete the session."
+        state.errorBanner = error.sessionMutationBanner("Couldn’t delete the session.")
         return .none
       }
     }

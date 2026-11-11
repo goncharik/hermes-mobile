@@ -296,6 +296,37 @@ Older agents omit `unread`. For those rows only, mobile preserves its existing d
 `seenCounts` behavior (`message_count > last seen`), including first-sight seeding. This is a
 per-row fallback—not a server-wide capability latch—so mixed/transitional responses stay safe.
 
+## Fenced session writes (Hermes Agent v0.22.1+)
+
+Since v0.22.1 (2026-10-14) the agent refuses every `PATCH`/`DELETE /api/sessions/{id}` that
+lacks a mutation identity with **409** (`client_upgrade_required` / `mutation_identity_required`).
+Archive, restore, list rename, pin, unread and delete therefore all go through ONE funnel,
+`mutateSession` in `HermesRESTClient.swift`, a port of desktop `mutateSessionHttp`:
+
+1. `GET /api/sessions/{id}/mutation-snapshot` (same `?profile=`) → `{exists, runtime_revision,
+   runtime_generation}`.
+2. The write carries a fresh lowercase `request_id`, `expected_revision`, and
+   `expected_generation` when non-null: in the PATCH body, or in the DELETE query (after
+   `profile`).
+
+- **No snapshot route → the unfenced request, byte-identical to before**: an unrouted 404
+  (FastAPI `Not Found`, the dashboard's `No such API endpoint: …`, the headless notice, no JSON
+  detail) or a 2xx that isn't a snapshot (a pre-guard SPA's HTML). Desktop falls back the same
+  way. It is safe because a fencing agent never commits an unfenced write. A handler's own 404
+  on the snapshot (e.g. an unknown profile) throws instead.
+- **`exists: false`**: DELETE is a local success, matching the server's `already_absent`
+  contract. A PATCH throws `.server(404, "Session not found.")`.
+- **A fenced write's 404 is the owner's `not_found` refusal, not a missing endpoint**
+  (`notFoundMeansNoRoute`), so it never flips `deleteSupported`. The 404/405 verdict applies
+  only to the unfenced path.
+- **No identity is retained across attempts** (the desktop keeps one for an ambiguous write).
+  There are no automatic retries, so the next user action reads a fresh snapshot.
+- **Refusal banners**: `RESTError.sessionMutationBanner(_:)` appends a sentence for the known
+  reason codes (`revision_conflict` / `stale_generation`, `session_busy`, `profile_mismatch`,
+  `permission_denied`, `runtime_draining` / `storage_unavailable`, upgrade-required) to the
+  action's banner. Any other failure keeps the plain banner. A pin failure shows that reason,
+  or else the server's copy.
+
 ## Branch nesting is display-only (#34)
 
 `parent_session_id` decodes leniently from REST onto `Session.parentSessionID`

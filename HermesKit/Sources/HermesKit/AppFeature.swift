@@ -1164,8 +1164,8 @@ public struct AppFeature {
             : .archiveFailed(id: removal.id, error: error)))
         }
         if !verdict {
-          state.home?.loadError = isDelete
-            ? "Couldn’t delete the session." : "Couldn’t archive the session."
+          state.home?.loadError = error.sessionMutationBanner(isDelete
+            ? "Couldn’t delete the session." : "Couldn’t archive the session.")
         }
         return .none
 

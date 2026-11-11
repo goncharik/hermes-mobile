@@ -715,6 +715,192 @@ struct HermesRESTClientTests {
     }
   }
 
+  // MARK: Fenced session mutations (Hermes v0.22.1+)
+
+  private static let snapshotJSON =
+    #"{"session_id":"sid","exists":true,"runtime_revision":7,"runtime_generation":2}"#
+
+  private func stub(_ status: Int, _ json: String = "") -> MockURLProtocol.Stub {
+    MockURLProtocol.Stub(statusCode: status, body: Data(json.utf8))
+  }
+
+  private func bodyJSON(_ request: URLRequest) throws -> [String: Any] {
+    try #require(JSONSerialization.jsonObject(with: mockRequestBody(request)) as? [String: Any])
+  }
+
+  private func queryItems(_ request: URLRequest) -> [URLQueryItem] {
+    URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+  }
+
+  /// The snapshot read goes first, profile-scoped and authenticated; the PATCH then carries a
+  /// fresh lowercase `request_id` and the snapshot's fences in its body.
+  @Test func fencedArchiveReadsTheSnapshotThenSendsTheIdentityInTheBody() async throws {
+    MockURLProtocol.setSequence([stub(200, Self.snapshotJSON), stub(200, #"{"ok":true}"#)])
+    try await makeClient().archive(connection, "sid", true, "work")
+
+    let requests = MockURLProtocol.requests
+    #expect(requests.count == 2)
+    let snapshot = try #require(requests.first)
+    #expect(snapshot.httpMethod == "GET")
+    #expect(snapshot.url?.path == "/api/sessions/sid/mutation-snapshot")
+    #expect(snapshot.url?.query == "profile=work")
+    #expect(snapshot.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+
+    let write = try #require(requests.last)
+    #expect(write.httpMethod == "PATCH")
+    #expect(write.url?.path == "/api/sessions/sid")
+    #expect(write.url?.query == "profile=work")
+    let body = try bodyJSON(write)
+    #expect(body["archived"] as? Bool == true)
+    #expect(body["profile"] as? String == "work")
+    #expect(body["expected_revision"] as? Int == 7)
+    #expect(body["expected_generation"] as? Int == 2)
+    let requestID = try #require(body["request_id"] as? String)
+    #expect(UUID(uuidString: requestID) != nil)
+    #expect(requestID == requestID.lowercased())
+  }
+
+  /// Every PATCH-based write is fenced, not just archive.
+  @Test(arguments: ["unread", "pinned", "title"])
+  func everySessionPatchIsFenced(field: String) async throws {
+    MockURLProtocol.setSequence([stub(200, Self.snapshotJSON), stub(200)])
+    let client = makeClient()
+    switch field {
+    case "unread": try await client.setUnread(connection, "sid", false, nil)
+    case "pinned": try await client.setPinned(connection, "sid", true, nil)
+    default: try await client.rename(connection, "sid", "New", nil)
+    }
+    let write = try #require(MockURLProtocol.requests.last)
+    #expect(write.httpMethod == "PATCH")
+    let body = try bodyJSON(write)
+    #expect(body[field] != nil)
+    #expect(body["expected_revision"] as? Int == 7)
+    #expect(body["request_id"] is String)
+    #expect(body["profile"] == nil)
+  }
+
+  /// DELETE has no body: the identity rides in the query, after the profile.
+  @Test func fencedDeleteSendsTheIdentityInTheQuery() async throws {
+    MockURLProtocol.setSequence([stub(200, Self.snapshotJSON), stub(200, #"{"ok":true}"#)])
+    try await makeClient().deleteSession(connection, "sid", "default")
+
+    let write = try #require(MockURLProtocol.requests.last)
+    #expect(write.httpMethod == "DELETE")
+    #expect(write.url?.path == "/api/sessions/sid")
+    #expect(mockRequestBody(write).isEmpty)
+    let query = queryItems(write)
+    #expect(query.map(\.name) == ["profile", "request_id", "expected_revision", "expected_generation"])
+    #expect(query.first?.value == "default")
+    #expect(query.first { $0.name == "expected_revision" }?.value == "7")
+    #expect(query.first { $0.name == "expected_generation" }?.value == "2")
+  }
+
+  @Test func fencedWriteOmitsANullGeneration() async throws {
+    MockURLProtocol.setSequence([
+      stub(200, #"{"session_id":"sid","exists":true,"runtime_revision":0,"runtime_generation":null}"#),
+      stub(200),
+    ])
+    try await makeClient().archive(connection, "sid", true, nil)
+    let body = try bodyJSON(try #require(MockURLProtocol.requests.last))
+    #expect(body["expected_revision"] as? Int == 0)
+    #expect(body["expected_generation"] == nil)
+  }
+
+  /// An agent without the snapshot route gets today's unfenced request, byte for byte.
+  @Test(arguments: [
+    #"{"detail":"Not Found"}"#,
+    #"{"detail":"No such API endpoint: /api/sessions/sid/mutation-snapshot"}"#,
+    #"{"detail":"Headless backend (hermes serve): web UI disabled — use `hermes dashboard` for the browser UI."}"#,
+    "",
+  ])
+  func unroutedSnapshotFallsBackToTheUnfencedWrite(notFoundBody: String) async throws {
+    MockURLProtocol.setSequence([stub(404, notFoundBody), stub(200)])
+    try await makeClient().archive(connection, "sid", true, nil)
+    #expect(MockURLProtocol.requests.count == 2)
+    let body = try #require(
+      JSONSerialization.jsonObject(with: mockRequestBody(MockURLProtocol.requests[1])) as? [String: Bool]
+    )
+    #expect(body == ["archived": true])
+  }
+
+  /// A pre-guard agent's SPA answers an unknown GET with index.html: also unfenced.
+  @Test func htmlSnapshotFallsBackToTheUnfencedWrite() async throws {
+    MockURLProtocol.setSequence([stub(200, "<!doctype html><html></html>"), stub(200)])
+    try await makeClient().deleteSession(connection, "sid", nil)
+    let write = try #require(MockURLProtocol.requests.last)
+    #expect(write.httpMethod == "DELETE")
+    #expect(write.url?.query == nil)
+  }
+
+  /// A handler's own 404 on the snapshot (e.g. an unknown profile) is an error, never a
+  /// reason to send the write unfenced.
+  @Test func handlerNotFoundOnTheSnapshotThrowsWithoutWriting() async throws {
+    MockURLProtocol.setSequence([stub(404, #"{"detail":"Profile 'x' does not exist."}"#)])
+    await #expect(throws: RESTError.server(status: 404, detail: "Profile 'x' does not exist.")) {
+      try await makeClient().archive(connection, "sid", true, "x")
+    }
+    #expect(MockURLProtocol.requests.count == 1)
+  }
+
+  /// A session the fencing agent no longer has: DELETE is done (the server's own
+  /// `already_absent` contract), a PATCH fails — neither sends the write.
+  @Test func absentSessionDeleteSucceedsWithoutWriting() async throws {
+    MockURLProtocol.setSequence([
+      stub(200, #"{"session_id":"sid","exists":false,"runtime_revision":0,"runtime_generation":null}"#),
+    ])
+    try await makeClient().deleteSession(connection, "sid", nil)
+    #expect(MockURLProtocol.requests.count == 1)
+  }
+
+  @Test func absentSessionPatchThrowsWithoutWriting() async throws {
+    MockURLProtocol.setSequence([
+      stub(200, #"{"session_id":"sid","exists":false,"runtime_revision":0,"runtime_generation":null}"#),
+    ])
+    await #expect(throws: RESTError.server(status: 404, detail: "Session not found.")) {
+      try await makeClient().archive(connection, "sid", true, nil)
+    }
+    #expect(MockURLProtocol.requests.count == 1)
+  }
+
+  /// The owner's `not_found` refusal on a fenced DELETE is not a missing-endpoint verdict —
+  /// it must never hide Delete.
+  @Test func fencedDeleteNotFoundRefusalIsNoMissingEndpointVerdict() async throws {
+    MockURLProtocol.setSequence([stub(200, Self.snapshotJSON), stub(404, #"{"detail":"not_found"}"#)])
+    let error = await #expect(throws: RESTError.self) {
+      try await makeClient().deleteSession(connection, "sid", nil)
+    }
+    #expect(error == .server(status: 404, detail: "not_found"))
+    #expect(error?.isMissingEndpointVerdict == false)
+  }
+
+  /// An older agent's 405 on the unfenced DELETE keeps its missing-endpoint verdict.
+  @Test func unfencedDelete405KeepsTheMissingEndpointVerdict() async throws {
+    MockURLProtocol.setSequence([stub(404, #"{"detail":"Not Found"}"#), stub(405)])
+    let error = await #expect(throws: RESTError.self) {
+      try await makeClient().deleteSession(connection, "sid", nil)
+    }
+    #expect(error?.isMissingEndpointVerdict == true)
+  }
+
+  @Test func fencedWriteRefusalCarriesTheServerReason() async throws {
+    MockURLProtocol.setSequence([stub(200, Self.snapshotJSON), stub(409, #"{"detail":"session_busy"}"#)])
+    await #expect(throws: RESTError.server(status: 409, detail: "session_busy")) {
+      try await makeClient().archive(connection, "sid", true, nil)
+    }
+  }
+
+  @Test func sessionMutationRefusalsReadAsSentences() {
+    #expect(RESTError.server(status: 409, detail: "revision_conflict").sessionMutationBanner("Couldn’t archive the session.")
+      == "Couldn’t archive the session. It changed on another device. Try again.")
+    #expect(RESTError.server(status: 409, detail: "client_upgrade_required: this app is out of sync").sessionMutationRefusal
+      == "This agent needs a newer version of the app.")
+    #expect(RESTError.server(status: 503, detail: "storage_unavailable").sessionMutationRefusal != nil)
+    // Anything else keeps the plain banner.
+    #expect(RESTError.server(status: 400, detail: "Title too long").sessionMutationRefusal == nil)
+    #expect(RESTError.unreachable.sessionMutationBanner("Couldn’t delete the session.")
+      == "Couldn’t delete the session.")
+  }
+
   @Test func unauthorizedMapsToTypedError() async throws {
     MockURLProtocol.set(status: 401, json: #"{"detail":"Unauthorized"}"#)
     await #expect(throws: RESTError.unauthorized) {
