@@ -278,7 +278,14 @@ struct BranchMutationTests {
     #expect(branchFailureBanner(.server(branchUnsavedMessage)) == branchUnsavedMessage)
     // A legacy host's prose stays as the detail.
     #expect(branchFailureBanner(.server("Session cap reached")) == "Couldn’t branch the chat: Session cap reached")
-    for reason in ["not_found", "permission_denied", "invalid_params", "revision_conflict", "runtime_draining"] {
+    // Review on #168: the stored-history refusal, the epoch/execution fences, and a branch with
+    // no local policy (not transient).
+    #expect(branchFailureBanner(.server("session_read_only")).hasPrefix("This chat is read-only"))
+    #expect(branchFailureBanner(.server("stale_epoch")) == "Couldn’t branch the chat. Try again.")
+    #expect(branchFailureBanner(.server("unknown_execution")) == "Couldn’t branch the chat. Try again.")
+    #expect(branchFailureBanner(.server("runtime_coordination_required")) == "Couldn’t branch the chat: the server doesn’t allow it here.")
+    for reason in ["not_found", "permission_denied", "invalid_params", "revision_conflict", "runtime_draining",
+                   "session_read_only", "stale_epoch", "unknown_execution", "runtime_coordination_required"] {
       #expect(!branchFailureBanner(.server(reason)).contains(reason))
     }
   }

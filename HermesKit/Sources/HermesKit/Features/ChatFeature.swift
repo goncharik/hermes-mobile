@@ -311,6 +311,13 @@ public struct ChatFeature {
     /// drain can remove it again (the entry goes back to the panel — leaving the bubble too
     /// would show the text twice).
     var drainingRowID: ChatRow.ID?
+    /// A drained entry a LEGACY host held (`{status: "queued"}`) for the turn after the one it
+    /// was already running (an accepted steer's undelivered follow-up, a compression accept).
+    /// The server owns it, but a Stop before it runs clears the server's `queued_prompt`
+    /// (`_interrupt_session_turn`), so the client keeps it until its own turn shows: re-parked
+    /// on that Stop or on an idle hydrate without it, released by the `message.start` after a
+    /// turn end or by a running hydrate whose `inflight.user` is it. Holds the drain meanwhile.
+    var heldDrain: HeldDrain?
     /// One-shot Send-now override (#66): the next drain attempt ignores (and clears)
     /// `isQueueParked`, and the interrupted turn's terminal `.error` skips re-parking.
     /// Cleared by the drain that consumes it and by a manual Stop (stop intent wins).
@@ -504,19 +511,31 @@ public struct ChatFeature {
         && pendingPasteCount == 0
     }
 
+    /// See `heldDrain`. `sawTurnEnd`: the turn it was held behind has ended, so the next
+    /// `message.start` is its own (and a Stop from then on stops it, never drops it).
+    struct HeldDrain: Equatable {
+      var entry: QueuedPrompt
+      var rowID: ChatRow.ID?
+      var sawTurnEnd: Bool
+    }
+
     /// True while the queue still owes work — entries waiting OR one mid-drain. The
     /// app-level slot policy reads this alongside `isRunning`: a detached slot with
     /// queued work must not be torn down at turn end (the drain fires the next turn
     /// into it), and an idle pop must not destroy a parked queue.
-    public var hasQueuedWork: Bool { !queuedPrompts.isEmpty || drainingEntry != nil }
+    public var hasQueuedWork: Bool {
+      !queuedPrompts.isEmpty || drainingEntry != nil || heldDrain != nil
+    }
 
     /// Whether Steer now is offered for a steerable queued entry (`SteerEligibility`): a real
     /// turn is running (`isSending`, but not a slash exec — `slash.exec` never marks the
     /// session running, so the server would only answer `rejected`), no card stands (the
     /// #97 card queue gates it like queuing and the drain), and no other steer is in flight.
-    /// The panel and the reducer both read this.
+    /// The panel and the reducer both read this. Not on a session-authority host: its
+    /// `session.steer` requires the running claim's `execution_generation` and answers
+    /// `invalid_params` without it, so the action is hidden there (like `steerSupported` off).
     public var canSteerQueued: Bool {
-      steerSupported
+      steerSupported && !isSessionAuthority
         && isSending && !slashExecInFlight
         && steeringEntryID == nil
         && liveSessionID != nil
@@ -991,6 +1010,7 @@ public struct ChatFeature {
       self.isQueueParked = false
       self.drainingEntry = nil
       self.drainingRowID = nil
+      self.heldDrain = nil
       self.sendNowArmed = false
       self.steeringEntryID = nil
       self.steerSupported = true
@@ -1261,9 +1281,9 @@ public struct ChatFeature {
     case usageResponse(Usage)
     case composerSubmitted
     case promptSubmitFailed(message: String)
-    /// A queue drain's `prompt.submit` answered `{status: "queued"}`: the server holds it for
-    /// its next turn (see `promptSubmitParams`' `queued`).
-    case drainedEntryHeld
+    /// A queue drain's `prompt.submit` answered `{status: "queued"}` (see `promptSubmitParams`'
+    /// `queued`). Carries the drained entry so a late receipt clears only its own entry.
+    case drainedEntryHeld(entry: QueuedPrompt, rowID: ChatRow.ID?)
     /// A self-heal re-resume/recreate landed a fresh live session id for an outbound RPC that
     /// failed with "session not found" (#17). Apply it WITHOUT a wholesale transcript rebuild
     /// (unlike `activateResult`) so the optimistic user/attachment row stays put while the
@@ -1994,11 +2014,18 @@ public struct ChatFeature {
           sessionID: sessionID, state: &state
         ))
 
-      case .drainedEntryHeld:
-        // Consumed: the server runs it after the turn in flight. Its echo row stays (desktop
-        // keeps the input on a `queued` receipt) and the hydrate after that turn places it.
-        // `isSending` stays true: a turn is running server-side.
-        clearDrainingEntry(into: &state)
+      case let .drainedEntryHeld(entry, rowID):
+        // The server owns the entry now: consumed, never re-drained. Only its OWN draining
+        // slot is cleared: a late receipt (authority hosts answer separately from the event
+        // stream) must not clear the next entry's, or that one's failure couldn't re-park it.
+        if state.drainingEntry?.id == entry.id { clearDrainingEntry(into: &state) }
+        // A session-authority host answers `queued` to EVERY admission (rows are inserted
+        // queued) and its Stop never drops a queued admission: nothing more to track.
+        guard !state.isSessionAuthority else { return .none }
+        // A legacy host was running another turn and holds this one for the turn after.
+        // Its echo row stays (desktop keeps the input on a `queued` receipt); it sits above
+        // the running turn's answer until the next hydrate rebuilds the transcript.
+        state.heldDrain = State.HeldDrain(entry: entry, rowID: rowID, sawTurnEnd: false)
         return .none
 
       case let .promptSubmitFailed(message):
@@ -2049,6 +2076,9 @@ public struct ChatFeature {
         // parity). Stop intent also wins over a not-yet-consumed Send-now arm.
         state.sendNowArmed = false
         if !state.queuedPrompts.isEmpty { state.isQueueParked = true }
+        // The server's Stop also clears a legacy host's held `queued_prompt`: a held drain
+        // that hasn't run goes back to the panel (#66: never silently lost).
+        if let held = state.heldDrain, !held.sawTurnEnd { reparkHeldDrain(into: &state) }
         // Freeze the live turn + stop the elapsed timer (mirrors the `.error` /
         // socket-drop turn-ending paths) so an interrupt doesn't leave it shimmering forever.
         // Not consumed for read-aloud (#74): the interrupted turn's `message.complete` still
@@ -3265,6 +3295,8 @@ public struct ChatFeature {
       // The drained entry's turn started (#66) — the submit demonstrably reached the
       // server, so the entry is consumed (its echo row is now the turn's real user row).
       clearDrainingEntry(into: &state)
+      // A held drain whose turn-in-front has ended: this start is its own turn.
+      if state.heldDrain?.sawTurnEnd == true { state.heldDrain = nil }
       // A turn started, so the first prompt landed — the server has persisted the DB row
       // for an unpersisted branch (#34); from here the standard `session.resume` by
       // stored id serves every subsequent hydrate, the client-held seed is durable
@@ -3351,6 +3383,8 @@ public struct ChatFeature {
       // A stale draining entry here means the start event was lost/reordered — the turn
       // demonstrably ran, so the entry is consumed either way (never re-queued).
       clearDrainingEntry(into: &state)
+      // The turn a held drain waited behind ended: the server runs it next.
+      state.heldDrain?.sawTurnEnd = true
       // Turn ended — drop the anchor so a later hydrate doesn't resurrect a phantom timer,
       // and tell the list to clear this session's working glow immediately. This is also
       // the primary DRAIN edge (#66): the queue's head fires as the next turn. (The drain's
@@ -3474,6 +3508,8 @@ public struct ChatFeature {
       clearStalePrompts(into: &state)
       // The errored turn consumed any draining entry (#66) — it ran; never re-queue it.
       clearDrainingEntry(into: &state)
+      // The server's post-turn follow-ups run after an error too: a held drain runs next.
+      state.heldDrain?.sawTurnEnd = true
       // An error PARKS the queue rather than draining it (#66): auto-firing the next entry
       // into whatever just failed could burn the whole queue against a broken server. The
       // one exception is a Send-now that interrupted this turn — its terminal lands here on
@@ -4962,6 +4998,7 @@ public struct ChatFeature {
     state.reasoningRowID = nil
     clearLiveRowTracking(into: &state)
     state.steerSealedTexts = steerSealedTexts
+    reconcileHeldDrain(response, running: running, into: &state)
 
     // Seed the in-flight turn snapshot (lost when the agent process restarts — acceptable).
     // Use DETERMINISTIC, position-derived ids (same convention as `reconstructTranscript`) so
@@ -5730,6 +5767,7 @@ public struct ChatFeature {
     // Read-aloud barge-in latch (#74): taken by every regular submit (composer and drain).
     let interrupted = takeReadAloudInterruption(&state)
     let submissionID = mintSubmissionID(state)
+    let drained = fromQueue ? state.drainingEntry : nil
     return .merge(anchor, .run { [gateway] send in
       await submitPrompt(
         sessionID: sessionID, heal: heal, gateway: gateway, send: send
@@ -5741,11 +5779,13 @@ public struct ChatFeature {
             submissionID: submissionID
           )
         )
-        // The server was already running a turn (its own follow-up of an undelivered steer,
-        // or a compression accept) and HELD this drain for the turn after it: the server owns
-        // the entry now, so it is consumed here, never re-drained or re-parked.
-        if fromQueue, receipt["status"]?.stringValue == "queued" {
-          await send(.drainedEntryHeld)
+        // A `queued` receipt: the server admitted the drain but hasn't started it. On a
+        // legacy host that means it was already running a turn (its own follow-up of an
+        // undelivered steer, or a compression accept) and holds this one for the turn after;
+        // a session-authority host answers `queued` to every admission. Either way the server
+        // owns the entry now (`.drainedEntryHeld`).
+        if let drained, receipt["status"]?.stringValue == "queued" {
+          await send(.drainedEntryHeld(entry: drained, rowID: rowID))
         }
       }
     })
@@ -5801,6 +5841,7 @@ public struct ChatFeature {
     // the queue, and a `rejected` steer must still drain ahead of it.
     guard !state.queuedPrompts.isEmpty,
           state.drainingEntry == nil,
+          state.heldDrain == nil,
           state.steeringEntryID == nil,
           !state.isSending, !state.slashExecInFlight,
           state.pendingInteraction == nil,
@@ -5936,6 +5977,36 @@ public struct ChatFeature {
       else { return false }
       delivered.remove(at: match)
       return true
+    }
+  }
+
+  /// A held drain the server dropped before running it (a Stop, or an idle hydrate whose
+  /// history doesn't end with it): back to the head of the panel, parked, echo row removed.
+  private func reparkHeldDrain(into state: inout State) {
+    guard let held = state.heldDrain else { return }
+    state.heldDrain = nil
+    state.queuedPrompts.insert(held.entry, at: 0)
+    state.isQueueParked = true
+    if let rowID = held.rowID { state.transcript.remove(id: rowID) }
+  }
+
+  /// A hydrate settles a held drain: a running turn whose `inflight.user` is it means it
+  /// started; an idle snapshot means it either ran (the history's last user message) or was
+  /// dropped (re-parked). A running turn that isn't it keeps it held.
+  private func reconcileHeldDrain(
+    _ response: ActivateResponse, running: Bool, into state: inout State
+  ) {
+    guard let held = state.heldDrain else { return }
+    let text = Self.normalizedText(held.entry.text)
+    if running {
+      if response.inflight?.user.map(Self.normalizedText) == text { state.heldDrain = nil }
+      return
+    }
+    let lastUser = response.messages.last { $0.role == "user" }?.displayText
+    if lastUser.map(Self.normalizedText) == text {
+      state.heldDrain = nil
+    } else {
+      reparkHeldDrain(into: &state)
     }
   }
 
@@ -6418,12 +6489,14 @@ func branchFailureBanner(_ error: GatewayError) -> String {
   case "session_busy": return "Stop the current turn before branching."
   case branchUnsavedMessage: return reason
   case "not_found": return "Couldn’t branch the chat: it no longer exists on the server."
-  case "permission_denied", "profile_mismatch", "read_only":
+  case "session_read_only", "cron_session_read_only":
+    return "This chat is read-only stored history, so it can’t be branched. Start a new chat instead."
+  case "permission_denied", "profile_mismatch", "runtime_coordination_required":
     return "Couldn’t branch the chat: the server doesn’t allow it here."
   case "revision_conflict", "stale_generation":
     return "Couldn’t branch the chat: it changed on the server. Try again."
   case "invalid_params", "runtime_draining", "runtime_retired", "storage_unavailable",
-       "runtime_coordination_required", "admission_conflict":
+       "admission_conflict", "stale_epoch", "unknown_execution":
     return "Couldn’t branch the chat. Try again."
   default: return "Couldn’t branch the chat: \(reason)"
   }

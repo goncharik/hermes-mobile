@@ -133,12 +133,6 @@ public enum GatewayError: Error, Equatable, Sendable {
     return false
   }
 
-  /// True when the server rejected the request because the live runtime session id is stale
-  /// (e.g. after a background→foreground the agent rebuilt/invalidated the in-memory session).
-  /// `InboundFrame` keeps only the error message, so we match the server's stable
-  /// `"session not found"` text (case-insensitive) — used to self-heal outbound RPCs by
-  /// transparently re-resuming for a fresh live id and replaying the call (#17). Mirrors
-  /// `isUnknownMethod`.
   /// A session-authority host refused a `session.mutate` because its fences moved
   /// (`revision_conflict` / `stale_generation`, #157): nothing was written; re-read and retry.
   public var isStaleFence: Bool {
@@ -148,6 +142,12 @@ public enum GatewayError: Error, Equatable, Sendable {
     return false
   }
 
+  /// True when the server rejected the request because the live runtime session id is stale
+  /// (e.g. after a background→foreground the agent rebuilt/invalidated the in-memory session).
+  /// `InboundFrame` keeps only the error message, so we match the server's stable
+  /// `"session not found"` text (case-insensitive) — used to self-heal outbound RPCs by
+  /// transparently re-resuming for a fresh live id and replaying the call (#17). Mirrors
+  /// `isUnknownMethod`.
   /// A canonical session-authority host (`gateway.ready.session_authority: true`, v0.22.3+)
   /// never sends that text: its refusal is `{code: 4001, message: <reason>}`, and a session
   /// it has no row for is the bare reason `not_found` (#166), matched exactly.

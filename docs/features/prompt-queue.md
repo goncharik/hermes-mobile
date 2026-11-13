@@ -16,10 +16,28 @@ the key). The client can be wrong about idle: an accepted steer the turn ended b
 (`pending_steer`), or a `queued` accept during compression, becomes the SERVER's own next turn
 right after `message.complete`, the same edge the drain fires on. Without the flag the drain's
 `prompt.submit` would hit that turn's default `interrupt` busy policy and cut its answer. With it
-the busy path only holds the text for the turn after (`{status: "queued"}`), which consumes the
-entry (`.drainedEntryHeld`: the server owns it now; its echo row stays and `isSending` stays on)
-rather than re-parking or re-draining it. The slash `send`/`skill` directive of a drained
-command is not flagged (its `prompt.submit` runs after a `slash.exec` round trip).
+the busy path only holds the text for the turn after (`{status: "queued"}`).
+
+A `queued` receipt fires `.drainedEntryHeld(entry:rowID:)`, which consumes the entry (never
+re-drained) and clears `drainingEntry` only when it is still that entry: a late receipt must
+not clear the next entry's slot, or that entry's failure could no longer re-park it. What the
+receipt means depends on the host:
+
+- **Legacy host:** the server was already running another turn (the steer's follow-up, a
+  compression accept) and holds the entry in its `queued_prompt`. Its echo row stays, sitting
+  above the running turn's answer until the next hydrate rebuilds the transcript (no hydrate
+  runs after a turn). A Stop clears the server's `queued_prompt`, so the client keeps the entry
+  in `heldDrain` until its own turn shows: a Stop before the turn in front ends re-parks it at
+  the head (echo row removed); the turn end (`message.complete` or `.error`) marks it next, and
+  the `message.start` after that releases it. A hydrate settles it too: running with it as
+  `inflight.user` releases it; idle with it as the last user message releases it; idle without
+  it re-parks it. The drain waits while `heldDrain` stands.
+- **Session-authority host:** every admission's first receipt is `queued` (rows are inserted
+  queued), so every drain takes this path. It means "admitted", not "held behind a turn", and
+  the host's Stop never drops a queued admission, so nothing more is tracked.
+
+The slash `send`/`skill` directive of a drained command is not flagged (its `prompt.submit` runs
+after a `slash.exec` round trip).
 
 ## Queuing
 
@@ -54,7 +72,9 @@ Manual Stop and turn `.error` park (`isQueueParked`) — desktop park-on-explici
 no burning the queue against a failing server; a FAILED drain re-parks the entry at the head and
 removes its optimistic echo row (`drainingEntry`/`drainingRowID`; a queued message is never
 silently lost and never shows twice), while `message.start` / turn terminals /
-`.attachmentsSubmitted` / the slash terminals consume it.
+`.attachmentsSubmitted` / the slash terminals / `.drainedEntryHeld` consume it. A held drain
+(`heldDrain`, above) re-parks the same way on a Stop before its turn, or on an idle hydrate
+that doesn't carry it.
 
 ## Send now & edit
 
@@ -70,7 +90,10 @@ the panel's menu item mirrors it).
 re-checks, only while `canSteerQueued` and `SteerEligibility.isSteerable(entry)`:
 
 - **Gating.** `canSteerQueued`: `isSending && !slashExecInFlight` (a slash exec never marks the
-  session running, so its steer could only be `rejected`), `steerSupported`, no steer in flight,
+  session running, so its steer could only be `rejected`), `steerSupported`, not a
+  session-authority host (its `session.steer` requires the running claim's
+  `execution_generation` and answers `invalid_params` without it, so Steer now is hidden there
+  until the client tracks the claim), no steer in flight,
   `status == .ready`, no standing card (`pendingInteraction`, so the #97 card queue gates it like
   queuing and the drain), no branch create, no #98 replay read pending. `SteerEligibility`
   (desktop `isSteerableEntry`): no attachments, non-empty after trimming, not command-shaped.
