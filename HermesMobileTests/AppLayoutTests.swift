@@ -17,7 +17,7 @@ final class AppLayoutTests: XCTestCase {
   func testNarrowOrUnresolvedSizeClassesUseTheStack() {
     let host = LayoutHost()
     for (horizontal, vertical): (UserInterfaceSizeClass?, UserInterfaceSizeClass?) in [
-      (.compact, .regular), (.compact, .compact), (nil, .regular), (.regular, nil),
+      (.compact, .regular), (.compact, .compact), (nil, .regular), (.regular, nil)
     ] {
       host.render(horizontal: horizontal, vertical: vertical)
       XCTAssertEqual(host.store.layout, .compact)
