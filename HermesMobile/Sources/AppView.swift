@@ -1,7 +1,6 @@
 import ComposableArchitecture
 import HermesKit
 import SwiftUI
-import UIKit
 
 /// Root view: the onboarding screen until connected, then a `NavigationSplitView` whose
 /// sidebar is the session list (inside the navigation stack that pushes chat screens in
@@ -13,6 +12,11 @@ struct AppView: View {
   // reports `.compact` even on a 13" iPad, which would flip the reducer into the stack
   // layout for the whole window.
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+  private var layout: AppFeature.Layout {
+    appLayout(horizontal: horizontalSizeClass, vertical: verticalSizeClass)
+  }
 
   var body: some View {
     content
@@ -31,8 +35,8 @@ struct AppView: View {
       // the layout is known BEFORE the home screen lands: the landing fills and the cold-launch
       // push replay read `state.layout` at that moment. Attached to `content` (every root
       // branch) rather than the split view for the same reason.
-      .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
-        store.send(.layoutChanged(appLayout(for: sizeClass)))
+      .onChange(of: layout, initial: true) { _, layout in
+        store.send(.layoutChanged(layout))
       }
   }
 
@@ -152,15 +156,11 @@ private extension ScenePhase {
   }
 }
 
-/// Decide the layout regime for a horizontal size class. The split layout needs BOTH a
-/// regular width and the pad idiom: a Plus/Max iPhone reports `.regular` in landscape, and
-/// rotating a phone must not swap it into a split view. On an iPad the size class is what
-/// varies, so a narrow window (Slide Over, Stage Manager) still gets the stack — as does an
-/// unresolved (`nil`) class, which is the reducer's default, so an early `nil` never flips
-/// anything.
-@MainActor
-private func appLayout(for sizeClass: UserInterfaceSizeClass?) -> AppFeature.Layout {
-  guard sizeClass == .regular, UIDevice.current.userInterfaceIdiom == .pad else { return .compact }
+/// The open Duo has regular width and height; a landscape Plus/Max has compact height.
+private func appLayout(
+  horizontal: UserInterfaceSizeClass?, vertical: UserInterfaceSizeClass?
+) -> AppFeature.Layout {
+  guard horizontal == .regular, vertical == .regular else { return .compact }
   return .regular
 }
 

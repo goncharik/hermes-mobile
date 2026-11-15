@@ -1,4 +1,4 @@
-# iPad split-view layout (#80)
+# iPad and iPhone Duo split-view layout (#80, #144)
 
 The short rules live in `CLAUDE.md` → "Gateway & session lifecycle" (#33 bullet) and
 "Transcript & chat UI"; this doc is the full contract. Design history:
@@ -10,17 +10,21 @@ tracked as **#90**; the app keeps ONE live-chat slot.
 
 `AppFeature.State.layout: Layout` (`.compact` | `.regular`, default `.compact`) is reported by
 `AppView` through `layoutChanged(Layout)` — the same shape as `scenePhaseChanged`. `.regular`
-needs **both** a regular `horizontalSizeClass` **and** `UIUserInterfaceIdiom.pad`
-(`appLayout(for:)`): the size class is what varies on an iPad, so Slide Over and a narrow Stage
-Manager window get the stack and the same iPad flips between regimes as its window narrows and
-widens — but a Plus/Max iPhone also reports a regular width in landscape, and rotating a phone
-must not swap it into a split view. So every iPhone is `.compact` in both orientations.
-`nil` (unresolved) maps to `.compact` so an early read never flips anything. The size class is
-read at the `AppView` ROOT and the `.onChange(of:initial: true)` is attached to `content`
-(every root branch), not to the split view: inside a sidebar column the environment reports
+needs **both** regular horizontal and vertical size classes (`appLayout(horizontal:vertical:)`).
+The open iPhone Duo uses the same split view as an iPad. A closed Duo, Slide Over, and a narrow
+Stage Manager window use the stack. A Plus/Max iPhone can report regular width in landscape,
+but its compact height keeps it on the stack. Either unresolved (`nil`) size class maps to
+`.compact` so an early read never flips anything. Both size classes are
+read at the `AppView` ROOT and `.onChange(of:initial: true)` observes their resolved layout on `content`
+(every root branch), outside the split view: inside a sidebar column the environment reports
 `.compact` even on a 13" iPad, and the home-landing fills + the cold-launch push replay read
 `state.layout` the moment `home` appears, so the layout must be known before the `.home`
-branch exists.
+branch exists. A height-only change is observed even if the width class stays regular.
+The transition table and invariants are indexed in [`../state-machines.md`](../state-machines.md).
+
+Build with Xcode 27.1 or later for the full iPhone Duo display. Older SDK builds can run
+inside a compatibility window; changing the layout gate alone cannot enlarge that window.
+See [Apple's preparation guide](https://developer.apple.com/iphone-duo/prepare/).
 
 ## `isChatDetached` — the one predicate
 
@@ -269,6 +273,9 @@ the compact layout. Deployment target stays iOS 18.
 
 ## Tests that pin each invariant
 
+- `HermesMobileTests/AppLayoutTests.swift` — regular width and height enable the split on
+  a phone; narrow/unresolved size classes stay compact; height-only changes update the layout;
+  the split renders one chat with its composer in the detail column.
 - `HermesKit/Tests/HermesKitTests/AppFeatureTests.swift` — "Layout regime + the detached
   predicate" (`defaultLayoutIsCompactAndDetachedMeansEmptyPath`,
   `highlightedSessionIsNilInCompactEvenWithTheChatOnScreen`,
