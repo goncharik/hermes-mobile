@@ -84,8 +84,8 @@ bullets below are the compressed rules.
   View disappearance is `AppFeature.chatViewDisappeared`, handled AFTER the pop
   animation, never at `.popFrom` time. A slot with `hasQueuedWork` stays alive.
 - **"Detached" means `isChatDetached` = `layout == .compact && path.isEmpty` (#80)** —
-  never a bare `path.isEmpty`. `.regular` needs a regular size class AND the pad idiom (a
-  Max iPhone in landscape stays on the stack; Slide Over does too), reported via
+  never a bare `path.isEmpty`. `.regular` needs regular horizontal AND vertical size classes
+  (iPad and open iPhone Duo; a landscape Max or narrow window stays on the stack), reported via
   `layoutChanged` and set FIRST so the column-move `chatViewDisappeared` is a no-op. The
   `ChatScreen` marker is COMPACT-ONLY: in regular the slot IS the `NavigationSplitView`
   detail, the path stays empty, and the chat is never detached (no pop/turn-end teardown).
