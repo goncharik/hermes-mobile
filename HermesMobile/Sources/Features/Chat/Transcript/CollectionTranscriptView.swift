@@ -66,14 +66,15 @@ struct TranscriptCellLayout: Layout {
 
   /// Placed at the same floored width it was measured at: a degenerate (narrower) pass lays the
   /// content out as the narrowest real row and lets it overhang, rather than re-measuring it
-  /// into a glyph column.
+  /// into a glyph column. Horizontally CENTERED, as the hosting view places content narrower
+  /// than the cell (a bare status line such as "Approved" sits in the middle of its row).
   func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
     let width = TranscriptCellSizing.measuringWidth(
       proposed: bounds.width, floor: TranscriptLayout.narrowestRowWidth
     )
     subviews.first?.place(
-      at: CGPoint(x: bounds.minX, y: bounds.minY),
-      anchor: .topLeading,
+      at: CGPoint(x: bounds.midX, y: bounds.minY),
+      anchor: .top,
       proposal: ProposedViewSize(width: width, height: bounds.height)
     )
   }
