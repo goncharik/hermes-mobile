@@ -43,6 +43,42 @@ enum TranscriptLayout {
   static let shortestLayoutHeight: CGFloat = 568
 }
 
+/// The root of every transcript cell's content (#191): measures its content no narrower than
+/// ``TranscriptLayout/narrowestRowWidth`` and reports a finite, non-negative size no taller than
+/// `TranscriptCellSizing.maximumCellHeight`, whatever the self-sizing pass proposes.
+///
+/// UIKit crashes (`_UIContentViewAssertValidFittingSize`) on a cell whose content answers a
+/// non-finite, negative or too-tall fitting size — and prose answers a degenerate width with an
+/// absurd height (a 1pt row lays it out one glyph per line: a 166k-character reply measured
+/// 3.17M pt and asserted, through a plain `layoutSubviews`, no apply involved). So no cell
+/// content is trusted to be well-behaved: the guard is here, once, at the cell root, not in each
+/// view. At every real row width (≥ the narrowest row) it measures and places exactly as the
+/// bare content would. The rule itself is the pure `TranscriptCellSizing`.
+struct TranscriptCellLayout: Layout {
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard let content = subviews.first else { return .zero }
+    let width = TranscriptCellSizing.measuringWidth(
+      proposed: proposal.width, floor: TranscriptLayout.narrowestRowWidth
+    )
+    let measured = content.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    return TranscriptCellSizing.reportedSize(content: measured, proposedWidth: proposal.width)
+  }
+
+  /// Placed at the same floored width it was measured at: a degenerate (narrower) pass lays the
+  /// content out as the narrowest real row and lets it overhang, rather than re-measuring it
+  /// into a glyph column.
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    let width = TranscriptCellSizing.measuringWidth(
+      proposed: bounds.width, floor: TranscriptLayout.narrowestRowWidth
+    )
+    subviews.first?.place(
+      at: CGPoint(x: bounds.minX, y: bounds.minY),
+      anchor: .topLeading,
+      proposal: ProposedViewSize(width: width, height: bounds.height)
+    )
+  }
+}
+
 #if canImport(UIKit)
 import UIKit
 
@@ -109,6 +145,15 @@ extension TranscriptLayout {
       trailing: horizontalSectionInset
     )
     return UICollectionViewCompositionalLayout(section: section)
+  }
+
+  /// A transcript cell's content configuration: `content` hosted under the sizing guard
+  /// (``TranscriptCellLayout``, #191) with no margins. The ONE way a transcript cell is
+  /// configured — the measured layout tests build their cells through it too, so they cannot
+  /// drift from the production cell.
+  static func cellConfiguration(@ViewBuilder content: () -> some View) -> some UIContentConfiguration {
+    UIHostingConfiguration { TranscriptCellLayout { content() } }
+      .margins(.all, 0)
   }
 }
 
@@ -335,8 +380,7 @@ struct CollectionTranscriptView<Cell: View>: UIViewRepresentable {
         [weak self] cell, _, id in
         guard let self, let item = self.itemsByID[id] else { return }
         let builder = self.cell
-        cell.contentConfiguration = UIHostingConfiguration { builder(item) }
-          .margins(.all, 0)
+        cell.contentConfiguration = TranscriptLayout.cellConfiguration { builder(item) }
         cell.backgroundConfiguration = .clear()
       }
 

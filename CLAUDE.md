@@ -180,7 +180,10 @@ bullets below are the compressed rules.
   fold change nor the snapped start moving reads as a reset. Stick-to-bottom is
   renderer-local, not reducer state; pure scroll-math helpers stay outside the
   `#if canImport(UIKit)` guard. No diff apply on an unmeasurable view (#128): gated by
-  `TranscriptScrollMath.canApplySnapshot`, latest deferred (`docs/features/tool-calls.md`).
+  `TranscriptScrollMath.canApplySnapshot`, latest deferred. Every cell is configured by
+  `TranscriptLayout.cellConfiguration` (#191): `TranscriptCellLayout` measures no narrower than
+  the narrowest row and reports a finite, capped size — UIKit crashes on a too-tall fitting
+  size, not only NaN (`docs/features/tool-calls.md`).
 - **The empty-chat hero swaps the transcript REGION on `ChatFeature.State.showsEmptyHero`**
   (#80) — a HermesKit predicate (`transcript.isEmpty && !isSending && streamingRowID == nil
   && (storedSessionID == nil || hasHydrated)`), never view-derived. `hasHydrated` is set on

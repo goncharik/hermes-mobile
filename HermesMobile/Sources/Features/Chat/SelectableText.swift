@@ -71,10 +71,31 @@ struct SelectableText: UIViewRepresentable {
     }
   }
 
+  /// A real (finite) proposed width is taken whole — the block wraps to the row — and the
+  /// height is the text's at that width. Every answer is finite and non-negative (#191):
+  ///
+  /// - `nil` or an infinite width (SwiftUI's ideal-size and maximum-size probes) answers the
+  ///   text's natural, unwrapped size, as `Text` does — never `0`, and never an infinite width
+  ///   echoed back into the stacks above;
+  /// - a negative width answers `0` wide.
+  ///
+  /// A narrow-but-positive width still answers a tall block (one glyph per line at 1pt); the
+  /// transcript cell's `TranscriptCellLayout` is what keeps that out of a self-sizing pass.
   func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
-    let width = proposal.width ?? UIView.layoutFittingCompressedSize.width
+    guard let proposed = proposal.width, proposed.isFinite else {
+      let natural = uiView.sizeThatFits(
+        CGSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+      )
+      return CGSize(width: Self.finite(ceil(natural.width)), height: Self.finite(ceil(natural.height)))
+    }
+    let width = max(proposed, 0)
     let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-    return CGSize(width: width, height: ceil(fitted.height))
+    return CGSize(width: width, height: Self.finite(ceil(fitted.height)))
+  }
+
+  /// `value` when finite and positive, else 0.
+  private static func finite(_ value: CGFloat) -> CGFloat {
+    value.isFinite ? max(value, 0) : 0
   }
 }
 

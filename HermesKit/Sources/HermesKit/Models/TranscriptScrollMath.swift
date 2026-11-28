@@ -90,7 +90,9 @@ public enum TranscriptScrollMath {
   /// fitting width, the suspected trigger of iOS 18's `_UIContentViewAssertValidFittingSize`
   /// (not reproduced on iOS 26.5/27.0). The renderer defers such an update (keeping only
   /// the latest) and flushes it from the next layout pass that passes this gate, so the open's
-  /// first population still takes the jump-to-bottom.
+  /// first population still takes the jump-to-bottom. The assert's reproduced cause (#191) is a
+  /// too-tall cell from text measured at a degenerate width, which this gate cannot stop on its own
+  /// (it allows a 1pt row and gates no layout pass) — ``TranscriptCellSizing`` is that fix.
   public static func canApplySnapshot(width: CGFloat, height: CGFloat, hasWindow: Bool) -> Bool {
     hasWindow
       && width.isFinite && height.isFinite
