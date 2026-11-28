@@ -13,15 +13,27 @@ final class ConnectionFailedSnapshotTests: SnapshotTestCase {
   private func store(
     url: String = "http://mac.tailnet:9119",
     reason: RESTError,
+    details: String? = nil,
     isRetrying: Bool = false
   ) -> StoreOf<ConnectionFailedFeature> {
     Store(
       initialState: ConnectionFailedFeature.State(
         connection: ServerConnection(baseURL: URL(string: url)!, token: "t"),
         reason: reason,
+        details: details,
         isRetrying: isRetrying
       )
     ) { ConnectionFailedFeature() }
+  }
+
+  /// The Details disclosure open (#193): the failed step and its raw cause under the reason
+  /// line, above the escape routes.
+  func testConnectionFailedView_detailsExpanded() {
+    let view = ConnectionFailedView(
+      store: store(reason: .unreachable, details: "GET /api/sessions: URLError -1001 timedOut"),
+      isShowingDetails: true
+    )
+    assertSnapshot(of: view, as: deviceImage())
   }
 
   /// Offline: "check Wi-Fi/cellular" copy — no point pointing the user at their VPN.

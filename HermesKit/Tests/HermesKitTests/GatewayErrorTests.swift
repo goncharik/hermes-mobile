@@ -48,7 +48,7 @@ import Testing
     #expect(!GatewayError.notConnected.isSessionNotFound)
     #expect(!GatewayError.timedOut(method: "prompt.submit").isSessionNotFound)
     #expect(!GatewayError.authExpired.isSessionNotFound)
-    #expect(!GatewayError.ticketUnavailable.isSessionNotFound)
+    #expect(!GatewayError.ticketUnavailable(cause: "HTTP 503").isSessionNotFound)
   }
 
   // MARK: isUnknownReasoningValue
@@ -77,7 +77,7 @@ import Testing
     #expect(!GatewayError.disconnected.isUnknownReasoningValue)
     #expect(!GatewayError.notConnected.isUnknownReasoningValue)
     #expect(!GatewayError.authExpired.isUnknownReasoningValue)
-    #expect(!GatewayError.ticketUnavailable.isUnknownReasoningValue)
+    #expect(!GatewayError.ticketUnavailable(cause: "HTTP 503").isUnknownReasoningValue)
   }
 
   // MARK: cross-check the matchers stay distinct

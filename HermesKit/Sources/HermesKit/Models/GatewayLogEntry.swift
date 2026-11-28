@@ -50,6 +50,7 @@ public extension GatewayEvent {
     // Client-synthesized, not a server frame (the gateway client yields it on a ws-ticket
     // 401) — labeled distinctly so it never reads as a real `auth.*` wire event in the log.
     case .authExpired: return "(client) session expired"
+    case .connectionFailed: return ConnectionFailure.logType
     case let .unknown(type, _): return type
     }
   }
@@ -89,6 +90,7 @@ public extension GatewayEvent {
       return message
     case let .reviewSummary(text): return Self.truncate(text)
     case .authExpired: return ""
+    case let .connectionFailed(detail): return detail
     case .unknown: return ""
     }
   }

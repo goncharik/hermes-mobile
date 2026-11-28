@@ -3616,6 +3616,11 @@ public struct ChatFeature {
       )
       return .none
 
+    case .connectionFailed:
+      // Diagnostics only (the connect loop already logged it); the finished stream's
+      // `.gatewayClosed` drives the reconnect.
+      return .none
+
     case .unknown:
       return .none
     }
@@ -6036,8 +6041,9 @@ public struct ChatFeature {
       // Blank text is dropped by the fold with zero state change — don't schedule a
       // pointless snapshot write for it.
       return Self.hasRenderableReviewText(text)
-    case .ready, .error, .serverRequestFailed, .serverRequestsUnavailable, .authExpired, .approvalRequest,
-         .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest, .unknown:
+    case .ready, .error, .serverRequestFailed, .serverRequestsUnavailable, .authExpired, .connectionFailed,
+         .approvalRequest, .serverRequest, .requestCancel, .clarifyRequest, .sudoRequest, .secretRequest,
+         .unknown:
       return false
     }
   }

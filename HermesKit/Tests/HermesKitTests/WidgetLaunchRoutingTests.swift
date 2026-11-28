@@ -439,7 +439,9 @@ struct WidgetLaunchRoutingTests {
     await store.send(.launchIntentReceived(intent)) {
       $0.pendingLaunchIntent = intent
     }
-    await store.send(.autoConnectFailed(connection, .unauthorized)) {
+    await store.send(.autoConnectFailed(
+      connection, ConnectionFailure(reason: .unauthorized, detail: "GET /api/sessions: HTTP 401")
+    )) {
       $0.autoConnecting = false
       $0.onboarding = ConnectionFeature.State(
         recovering: self.connection.baseURL,

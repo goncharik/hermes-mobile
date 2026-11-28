@@ -208,28 +208,21 @@ struct ConnectionFailedFeatureTests {
 
   @Test func retrySuccessDelegatesConnected() async {
     let probed = LockIsolated<[ServerConnection]>([])
-    let pages = LockIsolated<[(Int, Int, SessionOrder)]>([])
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable connection, limit, offset, order, _ in
+      $0.hermesREST.validateConnection = { @Sendable connection in
         probed.withValue { $0.append(connection) }
-        pages.withValue { $0.append((limit, offset, order)) }
-        return []
       }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
     await store.receive(\.retrySucceeded) { $0.isRetrying = false }
     await store.receive(\.delegate, .connected(connection))
-    // The probe must use the STORED connection (not a rebuilt/blank one) and the same page
-    // shape launch auto-connect uses — the delegate payload is built independently of it, so
+    // The probe must use the STORED connection (not a rebuilt/blank one) and the same probe
+    // launch auto-connect uses — the delegate payload is built independently of it, so
     // nothing else would catch a probe against the wrong server.
     #expect(probed.value == [connection])
-    #expect(pages.value.count == 1)
-    #expect(pages.value[0].0 == 1)
-    #expect(pages.value[0].1 == 0)
-    #expect(pages.value[0].2 == .recent)
   }
 
   /// The headline #62 story is a PASSWORD-mode user: the cookie session must ride through the
@@ -239,9 +232,8 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state(connection: cookieConnection)) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable connection, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable connection in
         probed.setValue(connection)
-        return []
       }
     }
 
@@ -256,14 +248,37 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state(reason: .unreachable)) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.offline }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.offline }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
     await store.receive(\.retryFailed) {
       $0.isRetrying = false
       $0.reason = .offline
+      $0.details = "GET /api/sessions: device offline"
     }
+  }
+
+  /// The live probe's `ConnectionFailure` reaches Details verbatim (#193): the raw URLError
+  /// code a Tailscale report needs, which `.unreachable` alone would have flattened away. The
+  /// same line goes to the diagnostics log.
+  @Test func retryFailureShowsTheRawCauseAndLogsIt() async {
+    let logged = LockIsolated<[String]>([])
+    let failure = ConnectionFailure(reason: .unreachable, detail: "GET /api/sessions: URLError -1001 timedOut")
+    let store = TestStore(initialState: state(reason: .offline)) {
+      ConnectionFailedFeature()
+    } withDependencies: {
+      $0.hermesREST.validateConnection = { @Sendable _ in throw failure }
+      $0.debugLog.note = { @Sendable type, summary in logged.withValue { $0.append("\(type) \(summary)") } }
+    }
+
+    await store.send(.retryTapped) { $0.isRetrying = true }
+    await store.receive(\.retryFailed, failure) {
+      $0.isRetrying = false
+      $0.reason = .unreachable
+      $0.details = "GET /api/sessions: URLError -1001 timedOut"
+    }
+    #expect(logged.value == ["connect.failed GET /api/sessions: URLError -1001 timedOut"])
   }
 
   /// A retry that reaches *something* which answers badly stays on the screen and just
@@ -283,13 +298,14 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state(reason: .unreachable)) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw error }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw error }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
     await store.receive(\.retryFailed) {
       $0.isRetrying = false
       $0.reason = error
+      $0.details = "GET /api/sessions: \(ConnectionDiagnostics.cause(of: error))"
     }
   }
 
@@ -297,7 +313,7 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unauthorized }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
@@ -312,7 +328,7 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw error }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw error }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
@@ -325,13 +341,14 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state(reason: .offline)) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw Boom() }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw Boom() }
     }
 
     await store.send(.retryTapped) { $0.isRetrying = true }
     await store.receive(\.retryFailed) {
       $0.isRetrying = false
       $0.reason = .unreachable
+      $0.details = "GET /api/sessions: Boom" // the type name only, never its description
     }
   }
 
@@ -342,7 +359,7 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state(reason: .unreachable)) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         throw URLError(.notConnectedToInternet)
       }
     }
@@ -351,6 +368,7 @@ struct ConnectionFailedFeatureTests {
     await store.receive(\.retryFailed) {
       $0.isRetrying = false
       $0.reason = .offline
+      $0.details = "GET /api/sessions: URLError -1009 notConnectedToInternet"
     }
   }
 
@@ -360,7 +378,7 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.validateConnection = { @Sendable _ in }
     }
 
     await store.send(.sceneBecameActive) { $0.isRetrying = true }
@@ -375,10 +393,9 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         probes.withValue { $0 += 1 }
         for await _ in gate { break }
-        return []
       }
     }
 
@@ -402,14 +419,13 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         let attempt = probes.withValue { value -> Int in
           value += 1
           return value
         }
         // The first probe never resolves; the foreground's probe answers immediately.
         if attempt == 1 { for await _ in stall { break } }
-        return []
       }
     }
 
@@ -452,9 +468,8 @@ struct ConnectionFailedFeatureTests {
     let store = TestStore(initialState: state()) {
       ConnectionFailedFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         for await _ in gate { break }
-        return []
       }
     }
 

@@ -333,12 +333,12 @@ public struct AppFeature {
   public enum Action {
     case task
     case autoConnectSucceeded(ServerConnection)
-    /// The launch probe failed. The `RESTError` decides where we land, via the one rule in
-    /// `ConnectionFailedFeature.isRetryable`: only a credentials verdict (`.unauthorized`, or
+    /// The launch probe failed. The failure's `reason` decides where we land, via the one rule
+    /// in `ConnectionFailedFeature.isRetryable`: only a credentials verdict (`.unauthorized`, or
     /// a `.server` with status 401/403) falls back to onboarding for re-entry — **every**
     /// other failure (transport, 500, 404, 429, 503, `.decoding`) raises the retry screen with
-    /// the session intact.
-    case autoConnectFailed(ServerConnection, RESTError)
+    /// the session intact, its `detail` under Details (#193).
+    case autoConnectFailed(ServerConnection, ConnectionFailure)
     /// The app's scene phase changed (foreground/background) — observed at the app shell and
     /// fanned out: `.active` reconnects + re-hydrates the open chat and refreshes the list;
     /// `.background`/`.inactive` flushes the open chat's snapshot + anchor immediately, and
@@ -537,7 +537,7 @@ public struct AppFeature {
         let connection = ServerConnection(baseURL: url, auth: session)
         return .merge(
           observers,
-          .run { [rest, keychain, bearerTokens] send in
+          .run { [rest, keychain, bearerTokens, debugLog] send in
             // Bearer restore (#19) must happen BEFORE the probe: a `.bearer` connection
             // resolves its `Authorization` header through the token store, so probing an
             // unseeded store sends the request with no credentials at all and 401s a
@@ -545,13 +545,15 @@ public struct AppFeature {
             // Keychain persist hook, so a rotation during the probe is saved.
             Self.seedBearerStore(session, baseURL: url, keychain: keychain, store: bearerTokens)
             do {
-              _ = try await rest.sessions(connection, 1, 0, .recent, .all)
+              try await rest.validateConnection(connection)
               await send(.autoConnectSucceeded(connection))
             } catch {
               // A dead refresh token surfaces here as `RESTError.unauthorized` (the store
               // maps the 401 verdict), so it takes the existing credentials-verdict branch
               // in `.autoConnectFailed` — the #62 routing rule needs no bearer carve-out.
-              await send(.autoConnectFailed(connection, asRESTError(error)))
+              let failure = ConnectionFailure(error, step: .sessionsProbe)
+              debugLog.note(ConnectionFailure.logType, failure.detail)
+              await send(.autoConnectFailed(connection, failure))
             }
           }
         )
@@ -563,9 +565,9 @@ public struct AppFeature {
         state.home = makeHomeState(connection: connection)
         return landOnHome(&state, replaysLaunchAction: true)
 
-      case let .autoConnectFailed(connection, error):
+      case let .autoConnectFailed(connection, failure):
         state.autoConnecting = false
-        guard ConnectionFailedFeature.isRetryable(error) else {
+        guard ConnectionFailedFeature.isRetryable(failure.reason) else {
           // Stored creds didn't validate (expired token / dead cookies / a dead refresh
           // token) — fall back to onboarding for re-entry; retrying can't repair dead
           // credentials.
@@ -576,7 +578,7 @@ public struct AppFeature {
         // onboarding (which, in password mode, would demand a password that never expired just
         // because the VPN was off).
         state.connectionFailed = ConnectionFailedFeature.State(
-          connection: connection, reason: error
+          connection: connection, reason: failure.reason, details: failure.detail
         )
         return .none
 

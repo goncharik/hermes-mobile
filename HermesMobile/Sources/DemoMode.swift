@@ -77,6 +77,7 @@ enum DemoMode {
     // (`rest.sessions`) and the profile-scoped (`profiles.sessions`) fetch paths. Both
     // source slices get the same page, which the list merges back to one copy.
     deps.hermesREST.sessions = { _, _, _, _, _ in seededSessions }
+    deps.hermesREST.validateConnection = { _ in }
     deps.hermesProfiles.sessions = { _, _, _, _, _, _, _ in seededSessions }
     // The agent always exposes the default profile, so the "default" pill is always present.
     deps.hermesProfiles.list = { _ in [Profile(name: "default", isDefault: true)] }
