@@ -200,6 +200,22 @@ the same): picking `ultra` on a model that clamps leaves the chip reading `ultra
 runs at the clamped level. Labels are the raw level ids in the chip, the Reasoning row and the
 effort page — no prettified `XHigh`/`Ultra` forms.
 
+### The chip on a narrow row (#192)
+
+Only the model label in the chip truncates; the `·`, the effort and the chevron are
+`fixedSize`, so the effort never wraps (`medi-um`, or one letter per line in a narrow window).
+The composer toolbar is `ComposerToolbarLayout`: one row while the chip can still show
+`modelLabelFloor` (48 pt, scaled) of the model name beside every control, otherwise the chip and
+usage ring take their own line above the buttons. `IdealWidthCap` reports the floor as the
+label's ideal width so the layout judges the row by a truncated label, while the row still
+shows the full name when there is room. It is a measured `Layout` on purpose: a `ViewThatFits`
+version looped the hosted chat's layout with the keyboard up
+(`ApprovalCardLayoutTests.testRaisingACardHandsTheKeyboardBack` hung). At accessibility text
+sizes the toolbar stays one row and the effort truncates instead: a second row there took the
+height a raised approval card needs for its command
+(`testTheCommandIsWhatTheViewportOpensOnAtAccessibilitySizes`). With the usage ring, approval bolt and read-aloud
+toggle all showing, a 390 pt phone and `medium` already take the two-row shape.
+
 ## The capability gate is reactive, not a probe
 
 Every other gate in the app flips on a `-32601` / REST 404. This one can't: a pre-#62650 gateway

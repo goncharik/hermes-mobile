@@ -213,6 +213,38 @@ final class ComposerSnapshotTests: SnapshotTestCase {
     .frame(width: 390)
   }
 
+  /// A long model name with `medium` effort at 320 pt (#192), top to bottom: with only mic +
+  /// send the toolbar stays one row and the MODEL label truncates while `medium` stays on one
+  /// line; with every control showing (usage ring, approval bolt, read-aloud, paperclip) there
+  /// is no room for the chip in the row, so chip + ring take their own line above the buttons
+  /// instead of wrapping the effort or pushing the buttons out of the composer.
+  func testComposer_narrowChipKeepsEffortOnOneLine() {
+    let model = "anthropic/claude-sonnet-4-6-20260514"
+    let view = VStack(spacing: 20) {
+      ComposerView(
+        text: .constant(""),
+        isSending: false, canSend: false,
+        model: model, reasoningEffort: "medium",
+        attachmentsSupported: false,
+        showsAutoSpeak: false,
+        onModelTap: {}, onSend: {}, onInterrupt: {}
+      )
+      ComposerView(
+        text: .constant(""),
+        isSending: false, canSend: false,
+        model: model, reasoningEffort: "medium",
+        usage: Usage(total: 48_000, contextUsed: 48_000, contextMax: 200_000, contextPercent: 24),
+        approvalMode: .manual,
+        attachmentsSupported: true,
+        autoSpeak: false, showsAutoSpeak: true,
+        onModelTap: {}, onSend: {}, onInterrupt: {}
+      )
+    }
+    .environment(\.dynamicTypeSize, .large)
+    .frame(width: 320)
+    assertSnapshot(of: view, as: componentImage())
+  }
+
   func testApprovalModePopover_large() {
     let view = ApprovalModePopover(selectedMode: .manual, isPending: false, onSelect: { _ in })
       .environment(\.dynamicTypeSize, .large)
