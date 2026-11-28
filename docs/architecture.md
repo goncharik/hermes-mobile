@@ -118,7 +118,12 @@ a `testValue`/`.inMemory()` variant):
   via `POST /api/auth/ws-ticket` per connect (never cached), the regimes differing only inside
   `mintTicket` (cookie jar vs `Authorization: Bearer`). A `401` from the mint surfaces as
   `GatewayEvent.authExpired` (non-retryable → `.sessionExpired`); other mint failures are
-  `.ticketUnavailable` (transient → reducer backoff).
+  `.ticketUnavailable(cause:)` (transient → reducer backoff). Any end the client didn't ask
+  for — a failed mint, a refused upgrade (Starlette answers a pre-accept close with HTTP 403,
+  read off the task's response), a close frame's code + reason, a transport error — is yielded
+  as a synthetic `GatewayEvent.connectionFailed(detail:)` just before the stream finishes, so
+  the diagnostics log records it (#193); the reducer ignores it and `.gatewayClosed` still
+  drives the backoff. A client-initiated `disconnect`/teardown yields nothing.
 - **`OAuthLoginClient`** — the whole browser leg of the native PKCE flow behind one
   `signIn(baseURL, provider)` call: PKCE + state → a `LoopbackCallbackListener` (`NWListener`
   on IPv4 `127.0.0.1`, ephemeral port) → `ASWebAuthenticationSession` → the loopback callback →
@@ -301,7 +306,13 @@ and a confirmed Log Out (the clearing itself lives in `AppFeature`). Its reason 
 clear on their own, every *other* 4xx repeats identically and so surfaces the server's own
 `detail` (sanitized: markup dropped, first line, ~200 chars, since `serverDetail(from:)` falls
 back to the whole body), which is what makes the agent's host-header `400` actionable instead
-of a futile retry loop. The launch probe is **once per process**
+of a futile retry loop. The probe is `HermesRESTClient.validateConnection` (the list's one-row
+`GET /api/sessions` page) so its failure is a `ConnectionFailure`: the same `RESTError` as
+`reason` for all the routing above, plus a secret-free `detail` line naming the step and the
+raw cause the `RESTError` funnel flattens (`GET /api/sessions: URLError -1001 timedOut`,
+`… HTTP 502 <detail>`), shown under the screen's **Details** disclosure and written to the
+diagnostics log as `connect.failed` (#193). Never a URL, header, cookie or
+`localizedDescription` — `ConnectionDiagnostics` builds it from codes only. The launch probe is **once per process**
 (`AppFeature.State.didRunLaunchProbe`), and scope is the launch path only: manual login keeps
 the onboarding Server step's typed failure cards (`ProbeFailure`, each with a setup-guide
 button) and a post-login drop keeps the chat reconnect banner. The credentials-verdict

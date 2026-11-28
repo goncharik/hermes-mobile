@@ -45,6 +45,29 @@ final class FakeTransport: WebSocketTransport, @unchecked Sendable {
   func inject(_ frame: String) { inboundContinuation.yield(frame) }
 }
 
+/// A transport whose `receive()` fails once `inbound` finishes, describing the failure with a
+/// fixed cause (standing in for `URLSessionWebSocketTransport`'s HTTP status / close code).
+private final class DescribedFailureTransport: WebSocketTransport, @unchecked Sendable {
+  let inbound: AsyncStream<String>.Continuation
+  private var iterator: AsyncStream<String>.AsyncIterator
+  private let cause: String
+
+  init(cause: String) {
+    let (stream, continuation) = AsyncStream<String>.makeStream()
+    inbound = continuation
+    iterator = stream.makeAsyncIterator()
+    self.cause = cause
+  }
+
+  func send(_ text: String) async throws {}
+  func receive() async throws -> String {
+    guard let next = await iterator.next() else { throw URLError(.badServerResponse) }
+    return next
+  }
+  func cancel() { inbound.finish() }
+  func failureCause(_ error: any Error) -> String { cause }
+}
+
 private func requestID(_ frame: String) -> Int? {
   (try? JSONDecoder().decode(JSONValue.self, from: Data(frame.utf8)))?["id"]?.intValue
 }
@@ -382,7 +405,33 @@ private func requestID(_ frame: String) -> Int? {
       _ = try await client.send("session.create", .object([:]))
     }
     var iterator = stream.makeAsyncIterator()
+    // A close the client didn't ask for is logged with its cause (#193), then the stream ends.
+    #expect(await iterator.nextEvent() == .connectionFailed(detail: "WebSocket /api/ws: disconnected"))
     #expect(await iterator.nextEvent() == nil) // stream finished
+  }
+
+  /// The transport's own description of the failure (the live one reads the refused
+  /// upgrade's HTTP status / the close frame) is what reaches the log.
+  @Test func socketFailureUsesTheTransportsCause() async throws {
+    let transport = DescribedFailureTransport(cause: "upgrade refused, HTTP 403")
+    let client = HermesGatewayClient.make { _ in transport }
+    let stream = client.connect(url, .token("t"))
+
+    var iterator = stream.makeAsyncIterator()
+    transport.inbound.finish()
+    #expect(await iterator.nextEvent() == .connectionFailed(detail: "WebSocket /api/ws: upgrade refused, HTTP 403"))
+    #expect(await iterator.nextEvent() == nil)
+  }
+
+  /// A socket WE closed (`disconnect`, a teardown) is not a failure: nothing is logged.
+  @Test func clientInitiatedDisconnectLogsNothing() async throws {
+    let transport = FakeTransport()
+    let client = HermesGatewayClient.make { _ in transport }
+    let stream = client.connect(url, .token("t"))
+
+    client.disconnect()
+    var iterator = stream.makeAsyncIterator()
+    #expect(await iterator.nextEvent() == nil)
   }
 
   // MARK: - Auth-regime URL branching
@@ -448,13 +497,17 @@ private func requestID(_ frame: String) -> Int? {
   /// so the reducer's existing backoff re-calls `connect` and re-mints.
   @Test func cookieModeTransientMintFinishesStreamWithoutAuthExpired() async throws {
     let client = HermesGatewayClient.make(
-      mintTicket: { _, _ in throw GatewayError.ticketUnavailable },
+      mintTicket: { _, _ in throw GatewayError.ticketUnavailable(cause: "URLError -1004 cannotConnectToHost") },
       makeTransport: { _ in FakeTransport() }
     )
     let stream = client.connect(url, .cookie(CookieSession(cookies: [], username: "u", provider: "basic")))
 
     var iterator = stream.makeAsyncIterator()
-    #expect(await iterator.nextEvent() == nil) // finished, no .authExpired emitted
+    // The mint's cause is logged (#193), then the stream finishes — no `.authExpired`.
+    #expect(await iterator.nextEvent() == .connectionFailed(
+      detail: "POST /api/auth/ws-ticket: URLError -1004 cannotConnectToHost"
+    ))
+    #expect(await iterator.nextEvent() == nil)
   }
 
   /// After a successful **cookie** connect, terminating the stream (consumer cancels →
@@ -562,13 +615,15 @@ private func requestID(_ frame: String) -> Int? {
   /// user out over a momentarily unreachable provider.
   @Test func bearerModeTransientMintFinishesStreamWithoutAuthExpired() async throws {
     let client = HermesGatewayClient.make(
-      mintTicket: { _, _ in throw GatewayError.ticketUnavailable },
+      mintTicket: { _, _ in throw GatewayError.ticketUnavailable(cause: "HTTP 503") },
       makeTransport: { _ in FakeTransport() }
     )
     let stream = client.connect(url, .bearer(bearerSession))
 
     var iterator = stream.makeAsyncIterator()
-    #expect(await iterator.nextEvent() == nil) // finished, no .authExpired emitted
+    // Only the diagnostics line (#193), never `.authExpired`, then finished.
+    #expect(await iterator.nextEvent() == .connectionFailed(detail: "POST /api/auth/ws-ticket: HTTP 503"))
+    #expect(await iterator.nextEvent() == nil)
   }
 
   /// Terminating a successful bearer connect shuts the opened transport down (the composed
@@ -703,7 +758,7 @@ struct GatewayTicketMintTests {
     let store = await freshStore(expiresAt: 1_000_010)
     MockURLProtocol.set(status: 503)
 
-    await #expect(throws: GatewayError.ticketUnavailable) {
+    await #expect(throws: GatewayError.ticketUnavailable(cause: "token refresh HTTP 503")) {
       _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
     }
     #expect(store.current?.accessToken == "AT1")
@@ -730,14 +785,15 @@ struct GatewayTicketMintTests {
     }
 
     // Anything else is transient → backoff re-dials and re-mints.
-    MockURLProtocol.set(status: 500)
-    await #expect(throws: GatewayError.ticketUnavailable) {
+    // Its cause carries the status and the server's detail for the diagnostics log (#193).
+    MockURLProtocol.set(status: 500, json: #"{"detail":"boom"}"#)
+    await #expect(throws: GatewayError.ticketUnavailable(cause: "HTTP 500 boom")) {
       _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
     }
 
     // A 2xx whose body isn't a ticket is transient too, never a silent empty ticket.
     MockURLProtocol.set(json: #"{"nope":1}"#)
-    await #expect(throws: GatewayError.ticketUnavailable) {
+    await #expect(throws: GatewayError.ticketUnavailable(cause: "response had no ticket")) {
       _ = try await wsTicket(baseURL: baseURL, tokenStore: store, session: mockSession)
     }
   }

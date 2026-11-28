@@ -68,14 +68,21 @@ public struct ConnectionFailedFeature {
     /// A probe is in flight — drives the spinner and guards against double-firing (two fast
     /// Retry taps).
     public var isRetrying: Bool
+    /// The failed step and its raw cause (`ConnectionFailure.detail`: URLError code, HTTP
+    /// status), shown under the screen's Details disclosure so a screenshot or bug report
+    /// carries the cause (#193). Secret-free by construction; `nil` hides the disclosure.
+    public var details: String?
     /// Log Out wipes the keychain session, every pref and the snapshot cache, and it sits one
     /// tap away on a launch screen a frustrated user is poking at — so it confirms first
     /// (project convention: destructive actions are state-driven dialogs).
     @Presents public var confirmationDialog: ConfirmationDialogState<Action.Dialog>?
 
-    public init(connection: ServerConnection, reason: RESTError, isRetrying: Bool = false) {
+    public init(
+      connection: ServerConnection, reason: RESTError, details: String? = nil, isRetrying: Bool = false
+    ) {
       self.connection = connection
       self.reason = reason
+      self.details = details
       self.isRetrying = isRetrying
     }
 
@@ -204,8 +211,9 @@ public struct ConnectionFailedFeature {
     case confirmationDialog(PresentationAction<Dialog>)
     /// The probe validated the stored session.
     case retrySucceeded
-    /// The probe failed — the payload decides "stay and retry" vs "back to onboarding".
-    case retryFailed(RESTError)
+    /// The probe failed — the payload's `reason` decides "stay and retry" vs "back to
+    /// onboarding"; its `detail` refreshes Details.
+    case retryFailed(ConnectionFailure)
     case delegate(Delegate)
 
     @CasePathable
@@ -258,6 +266,7 @@ public struct ConnectionFailedFeature {
   private enum CancelID { case probe }
 
   @Dependency(\.hermesREST) var rest
+  @Dependency(\.debugLog) var debugLog
 
   public init() {}
 
@@ -281,15 +290,16 @@ public struct ConnectionFailedFeature {
         state.isRetrying = false
         return .send(.delegate(.connected(state.connection)))
 
-      case let .retryFailed(error):
+      case let .retryFailed(failure):
         state.isRetrying = false
-        guard Self.isRetryable(error) else {
+        guard Self.isRetryable(failure.reason) else {
           // The server rejected the stored credentials (401/403) — this screen can't help.
           return .send(.delegate(.credentialsRejected(state.connection)))
         }
-        // Still retryable — stay put, but refresh the reason (offline ⇄ unreachable ⇄ a
-        // proxy's 502 can flip between attempts).
-        state.reason = error
+        // Still retryable — stay put, but refresh the reason and its details (offline ⇄
+        // unreachable ⇄ a proxy's 502 can flip between attempts).
+        state.reason = failure.reason
+        state.details = failure.detail
         return .none
 
       case .logoutButtonTapped:
@@ -328,12 +338,17 @@ public struct ConnectionFailedFeature {
   private func probe(_ state: inout State) -> Effect<Action> {
     state.isRetrying = true
     let connection = state.connection
-    return .run { [rest] send in
+    return .run { [rest, debugLog] send in
       do {
-        _ = try await rest.sessions(connection, 1, 0, .recent, .all)
+        try await rest.validateConnection(connection)
         await send(.retrySucceeded)
       } catch {
-        await send(.retryFailed(asRESTError(error)))
+        // Superseded by a newer probe (`cancelInFlight`; URLSession throws `URLError
+        // .cancelled`) — not a connection failure to log, and its send would be dropped.
+        guard !Task.isCancelled else { return }
+        let failure = ConnectionFailure(error, step: .sessionsProbe)
+        debugLog.note(ConnectionFailure.logType, failure.detail)
+        await send(.retryFailed(failure))
       }
     }
     .cancellable(id: CancelID.probe, cancelInFlight: true)

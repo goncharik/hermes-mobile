@@ -264,6 +264,11 @@ public struct HermesRESTClient: Sendable {
   /// nothing to authenticate with and is skipped (silently, like any other failure).
   public var logout: @Sendable (_ connection: ServerConnection) async -> Void = { _ in }
   public var sessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int, _ order: SessionOrder, _ source: SessionSourceFilter) async throws -> [Session]
+  /// The launch auto-connect / retry-screen check that a stored connection still works: the
+  /// same authenticated `GET /api/sessions?limit=1` the list makes, but every failure is a
+  /// `ConnectionFailure` that keeps the raw cause (URLError code, HTTP status) the `RESTError`
+  /// funnel flattens (#193). Its `reason` is exactly what `sessions` would have thrown.
+  public var validateConnection: @Sendable (_ connection: ServerConnection) async throws -> Void
   /// Just the archived (soft-hidden) sessions — `GET /api/sessions?archived=only`.
   public var archivedSessions: @Sendable (_ connection: ServerConnection, _ limit: Int, _ offset: Int) async throws -> [Session]
   /// Full-text search — `GET /api/sessions/search?q=…`. A non-nil `profile` adds
@@ -460,6 +465,27 @@ public extension HermesRESTClient {
         ] + source.queryItems)
         let response: SessionsResponse = try await get(url, auth: authFor(conn), session: session)
         return response.sessions.map(\.asSession)
+      },
+      validateConnection: { conn in
+        // `get` minus its transport funnel, so the raw `URLError` reaches `ConnectionFailure`.
+        do {
+          let url = try makeURL(conn.baseURL, "/api/sessions", query: [
+            .init(name: "limit", value: "1"),
+            .init(name: "offset", value: "0"),
+            .init(name: "order", value: SessionOrder.recent.rawValue),
+          ])
+          var request = URLRequest(url: url)
+          try await authFor(conn).apply(to: &request)
+          let (data, response) = try await session.data(for: request)
+          try validate(response, data: data)
+          do {
+            _ = try JSONDecoder().decode(SessionsResponse.self, from: data)
+          } catch {
+            throw RESTError.decoding
+          }
+        } catch {
+          throw ConnectionFailure(error, step: .sessionsProbe)
+        }
       },
       archivedSessions: { conn, limit, offset in
         let url = try makeURL(conn.baseURL, "/api/sessions", query: [

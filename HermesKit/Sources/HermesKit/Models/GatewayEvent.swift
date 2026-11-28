@@ -63,6 +63,12 @@ public enum GatewayEvent: Equatable, Sendable {
   /// meaning the cookie session is fully dead. The reducer routes this to re-auth instead of
   /// reconnect backoff. Distinct from `.error` (recoverable) and a socket drop (transient).
   case authExpired
+  /// Synthetic (client-side, never on the wire): the connection failed or ended without the
+  /// client asking — a ticket mint that failed, a refused WebSocket upgrade, a socket that
+  /// closed or errored. `detail` is a secret-free `ConnectionFailure`-style line (#193); the
+  /// stream finishes right after, so the reducer's `.gatewayClosed` still owns recovery.
+  /// Yielded only for the diagnostics log.
+  case connectionFailed(detail: String)
   /// Any event type we don't model (incl. ones ignored for MVP like `tool.progress`,
   /// `tool.generating`, `background.complete`, `skin.changed`). Never throws.
   case unknown(type: String, raw: JSONValue)

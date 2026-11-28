@@ -138,7 +138,10 @@ bullets below are the compressed rules.
   never onboarding (#62)**: only 401/403 falls back to onboarding (`State(recovering:token:)`:
   auto-probing Server step, token prefilled); everything else (incl. `RESTError.offline`)
   populates `connectionFailed`. `ConnectionFailedFeature.isRetryable` is the ONE routing
-  rule. Launch path only; a foreground re-probe supersedes an in-flight one.
+  rule. Launch path only; a foreground re-probe supersedes an in-flight one. The probe
+  (`validateConnection`) and the gateway stream report failures as secret-free
+  `ConnectionDiagnostics` lines (step + URLError code / HTTP status / close code — never a URL,
+  which carries `?token=`): retry-screen Details + `connect.failed` log entries (#193).
 
 ## Transcript & chat UI
 

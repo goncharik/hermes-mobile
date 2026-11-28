@@ -39,7 +39,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.validateConnection = { @Sendable _ in }
     }
 
     await store.send(.task) {
@@ -68,7 +68,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .cookie(cookieSession) }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.validateConnection = { @Sendable _ in }
     }
 
     await store.send(.task) {
@@ -87,7 +87,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("bad") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unauthorized }
     }
 
     await store.send(.task) {
@@ -125,7 +125,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .cookie(cookieSession) }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unauthorized }
     }
 
     await store.send(.task) {
@@ -3792,10 +3792,12 @@ struct AppFeatureTests {
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       $0.pendingLaunchIntent = .newChatWithDictation
     }
-    await store.send(.autoConnectFailed(connection, .offline)) {
+    await store.send(.autoConnectFailed(
+      connection, ConnectionFailure(reason: .offline, detail: "GET /api/sessions: URLError -1009")
+    )) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: .offline
+        connection: self.connection, reason: .offline, details: "GET /api/sessions: URLError -1009"
       )
     }
     await store.send(.connectionFailed(.delegate(.connected(connection)))) {
@@ -3818,7 +3820,9 @@ struct AppFeatureTests {
     await store.send(.launchIntentReceived(.newChatWithDictation)) {
       $0.pendingLaunchIntent = .newChatWithDictation
     }
-    await store.send(.autoConnectFailed(connection, .unauthorized)) {
+    await store.send(.autoConnectFailed(
+      connection, ConnectionFailure(reason: .unauthorized, detail: "GET /api/sessions: HTTP 401")
+    )) {
       $0.autoConnecting = false
       $0.onboarding = ConnectionFeature.State(
         recovering: self.connection.baseURL,
@@ -3874,9 +3878,8 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         for await _ in probeGate {}
-        return []
       }
       $0.launchIntents.incoming = { bridge.stream() }
     }
@@ -3966,7 +3969,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
+      $0.hermesREST.validateConnection = { @Sendable _ in }
       $0.quickActions = .recording(into: calls)
     }
     store.exhaustivity = .off
@@ -3984,7 +3987,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unauthorized }
       $0.quickActions = .recording(into: calls)
     }
     store.exhaustivity = .off
@@ -4172,20 +4175,45 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.validateConnection = { @Sendable _ in
+        throw ConnectionFailure(reason: .unreachable, detail: "GET /api/sessions: URLError -1001 timedOut")
+      }
     }
 
     await store.send(.task) {
       $0.didRunLaunchProbe = true
       $0.autoConnecting = true
     }
+    // The probe's raw cause rides into Details (#193), untouched by the routing.
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: .unreachable
+        connection: self.connection, reason: .unreachable,
+        details: "GET /api/sessions: URLError -1001 timedOut"
       )
     }
     #expect(store.state.onboarding == ConnectionFeature.State())
+  }
+
+  /// The launch failure's line also lands in the diagnostics log (#193), so a report from
+  /// Settings → Diagnostics carries it even after the retry screen is gone.
+  @Test func autoConnectFailureIsLoggedToDiagnostics() async {
+    let logged = LockIsolated<[String]>([])
+    let store = TestStore(initialState: AppFeature.State()) {
+      AppFeature()
+    } withDependencies: {
+      $0.keychain.loadSession = { @Sendable _ in .token("tok") }
+      $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
+      $0.hermesREST.validateConnection = { @Sendable _ in
+        throw ConnectionFailure(reason: .server(status: 502), detail: "GET /api/sessions: HTTP 502")
+      }
+      $0.debugLog.note = { @Sendable type, summary in logged.withValue { $0.append("\(type) \(summary)") } }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.task)
+    await store.receive(\.autoConnectFailed)
+    #expect(logged.value == ["connect.failed GET /api/sessions: HTTP 502"])
   }
 
   /// Same routing for `.offline` — the reason rides along so the screen can say "you're
@@ -4196,7 +4224,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.offline }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.offline }
     }
 
     await store.send(.task) {
@@ -4206,7 +4234,7 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: .offline
+        connection: self.connection, reason: .offline, details: "GET /api/sessions: device offline"
       )
     }
   }
@@ -4221,7 +4249,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in auth }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unreachable }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unreachable }
     }
 
     await store.send(.task) {
@@ -4231,7 +4259,8 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.cookieConnection, reason: .unreachable
+        connection: self.cookieConnection, reason: .unreachable,
+        details: "GET /api/sessions: no HTTP response"
       )
     }
     #expect(store.state.connectionFailed?.connection.auth == self.cookieConnection.auth)
@@ -4268,7 +4297,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         throw RESTError.server(status: status, detail: nil)
       }
     }
@@ -4280,7 +4309,8 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: .server(status: status, detail: nil)
+        connection: self.connection, reason: .server(status: status, detail: nil),
+        details: "GET /api/sessions: HTTP \(status)"
       )
     }
     #expect(store.state.onboarding == ConnectionFeature.State())
@@ -4307,7 +4337,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw error }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw error }
     }
 
     await store.send(.task) {
@@ -4331,7 +4361,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw error }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw error }
     }
 
     await store.send(.task) {
@@ -4341,7 +4371,8 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: error
+        connection: self.connection, reason: error,
+        details: "GET /api/sessions: \(ConnectionDiagnostics.cause(of: error))"
       )
     }
     #expect(store.state.onboarding == ConnectionFeature.State())
@@ -4357,7 +4388,7 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         throw URLError(.notConnectedToInternet)
       }
     }
@@ -4369,7 +4400,8 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.connection, reason: .offline
+        connection: self.connection, reason: .offline,
+        details: "GET /api/sessions: URLError -1009 notConnectedToInternet"
       )
     }
   }
@@ -4390,9 +4422,8 @@ struct AppFeatureTests {
     } withDependencies: {
       $0.keychain.loadSession = { @Sendable _ in .token("tok") }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         probes.withValue { $0 += 1 }
-        return []
       }
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
@@ -4543,6 +4574,7 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
+      $0.hermesREST.validateConnection = { @Sendable _ in }
       $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
@@ -4574,14 +4606,14 @@ struct AppFeatureTests {
     ) {
       AppFeature()
     } withDependencies: {
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable _ in
         let attempt = probes.withValue { value -> Int in
           value += 1
           return value
         }
         if attempt == 1 { for await _ in stall.stream { break } } // never resolves
-        return []
       }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in [] }
     }
     store.exhaustivity = .off(showSkippedAssertions: false)
 
@@ -6970,10 +7002,9 @@ struct AppFeatureTests {
       $0.keychain = keychain
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
       $0.bearerTokens = tokenStore
-      $0.hermesREST.sessions = { @Sendable connection, _, _, _, _ in
+      $0.hermesREST.validateConnection = { @Sendable connection in
         #expect(tokenStore.current == session, "the probe must run against a seeded store")
         #expect(connection.token == nil) // never the legacy session-token path
-        return []
       }
     }
 
@@ -7007,7 +7038,7 @@ struct AppFeatureTests {
       $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
       $0.bearerTokens = tokenStore
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.unauthorized }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.unauthorized }
     }
 
     await store.send(.task) {
@@ -7036,7 +7067,7 @@ struct AppFeatureTests {
       $0.keychain.loadSession = { @Sendable _ in .bearer(session) }
       $0.preferences.loadServerURL = { "http://mac.tailnet:9119" }
       $0.bearerTokens = tokenStore
-      $0.hermesREST.sessions = { @Sendable _, _, _, _, _ in throw RESTError.offline }
+      $0.hermesREST.validateConnection = { @Sendable _ in throw RESTError.offline }
     }
 
     await store.send(.task) {
@@ -7046,7 +7077,8 @@ struct AppFeatureTests {
     await store.receive(\.autoConnectFailed) {
       $0.autoConnecting = false
       $0.connectionFailed = ConnectionFailedFeature.State(
-        connection: self.bearerConnection(session), reason: .offline
+        connection: self.bearerConnection(session), reason: .offline,
+        details: "GET /api/sessions: device offline"
       )
     }
     await store.finish()

@@ -146,6 +146,57 @@ struct HermesRESTClientTests {
     return .live(session: URLSession(configuration: config))
   }
 
+  // MARK: - validateConnection (#193)
+
+  /// The launch / retry probe is the list's one-row page, authenticated like it.
+  @Test func validateConnectionProbesOneSessionWithTheStoredAuth() async throws {
+    MockURLProtocol.set(json: #"{"sessions":[],"total":0}"#)
+    try await makeClient().validateConnection(connection)
+    let request = try #require(MockURLProtocol.lastRequest)
+    #expect(request.url?.path == "/api/sessions")
+    #expect(request.url?.query == "limit=1&offset=0&order=recent")
+    #expect(request.value(forHTTPHeaderField: "X-Hermes-Session-Token") == "tok")
+  }
+
+  /// A transport failure keeps its URLError code — the cause `.unreachable` flattens away —
+  /// while `reason` is the same `RESTError` the shared funnel would produce.
+  @Test func validateConnectionKeepsTheRawURLErrorCode() async throws {
+    MockURLProtocol.set(fail: true, failCode: .timedOut)
+    await #expect(throws: ConnectionFailure(
+      reason: .unreachable, detail: "GET /api/sessions: URLError -1001 timedOut"
+    )) {
+      try await makeClient().validateConnection(connection)
+    }
+
+    MockURLProtocol.set(fail: true, failCode: .notConnectedToInternet)
+    await #expect(throws: ConnectionFailure(
+      reason: .offline, detail: "GET /api/sessions: URLError -1009 notConnectedToInternet"
+    )) {
+      try await makeClient().validateConnection(connection)
+    }
+  }
+
+  /// An HTTP refusal keeps its status and the server's detail; a 401 stays `.unauthorized`
+  /// so the credentials-verdict routing is unchanged.
+  @Test func validateConnectionKeepsTheHTTPStatus() async throws {
+    MockURLProtocol.set(status: 502, json: #"{"detail":"no upstream"}"#)
+    await #expect(throws: ConnectionFailure(
+      reason: .server(status: 502, detail: "no upstream"), detail: "GET /api/sessions: HTTP 502 no upstream"
+    )) {
+      try await makeClient().validateConnection(connection)
+    }
+
+    MockURLProtocol.set(status: 401)
+    await #expect(throws: ConnectionFailure(reason: .unauthorized, detail: "GET /api/sessions: HTTP 401")) {
+      try await makeClient().validateConnection(connection)
+    }
+
+    MockURLProtocol.set(json: "<html>portal</html>")
+    await #expect(throws: ConnectionFailure(reason: .decoding, detail: "GET /api/sessions: response did not decode")) {
+      try await makeClient().validateConnection(connection)
+    }
+  }
+
   @Test func statusDecodes() async throws {
     MockURLProtocol.set(json: #"{"version":"0.16.0","gateway_running":true,"gateway_state":"running","active_sessions":2}"#)
     let status = try await makeClient().status(baseURL)

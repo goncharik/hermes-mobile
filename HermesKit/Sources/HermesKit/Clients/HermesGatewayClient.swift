@@ -66,8 +66,9 @@ public enum GatewayError: Error, Equatable, Sendable {
   /// reconnecting won't help. Surfaced as `GatewayEvent.authExpired` on the stream.
   case authExpired
   /// The `ws-ticket` mint failed transiently (network/5xx/non-401): the consumer should
-  /// fall back to the existing reconnect backoff, exactly as for a dropped socket.
-  case ticketUnavailable
+  /// fall back to the existing reconnect backoff, exactly as for a dropped socket. `cause`
+  /// is the secret-free reason for the diagnostics log (`ConnectionDiagnostics`, #193).
+  case ticketUnavailable(cause: String)
 
   public var message: String {
     switch self {
@@ -189,7 +190,7 @@ public extension HermesGatewayClient {
         case .token:
           // Unreachable: `connect` opens `…/api/ws?token=` synchronously and never mints
           // for the legacy regime. Answer transiently rather than inventing a ticket.
-          throw GatewayError.ticketUnavailable
+          throw GatewayError.ticketUnavailable(cause: "token sign-ins never mint")
         case let .cookie(cookieSession):
           return try await wsTicket(baseURL: baseURL, cookieSession: cookieSession, session: session)
         case .bearer:
@@ -225,7 +226,7 @@ public extension HermesGatewayClient {
     longRequestTimeout: Duration = .seconds(120),
     clock: any Clock<Duration> = ContinuousClock(),
     mintTicket: @escaping @Sendable (_ baseURL: URL, _ auth: AuthSession) async throws -> String = { _, _ in
-      throw GatewayError.ticketUnavailable
+      throw GatewayError.ticketUnavailable(cause: "no ticket minter")
     },
     makeTransport: @escaping @Sendable (_ wsURL: URL) -> any WebSocketTransport
   ) -> HermesGatewayClient {
@@ -290,7 +291,11 @@ public extension HermesGatewayClient {
               continuation.finish()
             } catch {
               // Transient mint failure → finish like a dropped socket; the reducer's
-              // backoff re-calls `connect` (which re-mints the ticket).
+              // backoff re-calls `connect` (which re-mints the ticket). Its cause goes to the
+              // diagnostics log first (#193).
+              continuation.yield(GatewayFrame(.connectionFailed(
+                detail: "\(ConnectionStep.ticketMint.label): \(ConnectionDiagnostics.cause(of: error))"
+              )))
               continuation.finish()
             }
           }
@@ -447,7 +452,15 @@ actor GatewayConnection {
       do {
         text = try await transport.receive()
       } catch {
-        break // socket closed or errored
+        // Socket closed or errored. Unless we closed it ourselves (`shutdown` finishes first,
+        // and cancels this task), say why for the diagnostics log (#193): a refused upgrade's
+        // HTTP status, a close frame's code, or the transport error.
+        if !isFinished, !Task.isCancelled {
+          events.yield(GatewayFrame(.connectionFailed(
+            detail: "\(ConnectionStep.webSocket.label): \(transport.failureCause(error))"
+          )))
+        }
+        break
       }
       // A single WS message may carry multiple newline-delimited frames.
       for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -627,6 +640,12 @@ public protocol WebSocketTransport: Sendable {
   func send(_ text: String) async throws
   func receive() async throws -> String
   func cancel()
+  /// A secret-free one-line cause for an error `receive()` threw (`ConnectionDiagnostics`).
+  func failureCause(_ error: any Error) -> String
+}
+
+public extension WebSocketTransport {
+  func failureCause(_ error: any Error) -> String { ConnectionDiagnostics.cause(of: error) }
 }
 
 final class URLSessionWebSocketTransport: WebSocketTransport, @unchecked Sendable {
@@ -662,6 +681,20 @@ final class URLSessionWebSocketTransport: WebSocketTransport, @unchecked Sendabl
 
   func cancel() {
     task.cancel(with: .goingAway, reason: nil)
+  }
+
+  /// What the task knows beyond the thrown error: the close frame's code and reason once the
+  /// socket had opened, or the upgrade response's status when the handshake was refused
+  /// (which `receive()` reports only as `badServerResponse`). Never the URL — it carries
+  /// the `?token=` / `?ticket=` credential.
+  func failureCause(_ error: any Error) -> String {
+    let closeCode = task.closeCode == .invalid ? nil : task.closeCode.rawValue
+    return ConnectionDiagnostics.webSocketCause(
+      closeCode: closeCode,
+      closeReason: task.closeReason.map { String(decoding: $0, as: UTF8.self) },
+      httpStatus: (task.response as? HTTPURLResponse)?.statusCode,
+      underlying: error
+    )
   }
 }
 
@@ -721,7 +754,7 @@ func wsTicket(baseURL: URL, tokenStore: BearerTokenStore, session: URLSession) a
   } catch GatewayError.authExpired {
     throw GatewayError.authExpired
   } catch {
-    throw GatewayError.ticketUnavailable
+    throw GatewayError.ticketUnavailable(cause: "token refresh \(ConnectionDiagnostics.cause(of: error))")
   }
   return try await wsTicketRequest(baseURL: baseURL, auth: .bearer(accessToken), session: session)
 }
@@ -734,7 +767,7 @@ private func wsTicketRequest(
 ) async throws -> String {
   var comps = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
   comps.path = "/api/auth/ws-ticket"
-  guard let url = comps.url else { throw GatewayError.ticketUnavailable }
+  guard let url = comps.url else { throw GatewayError.ticketUnavailable(cause: "bad server URL") }
   var request = URLRequest(url: url)
   request.httpMethod = "POST"
   auth.apply(to: &request)
@@ -744,13 +777,19 @@ private func wsTicketRequest(
   do {
     (data, response) = try await session.data(for: request)
   } catch {
-    throw GatewayError.ticketUnavailable
+    throw GatewayError.ticketUnavailable(cause: ConnectionDiagnostics.cause(of: error))
   }
-  guard let http = response as? HTTPURLResponse else { throw GatewayError.ticketUnavailable }
+  guard let http = response as? HTTPURLResponse else {
+    throw GatewayError.ticketUnavailable(cause: "no HTTP response")
+  }
   if http.statusCode == 401 { throw GatewayError.authExpired }
-  guard (200..<300).contains(http.statusCode) else { throw GatewayError.ticketUnavailable }
+  guard (200..<300).contains(http.statusCode) else {
+    throw GatewayError.ticketUnavailable(
+      cause: ConnectionDiagnostics.httpCause(status: http.statusCode, detail: serverDetail(from: data))
+    )
+  }
   guard let decoded = try? JSONDecoder().decode(WSTicketResponse.self, from: data) else {
-    throw GatewayError.ticketUnavailable
+    throw GatewayError.ticketUnavailable(cause: "response had no ticket")
   }
   return decoded.ticket
 }

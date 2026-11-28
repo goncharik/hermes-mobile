@@ -17,6 +17,14 @@ struct ConnectionFailedView: View {
   @Bindable var store: StoreOf<ConnectionFailedFeature>
 
   @State private var showsSetupGuide = false
+  /// The Details disclosure (#193) — view-local like onboarding's `ProbeFailureCard`, and
+  /// injectable so a snapshot can pin it open.
+  @State private var isShowingDetails: Bool
+
+  init(store: StoreOf<ConnectionFailedFeature>, isShowingDetails: Bool = false) {
+    self.store = store
+    self._isShowingDetails = State(initialValue: isShowingDetails)
+  }
 
   /// The hero glyph, sized well above any text style: this is a full-screen failure state, and
   /// the icon is what identifies it before a word is read. Deliberately larger than
@@ -83,6 +91,10 @@ struct ConnectionFailedView: View {
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
           .lineLimit(6)
+
+        if let details = store.details {
+          detailsDisclosure(details)
+        }
       }
       .padding(.horizontal, 8)
 
@@ -136,6 +148,30 @@ struct ConnectionFailedView: View {
     .padding(.horizontal, 32)
     .padding(.vertical, 40)
   }
+
+  /// The failed step and its raw cause (URLError code, HTTP status), selectable so it can be
+  /// pasted into a report. Same treatment as onboarding's failure-card Details.
+  private func detailsDisclosure(_ details: String) -> some View {
+    DisclosureGroup(isExpanded: $isShowingDetails) {
+      Text(verbatim: details)
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+          Color(.secondarySystemGroupedBackground),
+          in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .padding(.top, 6)
+    } label: {
+      Text("Details")
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+    }
+    .tint(.secondary)
+  }
 }
 
 #Preview {
@@ -146,7 +182,8 @@ struct ConnectionFailedView: View {
           baseURL: URL(string: "http://mac.tailnet:9119")!,
           token: "t"
         ),
-        reason: .unreachable
+        reason: .unreachable,
+        details: "GET /api/sessions: URLError -1001 timedOut"
       )
     ) {
       ConnectionFailedFeature()
