@@ -192,7 +192,9 @@ bullets below are the compressed rules.
 - **The chat column is capped at `ChatLayout.readableMaxWidth` (760) on the OUTER
   container only** — `.frame(maxWidth:)` + `.frame(maxWidth: .infinity)` on `ChatView`'s
   outer `VStack`; phone widths are below it (compact unchanged); never on table cells
-  (`CappedWidthLayout` rule stands). Measured in `ChatColumnLayoutTests`.
+  (`CappedWidthLayout` rule stands). The column must never be WIDER than the window (#191): no
+  rigid row in it (the composer toolbar's layout reports its offered width). Measured in
+  `ChatColumnLayoutTests`.
 - **Markdown & tables**: block classification in `MarkdownSegment`, rendered by
   `MarkdownText`; only USER messages get a bubble; wide tables PAN in
   `MarkdownTableView` (direction-aware fade), cells capped by `CappedWidthLayout` —

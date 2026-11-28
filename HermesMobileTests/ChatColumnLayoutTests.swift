@@ -1,5 +1,5 @@
 import ComposableArchitecture
-import HermesKit
+@testable import HermesKit
 import SwiftUI
 import UIKit
 import XCTest
@@ -130,6 +130,46 @@ final class ChatColumnLayoutTests: XCTestCase {
     XCTAssertEqual(composer.midX, Self.phoneWindow.width / 2, accuracy: 1)
   }
 
+  // MARK: - Never wider than the window (#191)
+
+  /// "In portrait the text spills off the screen on both sides" (#191): with every composer
+  /// control showing, the toolbar's rigid row made the column 341pt wide at the default text size
+  /// and 380pt at xxxLarge, so a 320pt (Display Zoom) or 375pt screen centered a column wider
+  /// than itself. `ComposerView`'s toolbar layout (#192) reports the width it is offered —
+  /// wrapping the buttons to a second row below accessibility sizes, keeping one row (the effort
+  /// truncating) at them — so the column is now the window at every phone width and text size
+  /// measured, including the accessibility sizes where the row stays single.
+  ///
+  /// Measured on the single-`HStack` toolbar (before #192), the column was 341pt at 320 / large,
+  /// 380pt at 320 and 375 / xxxLarge, and 409pt at 375 / AX1.
+  @MainActor
+  func testTheColumnNeverOutgrowsANarrowWindow() throws {
+    for (width, dynamicType) in [
+      (CGFloat(320), DynamicTypeSize.large), (320, .xxxLarge), (375, .large), (375, .xxxLarge),
+      (320, .accessibility1), (375, .accessibility1), (375, .accessibility5),
+    ] {
+      let chat = try hostedChat(
+        window: CGSize(width: width, height: 693), dynamicType: dynamicType, configure: Self.everyControl
+      )
+      let transcript = chat.transcript.convert(chat.transcript.bounds, to: nil)
+      XCTAssertEqual(transcript.width, width, accuracy: 1, "\(width)pt at \(dynamicType): the column is the window")
+      XCTAssertEqual(transcript.minX, 0, accuracy: 1, "\(width)pt at \(dynamicType): …not centered past its edges")
+      let composer = chat.composer.convert(chat.composer.bounds, to: nil)
+      XCTAssertGreaterThanOrEqual(composer.minX, 0, "\(width)pt at \(dynamicType)")
+      XCTAssertLessThanOrEqual(composer.maxX, width, "\(width)pt at \(dynamicType)")
+    }
+  }
+
+  /// Every composer control: model + effort chip, context ring, approval mode (desktop contract
+  /// 3), read aloud, attach, mic, send.
+  private static func everyControl(_ state: inout ChatFeature.State) {
+    state.model = "claude-sonnet-4-5"
+    state.reasoningEffort = "medium"
+    state.desktopContract = 3
+    state.approvalMode = .smart
+    state.usage = Usage(contextUsed: 84_000, contextMax: 200_000, contextPercent: 42)
+  }
+
   // MARK: - The cap is on the OUTER container (tables still pan inside it)
 
   /// A table wider than the capped column must pan inside it, exactly as it does on a phone:
@@ -189,10 +229,12 @@ final class ChatColumnLayoutTests: XCTestCase {
   private func hostedChat(
     window size: CGSize,
     markdown: String = "row",
+    dynamicType: DynamicTypeSize = .large,
+    configure: (inout ChatFeature.State) -> Void = { _ in },
     file: StaticString = #filePath,
     line: UInt = #line
   ) throws -> HostedChat {
-    let state = ChatFeature.State(
+    var state = ChatFeature.State(
       connection: ServerConnection(
         baseURL: URL(string: "http://127.0.0.1:8787")!, auth: .token("t")
       ),
@@ -205,13 +247,14 @@ final class ChatColumnLayoutTests: XCTestCase {
       ),
       status: .ready
     )
+    configure(&state)
     let store = Store(initialState: state) { ChatFeature() } withDependencies: {
       // Don't open a real socket during layout.
       $0.hermesGateway.connect = { _, _ in AsyncStream { _ in } }
       $0.continuousClock = ImmediateClock()
     }
     let controller = UIHostingController(
-      rootView: NavigationStack { ChatView(store: store) }.dynamicTypeSize(.large)
+      rootView: NavigationStack { ChatView(store: store) }.dynamicTypeSize(dynamicType)
     )
     let window = UIWindow(frame: CGRect(origin: .zero, size: size))
     window.rootViewController = controller
