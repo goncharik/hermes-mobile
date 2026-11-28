@@ -62,6 +62,14 @@ struct ComposerView: View {
   /// never paste) stay unchanged.
   var onPasteImages: (PickedBatch) -> Void = { _ in }
 
+  /// The least of the model name the one-row toolbar must still show ("claude…") before it
+  /// falls back to two rows (#192). Scales with the chip's footnote text.
+  @ScaledMetric(relativeTo: .footnote) private var modelLabelFloor: CGFloat = 48
+  /// At accessibility text sizes height is the scarce resource (a raised prompt card shares the
+  /// fixed region with the composer), so the toolbar never takes a second row there and the
+  /// effort truncates instead of holding its width.
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
   var body: some View {
     Group {
       if recording.isBusy {
@@ -93,20 +101,30 @@ struct ComposerView: View {
         onPasteImages: onPasteImages
       )
 
-      HStack(spacing: 12) {
-        // Let the model chip claim its ideal width before the Spacer, so the model name
-        // shows in full when there's room (it truncated even with space to spare otherwise).
-        modelChip
-          .layoutPriority(1)
-        if let usage { ContextUsageRing(usage: usage) }
-        Spacer()
-        if approvalMode != nil { approvalModeButton }
-        if showsAutoSpeak { autoSpeakButton }
-        if attachmentsSupported { attachButton }
-        voiceButton
-        sendButton
+      // One row while the chip keeps at least `modelLabelFloor` of its model name beside every
+      // control; otherwise (#192: a narrow window with the usage ring, approval bolt and
+      // read-aloud toggle all showing) the chip and ring take their own line above the
+      // buttons, instead of the chip wrapping its effort or pushing the buttons out.
+      ComposerToolbarLayout(allowsTwoRows: !dynamicTypeSize.isAccessibilitySize) {
+        HStack(spacing: 12) {
+          // The chip claims its width before the ring, so the model name shows in full when
+          // there's room (it truncated even with space to spare otherwise).
+          modelChip
+            .layoutPriority(1)
+          if let usage { ContextUsageRing(usage: usage) }
+        }
+        HStack(spacing: 12) { composerButtons }
       }
     }
+  }
+
+  @ViewBuilder
+  private var composerButtons: some View {
+    if approvalMode != nil { approvalModeButton }
+    if showsAutoSpeak { autoSpeakButton }
+    if attachmentsSupported { attachButton }
+    voiceButton
+    sendButton
   }
 
   private var attachmentChips: some View {
@@ -192,14 +210,23 @@ struct ComposerView: View {
 
   private var modelChip: some View {
     Button(action: onModelTap) {
+      // Only the model label gives way on a narrow row (#192): the effort, separator and
+      // chevron hold their ideal width, so the effort never wraps ("medi-um") and the chip's
+      // floor is the effort itself, never a sliver.
       HStack(spacing: 5) {
-        Text(modelLabel)
-          .lineLimit(1)
+        IdealWidthCap(cap: modelLabelFloor) {
+          Text(modelLabel)
+            .lineLimit(1)
+        }
         if let effort = reasoningEffort, !effort.isEmpty {
           Text("·").foregroundStyle(.tertiary)
+            .fixedSize()
           Text(effort)
+            .lineLimit(1)
+            .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: false)
         }
         Image(systemName: "chevron.up.chevron.down").font(.caption2)
+          .fixedSize()
       }
       .font(.footnote.weight(.medium))
       .foregroundStyle(.secondary)
@@ -266,6 +293,85 @@ struct ComposerView: View {
   private var modelLabel: String {
     if let model, !model.isEmpty { return model }
     return "Model"
+  }
+}
+
+/// The composer toolbar (#192): subview 0 is the chip group (model chip + usage ring), subview 1
+/// the buttons. One row — chip group leading, buttons trailing, at least `minGap` apart — while
+/// the chip group's IDEAL width fits beside the buttons; otherwise the chip group takes its own
+/// line above the trailing-aligned buttons. The chip's ideal width already has its model label
+/// capped by `IdealWidthCap`, so the one-row test means "at least the label floor still shows".
+/// A measured `Layout`, not `ViewThatFits`: the latter, holding two copies of the row, looped
+/// the hosted chat's layout with the keyboard up.
+private struct ComposerToolbarLayout: Layout {
+  /// False keeps one row whatever the width (accessibility text sizes); the chip then gets
+  /// whatever the buttons leave.
+  var allowsTwoRows = true
+  /// The old row's gap: two 12 pt stack spacings around an 8 pt minimum `Spacer`.
+  var minGap: CGFloat = 32
+  var rowSpacing: CGFloat = 10
+
+  private func fitsOneRow(_ width: CGFloat, chip: CGSize, buttons: CGSize) -> Bool {
+    !allowsTwoRows || chip.width + minGap + buttons.width <= width
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard subviews.count == 2 else { return .zero }
+    let buttons = subviews[1].sizeThatFits(.unspecified)
+    let chipIdeal = subviews[0].sizeThatFits(.unspecified)
+    guard let width = proposal.width else {
+      return CGSize(
+        width: chipIdeal.width + minGap + buttons.width,
+        height: max(chipIdeal.height, buttons.height)
+      )
+    }
+    if fitsOneRow(width, chip: chipIdeal, buttons: buttons) {
+      let chip = subviews[0].sizeThatFits(
+        ProposedViewSize(width: max(0, width - buttons.width - minGap), height: nil))
+      return CGSize(width: width, height: max(chip.height, buttons.height))
+    }
+    let chip = subviews[0].sizeThatFits(ProposedViewSize(width: width, height: nil))
+    return CGSize(width: width, height: chip.height + rowSpacing + buttons.height)
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    guard subviews.count == 2 else { return }
+    let buttons = subviews[1].sizeThatFits(.unspecified)
+    let chipIdeal = subviews[0].sizeThatFits(.unspecified)
+    if fitsOneRow(bounds.width, chip: chipIdeal, buttons: buttons) {
+      subviews[0].place(
+        at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+        proposal: ProposedViewSize(width: max(0, bounds.width - buttons.width - minGap), height: nil))
+      subviews[1].place(
+        at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+        proposal: ProposedViewSize(buttons))
+    } else {
+      subviews[0].place(
+        at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading,
+        proposal: ProposedViewSize(width: bounds.width, height: nil))
+      subviews[1].place(
+        at: CGPoint(x: bounds.maxX, y: bounds.maxY), anchor: .bottomTrailing,
+        proposal: ProposedViewSize(buttons))
+    }
+  }
+}
+
+/// Reports at most `cap` as its single subview's IDEAL width (an unspecified width proposal)
+/// and passes every concrete proposal straight through, so `ComposerToolbarLayout` judges the
+/// one-row fit by a truncated model label while the row still lays the label out at full width
+/// when there is room (#192).
+private struct IdealWidthCap: Layout {
+  let cap: CGFloat
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    guard let subview = subviews.first else { return .zero }
+    let size = subview.sizeThatFits(proposal)
+    guard proposal.width == nil else { return size }
+    return CGSize(width: min(size.width, cap), height: size.height)
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
   }
 }
 
