@@ -624,10 +624,10 @@ final class MarkdownTableLayoutTests: XCTestCase {
 
 /// One assistant message row in a stand-in for the transcript: the **production**
 /// `TranscriptLayout.makeLayout()` (`.estimated(60)` self-sizing items, the section's
-/// own horizontal insets) driving the same `UIHostingConfiguration { … }.margins(.all, 0)`
-/// cell registration, in a real window.
+/// own horizontal insets) driving the production `TranscriptLayout.cellConfiguration` (the
+/// #191 sizing guard over a margin-less `UIHostingConfiguration`), in a real window.
 ///
-/// The layout is the real one rather than a hand-copied recipe so the harness cannot drift
+/// The layout and the cell configuration are the real ones rather than hand-copied recipes so the harness cannot drift
 /// from the transcript it stands in for. Only the *hosting* is a stand-in: the real
 /// `CollectionTranscriptView` needs a `ChatFeature` store and a `ChatRow`, neither of which
 /// affects the measurement under test (cell height for hosted SwiftUI content at a width).
@@ -653,11 +653,10 @@ private final class TranscriptCellHarness {
       frame: bounds, collectionViewLayout: TranscriptLayout.makeLayout()
     )
     let registration = UICollectionView.CellRegistration<UICollectionViewCell, Int> { cell, _, id in
-      cell.contentConfiguration = UIHostingConfiguration {
+      cell.contentConfiguration = TranscriptLayout.cellConfiguration {
         MessageBubbleView(role: .assistant, text: markdowns[id], isComplete: true)
           .dynamicTypeSize(.large)
       }
-      .margins(.all, 0)
       cell.backgroundConfiguration = .clear()
     }
     dataSource = UICollectionViewDiffableDataSource<Int, Int>(collectionView: collectionView) { view, indexPath, id in

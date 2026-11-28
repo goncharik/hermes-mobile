@@ -178,7 +178,21 @@ survives the hydrate's live → deterministic id rewrite.
   re-attach so a window-less deferral flushes even at an unchanged size. Nothing in the diff
   state (`currentOrder` / `currentRowIDs`) moves until the flush, so the gap classifies as one
   change. The open's FIRST update always defers (zero frame, no window), and its flush is what
-  takes the open jump. Never call `dataSource.apply` outside this gate.
+  takes the open jump. Never call `dataSource.apply` outside this gate. The gate is NOT the
+  crash fix on its own (#191, below): it allows a 33pt view (a 1pt row) and gates no layout pass.
+- **Every cell sits under the sizing guard (#191).** UIKit's `_UIContentViewAssertValidFittingSize`
+  aborts on a fitting size that is non-finite, negative or too TALL (measured on iOS 27.2: 2.5M pt
+  passes, 3M pt asserts), on the apply path and on a plain `layoutSubviews` prefetch alike. Prose
+  answers a degenerate width with one glyph per line (~19pt per character at 1pt), so a long
+  reply in a collection view a few points wide crossed it — reproduced in
+  `TranscriptCellSizingLayoutTests` (166k characters, 3.17M pt). Every cell is configured by
+  `TranscriptLayout.cellConfiguration`, which roots the content in `TranscriptCellLayout`: it
+  measures and places no narrower than `TranscriptLayout.narrowestRowWidth` and reports a finite,
+  non-negative size capped at `TranscriptCellSizing.maximumCellHeight` (1M pt; the pure rule is
+  `TranscriptCellSizing` in HermesKit). Size-neutral at every real row width. Never configure a
+  transcript cell any other way, and don't rely on individual views being well-behaved — though
+  `SelectableText` also answers `nil` / infinite widths with its natural size and never echoes a
+  negative or infinite width.
 - **Fold changes hold the reader's place.** Pinned → normal re-pin. Scrolled up → the first
   visible surviving item keeps its on-screen y, through the same same-pass anchor hold as a
   #125 window slide (pure `TranscriptScrollMath.holdsReaderAnchor` / `preservationAnchor` /
